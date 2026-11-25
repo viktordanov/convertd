@@ -25,7 +25,7 @@ The design runs one supervisor and two pools of workers, all from the same binar
 
 Each engine runs in a worker process because a hostile file can crash it, hang it or make it grow without limit. At the deadline, the pool kills the worker's process group, and the supervisor keeps serving. LibreOfficeKit allows one instance per process for the life of the process, and PDFium is not thread-safe. Thus one worker holds one engine and runs one job at a time.
 
-The supervisor reads only enough of a file to route it. `detect/` reads the signature, the ZIP central directory, `[Content_Types].xml`, the ODF `mimetype` entry and the stream names of an OLE2 file, in safe Rust with fixed caps. In the design, everything else that reads document content runs in a worker, including the pre-flight scan of office files.
+The supervisor reads only enough of a file to route it. `detect/` reads the signature, the ZIP central directory, `[Content_Types].xml` and the ODF `mimetype` entry. For an OLE2 file it reads only the stream names. All of it is safe Rust with fixed caps. In the design, everything else that reads document content runs in a worker, including the pre-flight scan of office files.
 
 `main.rs` dispatches `convertd worker` first, before it builds a runtime, starts logging or reads the configuration. For `convertd serve`, `runtime.rs` builds a Tokio runtime with 2 worker threads, unless `TOKIO_WORKER_THREADS` sets another count. The blocking pool has at most 32 threads, and an idle blocking thread exits after 10 s.
 
@@ -62,7 +62,7 @@ The rest of the crate supports both sides:
 
 The dependency rule keeps the domain at the center. `domain/` uses no other module of the crate, and no HTTP, async runtime, serde, IPC or FFI crate. The test `domain_has_no_forbidden_imports` in `domain/engine.rs` fails when a domain file imports one of them.
 
-`detect/` and `jobs/` depend on `domain/` only. `rest/` depends on `domain/`, `detect/`, `jobs/` and `config.rs`, and it imports `engines/` only in its tests. `rest/response.rs` is the only place that maps an error to an HTTP status. `rest/serialization/` holds the only serde types of the supervisor's request path.
+`detect/` and `jobs/` depend on `domain/` only. `preflight/` depends on `domain/` and on the ZIP reader in `detect/zip_scan.rs`. `rest/` depends on `domain/`, `detect/`, `jobs/` and `config.rs`, and it imports `engines/` only in its tests. `rest/response.rs` is the only place that maps an error to an HTTP status. `rest/serialization/` holds the only serde types of the supervisor's request path.
 
 `domain/engine.rs` is the seam between the two sides. The conversion service calls the `OfficeEngine` and `PdfEngine` traits. Lane 002's adapters in `engines/` will implement them, and they are not written yet. `worker/` is the only place with `unsafe` code and engine calls. Changes to `domain/engine.rs` go through the lead.
 <!-- /memoria:section -->
@@ -113,7 +113,7 @@ Every 200 carries `Content-Length`, `Content-Disposition`, `X-Request-ID`, the `
 <!-- memoria:section id="warnings" files="domain/verification.rs preflight/mod.rs preflight/package.rs preflight/docx.rs preflight/pptx.rs preflight/xlsx.rs preflight/odf.rs" -->
 ## Warnings
 
-Warnings compare what an office source declares with what the engines produced. The algorithms are 005 §5. `preflight::scan` reads the source in the office worker, before LibreOffice loads it, and returns `SourceFacts`: the visible slide count of a deck, the requested Latin font families and where macros are stored. `domain/verification.rs` holds the rules:
+Warnings compare what an office source declares with what the engines produced. The algorithms are 005 §5. `preflight::scan` reads the source in the office worker, before LibreOffice loads it. It returns `SourceFacts`: the visible slide count of a deck, the requested Latin font families and where macros are stored. `domain/verification.rs` holds the rules:
 
 - **`PAGE_COUNT_MISMATCH`**: PPTX family only, when the declared count differs from the PDF. It is skipped when hidden slides or notes pages are included, and for a template with no slides.
 - **`FONT_SUBSTITUTED`**: a requested family that `build-info.json` does not list, unless `fonts.json` marks it metric-compatible and its substitute is installed. At most 32 per request. Without `build-info.json`, as outside the image, the check is skipped.
@@ -121,7 +121,7 @@ Warnings compare what an office source declares with what the engines produced. 
 - **`MACROS_IGNORED`**: a VBA project, an Excel 4 macro sheet, an ODF `Basic/` module or `Scripts/` entry, or an OLE2 macro storage.
 - **`RENDER_CLAMPED`**: `MAX_DPI` or `MAX_EDGE_PX` lowered the requested resolution.
 
-The scanners stream each part through quick-xml under fixed caps: 4 MiB per part, 32 MiB per font scan and 64 MiB per request. A part that is missing, malformed or over a cap skips its check, and the skip is logged. A scanner must not panic, because a panic ends the office worker.
+The scanners stream each part through quick-xml under fixed caps: 4 MiB per part, 32 MiB per font scan and 64 MiB per request. A part that is missing, malformed or over a cap skips its check, and `convert_verify_skipped_total` counts the skip by check and reason. A scanner must not panic, because a panic ends the office worker.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="lifecycle" files="main.rs rest/server.rs rest/ops_handlers.rs observability/metrics.rs" -->
