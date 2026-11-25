@@ -43,7 +43,7 @@ The supervisor's request path uses five layers:
 - **`rest/`**: the axum router, the middleware, the handlers, the streamed upload, the response pump, the error mapping and the DTOs.
 - **`detect/`**: format detection from the bytes, with the zip-bomb guard.
 - **`jobs/`**: the job directory under `TMP_DIR` and the disk budget (`TMP_MAX_BYTES`).
-- **`bundle/`**: the stored-ZIP writer for `images` and `bundle` output. It is empty at this time.
+- **`bundle/`**: the stored-ZIP writer for `images` and `bundle` output.
 
 Lane 002 owns the worker side:
 
@@ -65,10 +65,10 @@ The dependency rule keeps the domain at the center. `domain/` uses no other modu
 `domain/engine.rs` is the seam between the two sides. The conversion service calls the `OfficeEngine` and `PdfEngine` traits. Lane 002's adapters in `engines/` will implement them, and they are not written yet. `worker/` is the only place with `unsafe` code and engine calls. Changes to `domain/engine.rs` go through the lead.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="usage" files="rest/server.rs rest/convert_handlers.rs rest/upload.rs rest/body.rs rest/timing.rs domain/conversion_service.rs detect/mod.rs jobs/job_dir.rs jobs/disk_budget.rs" -->
+<!-- memoria:section id="usage" files="rest/server.rs rest/convert_handlers.rs rest/upload.rs rest/body.rs rest/timing.rs domain/conversion_service.rs detect/mod.rs jobs/job_dir.rs jobs/disk_budget.rs bundle/zip_stored.rs rest/serialization/manifest.rs" -->
 ## Request path
 
-One `POST /v1/convert` with `output=pdf` goes through these files:
+One `POST /v1/convert` goes through these files:
 
 ```text
 rest/server.rs                    layers, outermost first
@@ -89,26 +89,29 @@ rest/server.rs                    layers, outermost first
     ├── conversion_service.rs     convert() under the backstop
     │   ├── office file           convert, then inspect
     │   ├── PDF                   inspect, then decrypt if needed
-    │   └── image                 assemble, then inspect
-    └── body.rs                   file_body(): the response pump
+    │   ├── image                 assemble, then inspect
+    │   └── images or bundle      render the selected pages
+    ├── bundle/zip_stored.rs      ZipPlan: manifest, PDF, pages
+    └── body.rs                   file_body() or zip_body()
 ```
 
 The upload never sits whole in memory. The handler sends the chunks of the file part through a queue of four to one blocking sink. The sink computes SHA-256 and CRC-32 while it writes, then runs detection while the file is still in the page cache.
 
 The deadline is the end of the upload plus `timeout_seconds`. The engines enforce it inside each call, and the service makes sure that it has time left between calls. The handler drops the conversion 250 ms after the deadline and answers 504 `CONVERSION_TIMEOUT`. Dropping the future cancels the engine job.
 
-The response pump is one blocking task. It reads the PDF in 64 KiB chunks and sends them to the response body through a queue of four. The pump, not the body, owns the job directory and the permit. If the client stops reading for `IO_IDLE_TIMEOUT_SECONDS`, the pump stops, logs `RESPONSE_STALLED` and releases both.
+For `images` and `bundle`, the response is a stored ZIP: `manifest.json`, then `document.pdf` for a bundle, then `pages/NNNN.<ext>`. Its sizes come from `fstat` and every CRC-32 is known before the headers, so `Content-Length` is exact. A ZIP that would need ZIP64 (4 GiB, or 65 535 entries) answers 422 `LIMIT_EXCEEDED`.
+
+The response pump is one blocking task. It reads the PDF, or writes the ZIP, in 64 KiB chunks and sends them to the response body through a queue of four. The pump, not the body, owns the job directory and the permit. If the client stops reading for `IO_IDLE_TIMEOUT_SECONDS`, the pump stops, logs `RESPONSE_STALLED` and releases both.
 
 Every 200 carries `Content-Length`, `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers and `Server-Timing`. A detection error and a conversion error also carry `Server-Timing`. `rest/timing.rs` builds the header and computes the overhead and the strict overhead for the `conversion finished` log line.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="contract" files="main.rs rest/upload.rs detect/mod.rs rest/ops_handlers.rs rest/server.rs bundle/mod.rs preflight/mod.rs observability/mod.rs" -->
+<!-- memoria:section id="contract" files="main.rs detect/mod.rs rest/ops_handlers.rs rest/server.rs preflight/mod.rs observability/mod.rs" -->
 ## Not wired yet
 
 These parts of the design do not work yet:
 
 - **Engines**: `convertd serve` uses the `Unwired` engines. Every conversion answers 503 `SERVICE_UNAVAILABLE`, and `/readyz` answers 503 with `starting`. In a build with the `test-hooks` feature, `TEST_ENGINE=fake` selects the level-A fakes instead. `TEST_ENGINE=worker` is not wired either, and the office and render worker roles stop with "not built yet".
-- **ZIP output**: `output=images` and `output=bundle` answer 422 `VALIDATION_ERROR` with "output images is not available yet" or "output bundle is not available yet".
 - **OLE2 files**: `doc`, `xls`, `ppt`, `pps` and encrypted OOXML answer 415 with "unsupported format: ole2". `/v1/capabilities` already lists `doc`, `xls`, `ppt` and `pps`.
 - **Warnings**: the pre-flight scanners and the warning rules that compare their facts with the PDF are not written yet. `RENDER_CLAMPED` needs image output, so the service raises no warning. `Convert-Warning-Count` is always 0.
 - **Metrics and drain**: `/metrics` answers an empty body. On SIGTERM or SIGINT, the server stops accepting and finishes its open connections, with no drain step before that.

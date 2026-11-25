@@ -8,12 +8,14 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use super::body::{Pump, file_body};
+use super::body::{Pump, file_body, zip_body};
 use super::middleware::request_id::RequestId;
 use super::response::{ApiError, content_disposition};
+use super::serialization::manifest::{Manifest, ManifestParts, Timings, page_path};
 use super::timing::{RequestTimings, micros};
 use super::upload::{self, Received, UploadError};
-use crate::domain::conversion::ConversionResult;
+use crate::bundle::{PlanError, ZipPlan};
+use crate::domain::conversion::{ConversionResult, Output};
 use crate::domain::conversion_service::{ConversionError, ConversionJob};
 use crate::jobs::JobDir;
 
@@ -137,6 +139,17 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
     };
     let deadline = received.upload_done + received.request.timeout;
     let paths = job.paths(received.detection.format);
+    // The supervisor creates pages/; the render engine writes into it.
+    if received.request.output != Output::Pdf
+        && let Err(err) = std::fs::create_dir(&paths.pages_dir)
+    {
+        let api = ApiError::from_upload(&upload::map_io(err), state.queue_wait_seconds);
+        let mut response = api.into_response();
+        response
+            .headers_mut()
+            .insert(SERVER_TIMING, timings.header());
+        return response;
+    }
     let outcome = {
         let conversion = state.service.convert(
             ConversionJob {
@@ -160,16 +173,19 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
     };
     let package_started = Instant::now();
     match outcome {
-        Ok(result) => success(
-            &state,
-            &received,
-            result,
-            job,
-            permit,
-            &request_id,
-            &mut timings,
-            package_started,
-        ),
+        Ok(result) => {
+            success(
+                &state,
+                &received,
+                result,
+                job,
+                permit,
+                &request_id,
+                &mut timings,
+                package_started,
+            )
+            .await
+        }
         Err(err) => {
             let api = ApiError::from_conversion(&err, state.queue_wait_seconds);
             timings.total = Some(received.upload_done.elapsed());
@@ -200,9 +216,10 @@ const WARNING_COUNT: HeaderName = HeaderName::from_static("convert-warning-count
 const FINGERPRINT: HeaderName = HeaderName::from_static("convert-engine-fingerprint");
 
 /// The 200: headers first, then the body pump, which owns the job
-/// directory and the permit from here on.
+/// directory and the permit from here on. Anything that fails before the
+/// headers still becomes an error status.
 #[allow(clippy::too_many_arguments)]
-fn success(
+async fn success(
     state: &AppState,
     received: &Received,
     result: ConversionResult,
@@ -212,10 +229,26 @@ fn success(
     timings: &mut RequestTimings,
     package_started: Instant,
 ) -> Response {
-    let file = match File::open(&result.pdf).and_then(|file| Ok((file.metadata()?.len(), file))) {
-        Ok((size, file)) => (file, size),
-        Err(err) => {
-            let api = ApiError::internal(format!("failed to open the result: {err}"));
+    let output = received.request.output;
+    let prepared = match output {
+        Output::Pdf => File::open(&result.pdf)
+            .and_then(|file| Ok((file.metadata()?.len(), file)))
+            .map(|(size, file)| Prepared::Pdf { file, size })
+            .map_err(|err| ApiError::internal(format!("failed to open the result: {err}"))),
+        Output::Images | Output::Bundle => {
+            let manifest = ManifestInput::new(state, received, request_id, timings);
+            let job = Arc::clone(&job);
+            let result = result.clone();
+            tokio::task::spawn_blocking(move || plan_zip(&job, &manifest, &result))
+                .await
+                .unwrap_or_else(|err| {
+                    Err(ApiError::internal(format!("failed to plan the ZIP: {err}")))
+                })
+        }
+    };
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(api) => {
             timings.total = Some(received.upload_done.elapsed());
             log_finished(request_id, received, None, timings, Some(api.code.as_str()));
             let mut response = api.into_response();
@@ -225,39 +258,155 @@ fn success(
             return response;
         }
     };
-    let (file, size) = file;
-    let warning_count = received.warnings.len() + result.warnings.len();
+    let size = prepared.size();
     timings.package = Some(package_started.elapsed());
     timings.total = Some(received.upload_done.elapsed());
     log_finished(request_id, received, Some((&result, size)), timings, None);
 
-    let body = file_body(
-        file,
-        size,
-        Pump {
-            job,
-            permit,
-            idle: state.io_idle_timeout,
-            request_id: request_id.to_owned(),
-        },
-    );
+    let pump = Pump {
+        job,
+        permit,
+        idle: state.io_idle_timeout,
+        request_id: request_id.to_owned(),
+    };
+    let (body, content_type, extension) = match prepared {
+        Prepared::Pdf { file, size } => (file_body(file, size, pump), "application/pdf", "pdf"),
+        Prepared::Zip { plan, .. } => (zip_body(plan, pump), "application/zip", "zip"),
+    };
     let mut response = (StatusCode::OK, body).into_response();
     let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/pdf"),
-    );
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
     headers.insert(
         header::CONTENT_DISPOSITION,
-        content_disposition(received.upload.file_name.as_deref(), "pdf"),
+        content_disposition(received.upload.file_name.as_deref(), extension),
     );
     headers.insert(SOURCE_FORMAT, HeaderValue::from_static(result.format.id()));
     headers.insert(PAGE_COUNT, HeaderValue::from(result.page_count));
-    headers.insert(WARNING_COUNT, HeaderValue::from(warning_count));
+    headers.insert(WARNING_COUNT, HeaderValue::from(result.warnings.len()));
     headers.insert(FINGERPRINT, state.fingerprint.clone());
     headers.insert(SERVER_TIMING, timings.header());
     response
+}
+
+/// A response body, ready to stream.
+enum Prepared {
+    Pdf { file: File, size: u64 },
+    Zip { plan: ZipPlan, size: u64 },
+}
+
+impl Prepared {
+    fn size(&self) -> u64 {
+        match self {
+            Prepared::Pdf { size, .. } | Prepared::Zip { size, .. } => *size,
+        }
+    }
+}
+
+/// What the blocking ZIP planner needs from the request, owned.
+struct ManifestInput {
+    request_id: String,
+    upload: crate::domain::conversion_service::UploadFacts,
+    request: crate::domain::conversion::ConversionRequest,
+    source: std::path::PathBuf,
+    engine: super::serialization::manifest::EngineInfo,
+    timings: Timings,
+}
+
+impl ManifestInput {
+    fn new(
+        state: &AppState,
+        received: &Received,
+        request_id: &str,
+        timings: &RequestTimings,
+    ) -> Self {
+        let s = &timings.stages;
+        let ms = |d: Option<Duration>| {
+            u64::try_from(d.unwrap_or_default().as_millis()).unwrap_or(u64::MAX)
+        };
+        Self {
+            request_id: request_id.to_owned(),
+            upload: received.upload.clone(),
+            request: received.request.clone(),
+            source: received.source.clone(),
+            engine: state.engine_info.clone(),
+            timings: Timings {
+                queue: ms(Some(s.queue)),
+                convert: ms(s.convert),
+                render: ms(s.render),
+                total: ms(Some(received.upload_done.elapsed())),
+            },
+        }
+    }
+}
+
+/// Builds the stored ZIP: `manifest.json`, then `document.pdf` for a
+/// bundle, then `pages/NNNN.<ext>`. Sizes come from `fstat`; the page
+/// paths come from the page numbers, never from the engine's file names.
+fn plan_zip(
+    job: &JobDir,
+    input: &ManifestInput,
+    result: &ConversionResult,
+) -> Result<Prepared, ApiError> {
+    let format = input.request.images.format;
+    let io = |err: std::io::Error| ApiError::internal(format!("failed to plan the ZIP: {err}"));
+    let page_files: Vec<std::path::PathBuf> = result
+        .pages
+        .iter()
+        .map(|page| {
+            job.pages_dir()
+                .join(page_path(page.number, format).trim_start_matches("pages/"))
+        })
+        .collect();
+    let page_sizes = page_files
+        .iter()
+        .map(|path| std::fs::metadata(path).map(|m| m.len()))
+        .collect::<Result<Vec<u64>, _>>()
+        .map_err(io)?;
+    let bundle = input.request.output == Output::Bundle;
+    let pdf_size = if bundle {
+        Some(std::fs::metadata(&result.pdf).map_err(io)?.len())
+    } else {
+        None
+    };
+    let manifest = Manifest::new(ManifestParts {
+        request_id: &input.request_id,
+        upload: &input.upload,
+        request: &input.request,
+        result,
+        pdf_size,
+        page_sizes: &page_sizes,
+        engine: &input.engine,
+        timings: input.timings.clone(),
+    });
+    let manifest = serde_json::to_vec(&manifest)
+        .map_err(|err| ApiError::internal(format!("failed to serialise the manifest: {err}")))?;
+
+    let plan_error = |err: PlanError| match err {
+        PlanError::TooLarge => {
+            ApiError::from_conversion(&ConversionError::LimitExceeded(err.to_string()), 0)
+        }
+        PlanError::Io { .. } => ApiError::internal(err.to_string()),
+    };
+    let mut plan = ZipPlan::new();
+    plan.add_bytes("manifest.json", bytes::Bytes::from(manifest));
+    if bundle {
+        // The upload's CRC holds only for a PDF passed through unchanged.
+        let crc = (result.pdf == input.source).then_some(input.upload.crc32);
+        plan.add_file("document.pdf", result.pdf.clone(), crc)
+            .map_err(plan_error)?;
+    }
+    for ((page, path), name) in result
+        .pages
+        .iter()
+        .zip(page_files)
+        .zip(result.pages.iter().map(|p| page_path(p.number, format)))
+    {
+        plan.add_file(name, path, page.crc32).map_err(plan_error)?;
+    }
+    plan.check().map_err(plan_error)?;
+    let size = plan.content_length();
+    Ok(Prepared::Zip { plan, size })
 }
 
 /// The `conversion finished` line: PLAN's fields plus the §11 overheads,
@@ -278,7 +427,8 @@ fn log_finished(
         page_count = result.map(|(r, _)| r.page_count),
         input_bytes = received.upload.size_bytes,
         output_bytes = result.map(|(_, size)| size),
-        warning_count = result.map(|(r, _)| r.warnings.len() + received.warnings.len()),
+        warning_count = result.map(|(r, _)| r.warnings.len()),
+        render_us = s.render.map(micros),
         recv_us = timings.recv.map(micros),
         queue_us = micros(s.queue),
         convert_us = s.convert.map(micros),

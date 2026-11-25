@@ -13,7 +13,7 @@
 //! Peak memory per response is about five chunks.
 
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,6 +22,7 @@ use bytes::{Bytes, BytesMut};
 use tokio::runtime::Handle;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
+use crate::bundle::ZipPlan;
 use crate::jobs::JobDir;
 
 /// Bytes per chunk.
@@ -53,10 +54,48 @@ pub enum PumpEnd {
 
 /// Streams exactly `size` bytes of `file`.
 pub fn file_body(file: File, size: u64, pump: Pump) -> Body {
+    spawn_pump(pump, move |tx, handle, idle| {
+        run(file, size, tx, handle, idle)
+    })
+}
+
+/// Streams the stored ZIP of `plan`; `plan.content_length()` is its exact
+/// length. The plan must have passed [`ZipPlan::check`].
+pub fn zip_body(plan: ZipPlan, pump: Pump) -> Body {
+    spawn_pump(pump, move |tx, handle, idle| {
+        let mut writer = ChannelWriter {
+            buf: BytesMut::with_capacity(READ_CHUNK),
+            tx,
+            handle,
+            idle,
+            end: None,
+        };
+        match plan.write_to(&mut writer).and_then(|_| writer.flush()) {
+            Ok(()) => PumpEnd::Complete,
+            Err(err) => match writer.end {
+                Some(end) => end,
+                None => {
+                    // A file shorter than planned, or a read error: abort.
+                    let _ = handle.block_on(tokio::time::timeout(idle, tx.send(Err(err))));
+                    PumpEnd::Aborted
+                }
+            },
+        }
+    })
+}
+
+type Sender = mpsc::Sender<io::Result<Bytes>>;
+
+/// Runs `work` on one blocking thread that owns the job directory and the
+/// permit, and returns the body that receives its chunks.
+fn spawn_pump(
+    pump: Pump,
+    work: impl FnOnce(&Sender, &Handle, Duration) -> PumpEnd + Send + 'static,
+) -> Body {
     let (tx, rx) = mpsc::channel::<io::Result<Bytes>>(BODY_QUEUE_CHUNKS);
     let handle = Handle::current();
     tokio::task::spawn_blocking(move || {
-        let end = run(file, size, &tx, &handle, pump.idle);
+        let end = work(&tx, &handle, pump.idle);
         // Nothing reads the job directory any more: remove it here, on a
         // blocking thread, with no extra hop.
         pump.job.remove_now();
@@ -75,6 +114,59 @@ pub fn file_body(file: File, size: u64, pump: Pump) -> Body {
         rx.recv().await.map(|item| (item, rx))
     });
     Body::from_stream(stream)
+}
+
+/// A `Write` that sends 64 KiB chunks to the body, each under the idle
+/// timeout. A stalled or vanished client makes `write` fail and records
+/// why in `end`.
+struct ChannelWriter<'a> {
+    buf: BytesMut,
+    tx: &'a Sender,
+    handle: &'a Handle,
+    idle: Duration,
+    end: Option<PumpEnd>,
+}
+
+impl ChannelWriter<'_> {
+    fn send(&mut self, len: usize) -> io::Result<()> {
+        let chunk = self.buf.split_to(len).freeze();
+        // The sent chunk keeps its allocation alive while it is queued.
+        self.buf.reserve(READ_CHUNK);
+        match self
+            .handle
+            .block_on(tokio::time::timeout(self.idle, self.tx.send(Ok(chunk))))
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => {
+                self.end = Some(PumpEnd::Disconnected);
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            Err(_) => {
+                self.end = Some(PumpEnd::Stalled);
+                Err(io::ErrorKind::TimedOut.into())
+            }
+        }
+    }
+}
+
+impl Write for ChannelWriter<'_> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if self.end.is_some() {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        self.buf.extend_from_slice(data);
+        while self.buf.len() >= READ_CHUNK {
+            self.send(READ_CHUNK)?;
+        }
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if !self.buf.is_empty() {
+            self.send(self.buf.len())?;
+        }
+        Ok(())
+    }
 }
 
 fn run(

@@ -544,14 +544,6 @@ async fn refused_inputs() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["error"], "unsupported format: html");
     assert!(response.headers().contains_key("server-timing"));
-
-    let (response, body) = send(
-        &app,
-        with_options("a.docx", &docx("x"), r#"{"output":"bundle"}"#),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(error_code(&body), "VALIDATION_ERROR");
     app.assert_no_jobs().await;
 }
 

@@ -6,9 +6,12 @@ use utoipa::openapi::schema::{AdditionalProperties, ObjectBuilder, Type};
 use utoipa::openapi::{RefOr, Schema};
 
 use super::options::ImageFormatDto;
-use crate::domain::conversion::PdfOrigin;
+use crate::domain::conversion::{
+    ConversionRequest, ConversionResult, ImageFormat, Output, PdfOrigin,
+};
+use crate::domain::conversion_service::UploadFacts;
 use crate::domain::document::Family;
-use crate::domain::verification::WarningCode;
+use crate::domain::verification::{DetailValue, Warning, WarningCode};
 
 /// The `manifest.json` at the root of every ZIP response. It describes
 /// the source, the PDF, each rendered page and anything the service
@@ -273,7 +276,7 @@ pub struct EngineInfo {
 }
 
 /// Where the time went, in milliseconds.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Timings {
     /// Waiting for a free worker.
     pub queue: u64,
@@ -283,4 +286,112 @@ pub struct Timings {
     pub render: u64,
     /// From the end of the upload to the start of the response.
     pub total: u64,
+}
+
+/// What [`Manifest::new`] needs besides the conversion result.
+pub struct ManifestParts<'a> {
+    pub request_id: &'a str,
+    pub upload: &'a UploadFacts,
+    pub request: &'a ConversionRequest,
+    pub result: &'a ConversionResult,
+    /// The `fstat` size of the PDF, for `bundle`.
+    pub pdf_size: Option<u64>,
+    /// The `fstat` size of each rendered page, in page order.
+    pub page_sizes: &'a [u64],
+    pub engine: &'a EngineInfo,
+    pub timings: Timings,
+}
+
+/// The ZIP path of a page image: `pages/NNNN.<ext>`, at least 4 digits.
+pub fn page_path(number: u32, format: ImageFormat) -> String {
+    format!("pages/{number:04}.{}", format.extension())
+}
+
+impl Manifest {
+    pub fn new(parts: ManifestParts<'_>) -> Self {
+        let ManifestParts {
+            request_id,
+            upload,
+            request,
+            result,
+            pdf_size,
+            page_sizes,
+            engine,
+            timings,
+        } = parts;
+        let images = request.images;
+        let mut engine = engine.clone();
+        if result.origin != PdfOrigin::Converted {
+            // LibreOffice was not used.
+            engine.libreoffice = None;
+        }
+        Manifest {
+            manifest_version: 1,
+            request_id: request_id.to_owned(),
+            source: SourceInfo {
+                filename: upload.file_name.clone(),
+                format: result.format.id().to_owned(),
+                family: result.family.into(),
+                size_bytes: upload.size_bytes,
+                sha256: crate::rest::state::hex(&upload.sha256),
+                encrypted: result.encrypted,
+            },
+            page_count: result.page_count,
+            pdf: match (request.output, pdf_size) {
+                (Output::Bundle, Some(size)) => Some(PdfInfo {
+                    path: "document.pdf".to_owned(),
+                    size_bytes: size,
+                    origin: result.origin.into(),
+                }),
+                _ => None,
+            },
+            images: Some(ImageSettings {
+                format: images.format.into(),
+                dpi: u32::from(images.dpi),
+                quality: (images.format != ImageFormat::Png).then_some(u32::from(images.quality)),
+                max_edge: images.max_edge,
+            }),
+            pages: result
+                .pages
+                .iter()
+                .zip(page_sizes)
+                .map(|(page, &size)| PageInfo {
+                    number: page.number,
+                    path: page_path(page.number, images.format),
+                    width_px: page.width_px,
+                    height_px: page.height_px,
+                    width_pt: f64::from(page.width_pt),
+                    height_pt: f64::from(page.height_pt),
+                    size_bytes: size,
+                    blank: page.flat,
+                })
+                .collect(),
+            warnings: result.warnings.iter().map(WarningDto::from).collect(),
+            engine,
+            timings_ms: timings,
+        }
+    }
+}
+
+impl From<&Warning> for WarningDto {
+    fn from(warning: &Warning) -> Self {
+        let detail: serde_json::Map<String, serde_json::Value> = warning
+            .detail
+            .iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    DetailValue::Str(text) => serde_json::Value::from(text.as_str()),
+                    DetailValue::Int(n) => serde_json::Value::from(*n),
+                    DetailValue::Float(f) => serde_json::Value::from(*f),
+                };
+                ((*key).to_owned(), value)
+            })
+            .collect();
+        WarningDto {
+            code: warning.code.into(),
+            message: warning.message.clone(),
+            page: warning.page,
+            detail: (!detail.is_empty()).then_some(detail),
+        }
+    }
 }

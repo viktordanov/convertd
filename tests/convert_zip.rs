@@ -1,0 +1,374 @@
+//! `output=images` and `output=bundle` (plan 001 step 8): the stored ZIP
+//! over HTTP through the level-A fakes, read back with the `zip` crate.
+
+use std::io::{Cursor, Read};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use axum::Router;
+use axum::body::{Body, to_bytes};
+use axum::http::{Request, StatusCode, header};
+use axum::response::Response;
+use convertd::config::{Config, Env};
+use convertd::engines::fake::{FakeBehavior, FakeOffice, FakePdf, FakeReadiness};
+use convertd::rest::server::router;
+use convertd::rest::state::{AppState, Engines};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use tower::ServiceExt;
+
+const KEY: &str = "test-key";
+const BOUNDARY: &str = "convertd-zip-boundary-9a51";
+
+struct App {
+    state: AppState,
+    tmp: PathBuf,
+}
+
+impl App {
+    fn new(name: &str, env: &[(&str, &str)], pdf: FakeBehavior) -> Self {
+        let tmp = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("convert_zip-{name}"));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp_text = tmp.to_str().unwrap().to_owned();
+        let mut pairs = vec![
+            ("API_KEY", KEY),
+            ("TMP_DIR", tmp_text.as_str()),
+            ("BUILD_INFO_PATH", "/nonexistent/build-info.json"),
+        ];
+        pairs.extend_from_slice(env);
+        let config = Config::from_env(&Env::from_pairs(pairs, 2)).unwrap();
+        let state = AppState::new(
+            &config,
+            Engines {
+                office: Arc::new(FakeOffice::new(FakeBehavior::Succeed)),
+                pdf: Arc::new(FakePdf::new(pdf)),
+                readiness: Arc::new(FakeReadiness::new(true)),
+            },
+        );
+        Self { state, tmp }
+    }
+
+    fn router(&self) -> Router {
+        router(self.state.clone())
+    }
+
+    async fn assert_no_jobs(&self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let left: Vec<_> = std::fs::read_dir(&self.tmp)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with("job-"))
+                .collect();
+            if left.is_empty() {
+                return;
+            }
+            assert!(Instant::now() < deadline, "job directories left: {left:?}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    async fn send(&self, file_name: &str, data: &[u8], options: &str) -> (Response, Vec<u8>) {
+        let body = multipart(file_name, data, options);
+        let request = Request::post("/v1/convert")
+            .header(header::AUTHORIZATION, format!("Bearer {KEY}"))
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={BOUNDARY}"),
+            )
+            .header(header::CONTENT_LENGTH, body.len())
+            .header("x-request-id", "zip-test-request")
+            .body(Body::from(body))
+            .unwrap();
+        let response = self.router().oneshot(request).await.unwrap();
+        let (parts, body) = response.into_parts();
+        let bytes = to_bytes(body, 64 << 20).await.unwrap().to_vec();
+        (Response::from_parts(parts, Body::empty()), bytes)
+    }
+}
+
+fn multipart(file_name: &str, data: &[u8], options: &str) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"options\"\r\n\
+             Content-Type: application/json\r\n\r\n{options}\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n\
+             Content-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(data);
+    body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+    body
+}
+
+fn pdf() -> Vec<u8> {
+    b"%PDF-1.4\n%fixture\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n"
+        .to_vec()
+}
+
+fn docx() -> Vec<u8> {
+    let types = br#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#;
+    let mut out = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(Cursor::new(&mut out));
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("[Content_Types].xml", stored).unwrap();
+        std::io::Write::write_all(&mut zip, types).unwrap();
+        zip.start_file("word/document.xml", stored).unwrap();
+        std::io::Write::write_all(&mut zip, b"<w:document/>").unwrap();
+        zip.finish().unwrap();
+    }
+    out
+}
+
+/// Every entry, in order, with its bytes. Reading to the end checks each
+/// CRC.
+fn read_zip(zip: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(zip)).unwrap();
+    (0..archive.len())
+        .map(|i| {
+            let mut entry = archive.by_index(i).unwrap();
+            assert_eq!(entry.compression(), zip::CompressionMethod::Stored);
+            let name = entry.name().unwrap().into_owned();
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data).unwrap();
+            (name, data)
+        })
+        .collect()
+}
+
+fn header_str<'a>(response: &'a Response, name: &str) -> &'a str {
+    response
+        .headers()
+        .get(name)
+        .unwrap_or_else(|| panic!("no {name}"))
+        .to_str()
+        .unwrap()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[tokio::test]
+async fn images_from_a_pdf() {
+    let app = App::new("images", &[], FakeBehavior::Pages(3));
+    let upload = pdf();
+    let options = r#"{"output":"images","images":{"format":"png","dpi":72}}"#;
+    let (response, body) = app.send("report.pdf", &upload, options).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(header_str(&response, "content-type"), "application/zip");
+    assert_eq!(
+        header_str(&response, "content-length"),
+        body.len().to_string()
+    );
+    assert_eq!(
+        header_str(&response, "content-disposition"),
+        "attachment; filename=\"report.zip\"; filename*=UTF-8''report.zip"
+    );
+    assert_eq!(header_str(&response, "convert-page-count"), "3");
+    let timing = header_str(&response, "server-timing");
+    assert!(
+        timing.contains("render;dur=") && timing.contains("render_engine;dur="),
+        "{timing}"
+    );
+
+    let entries = read_zip(&body);
+    let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "manifest.json",
+            "pages/0001.png",
+            "pages/0002.png",
+            "pages/0003.png"
+        ]
+    );
+    for (_, data) in &entries[1..] {
+        assert!(data.starts_with(b"\x89PNG"));
+    }
+    let manifest: Value = serde_json::from_slice(&entries[0].1).unwrap();
+    assert_eq!(manifest["manifest_version"], 1);
+    assert_eq!(manifest["request_id"], "zip-test-request");
+    assert_eq!(manifest["source"]["filename"], "report.pdf");
+    assert_eq!(manifest["source"]["format"], "pdf");
+    assert_eq!(manifest["source"]["family"], "pdf");
+    assert_eq!(manifest["source"]["size_bytes"], upload.len());
+    assert_eq!(manifest["source"]["sha256"], hex(&Sha256::digest(&upload)));
+    assert_eq!(manifest["source"]["encrypted"], false);
+    assert_eq!(manifest["page_count"], 3);
+    assert!(manifest.get("pdf").is_none(), "images has no PDF entry");
+    assert_eq!(
+        manifest["images"],
+        serde_json::json!({"format": "png", "dpi": 72})
+    );
+    let pages = manifest["pages"].as_array().unwrap();
+    assert_eq!(pages.len(), 3);
+    assert_eq!(pages[1]["number"], 2);
+    assert_eq!(pages[1]["path"], "pages/0002.png");
+    assert_eq!(pages[1]["size_bytes"], entries[2].1.len());
+    assert_eq!(pages[1]["blank"], false);
+    assert_eq!(manifest["warnings"], serde_json::json!([]));
+    assert!(
+        manifest["engine"].get("libreoffice").is_none(),
+        "LibreOffice was not used"
+    );
+    assert!(
+        manifest["engine"]["fingerprint"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    for key in ["queue", "convert", "render", "total"] {
+        assert!(manifest["timings_ms"][key].is_u64(), "{key}");
+    }
+    app.assert_no_jobs().await;
+}
+
+#[tokio::test]
+async fn bundle_from_a_docx_and_from_a_pdf() {
+    let app = App::new("bundle", &[], FakeBehavior::Succeed);
+    let (response, body) = app
+        .send("deck.docx", &docx(), r#"{"output":"bundle"}"#)
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let entries = read_zip(&body);
+    let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["manifest.json", "document.pdf", "pages/0001.jpg"]);
+    assert!(entries[1].1.starts_with(b"%PDF-"));
+    assert!(entries[2].1.starts_with(b"\xFF\xD8\xFF"));
+    let manifest: Value = serde_json::from_slice(&entries[0].1).unwrap();
+    assert_eq!(manifest["source"]["format"], "docx");
+    assert_eq!(manifest["source"]["family"], "document");
+    assert_eq!(manifest["pdf"]["path"], "document.pdf");
+    assert_eq!(manifest["pdf"]["origin"], "converted");
+    assert_eq!(manifest["pdf"]["size_bytes"], entries[1].1.len());
+    assert_eq!(
+        manifest["images"],
+        serde_json::json!({"format": "jpeg", "dpi": 150, "quality": 85})
+    );
+    assert!(manifest["engine"].get("libreoffice").is_some());
+
+    // A PDF passes through: document.pdf is the upload, byte for byte.
+    let upload = pdf();
+    let (response, body) = app
+        .send(
+            "a.pdf",
+            &upload,
+            r#"{"output":"bundle","images":{"format":"webp"}}"#,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let entries = read_zip(&body);
+    assert_eq!(entries[1], ("document.pdf".to_owned(), upload));
+    assert_eq!(entries[2].0, "pages/0001.webp");
+    let manifest: Value = serde_json::from_slice(&entries[0].1).unwrap();
+    assert_eq!(manifest["pdf"]["origin"], "passthrough");
+    app.assert_no_jobs().await;
+}
+
+#[tokio::test]
+async fn pages_select_what_is_rendered() {
+    let app = App::new("pages", &[], FakeBehavior::Pages(12));
+    let options = r#"{"output":"images","pages":"2,10-","images":{"format":"jpeg"}}"#;
+    let (response, body) = app.send("a.pdf", &pdf(), options).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(header_str(&response, "convert-page-count"), "12");
+    let names: Vec<String> = read_zip(&body).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(
+        names,
+        [
+            "manifest.json",
+            "pages/0002.jpg",
+            "pages/0010.jpg",
+            "pages/0011.jpg",
+            "pages/0012.jpg"
+        ]
+    );
+
+    let (response, body) = app
+        .send("a.pdf", &pdf(), r#"{"output":"images","pages":"20-"}"#)
+        .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["code"], "VALIDATION_ERROR");
+    app.assert_no_jobs().await;
+}
+
+#[tokio::test]
+async fn max_dpi_raises_render_clamped() {
+    let app = App::new("clamped", &[], FakeBehavior::Pages(1));
+    let options = r#"{"output":"images","pages":"1","images":{"format":"png","dpi":600}}"#;
+    let (response, body) = app.send("a.pdf", &pdf(), options).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(header_str(&response, "convert-warning-count"), "1");
+    let entries = read_zip(&body);
+    let manifest: Value = serde_json::from_slice(&entries[0].1).unwrap();
+    assert_eq!(manifest["images"]["dpi"], 300);
+    assert_eq!(
+        manifest["warnings"],
+        serde_json::json!([{
+            "code": "RENDER_CLAMPED",
+            "message": "the requested 600 DPI was reduced to 300 DPI by a server limit",
+            "detail": {"requested_dpi": 600, "effective_dpi": 300}
+        }])
+    );
+    app.assert_no_jobs().await;
+}
+
+#[tokio::test]
+async fn render_limits() {
+    let app = App::new(
+        "render-pages",
+        &[("MAX_RENDER_PAGES", "2")],
+        FakeBehavior::Pages(3),
+    );
+    let (response, body) = app.send("a.pdf", &pdf(), r#"{"output":"images"}"#).await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["code"], "LIMIT_EXCEEDED");
+
+    // TMP_MAX_BYTES / 4 is each job's output cap: 50 tiny pages pass it.
+    let app = App::new(
+        "render-budget",
+        &[("TMP_MAX_BYTES", "8000")],
+        FakeBehavior::Pages(50),
+    );
+    let (response, body) = app
+        .send(
+            "a.pdf",
+            &pdf(),
+            r#"{"output":"images","images":{"format":"png"}}"#,
+        )
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["code"], "LIMIT_EXCEEDED");
+    app.assert_no_jobs().await;
+    assert_eq!(app.state.disk_budget.used(), 0);
+}
