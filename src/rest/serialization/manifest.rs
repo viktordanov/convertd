@@ -1,4 +1,4 @@
-//! `manifest.json`, the first entry of every ZIP response (filled in step 8).
+//! `manifest.json`, the first entry of every tar.zst response.
 
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -13,7 +13,7 @@ use crate::domain::conversion_service::UploadFacts;
 use crate::domain::document::Family;
 use crate::domain::verification::{DetailValue, Warning, WarningCode};
 
-/// The `manifest.json` at the root of every ZIP response. It describes
+/// The `manifest.json` at the root of every tar.zst response. It describes
 /// the source, the PDF, each rendered page and anything the service
 /// noticed during conversion.
 #[derive(Debug, Serialize, ToSchema)]
@@ -120,7 +120,7 @@ impl From<Family> for FormatFamily {
 /// The PDF inside a `bundle`. Absent for `images`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PdfInfo {
-    /// Path of the PDF inside the ZIP.
+    /// Path of the PDF inside the archive.
     #[schema(example = "document.pdf")]
     pub path: String,
     pub size_bytes: u64,
@@ -170,7 +170,7 @@ pub struct PageInfo {
     /// 1-based page number in the PDF.
     #[schema(minimum = 1)]
     pub number: u32,
-    /// Path of the image inside the ZIP.
+    /// Path of the image inside the archive.
     #[schema(example = "pages/0001.jpg")]
     pub path: String,
     #[schema(minimum = 1)]
@@ -302,7 +302,7 @@ pub struct ManifestParts<'a> {
     pub timings: Timings,
 }
 
-/// The ZIP path of a page image: `pages/NNNN.<ext>`, at least 4 digits.
+/// The archive path of a page image: `pages/NNNN.<ext>`, at least 4 digits.
 pub fn page_path(number: u32, format: ImageFormat) -> String {
     format!("pages/{number:04}.{}", format.extension())
 }

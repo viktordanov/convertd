@@ -74,8 +74,8 @@ pub struct ConvertOptions {
 /// What the response contains.
 ///
 /// - `pdf`: the PDF, as `application/pdf`.
-/// - `images`: page images and a manifest, as `application/zip`.
-/// - `bundle`: the PDF, page images and a manifest, as `application/zip`.
+/// - `images`: page images and a manifest, as `application/zstd` (tar.zst).
+/// - `bundle`: the PDF, page images and a manifest, as `application/zstd` (tar.zst).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputKind {

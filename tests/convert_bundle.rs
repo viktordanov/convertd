@@ -1,7 +1,8 @@
-//! `output=images` and `output=bundle` (plan 001 step 8): the stored ZIP
-//! over HTTP through the level-A fakes, read back with the `zip` crate.
+//! `output=images` and `output=bundle` (plan 001 step 8): the tar.zst
+//! bundle over HTTP through the level-A fakes, read back with the `zstd`
+//! crate and a small ustar reader. The `zip` crate only builds inputs.
 
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -131,20 +132,32 @@ fn docx() -> Vec<u8> {
     out
 }
 
-/// Every entry, in order, with its bytes. Reading to the end checks each
-/// CRC.
-fn read_zip(zip: &[u8]) -> Vec<(String, Vec<u8>)> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(zip)).unwrap();
-    (0..archive.len())
-        .map(|i| {
-            let mut entry = archive.by_index(i).unwrap();
-            assert_eq!(entry.compression(), zip::CompressionMethod::Stored);
-            let name = entry.name().unwrap().into_owned();
-            let mut data = Vec::new();
-            entry.read_to_end(&mut data).unwrap();
-            (name, data)
-        })
-        .collect()
+/// Every entry, in order, with its bytes: one zstd frame holding a ustar
+/// archive of regular files, mode 0644, mtime 0, uid and gid 0.
+fn read_bundle(bundle: &[u8]) -> Vec<(String, Vec<u8>)> {
+    assert_eq!(&bundle[..4], &[0x28, 0xB5, 0x2F, 0xFD], "a zstd frame");
+    let tar = zstd::stream::decode_all(bundle).unwrap();
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at + 512 <= tar.len() && tar[at..at + 512].iter().any(|&b| b != 0) {
+        let h = &tar[at..at + 512];
+        let name_end = h[..100].iter().position(|&b| b == 0).unwrap_or(100);
+        let name = String::from_utf8(h[..name_end].to_vec()).unwrap();
+        let size = usize::from_str_radix(std::str::from_utf8(&h[124..135]).unwrap(), 8).unwrap();
+        assert_eq!(&h[100..107], b"0000644", "{name}");
+        assert_eq!(&h[108..115], b"0000000", "{name}: uid 0");
+        assert_eq!(&h[116..123], b"0000000", "{name}: gid 0");
+        assert_eq!(&h[136..147], b"00000000000", "{name}: mtime 0");
+        assert_eq!(h[156], b'0', "{name}: a regular file");
+        assert_eq!(&h[257..263], b"ustar\0");
+        out.push((name, tar[at + 512..at + 512 + size].to_vec()));
+        at += 512 + size.div_ceil(512) * 512;
+    }
+    assert!(
+        tar.len() - at >= 1024 && tar[at..].iter().all(|&b| b == 0),
+        "two end blocks"
+    );
+    out
 }
 
 fn header_str<'a>(response: &'a Response, name: &str) -> &'a str {
@@ -172,14 +185,14 @@ async fn images_from_a_pdf() {
         "{}",
         String::from_utf8_lossy(&body)
     );
-    assert_eq!(header_str(&response, "content-type"), "application/zip");
-    assert_eq!(
-        header_str(&response, "content-length"),
-        body.len().to_string()
+    assert_eq!(header_str(&response, "content-type"), "application/zstd");
+    assert!(
+        response.headers().get("content-length").is_none(),
+        "a chunked stream"
     );
     assert_eq!(
         header_str(&response, "content-disposition"),
-        "attachment; filename=\"report.zip\"; filename*=UTF-8''report.zip"
+        "attachment; filename=\"report.tar.zst\"; filename*=UTF-8''report.tar.zst"
     );
     assert_eq!(header_str(&response, "convert-page-count"), "3");
     let timing = header_str(&response, "server-timing");
@@ -188,7 +201,7 @@ async fn images_from_a_pdf() {
         "{timing}"
     );
 
-    let entries = read_zip(&body);
+    let entries = read_bundle(&body);
     let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
@@ -252,7 +265,7 @@ async fn bundle_from_a_docx_and_from_a_pdf() {
         "{}",
         String::from_utf8_lossy(&body)
     );
-    let entries = read_zip(&body);
+    let entries = read_bundle(&body);
     let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(names, ["manifest.json", "document.pdf", "pages/0001.jpg"]);
     assert!(entries[1].1.starts_with(b"%PDF-"));
@@ -279,7 +292,7 @@ async fn bundle_from_a_docx_and_from_a_pdf() {
         )
         .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let entries = read_zip(&body);
+    let entries = read_bundle(&body);
     assert_eq!(entries[1], ("document.pdf".to_owned(), upload));
     assert_eq!(entries[2].0, "pages/0001.webp");
     let manifest: Value = serde_json::from_slice(&entries[0].1).unwrap();
@@ -294,7 +307,7 @@ async fn pages_select_what_is_rendered() {
     let (response, body) = app.send("a.pdf", &pdf(), options).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(header_str(&response, "convert-page-count"), "12");
-    let names: Vec<String> = read_zip(&body).into_iter().map(|(n, _)| n).collect();
+    let names: Vec<String> = read_bundle(&body).into_iter().map(|(n, _)| n).collect();
     assert_eq!(
         names,
         [
@@ -322,7 +335,7 @@ async fn max_dpi_raises_render_clamped() {
     let (response, body) = app.send("a.pdf", &pdf(), options).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(header_str(&response, "convert-warning-count"), "1");
-    let entries = read_zip(&body);
+    let entries = read_bundle(&body);
     let manifest: Value = serde_json::from_slice(&entries[0].1).unwrap();
     assert_eq!(manifest["images"]["dpi"], 300);
     assert_eq!(
@@ -491,7 +504,7 @@ async fn warnings_reach_the_manifest_and_the_header() {
         String::from_utf8_lossy(&body)
     );
     assert_eq!(header_str(&response, "convert-warning-count"), "1");
-    let manifest: Value = serde_json::from_slice(&read_zip(&body)[0].1).unwrap();
+    let manifest: Value = serde_json::from_slice(&read_bundle(&body)[0].1).unwrap();
     assert_eq!(
         manifest["warnings"],
         serde_json::json!([{
@@ -506,7 +519,7 @@ async fn warnings_reach_the_manifest_and_the_header() {
         .send("m.docm", &aptos_docx(true), r#"{"output":"bundle"}"#)
         .await;
     assert_eq!(header_str(&response, "convert-source-format"), "docm");
-    let manifest: Value = serde_json::from_slice(&read_zip(&body)[0].1).unwrap();
+    let manifest: Value = serde_json::from_slice(&read_bundle(&body)[0].1).unwrap();
     let codes: Vec<&str> = manifest["warnings"]
         .as_array()
         .unwrap()
@@ -526,7 +539,7 @@ async fn warnings_reach_the_manifest_and_the_header() {
     let (_, body) = app
         .send("deck.pptx", &three_slide_pptx(), r#"{"output":"bundle"}"#)
         .await;
-    let manifest: Value = serde_json::from_slice(&read_zip(&body)[0].1).unwrap();
+    let manifest: Value = serde_json::from_slice(&read_bundle(&body)[0].1).unwrap();
     assert_eq!(
         manifest["warnings"][0]["detail"],
         serde_json::json!({"expected": 3, "actual": 1, "source": "ppt/presentation.xml"})
@@ -538,7 +551,7 @@ async fn warnings_reach_the_manifest_and_the_header() {
             r#"{"output":"bundle","slides":{"include_hidden":true}}"#,
         )
         .await;
-    let manifest: Value = serde_json::from_slice(&read_zip(&body)[0].1).unwrap();
+    let manifest: Value = serde_json::from_slice(&read_bundle(&body)[0].1).unwrap();
     assert_eq!(
         manifest["warnings"],
         serde_json::json!([]),

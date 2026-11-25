@@ -45,7 +45,7 @@ The supervisor's request path uses five layers:
 - **`rest/`**: the axum router, the middleware, the handlers, the streamed upload, the response pump, the error mapping and the DTOs.
 - **`detect/`**: format detection from the bytes, with the zip-bomb guard.
 - **`jobs/`**: the job directory under `TMP_DIR` and the disk budget (`TMP_MAX_BYTES`).
-- **`bundle/`**: the stored-ZIP writer for `images` and `bundle` output.
+- **`bundle/`**: the tar.zst writer for `images` and `bundle` output.
 
 Lane 002 owns the worker side:
 
@@ -67,7 +67,7 @@ The dependency rule keeps the domain at the center. `domain/` uses no other modu
 `domain/engine.rs` is the seam between the two sides. The conversion service calls the `OfficeEngine` and `PdfEngine` traits. Lane 002's adapters in `engines/` will implement them, and they are not written yet. `worker/` is the only place with `unsafe` code and engine calls. Changes to `domain/engine.rs` go through the lead.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="usage" files="detect/ole2.rs rest/server.rs rest/convert_handlers.rs rest/upload.rs rest/body.rs rest/timing.rs domain/conversion_service.rs detect/mod.rs jobs/job_dir.rs jobs/disk_budget.rs bundle/zip_stored.rs rest/serialization/manifest.rs" -->
+<!-- memoria:section id="usage" files="detect/ole2.rs rest/server.rs rest/convert_handlers.rs rest/upload.rs rest/body.rs rest/timing.rs domain/conversion_service.rs detect/mod.rs jobs/job_dir.rs jobs/disk_budget.rs bundle/tar_zst.rs rest/serialization/manifest.rs" -->
 ## Request path
 
 One `POST /v1/convert` goes through these files:
@@ -93,8 +93,8 @@ rest/server.rs                    layers, outermost first
     │   ├── PDF                   inspect, then decrypt if needed
     │   ├── image                 assemble, then inspect
     │   └── images or bundle      render the selected pages
-    ├── bundle/zip_stored.rs      ZipPlan: manifest, PDF, pages
-    └── body.rs                   file_body() or zip_body()
+    ├── bundle/tar_zst.rs         TarPlan: manifest, PDF, pages
+    └── body.rs                   file_body() or tar_body()
 ```
 
 An encrypted OOXML package is an OLE2 file whose type is inside the encryption. Without a password it answers 422 `PASSWORD_REQUIRED` before any engine call. With one, detection gives a provisional `docx`, and the document type that the office engine reports decides the format in `Convert-Source-Format` and the manifest. Whether LibreOfficeKit opens an encrypted spreadsheet or presentation named `source.docx` is not verified.
@@ -103,11 +103,11 @@ The upload never sits whole in memory. The handler sends the chunks of the file 
 
 The deadline is the end of the upload plus `timeout_seconds`. The engines enforce it inside each call, and the service makes sure that it has time left between calls. The handler drops the conversion 250 ms after the deadline and answers 504 `CONVERSION_TIMEOUT`. Dropping the future cancels the engine job.
 
-For `images` and `bundle`, the response is a stored ZIP: `manifest.json`, then `document.pdf` for a bundle, then `pages/NNNN.<ext>`. Its sizes come from `fstat` and every CRC-32 is known before the headers, so `Content-Length` is exact. A ZIP that would need ZIP64 (4 GiB, or 65 535 entries) answers 422 `LIMIT_EXCEEDED`.
+For `images` and `bundle`, the response is a ustar archive in one zstd frame at level 1: `application/zstd`, named `<stem>.tar.zst`. Its entries come in this order: `manifest.json`, then `document.pdf` for a bundle, then `pages/NNNN.<ext>` in page order. Each entry is a regular file with mode 0644, mtime 0 and uid and gid 0, so the bytes depend only on the content. The sizes in the headers come from `fstat`. The compressed length is not known in advance, so the response is chunked, without `Content-Length`. The disk budget and `max_output_bytes` bound its size.
 
-The response pump is one blocking task. It reads the PDF, or writes the ZIP, in 64 KiB chunks and sends them to the response body through a queue of four. The pump, not the body, owns the job directory and the permit. If the client stops reading for `IO_IDLE_TIMEOUT_SECONDS`, the pump stops, logs `RESPONSE_STALLED` and releases both.
+The response pump is one blocking task. It reads the PDF, or writes the tar.zst, in 64 KiB chunks and sends them to the response body through a queue of four. The pump, not the body, owns the job directory and the permit. If the client stops reading for `IO_IDLE_TIMEOUT_SECONDS`, the pump stops, logs `RESPONSE_STALLED` and releases both.
 
-Every 200 carries `Content-Length`, `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers and `Server-Timing`. A detection error and a conversion error also carry `Server-Timing`. `rest/timing.rs` builds the header and computes the overhead and the strict overhead for the `conversion finished` log line.
+Every 200 carries `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers and `Server-Timing`, and a PDF also `Content-Length`. Every error after detection also carries `Server-Timing`. `rest/timing.rs` builds the header and computes the overhead and the strict overhead for the `conversion finished` log line.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="warnings" files="domain/verification.rs preflight/mod.rs preflight/package.rs preflight/docx.rs preflight/pptx.rs preflight/xlsx.rs preflight/odf.rs" -->
@@ -149,4 +149,6 @@ This part of the design does not work yet:
 ## Configuration
 
 `config.rs` parses every environment variable by hand when `convertd serve` starts. A bad value stops `convertd serve` before it listens, and the error names the variable. Lane 002's engine and pool variables are parsed in [engines/config.rs](engines/config.rs). The two parsers hold the names, the defaults and the checks. `convertd openapi` and `convertd worker` do not parse this configuration.
+
+`FONTS_PATH` (default `/etc/convertd/fonts.json`) names the `{family: metric_compatible}` table for `FONT_SUBSTITUTED`. A missing file only logs a warning, and then no family counts as metric-compatible.
 <!-- /memoria:section -->

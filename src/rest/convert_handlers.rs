@@ -9,14 +9,14 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-use super::body::{Pump, file_body, zip_body};
+use super::body::{Pump, file_body, tar_body};
 use super::middleware::request_id::RequestId;
 use super::response::{ApiError, content_disposition};
 use super::serialization::errors::ErrorCode;
 use super::serialization::manifest::{Manifest, ManifestParts, Timings, page_path};
 use super::timing::{RequestTimings, micros};
 use super::upload::{self, Received, UploadError};
-use crate::bundle::{PlanError, ZipPlan};
+use crate::bundle::{PlanError, TarPlan};
 use crate::domain::conversion::{ConversionResult, Output};
 use crate::domain::conversion_service::{ConversionError, ConversionJob};
 use crate::jobs::JobDir;
@@ -67,19 +67,19 @@ use super::state::AppState;
     ),
     responses(
         (status = 200,
-            description = "The conversion succeeded. The content type follows the `output`\noption: `application/pdf` for `pdf`, `application/zip` for\n`images` and `bundle`.\n\nThe ZIP is laid out as:\n\n```\nmanifest.json        described by the Manifest schema\ndocument.pdf         only for output=bundle\npages/0001.jpg       one file per rendered page, 1-based, zero-padded\npages/0002.jpg\n```\n\nImages and the PDF are stored without further compression.\n",
+            description = "The conversion succeeded. The content type follows the `output`\noption: `application/pdf` for `pdf`, `application/zstd` for\n`images` and `bundle`.\n\nThe `application/zstd` body is a ustar archive in one zstd frame\n(`<stem>.tar.zst`), sent chunked without `Content-Length`. Its entries,\nin this order:\n\n```\nmanifest.json        described by the Manifest schema\ndocument.pdf         only for output=bundle\npages/0001.jpg       one file per rendered page, 1-based, zero-padded\npages/0002.jpg\n```\n\nEvery entry is a regular file, mode 0644, mtime 0, uid and gid 0.\n",
             headers(
                 ("X-Request-ID" = String, description = "The correlation ID of this request."),
-                ("Content-Disposition" = String, description = "`attachment` with a file name derived from the upload, for example `deck.pdf` or `deck.zip`."),
+                ("Content-Disposition" = String, description = "`attachment` with a file name derived from the upload, for example `deck.pdf` or `deck.tar.zst`."),
                 ("Convert-Source-Format" = String, description = "The detected input format, as listed by `/v1/capabilities`."),
                 ("Convert-Page-Count" = u32, description = "Number of pages in the resulting PDF."),
                 ("Convert-Warning-Count" = u32, description = "Number of warnings raised for this conversion. The warnings\nthemselves are in `manifest.json`; ask for `bundle` to read them.\n"),
                 ("Convert-Engine-Fingerprint" = String, description = "Identifies the exact engine build: service version, LibreOffice\nversion, PDFium version and installed font set. Use it in cache keys.\n"),
-                ("Server-Timing" = String, description = "Where the time of this request went, in the W3C Server-Timing form\n`name;dur=<milliseconds>`, comma-separated, with 3 decimals. It is\nsent on every response produced after the file type was detected,\nincluding the error responses that follow detection. It is meant for\ndiagnosis and benchmarks.\n\n| Name | Stage |\n| --- | --- |\n| `recv` | Receiving the upload. Outside `total`. |\n| `detect` | Detecting the file type. |\n| `preflight` | Scanning the source before conversion. Runs alongside `convert`. |\n| `queue` | Waiting for a free worker. |\n| `lease` | Taking the worker from its pool. |\n| `spawn` | Starting a worker on this request's path. 0 when a warm worker was used. |\n| `bind` | Loading the engine library in that worker. 0 when a warm worker was used. |\n| `convert`, `convert_engine` | Producing the PDF: wall time, then time inside the engine. |\n| `inspect`, `inspect_engine` | Reading the PDF's facts: wall time, then engine time. |\n| `probe`, `probe_engine` | The blank-page probe: wall time, then engine time. |\n| `render`, `render_engine` | Rendering page images: wall time, then engine time (the longest chunk). |\n| `verify` | The quality checks that raise warnings. |\n| `package` | Building the manifest and the ZIP plan before the headers are sent. |\n| `total` | From the end of the upload to the start of the response. |\n\nStages that did not run are left out, except `spawn` and `bind`.\n"),
+                ("Server-Timing" = String, description = "Where the time of this request went, in the W3C Server-Timing form\n`name;dur=<milliseconds>`, comma-separated, with 3 decimals. It is\nsent on every response produced after the file type was detected,\nincluding the error responses that follow detection. It is meant for\ndiagnosis and benchmarks.\n\n| Name | Stage |\n| --- | --- |\n| `recv` | Receiving the upload. Outside `total`. |\n| `detect` | Detecting the file type. |\n| `preflight` | Scanning the source before conversion. Runs alongside `convert`. |\n| `queue` | Waiting for a free worker. |\n| `lease` | Taking the worker from its pool. |\n| `spawn` | Starting a worker on this request's path. 0 when a warm worker was used. |\n| `bind` | Loading the engine library in that worker. 0 when a warm worker was used. |\n| `convert`, `convert_engine` | Producing the PDF: wall time, then time inside the engine. |\n| `inspect`, `inspect_engine` | Reading the PDF's facts: wall time, then engine time. |\n| `probe`, `probe_engine` | The blank-page probe: wall time, then engine time. |\n| `render`, `render_engine` | Rendering page images: wall time, then engine time (the longest chunk). |\n| `verify` | The quality checks that raise warnings. |\n| `package` | Building the manifest and the bundle plan before the headers are sent. |\n| `total` | From the end of the upload to the start of the response. |\n\nStages that did not run are left out, except `spawn` and `bind`.\n"),
             ),
             content(
                 (inline(Binary) = "application/pdf"),
-                (inline(Binary) = "application/zip"),
+                (inline(Binary) = "application/zstd"),
             ),
         ),
         (status = 400, response = BadRequest),
@@ -248,10 +248,12 @@ async fn success(
             let manifest = ManifestInput::new(state, received, request_id, timings);
             let job = Arc::clone(&job);
             let result = result.clone();
-            tokio::task::spawn_blocking(move || plan_zip(&job, &manifest, &result))
+            tokio::task::spawn_blocking(move || plan_tar(&job, &manifest, &result))
                 .await
                 .unwrap_or_else(|err| {
-                    Err(ApiError::internal(format!("failed to plan the ZIP: {err}")))
+                    Err(ApiError::internal(format!(
+                        "failed to plan the bundle: {err}"
+                    )))
                 })
         }
     };
@@ -280,12 +282,15 @@ async fn success(
     };
     let (body, content_type, extension) = match prepared {
         Prepared::Pdf { file, size } => (file_body(file, size, pump), "application/pdf", "pdf"),
-        Prepared::Zip { plan, .. } => (zip_body(plan, pump), "application/zip", "zip"),
+        Prepared::Tar { plan, .. } => (tar_body(plan, pump), "application/zstd", "tar.zst"),
     };
     let mut response = (StatusCode::OK, body).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
+    // A tar.zst is chunked: its compressed length is not known in advance.
+    if matches!(output, Output::Pdf) {
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
+    }
     headers.insert(
         header::CONTENT_DISPOSITION,
         content_disposition(received.upload.file_name.as_deref(), extension),
@@ -300,24 +305,30 @@ async fn success(
 
 /// A response body, ready to stream.
 enum Prepared {
-    Pdf { file: File, size: u64 },
-    Zip { plan: ZipPlan, size: u64 },
+    Pdf {
+        file: File,
+        size: u64,
+    },
+    /// `size` is the uncompressed tar length, for the log only.
+    Tar {
+        plan: TarPlan,
+        size: u64,
+    },
 }
 
 impl Prepared {
     fn size(&self) -> u64 {
         match self {
-            Prepared::Pdf { size, .. } | Prepared::Zip { size, .. } => *size,
+            Prepared::Pdf { size, .. } | Prepared::Tar { size, .. } => *size,
         }
     }
 }
 
-/// What the blocking ZIP planner needs from the request, owned.
+/// What the blocking bundle planner needs from the request, owned.
 struct ManifestInput {
     request_id: String,
     upload: crate::domain::conversion_service::UploadFacts,
     request: crate::domain::conversion::ConversionRequest,
-    source: std::path::PathBuf,
     engine: super::serialization::manifest::EngineInfo,
     timings: Timings,
 }
@@ -337,7 +348,6 @@ impl ManifestInput {
             request_id: request_id.to_owned(),
             upload: received.upload.clone(),
             request: received.request.clone(),
-            source: received.source.clone(),
             engine: state.engine_info.clone(),
             timings: Timings {
                 queue: ms(Some(s.queue)),
@@ -349,27 +359,29 @@ impl ManifestInput {
     }
 }
 
-/// Builds the stored ZIP: `manifest.json`, then `document.pdf` for a
-/// bundle, then `pages/NNNN.<ext>`. Sizes come from `fstat`; the page
-/// paths come from the page numbers, never from the engine's file names.
-fn plan_zip(
+/// Builds the tar.zst plan: `manifest.json`, then `document.pdf` for a
+/// bundle, then `pages/NNNN.<ext>` in page order. Sizes come from `fstat`;
+/// the page paths come from the page numbers, never from the engine's file
+/// names.
+fn plan_tar(
     job: &JobDir,
     input: &ManifestInput,
     result: &ConversionResult,
 ) -> Result<Prepared, ApiError> {
     let format = input.request.images.format;
-    let io = |err: std::io::Error| ApiError::internal(format!("failed to plan the ZIP: {err}"));
-    let page_files: Vec<std::path::PathBuf> = result
+    let io = |err: std::io::Error| ApiError::internal(format!("failed to plan the bundle: {err}"));
+    let pages: Vec<(String, std::path::PathBuf)> = result
         .pages
         .iter()
         .map(|page| {
-            job.pages_dir()
-                .join(page_path(page.number, format).trim_start_matches("pages/"))
+            let name = page_path(page.number, format);
+            let path = job.pages_dir().join(name.trim_start_matches("pages/"));
+            (name, path)
         })
         .collect();
-    let page_sizes = page_files
+    let page_sizes = pages
         .iter()
-        .map(|path| std::fs::metadata(path).map(|m| m.len()))
+        .map(|(_, path)| std::fs::metadata(path).map(|m| m.len()))
         .collect::<Result<Vec<u64>, _>>()
         .map_err(io)?;
     let bundle = input.request.output == Output::Bundle;
@@ -395,27 +407,20 @@ fn plan_zip(
         PlanError::TooLarge => {
             ApiError::from_conversion(&ConversionError::LimitExceeded(err.to_string()), 0)
         }
-        PlanError::Io { .. } => ApiError::internal(err.to_string()),
+        PlanError::NameTooLong(_) | PlanError::Io { .. } => ApiError::internal(err.to_string()),
     };
-    let mut plan = ZipPlan::new();
-    plan.add_bytes("manifest.json", bytes::Bytes::from(manifest));
+    let mut plan = TarPlan::new();
+    plan.add_bytes("manifest.json", bytes::Bytes::from(manifest))
+        .map_err(plan_error)?;
     if bundle {
-        // The upload's CRC holds only for a PDF passed through unchanged.
-        let crc = (result.pdf == input.source).then_some(input.upload.crc32);
-        plan.add_file("document.pdf", result.pdf.clone(), crc)
+        plan.add_file("document.pdf", result.pdf.clone())
             .map_err(plan_error)?;
     }
-    for ((page, path), name) in result
-        .pages
-        .iter()
-        .zip(page_files)
-        .zip(result.pages.iter().map(|p| page_path(p.number, format)))
-    {
-        plan.add_file(name, path, page.crc32).map_err(plan_error)?;
+    for (name, path) in pages {
+        plan.add_file(name, path).map_err(plan_error)?;
     }
-    plan.check().map_err(plan_error)?;
-    let size = plan.content_length();
-    Ok(Prepared::Zip { plan, size })
+    let size = plan.tar_length();
+    Ok(Prepared::Tar { plan, size })
 }
 
 /// The `conversion finished` line: PLAN's fields plus the §11 overheads,

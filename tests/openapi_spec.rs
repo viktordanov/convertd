@@ -86,7 +86,7 @@ fn binary_fields_are_strings() {
     assert_eq!(file["type"], "string");
     assert_eq!(file["format"], "binary");
     let content = &spec["paths"]["/v1/convert"]["post"]["responses"]["200"]["content"];
-    for media in ["application/pdf", "application/zip"] {
+    for media in ["application/pdf", "application/zstd"] {
         assert_eq!(content[media]["schema"]["type"], "string", "{media}");
         assert_eq!(content[media]["schema"]["format"], "binary", "{media}");
     }
@@ -187,7 +187,7 @@ const OPERATIONS: &[Operation] = &[
             "200", "400", "401", "413", "415", "422", "429", "500", "503", "504",
         ],
         content: &[
-            ("200", &["application/pdf", "application/zip"]),
+            ("200", &["application/pdf", "application/zstd"]),
             ("400", ERROR_JSON),
             ("401", ERROR_JSON),
             ("413", ERROR_JSON),
