@@ -17,26 +17,71 @@ on:
 permissions:
   contents: read
 
+# For the Rust jobs; the image job ignores them.
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
 defaults:
   run:
     shell: bash          # bash -eo pipefail: a failing smoke or kubeconform fails through pipes
 
 jobs:
-  rust:
+  # Rust checks run as two parallel jobs with a shared dependency cache. Debug info and
+  # incremental builds are off in CI: they cost build time and nothing reads them here.
+  lint:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # rustup is on the runner; rust-toolchain.toml pins the channel and components.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: lint
       - name: Format
         run: cargo fmt --check
       - name: Clippy
         run: |
           cargo clippy --locked --all-targets -- -D warnings
           cargo clippy --locked --all-targets --features test-hooks -- -D warnings
+
+  test:
+    # One test run, with the test hooks: it is a superset of the plain build's tests, and
+    # clippy above already proves the plain build compiles. Tests named slow_* run only in
+    # test-full. nextest kills a test after 60 s (.config/nextest.toml, profile ci).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: test
+      - uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
+        with:
+          tool: cargo-nextest@0.9.152
       - name: Test
-        run: |
-          cargo test --locked
-          cargo test --locked --features test-hooks
+        run: cargo nextest run --locked --features test-hooks --profile ci
+      - name: Doc tests
+        run: cargo test --locked --features test-hooks --doc
+
+  test-full:
+    # Every test, including slow_*: by hand and monthly.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: test
+          save-if: false
+      - uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
+        with:
+          tool: cargo-nextest@0.9.152
+      - name: Test
+        run: cargo nextest run --locked --features test-hooks --profile full
 
   image:
     # Manual and monthly only for now: the smoke test needs `convertd serve` with real engines

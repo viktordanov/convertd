@@ -1,0 +1,22 @@
+# cargo-nextest profiles (https://nexte.st). Each test runs in its own process.
+#
+# default: local runs. A test that runs past 2 minutes is killed and fails.
+# ci:      every push and pull request. Tests named `slow_*` are left out, and a
+#          test is killed after 60 seconds, so a hang costs one minute, not the job.
+# full:    the manual and monthly CI run. Every test, with the local limits.
+
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 4 }
+fail-fast = false
+
+[profile.ci]
+default-filter = "not test(/^slow_/)"
+slow-timeout = { period = "15s", terminate-after = 4 }
+fail-fast = false
+failure-output = "immediate-final"
+status-level = "slow"
+
+[profile.full]
+slow-timeout = { period = "30s", terminate-after = 4 }
+fail-fast = false
+failure-output = "immediate-final"
