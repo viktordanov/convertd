@@ -4,7 +4,7 @@ The corpus is the set of test files for rs-convert, and `expected.json` records 
 
 Know these facts before you change anything here:
 
-- The repository commits the generator and the expectations, not the files. `corpus/generate.py` writes the files into `corpus/out/`, which git ignores.
+- The repository commits the generator, the expectations and three small fixtures, not the test files. `corpus/generate.py` writes the files into `corpus/out/`, which git ignores.
 - `expected.json` pins a SHA-256 for 36 of the 37 files that `generate.py` writes. The hashes hold only in the environment that recorded them. Linux parity is unverified.
 - Private documents never enter the repository. Git ignores `corpus/private/`.
 
@@ -100,7 +100,7 @@ The generator needs Python 3.13. Run Python with `-I`, so that environment varia
 
 On an Apple-silicon Mac, step 3 took about 12 s and wrote 47 MB (measured once with the pins in `requirements.txt`). Without `--hostile`, the generator leaves out the hostile files and the canaries, and `validate` then reports them as missing.
 
-Each run checks its own output. Every file must open in its Python library, except the hostile files in `NEVER_PARSED`. The facts that the expectations use must read back from the saved bytes, and the size bounds in `SIZE_BOUNDS` must hold. A failed check stops the run with the file id.
+Each run checks its own output. Every file must open in its Python library, with two exceptions. The generator never parses the hostile files in `NEVER_PARSED`. For `docm` and `potx`, which python-docx and python-pptx refuse, it reads the main content type instead. The facts that the expectations use must read back from the saved bytes, and the size bounds in `SIZE_BOUNDS` must hold. A failed check stops the run with the file id.
 
 `generate.py` has three other modes:
 

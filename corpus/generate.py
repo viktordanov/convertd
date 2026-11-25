@@ -908,9 +908,14 @@ def check_file(entry_id, path, data):
     elif suffix == ".docx":
         docx.Document(str(path))
     elif suffix in MAIN_TYPES:
-        # The Python libraries refuse these main content types, so check the type itself.
+        # python-docx refuses docm and python-pptx refuses potx, so the main content type is
+        # checked for all four. openpyxl opens xlsm and python-pptx opens pptm.
         types = members(data).read("[Content_Types].xml").decode()
         require(MAIN_TYPES[suffix] in types, "main content type not set")
+        if suffix == ".xlsm":
+            openpyxl.load_workbook(str(path), read_only=True).close()
+        elif suffix == ".pptm":
+            Presentation(str(path))
     elif suffix == ".pptx":
         pres = Presentation(str(path))
         if entry_id != "pptx-pages-mismatch":  # slide 4 is not a slide by design
