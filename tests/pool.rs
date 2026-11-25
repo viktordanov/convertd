@@ -756,3 +756,46 @@ async fn shutdown_during_a_replacement_start_leaves_nothing_behind() {
     )
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_worker_over_the_kill_limit_is_killed_during_its_call() {
+    within(
+        TEST,
+        "a_worker_over_the_kill_limit_is_killed_during_its_call",
+        async {
+            let mut spec = spec("kill-rss", 1);
+            spec.kill_rss = 128 << 20;
+            let pool = ready(spec).await;
+            let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+            let first = lease.worker_ref().unwrap().generation;
+            // The allocation may already trip the watchdog; if it answers first,
+            // the next call finds the worker over the limit.
+            let started = Instant::now();
+            let mut result = lease
+                .call(test_op(TestOp::Allocate { mb: 256 }), after(10_000))
+                .await;
+            if result.is_ok() {
+                let sleeping = Instant::now();
+                result = lease
+                    .call(test_op(TestOp::Sleep { ms: 5000 }), after(10_000))
+                    .await;
+                let took = sleeping.elapsed();
+                assert!(took < Duration::from_millis(500), "killed after {took:?}");
+            }
+            let Err(CallError::TooBig { rss }) = result else {
+                panic!("expected TooBig, got {result:?}");
+            };
+            assert!(rss >= 128 << 20, "rss {rss}");
+            eprintln!(
+                "killed at {rss} bytes, {:?} after the first call",
+                started.elapsed()
+            );
+            drop(lease);
+            let lease = pool.lease(after(10_000), Admission::Queue).await.unwrap();
+            assert_ne!(lease.worker_ref().unwrap().generation, first);
+            drop(lease);
+            finish(pool, "kill-rss").await;
+        },
+    )
+    .await;
+}

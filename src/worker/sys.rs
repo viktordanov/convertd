@@ -245,3 +245,42 @@ pub fn catch_sigxfsz() -> io::Result<()> {
 pub fn take_file_size_hit() -> bool {
     FILE_SIZE_HIT.swap(false, std::sync::atomic::Ordering::SeqCst)
 }
+
+/// The resident set size of process `pid`, for the supervisor's watchdog;
+/// `None` where it cannot be read (the process is gone, or the platform has
+/// no reader).
+#[cfg(target_os = "linux")]
+pub fn rss_of(pid: u32) -> Option<u64> {
+    let statm = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
+    let pages: u64 = statm.split_ascii_whitespace().nth(1)?.parse().ok()?;
+    Some(pages * page_size())
+}
+
+/// macOS, for host tests: the task's resident size.
+#[cfg(target_os = "macos")]
+pub fn rss_of(pid: u32) -> Option<u64> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let mut info = std::mem::MaybeUninit::<libc::proc_taskinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+    // SAFETY: the buffer is a `proc_taskinfo` of `size` bytes, which is what
+    // PROC_PIDTASKINFO writes; it is read only if all of it was written.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTASKINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if written != size {
+        return None;
+    }
+    // SAFETY: `proc_pidinfo` filled the whole struct.
+    Some(unsafe { info.assume_init() }.pti_resident_size)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn rss_of(_pid: u32) -> Option<u64> {
+    None
+}

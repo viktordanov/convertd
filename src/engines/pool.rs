@@ -39,6 +39,28 @@ pub const BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// How long a crashed worker's exit status is waited for.
 pub const CRASH_STATUS_WAIT: Duration = Duration::from_millis(100);
 
+/// How often a call samples its worker's RSS against `kill_rss`.
+pub const KILL_RSS_TICK: Duration = Duration::from_millis(200);
+
+/// Resolves once process `pid` holds at least `limit` bytes, sampled every
+/// [`KILL_RSS_TICK`]; never, when the limit is off (`u64::MAX`) or the
+/// platform cannot read the RSS.
+async fn rss_above(pid: u32, limit: u64) -> u64 {
+    if limit == u64::MAX || crate::worker::sys::rss_of(pid).is_none() {
+        return std::future::pending().await;
+    }
+    let start = tokio::time::Instant::now() + KILL_RSS_TICK;
+    let mut tick = tokio::time::interval_at(start, KILL_RSS_TICK);
+    loop {
+        tick.tick().await;
+        if let Some(rss) = crate::worker::sys::rss_of(pid)
+            && rss >= limit
+        {
+            return rss;
+        }
+    }
+}
+
 /// Everything a pool needs.
 #[derive(Debug, Clone)]
 pub struct PoolSpec {
@@ -98,6 +120,9 @@ pub enum CallError {
     Crashed { status: Option<ExitStatus> },
     #[error("failed to finish the call: {0}")]
     Protocol(String),
+    /// The worker passed `kill_rss` during the call and was killed.
+    #[error("failed to finish the call: the worker used {rss} bytes")]
+    TooBig { rss: u64 },
 }
 
 /// Why a worker left. The labels of `convert_worker_restarts_total`.
@@ -111,6 +136,8 @@ pub enum Reason {
     Cancelled,
     Error,
     StartFailed,
+    /// Killed during a call above `kill_rss` (counted as `rss`).
+    RssKill,
     /// Not a restart: the pool is shutting down.
     Shutdown,
 }
@@ -119,7 +146,7 @@ impl Reason {
     pub fn as_str(self) -> &'static str {
         match self {
             Reason::Jobs => "jobs",
-            Reason::Rss => "rss",
+            Reason::Rss | Reason::RssKill => "rss",
             Reason::Age => "age",
             Reason::Timeout => "timeout",
             Reason::Crash => "crash",
@@ -313,7 +340,7 @@ impl Drop for Worker {
                     "worker recycled"
                 );
             }
-            Reason::Timeout | Reason::Cancelled => {
+            Reason::Timeout | Reason::Cancelled | Reason::RssKill => {
                 tracing::warn!(
                     pool = self.pool,
                     worker_id = %self.id(),
@@ -763,6 +790,8 @@ impl Lease {
         self.in_flight = true;
         let request = Request::Call(Call { id, op });
         let at = tokio::time::Instant::from_std(deadline);
+        let pid = worker.child.pid();
+        let kill_rss = self.pool.spec.kill_rss;
         let outcome = tokio::time::timeout_at(at, async {
             if let Err(err) = worker.conn.send(&request).await {
                 return Exchange::Frame(err);
@@ -777,6 +806,7 @@ impl Lease {
                     Err(err) => Exchange::Frame(err),
                 },
                 _ = worker.child.wait() => Exchange::Eof,
+                rss = rss_above(pid, kill_rss) => Exchange::TooBig(rss),
             }
         })
         .await;
@@ -791,6 +821,19 @@ impl Lease {
                 worker.child.kill_group();
                 self.broken = Some(Reason::Timeout);
                 Err(CallError::Timeout)
+            }
+            Ok(Exchange::TooBig(rss)) => {
+                worker.child.kill_group();
+                self.broken = Some(Reason::RssKill);
+                tracing::warn!(
+                    pool = worker.pool,
+                    worker_id = %worker.id(),
+                    generation = worker.generation,
+                    rss_bytes = rss,
+                    kill_rss = kill_rss,
+                    "worker over its memory limit"
+                );
+                Err(CallError::TooBig { rss })
             }
             Ok(Exchange::Unexpected(what)) => {
                 worker.child.kill_group();
@@ -880,6 +923,7 @@ impl std::fmt::Debug for Lease {
 
 enum Exchange {
     Reply(Box<Reply>),
+    TooBig(u64),
     Unexpected(String),
     Eof,
     Frame(FrameError),
