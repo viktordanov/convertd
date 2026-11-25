@@ -455,6 +455,7 @@ async fn slow_corpus_files_convert_with_their_page_counts() {
                     Some(3),
                 ),
             ];
+            let mut results = Vec::new();
             for (i, (rel, family, export, expected)) in cases.into_iter().enumerate() {
                 let ext = rel.rsplit('.').next().unwrap();
                 let source = copy_in(&corpus, rel, &dir, &format!("source-{i}.{ext}"));
@@ -465,7 +466,28 @@ async fn slow_corpus_files_convert_with_their_page_counts() {
                     .convert(job, DomainAdmission::Queue, deadline())
                     .await
                     .unwrap_or_else(|err| panic!("{rel} {export:?}: {err:?}"));
-                let count = pages_of(&pdf, &output).await;
+                let inspection = pdf
+                    .inspect(
+                        InspectJob {
+                            pdf: output.clone(),
+                            password: None,
+                            probe_dpi: None,
+                            collect_fonts: false,
+                        },
+                        DomainAdmission::Queue,
+                        deadline(),
+                    )
+                    .await
+                    .expect("an inspection");
+                let count = inspection.page_count;
+                let first = inspection.pages[0];
+                results.push((
+                    count,
+                    (
+                        first.width_pt.round() as u32,
+                        first.height_pt.round() as u32,
+                    ),
+                ));
                 eprintln!(
                     "{rel} {export:?}: {count} pages, {} bytes, engine {:?}, wall {:?}",
                     converted.pdf_bytes, converted.timing.engine, converted.timing.wall
@@ -474,6 +496,32 @@ async fn slow_corpus_files_convert_with_their_page_counts() {
                     assert_eq!(count, expected, "{rel} {export:?}");
                 }
             }
+            // The export keys must change the output, not only match a
+            // count: notes "only" gives notes pages (portrait), not the
+            // slides of "none", and one page per sheet differs from the
+            // default sheet layout.
+            let (none, only) = (results[2], results[4]);
+            eprintln!("deck20 first page: none {:?}, only {:?}", none.1, only.1);
+            assert_ne!(none.1, only.1, "ExportOnlyNotesPages changed nothing");
+            let source = copy_in(&corpus, "xlsx/sheet3.xlsx", &dir, "sheet-default.xlsx");
+            let output = dir.join("sheet-default.pdf");
+            office
+                .convert(
+                    job(source, output.clone(), Family::Spreadsheet),
+                    DomainAdmission::Queue,
+                    deadline(),
+                )
+                .await
+                .expect("the default sheet export");
+            let default_sheet = pages_of(&pdf, &output).await;
+            eprintln!(
+                "sheet3.xlsx: default {default_sheet} pages, one page per sheet {}",
+                results[7].0
+            );
+            assert_ne!(
+                default_sheet, results[7].0,
+                "SinglePageSheets changed nothing"
+            );
             office_pool.shutdown(Duration::from_secs(5)).await;
             render_pool.shutdown(Duration::from_secs(5)).await;
         },
@@ -584,7 +632,8 @@ async fn the_output_cap_gives_limit_exceeded_and_the_next_job_works() {
             let dir = Scratch::new("office-cap");
             let source = dir.join("source.docx");
             std::fs::write(&source, docx_pages(50)).unwrap();
-            let pool = ready(office_spec(dir.path(), &lo, false)).await;
+            // With warm-up, as in production.
+            let pool = ready(office_spec(dir.path(), &lo, true)).await;
             let office = OfficeLok::new(pool.clone());
             let mut capped = job(source.clone(), dir.join("capped.pdf"), Family::Document);
             capped.max_output_bytes = 4 * 1024;
