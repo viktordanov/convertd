@@ -21,20 +21,23 @@ pub fn files() -> Vec<WarmupFile> {
         WarmupFile {
             name: "warmup.docx",
             family: Family::Document,
-            bytes: docx(),
+            bytes: docx(TEXT),
         },
         WarmupFile {
             name: "warmup.xlsx",
             family: Family::Spreadsheet,
-            bytes: xlsx(),
+            bytes: xlsx(TEXT),
         },
         WarmupFile {
             name: "warmup.pptx",
             family: Family::Presentation,
-            bytes: pptx(),
+            bytes: pptx(TEXT),
         },
     ]
 }
+
+/// The text of every warm-up document.
+const TEXT: &str = "Warm-up.";
 
 const XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#;
 const RELS_NS: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
@@ -61,7 +64,8 @@ fn rels(entries: &[(&str, &str, &str)]) -> String {
     format!(r#"{XML}<Relationships xmlns="{RELS_NS}">{entries}</Relationships>"#)
 }
 
-fn docx() -> Vec<u8> {
+/// A one-paragraph DOCX holding `text` (XML-escaped by the caller).
+pub fn docx(text: &str) -> Vec<u8> {
     stored_zip(&[
         (
             "[Content_Types].xml",
@@ -77,13 +81,14 @@ fn docx() -> Vec<u8> {
         (
             "word/document.xml",
             format!(
-                r#"{XML}<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Warm-up.</w:t></w:r></w:p></w:body></w:document>"#
+                r#"{XML}<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>"#
             ),
         ),
     ])
 }
 
-fn xlsx() -> Vec<u8> {
+/// A one-sheet XLSX with `text` in A1 and 1 in B1.
+pub fn xlsx(text: &str) -> Vec<u8> {
     stored_zip(&[
         (
             "[Content_Types].xml",
@@ -116,19 +121,22 @@ fn xlsx() -> Vec<u8> {
         (
             "xl/worksheets/sheet1.xml",
             format!(
-                r#"{XML}<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Warm-up</t></is></c><c r="B1"><v>1</v></c></row></sheetData></worksheet>"#
+                r#"{XML}<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>{text}</t></is></c><c r="B1"><v>1</v></c></row></sheetData></worksheet>"#
             ),
         ),
     ])
 }
 
-fn pptx() -> Vec<u8> {
+/// A one-slide PPTX with `text` in a text box.
+pub fn pptx(text: &str) -> Vec<u8> {
     const P: &str = "http://schemas.openxmlformats.org/presentationml/2006/main";
     const A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
     const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
     let rel = |name: &str| format!("{R}/{name}");
     let shape_tree = r#"<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld>"#;
-    let slide_tree = r#"<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="Text"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="914400" y="914400"/><a:ext cx="7315200" cy="914400"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US"/><a:t>Warm-up.</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>"#;
+    let slide_tree = format!(
+        r#"<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="Text"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="914400" y="914400"/><a:ext cx="7315200" cy="914400"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US"/><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>"#
+    );
     let theme = format!(
         r#"{XML}<a:theme xmlns:a="{A}" name="Warm-up"><a:themeElements><a:clrScheme name="Warm-up"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="1F497D"/></a:dk2><a:lt2><a:srgbClr val="EEECE1"/></a:lt2><a:accent1><a:srgbClr val="4F81BD"/></a:accent1><a:accent2><a:srgbClr val="C0504D"/></a:accent2><a:accent3><a:srgbClr val="9BBB59"/></a:accent3><a:accent4><a:srgbClr val="8064A2"/></a:accent4><a:accent5><a:srgbClr val="4BACC6"/></a:accent5><a:accent6><a:srgbClr val="F79646"/></a:accent6><a:hlink><a:srgbClr val="0000FF"/></a:hlink><a:folHlink><a:srgbClr val="800080"/></a:folHlink></a:clrScheme><a:fontScheme name="Warm-up"><a:majorFont><a:latin typeface="DejaVu Sans"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="DejaVu Sans"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="Warm-up"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>"#
     );

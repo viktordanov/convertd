@@ -63,7 +63,9 @@ fn die_with_supervisor() -> io::Result<()> {
     Ok(())
 }
 
-fn ignore_sigxfsz() {
+/// Sets SIGXFSZ to ignored. LibreOffice installs its own handler for it
+/// at start-up, so the office worker calls this again after `Office::new`.
+pub fn ignore_sigxfsz() {
     // SAFETY: SIG_IGN is a valid disposition and SIGXFSZ a valid signal; no
     // handler code runs.
     unsafe {
@@ -209,4 +211,37 @@ pub fn set_file_size_limit(limit: Option<u64>) -> io::Result<()> {
         },
     )
     .map_err(io::Error::from)
+}
+
+/// Set by the SIGXFSZ handler: a write passed `RLIMIT_FSIZE`.
+static FILE_SIZE_HIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_sigxfsz(_: libc::c_int) {
+    // Async-signal-safe: one atomic store.
+    FILE_SIZE_HIT.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Catches SIGXFSZ with a handler that records the hit, so the write that
+/// passed `RLIMIT_FSIZE` fails with `EFBIG` and [`take_file_size_hit`]
+/// tells the cap apart from other export errors. The office worker calls
+/// it after `Office::new`, which installs a SIGXFSZ handler of its own that
+/// crashes the process.
+pub fn catch_sigxfsz() -> io::Result<()> {
+    // SAFETY: `action` is zeroed and then filled; the handler only stores
+    // to an atomic, which is async-signal-safe.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = on_sigxfsz as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        libc::sigemptyset(&mut action.sa_mask);
+        action.sa_flags = 0;
+        if libc::sigaction(libc::SIGXFSZ, &action, std::ptr::null_mut()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Whether a write passed `RLIMIT_FSIZE` since the last call.
+pub fn take_file_size_hit() -> bool {
+    FILE_SIZE_HIT.swap(false, std::sync::atomic::Ordering::SeqCst)
 }

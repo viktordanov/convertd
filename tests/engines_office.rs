@@ -1,24 +1,37 @@
-//! The office worker with the real LibreOffice, through the pool (plan 002
-//! step 8). These tests need LibreOffice at `LO_PROGRAM_DIR`, as in the dev
-//! image; where it is missing they print why and pass without running.
+//! The office worker with the real LibreOffice, through the pool and the
+//! `OfficeEngine` adapter (plan 002 step 8).
+//!
+//! These tests run where `LO_PROGRAM_DIR` holds LibreOffice, as in the dev
+//! image. Elsewhere they print `skipped` and pass without checking
+//! anything. Tests that count pages also need PDFium (`PDFIUM_LIB_DIR`);
+//! tests that use corpus files need `CONVERTD_CORPUS_DIR` (the output
+//! directory of `corpus/generate.py`).
 
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use convertd::domain::conversion::{ExportOptions, SlideNotes};
+use convertd::domain::document::Family;
+use convertd::domain::engine::{
+    Admission as DomainAdmission, EngineError, InspectJob, OfficeEngine, OfficeJob, PdfEngine,
+};
+use convertd::domain::secret::Password;
 use convertd::engines::config::Paper;
+use convertd::engines::office_lok::OfficeLok;
+use convertd::engines::pdf_pdfium::PdfPdfium;
 use convertd::engines::pool::{Admission, Lease, Pool, PoolSpec};
 use convertd::engines::process::{ReaperMode, Spawner};
 use convertd::engines::slot::WorkerEnv;
-use convertd::ipc::*;
+use convertd::ipc::{self, Init, Op, Output, PROTOCOL_VERSION};
 use convertd::worker::Role;
+use convertd::worker::warmup;
 
-/// The bound of one test: an office worker start takes seconds.
-const TEST: Duration = Duration::from_secs(180);
+/// The bound of one test: office workers take seconds to start.
+const TEST: Duration = Duration::from_secs(240);
 /// The deadline of one engine call.
 const CALL: Duration = Duration::from_secs(60);
 
-/// `fut`, or a test failure naming `what` once `limit` has passed.
 async fn within<T>(limit: Duration, what: &str, fut: impl std::future::Future<Output = T>) -> T {
     match tokio::time::timeout(limit, fut).await {
         Ok(value) => value,
@@ -26,19 +39,31 @@ async fn within<T>(limit: Duration, what: &str, fut: impl std::future::Future<Ou
     }
 }
 
-/// The LibreOffice program directory, or `None` (with a note) when this
-/// machine has none.
-fn lo_program_dir() -> Option<PathBuf> {
-    let dir = PathBuf::from(std::env::var_os("LO_PROGRAM_DIR")?);
-    if dir.join("soffice.bin").exists() {
+fn dir_from(var: &str, probe: &str) -> Option<PathBuf> {
+    let Some(dir) = std::env::var_os(var).map(PathBuf::from) else {
+        eprintln!("skipped: {var} is not set");
+        return None;
+    };
+    if dir.join(probe).exists() {
         Some(dir)
     } else {
-        eprintln!("skipped: no LibreOffice at {}", dir.display());
+        eprintln!("skipped: no {probe} in {}", dir.display());
         None
     }
 }
 
-/// A scratch directory, removed on drop.
+fn lo() -> Option<PathBuf> {
+    dir_from("LO_PROGRAM_DIR", "soffice.bin")
+}
+
+fn pdfium() -> Option<PathBuf> {
+    dir_from("PDFIUM_LIB_DIR", "libpdfium.so")
+}
+
+fn corpus() -> Option<PathBuf> {
+    dir_from("CONVERTD_CORPUS_DIR", "docx/small.docx")
+}
+
 struct Scratch(PathBuf);
 
 impl Scratch {
@@ -52,6 +77,10 @@ impl Scratch {
     fn path(&self) -> &Path {
         &self.0
     }
+
+    fn join(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
 }
 
 impl Drop for Scratch {
@@ -60,19 +89,15 @@ impl Drop for Scratch {
     }
 }
 
-fn spec(dir: &Path, lo: PathBuf) -> PoolSpec {
+fn base_spec(dir: &Path, name: &'static str, role: Role, init: Init) -> PoolSpec {
     PoolSpec {
-        name: "office",
-        role: Role::Office,
+        name,
+        role,
         program: PathBuf::from(env!("CARGO_BIN_EXE_convertd")),
         workers_dir: dir.join("workers"),
         profile_template: None,
-        env: WorkerEnv::from_process(Paper::A4),
-        init: Init {
-            protocol: PROTOCOL_VERSION,
-            lo_program_dir: Some(lo),
-            ..Init::default()
-        },
+        env: WorkerEnv::from_vars(std::env::vars_os(), Paper::A4),
+        init,
         size: 1,
         max_jobs: 1_000,
         max_rss: u64::MAX,
@@ -80,98 +105,166 @@ fn spec(dir: &Path, lo: PathBuf) -> PoolSpec {
         max_age: Duration::from_secs(3600),
         age_check: Duration::from_secs(30),
         queue_capacity: 4,
-        queue_wait: Duration::from_secs(10),
-        start_timeout: Duration::from_secs(60),
+        queue_wait: Duration::from_secs(30),
+        start_timeout: Duration::from_secs(90),
     }
 }
 
-/// A minimal valid DOCX with one paragraph per entry of `paragraphs`.
-pub fn docx(paragraphs: &[&str]) -> Vec<u8> {
-    let body: String = paragraphs
-        .iter()
-        .map(|p| format!("<w:p><w:r><w:t>{p}</w:t></w:r></w:p>"))
-        .collect();
-    zip_of(&[
-        (
-            "[Content_Types].xml",
-            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#
-                .to_owned(),
-        ),
-        (
-            "_rels/.rels",
-            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#
-                .to_owned(),
-        ),
-        (
-            "word/document.xml",
-            format!(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{body}</w:body></w:document>"#
-            ),
-        ),
-    ])
+fn office_spec(dir: &Path, lo: &Path, warmup: bool) -> PoolSpec {
+    base_spec(
+        dir,
+        "office",
+        Role::Office,
+        Init {
+            protocol: PROTOCOL_VERSION,
+            lo_program_dir: Some(lo.to_path_buf()),
+            warmup,
+            ..Init::default()
+        },
+    )
 }
 
-fn zip_of(entries: &[(&str, String)]) -> Vec<u8> {
-    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options =
-        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-    for (name, data) in entries {
-        zip.start_file(*name, options).unwrap();
-        zip.write_all(data.as_bytes()).unwrap();
-    }
-    zip.finish().unwrap().into_inner()
+fn render_spec(dir: &Path, pdfium: &Path) -> PoolSpec {
+    base_spec(
+        dir,
+        "render",
+        Role::Render,
+        Init {
+            protocol: PROTOCOL_VERSION,
+            pdfium_lib_dir: Some(pdfium.to_path_buf()),
+            warmup: true,
+            ..Init::default()
+        },
+    )
 }
 
-fn convert(input: PathBuf, output: PathBuf, password: Option<&str>) -> Op {
-    Op::Convert(ConvertArgs {
-        input,
-        output,
-        family: Family::Document,
-        password: password.map(Secret::new),
-        export: ExportOptions::default(),
-        max_output_bytes: 64 << 20,
-    })
+async fn ready(spec: PoolSpec) -> Pool {
+    let size = spec.size as usize;
+    let pool = Pool::start(spec, Spawner::new(ReaperMode::Owned).unwrap());
+    assert!(
+        pool.wait_idle(size, Duration::from_secs(120)).await,
+        "the pool did not get ready: {:?}",
+        pool.status()
+    );
+    pool
 }
 
 async fn lease(pool: &Pool) -> Lease {
     within(
-        Duration::from_secs(90),
-        "an office worker",
-        pool.lease(Instant::now() + Duration::from_secs(90), Admission::Queue),
+        Duration::from_secs(120),
+        "a worker",
+        pool.lease(Instant::now() + Duration::from_secs(120), Admission::Queue),
     )
     .await
     .expect("a lease")
 }
 
+fn deadline() -> Instant {
+    Instant::now() + CALL
+}
+
+/// A DOCX with `pages` pages, one paragraph each, divided by page breaks.
+fn docx_pages(pages: usize) -> Vec<u8> {
+    let body: String = (1..=pages)
+        .map(|n| {
+            let brk = if n < pages {
+                r#"<w:r><w:br w:type="page"/></w:r>"#
+            } else {
+                ""
+            };
+            format!("<w:p><w:r><w:t>Page {n}.</w:t></w:r>{brk}</w:p>")
+        })
+        .collect();
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (name, data) in [
+        (
+            "[Content_Types].xml",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#.to_owned(),
+        ),
+        (
+            "_rels/.rels",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.to_owned(),
+        ),
+        (
+            "word/document.xml",
+            format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{body}</w:body></w:document>"#),
+        ),
+    ] {
+        zip.start_file(name, stored).unwrap();
+        zip.write_all(data.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+fn job(input: PathBuf, output: PathBuf, family: Family) -> OfficeJob {
+    OfficeJob {
+        input,
+        output,
+        family,
+        password: None,
+        export: ExportOptions::default(),
+        sha256: [0; 32],
+        max_output_bytes: 256 << 20,
+    }
+}
+
+fn convert_op(input: PathBuf, output: PathBuf, family: ipc::Family) -> Op {
+    Op::Convert(ipc::ConvertArgs {
+        input,
+        output,
+        family,
+        password: None,
+        export: ipc::ExportOptions::default(),
+        max_output_bytes: 64 << 20,
+    })
+}
+
+/// The page count of `pdf`, from the render pool.
+async fn pages_of(pdf: &PdfPdfium, path: &Path) -> u32 {
+    pdf.inspect(
+        InspectJob {
+            pdf: path.to_path_buf(),
+            password: None,
+            probe_dpi: None,
+            collect_fonts: false,
+        },
+        DomainAdmission::Queue,
+        deadline(),
+    )
+    .await
+    .expect("an inspection")
+    .page_count
+}
+
+fn copy_in(corpus: &Path, rel: &str, dir: &Scratch, name: &str) -> PathBuf {
+    let to = dir.join(name);
+    std::fs::copy(corpus.join(rel), &to).unwrap();
+    to
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_docx_converts_through_the_office_pool() {
-    let Some(lo) = lo_program_dir() else { return };
+    let Some(lo) = lo() else { return };
     within(TEST, "a_docx_converts_through_the_office_pool", async {
         let dir = Scratch::new("office-docx");
-        let source = dir.path().join("source.docx");
-        std::fs::write(&source, docx(&["Hello from convertd.", "Second paragraph."])).unwrap();
-        let pool = Pool::start(spec(dir.path(), lo), Spawner::new(ReaperMode::Owned).unwrap());
+        let source = dir.join("source.docx");
+        std::fs::write(&source, warmup::docx("Hello from convertd.")).unwrap();
         let started = Instant::now();
-        assert!(
-            pool.wait_idle(1, Duration::from_secs(90)).await,
-            "the office worker did not get ready: {:?}",
-            pool.status()
-        );
+        let pool = ready(office_spec(dir.path(), &lo, false)).await;
         let ready_after = started.elapsed();
-
         let mut times = Vec::new();
         for round in 1..=3 {
-            let output = dir.path().join(format!("document-{round}.pdf"));
+            let output = dir.join(&format!("document-{round}.pdf"));
             let mut lease = lease(&pool).await;
-            let wall = Instant::now();
             let reply = lease
-                .call(convert(source.clone(), output.clone(), None), Instant::now() + CALL)
+                .call(
+                    convert_op(source.clone(), output.clone(), ipc::Family::Document),
+                    deadline(),
+                )
                 .await
                 .expect("a reply");
-            let wall = wall.elapsed();
             let Ok(Output::Converted(converted)) = reply.result else {
                 panic!("expected converted, got {:?}", reply.result);
             };
@@ -180,18 +273,448 @@ async fn a_docx_converts_through_the_office_pool() {
             assert_eq!(converted.pdf_bytes, pdf.len() as u64);
             assert_eq!(converted.doc_type, "text");
             assert!(converted.facts.is_some(), "pre-flight ran");
-            eprintln!(
-                "round {round}: wall {wall:?}, engine {} us, preflight {} us, rss {} MiB, pdf {} bytes, worker {:?}",
-                reply.engine.engine_us,
-                reply.engine.preflight_us,
-                reply.rss_bytes >> 20,
-                pdf.len(),
-                lease.worker_ref()
-            );
             times.push(reply.engine.engine_us);
         }
-        eprintln!("pool ready after {ready_after:?}; engine us per round {times:?}");
+        eprintln!("no warm-up: ready after {ready_after:?}; engine us per job {times:?}");
         pool.shutdown(Duration::from_secs(5)).await;
     })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_warm_up_makes_the_first_job_of_each_family_cheap() {
+    let Some(lo) = lo() else { return };
+    within(
+        TEST,
+        "slow_warm_up_makes_the_first_job_of_each_family_cheap",
+        async {
+            let dir = Scratch::new("office-warmup");
+            let started = Instant::now();
+            let pool = ready(office_spec(dir.path(), &lo, true)).await;
+            eprintln!("with warm-up: ready after {:?}", started.elapsed());
+            let docs: [(&str, Vec<u8>, ipc::Family); 3] = [
+                (
+                    "docx",
+                    warmup::docx("A real document."),
+                    ipc::Family::Document,
+                ),
+                (
+                    "xlsx",
+                    warmup::xlsx("A real sheet"),
+                    ipc::Family::Spreadsheet,
+                ),
+                (
+                    "pptx",
+                    warmup::pptx("A real slide."),
+                    ipc::Family::Presentation,
+                ),
+            ];
+            for (ext, bytes, family) in docs {
+                let source = dir.join(&format!("source.{ext}"));
+                std::fs::write(&source, bytes).unwrap();
+                let mut times = Vec::new();
+                for round in 1..=3 {
+                    let output = dir.join(&format!("{ext}-{round}.pdf"));
+                    let mut lease = lease(&pool).await;
+                    let reply = lease
+                        .call(convert_op(source.clone(), output, family), deadline())
+                        .await
+                        .expect("a reply");
+                    assert!(
+                        matches!(reply.result, Ok(Output::Converted(_))),
+                        "{ext}: {:?}",
+                        reply.result
+                    );
+                    times.push(reply.engine.engine_us);
+                }
+                eprintln!("{ext}: engine us per job {times:?}");
+                // The first job may cost a little more, never a cold start.
+                assert!(
+                    times[0] <= times[2] * 3 + 100_000,
+                    "{ext}: first job {} us against third {} us",
+                    times[0],
+                    times[2]
+                );
+            }
+            pool.shutdown(Duration::from_secs(5)).await;
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_encrypted_docx_needs_the_right_password_in_one_worker() {
+    let (Some(lo), Some(corpus)) = (lo(), corpus()) else {
+        return;
+    };
+    within(
+        TEST,
+        "an_encrypted_docx_needs_the_right_password_in_one_worker",
+        async {
+            let dir = Scratch::new("office-password");
+            let source = copy_in(&corpus, "docx/encrypted.docx", &dir, "source.docx");
+            let pool = ready(office_spec(dir.path(), &lo, false)).await;
+            let office = OfficeLok::new(pool.clone());
+            let attempt = |password: Option<&str>| {
+                let mut job = job(source.clone(), dir.join("document.pdf"), Family::Document);
+                job.password = password.map(Password::new);
+                office.convert(job, DomainAdmission::Queue, deadline())
+            };
+            assert_eq!(
+                attempt(None).await.unwrap_err(),
+                EngineError::PasswordRequired
+            );
+            assert_eq!(
+                attempt(Some("wrong")).await.unwrap_err(),
+                EngineError::InvalidPassword
+            );
+            let converted = attempt(Some("secret")).await.expect("the right password");
+            assert!(converted.pdf_bytes > 0);
+            // All three ran in the first worker: the password errors do not recycle.
+            assert_eq!(converted.worker.generation, 1, "{:?}", converted.worker);
+            assert_eq!(converted.worker.job, 3);
+            pool.shutdown(Duration::from_secs(5)).await;
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_corpus_files_convert_with_their_page_counts() {
+    let (Some(lo), Some(pdfium), Some(corpus)) = (lo(), pdfium(), corpus()) else {
+        return;
+    };
+    within(
+        TEST,
+        "slow_corpus_files_convert_with_their_page_counts",
+        async {
+            let dir = Scratch::new("office-corpus");
+            let office_pool = ready(office_spec(dir.path(), &lo, true)).await;
+            let render_pool = ready(render_spec(dir.path(), &pdfium)).await;
+            let office = OfficeLok::new(office_pool.clone());
+            let pdf = PdfPdfium::new(render_pool.clone());
+            let cases: [(&str, Family, ExportOptions, Option<u32>); 8] = [
+                (
+                    "docx/small.docx",
+                    Family::Document,
+                    ExportOptions::default(),
+                    None,
+                ),
+                (
+                    "docx/long.docx",
+                    Family::Document,
+                    ExportOptions::default(),
+                    None,
+                ),
+                (
+                    "pptx/deck20.pptx",
+                    Family::Presentation,
+                    ExportOptions::default(),
+                    Some(20),
+                ),
+                (
+                    "pptx/deck20.pptx",
+                    Family::Presentation,
+                    ExportOptions {
+                        notes: SlideNotes::Append,
+                        ..ExportOptions::default()
+                    },
+                    Some(40),
+                ),
+                (
+                    "pptx/deck20.pptx",
+                    Family::Presentation,
+                    ExportOptions {
+                        notes: SlideNotes::Only,
+                        ..ExportOptions::default()
+                    },
+                    Some(20),
+                ),
+                (
+                    "pptx/hidden.pptx",
+                    Family::Presentation,
+                    ExportOptions::default(),
+                    Some(3),
+                ),
+                (
+                    "pptx/hidden.pptx",
+                    Family::Presentation,
+                    ExportOptions {
+                        include_hidden_slides: true,
+                        ..ExportOptions::default()
+                    },
+                    Some(5),
+                ),
+                (
+                    "xlsx/sheet3.xlsx",
+                    Family::Spreadsheet,
+                    ExportOptions {
+                        one_page_per_sheet: true,
+                        ..ExportOptions::default()
+                    },
+                    Some(3),
+                ),
+            ];
+            for (i, (rel, family, export, expected)) in cases.into_iter().enumerate() {
+                let ext = rel.rsplit('.').next().unwrap();
+                let source = copy_in(&corpus, rel, &dir, &format!("source-{i}.{ext}"));
+                let output = dir.join(&format!("document-{i}.pdf"));
+                let mut job = job(source, output.clone(), family);
+                job.export = export;
+                let converted = office
+                    .convert(job, DomainAdmission::Queue, deadline())
+                    .await
+                    .unwrap_or_else(|err| panic!("{rel} {export:?}: {err:?}"));
+                let count = pages_of(&pdf, &output).await;
+                eprintln!(
+                    "{rel} {export:?}: {count} pages, {} bytes, engine {:?}, wall {:?}",
+                    converted.pdf_bytes, converted.timing.engine, converted.timing.wall
+                );
+                if let Some(expected) = expected {
+                    assert_eq!(count, expected, "{rel} {export:?}");
+                }
+            }
+            office_pool.shutdown(Duration::from_secs(5)).await;
+            render_pool.shutdown(Duration::from_secs(5)).await;
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stopped_worker_times_out_and_a_new_one_serves_the_next_call() {
+    let Some(lo) = lo() else { return };
+    within(
+        TEST,
+        "a_stopped_worker_times_out_and_a_new_one_serves_the_next_call",
+        async {
+            let dir = Scratch::new("office-sigstop");
+            let source = dir.join("source.docx");
+            std::fs::write(&source, warmup::docx("Stopped.")).unwrap();
+            let pool = ready(office_spec(dir.path(), &lo, false)).await;
+            let mut stopped = lease(&pool).await;
+            let pid = stopped.pid().unwrap();
+            let first = stopped.worker_ref().unwrap().generation;
+            rustix::process::kill_process(
+                rustix::process::Pid::from_raw(pid as i32).unwrap(),
+                rustix::process::Signal::STOP,
+            )
+            .unwrap();
+            let limit = Instant::now() + Duration::from_millis(1500);
+            let err = stopped
+                .call(
+                    convert_op(source.clone(), dir.join("a.pdf"), ipc::Family::Document),
+                    limit,
+                )
+                .await
+                .unwrap_err();
+            let late = Instant::now().saturating_duration_since(limit);
+            assert_eq!(err, convertd::engines::pool::CallError::Timeout);
+            eprintln!("timeout returned {late:?} after the deadline");
+            assert!(late < Duration::from_millis(250), "late by {late:?}");
+            drop(stopped);
+            let replaced = Instant::now();
+            let mut next = lease(&pool).await;
+            eprintln!("replacement ready after {:?}", replaced.elapsed());
+            assert_ne!(next.worker_ref().unwrap().generation, first);
+            let reply = next
+                .call(
+                    convert_op(source, dir.join("b.pdf"), ipc::Family::Document),
+                    deadline(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(reply.result, Ok(Output::Converted(_))));
+            drop(next);
+            pool.shutdown(Duration::from_secs(5)).await;
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_worker_killed_mid_call_is_retried_once() {
+    let Some(lo) = lo() else { return };
+    within(TEST, "a_worker_killed_mid_call_is_retried_once", async {
+        let dir = Scratch::new("office-sigkill");
+        let source = dir.join("source.docx");
+        std::fs::write(&source, docx_pages(400)).unwrap();
+        let pool = ready(office_spec(dir.path(), &lo, false)).await;
+        let pid = {
+            let lease = lease(&pool).await;
+            lease.pid().unwrap()
+        };
+        let office = OfficeLok::new(pool.clone());
+        let killer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            rustix::process::kill_process_group(
+                rustix::process::Pid::from_raw(pid as i32).unwrap(),
+                rustix::process::Signal::KILL,
+            )
+        });
+        let converted = office
+            .convert(
+                job(source, dir.join("document.pdf"), Family::Document),
+                DomainAdmission::Queue,
+                deadline(),
+            )
+            .await
+            .expect("the retry succeeds");
+        assert!(killer.await.unwrap().is_ok(), "the kill reached the worker");
+        assert_ne!(
+            converted.worker.generation, 1,
+            "the retry ran on a new worker"
+        );
+        eprintln!(
+            "retried on {:?}, wall {:?}",
+            converted.worker, converted.timing.wall
+        );
+        pool.shutdown(Duration::from_secs(5)).await;
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_output_cap_gives_limit_exceeded_and_the_next_job_works() {
+    let Some(lo) = lo() else { return };
+    within(
+        TEST,
+        "the_output_cap_gives_limit_exceeded_and_the_next_job_works",
+        async {
+            let dir = Scratch::new("office-cap");
+            let source = dir.join("source.docx");
+            std::fs::write(&source, docx_pages(50)).unwrap();
+            let pool = ready(office_spec(dir.path(), &lo, false)).await;
+            let office = OfficeLok::new(pool.clone());
+            let mut capped = job(source.clone(), dir.join("capped.pdf"), Family::Document);
+            capped.max_output_bytes = 4 * 1024;
+            let err = office
+                .convert(capped, DomainAdmission::Queue, deadline())
+                .await
+                .unwrap_err();
+            assert!(matches!(err, EngineError::LimitExceeded(_)), "{err:?}");
+            assert!(!dir.join("capped.pdf").exists(), "the partial file stays");
+            let converted = office
+                .convert(
+                    job(source, dir.join("full.pdf"), Family::Document),
+                    DomainAdmission::Queue,
+                    deadline(),
+                )
+                .await
+                .expect("the next job");
+            eprintln!(
+                "after the cap: {} bytes on {:?}",
+                converted.pdf_bytes, converted.worker
+            );
+            pool.shutdown(Duration::from_secs(5)).await;
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_disk_gives_disk_full() {
+    let Some(lo) = lo() else { return };
+    let Some(small) = std::env::var_os("CONVERTD_SMALL_DISK").map(PathBuf::from) else {
+        eprintln!("skipped: CONVERTD_SMALL_DISK is not set");
+        return;
+    };
+    within(TEST, "a_full_disk_gives_disk_full", async {
+        let dir = Scratch::new("office-disk");
+        let source = dir.join("source.docx");
+        std::fs::write(&source, docx_pages(20)).unwrap();
+        // Fill the small disk, so even a small PDF does not fit.
+        let filler = small.join("filler");
+        let _ = std::fs::write(&filler, vec![0u8; 64 << 20]);
+        let pool = ready(office_spec(dir.path(), &lo, false)).await;
+        let office = OfficeLok::new(pool.clone());
+        let err = office
+            .convert(
+                job(source, small.join("document.pdf"), Family::Document),
+                DomainAdmission::Queue,
+                deadline(),
+            )
+            .await
+            .unwrap_err();
+        let _ = std::fs::remove_file(&filler);
+        let _ = std::fs::remove_file(small.join("document.pdf"));
+        assert_eq!(err, EngineError::DiskFull);
+        pool.shutdown(Duration::from_secs(5)).await;
+    })
+    .await;
+}
+
+/// `DEFAULT_PAPER` reaches LibreOffice as `LC_PAPER`. A DOCX with no page
+/// size takes LibreOffice's default page. (An RTF is no probe: RTF defines
+/// Letter as its own default page size.)
+///
+/// Finding (dev image, LibreOffice 26.8.3, 2026-11-26): the default page is
+/// Letter whatever `LC_PAPER` or `LANG` say, with the en_GB.UTF-8 locale
+/// installed. LibreOfficeKit does not take the paper from the locale, so
+/// `DEFAULT_PAPER` has no effect. The fix belongs to the profile template
+/// (003/M3). Run this test with `--ignored` to see the current behavior.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "finding: LibreOfficeKit ignores LC_PAPER; the default page is Letter (003/M3)"]
+async fn default_paper_sets_the_page_size_of_a_docx_without_one() {
+    let (Some(lo), Some(pdfium)) = (lo(), pdfium()) else {
+        return;
+    };
+    within(
+        TEST,
+        "default_paper_sets_the_page_size_of_a_docx_without_one",
+        async {
+            let dir = Scratch::new("office-paper");
+            let source = dir.join("source.docx");
+            std::fs::write(&source, warmup::docx("No page size.")).unwrap();
+            let render_pool = ready(render_spec(dir.path(), &pdfium)).await;
+            let pdf = PdfPdfium::new(render_pool.clone());
+            let mut sizes = Vec::new();
+            for (paper, name) in [(Paper::A4, "a4"), (Paper::Letter, "letter")] {
+                let mut spec = office_spec(&dir.join(name), &lo, false);
+                spec.name = if name == "a4" {
+                    "office-a4"
+                } else {
+                    "office-letter"
+                };
+                spec.env = WorkerEnv::from_vars(std::env::vars_os(), paper);
+                let pool = ready(spec).await;
+                let output = dir.join(&format!("{name}.pdf"));
+                OfficeLok::new(pool.clone())
+                    .convert(
+                        job(source.clone(), output.clone(), Family::Document),
+                        DomainAdmission::Queue,
+                        deadline(),
+                    )
+                    .await
+                    .expect("converted");
+                let inspection = pdf
+                    .inspect(
+                        InspectJob {
+                            pdf: output,
+                            password: None,
+                            probe_dpi: None,
+                            collect_fonts: false,
+                        },
+                        DomainAdmission::Queue,
+                        deadline(),
+                    )
+                    .await
+                    .unwrap();
+                let page = inspection.pages[0];
+                eprintln!(
+                    "DEFAULT_PAPER={name}: {} x {} pt",
+                    page.width_pt, page.height_pt
+                );
+                sizes.push((page.width_pt.round() as u32, page.height_pt.round() as u32));
+                pool.shutdown(Duration::from_secs(5)).await;
+            }
+            render_pool.shutdown(Duration::from_secs(5)).await;
+            assert_eq!(
+                sizes,
+                vec![(595, 842), (612, 792)],
+                "LC_PAPER did not decide the paper"
+            );
+        },
+    )
     .await;
 }

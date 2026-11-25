@@ -57,6 +57,10 @@ impl OfficeWorker {
         let office = ManuallyDrop::new(
             Office::new(dir).map_err(|err| format!("failed to start the office engine: {err}"))?,
         );
+        // LibreOffice's start-up installs a SIGXFSZ handler that turns a
+        // write past RLIMIT_FSIZE into a crash ("Fatal exception: Signal 25").
+        // Ours records the hit, and the write fails with EFBIG instead.
+        sys::catch_sigxfsz().map_err(|err| format!("failed to catch SIGXFSZ: {err}"))?;
         office
             .set_optional_features(OfficeOptionalFeatures::DOCUMENT_PASSWORD)
             .map_err(|err| format!("failed to enable the password callback: {err}"))?;
@@ -167,14 +171,10 @@ impl OfficeWorker {
             state.password = password;
             state.calls = 0;
         }
-        sys::set_file_size_limit(Some(args.max_output_bytes))
-            .map_err(|err| io_error("cap the output size", &err))?;
         let started = Instant::now();
         let result = self.load_and_export(&input, &output, args, has_password);
         times.engine_us = micros(started.elapsed());
         times.convert_us = times.engine_us;
-        // Lift the cap again, so the profile and the next load are not capped.
-        let _ = sys::set_file_size_limit(None);
         self.state.borrow_mut().password = None;
 
         let doc_type = match result {
@@ -220,12 +220,21 @@ impl OfficeWorker {
             Ok(DocumentType::Other(_)) | Err(_) => "other",
         };
         let filter = filter_options(args.family, &args.export);
+        // The cap covers the export only: the load writes LibreOffice's own
+        // temp files, which are no part of this job's output.
+        sys::take_file_size_hit();
+        sys::set_file_size_limit(Some(args.max_output_bytes))
+            .map_err(|err| io_error("cap the output size", &err))?;
         let saved = document.save_as(output, "pdf", Some(&filter));
+        let capped = sys::take_file_size_hit();
+        // Lift the cap again, so the profile and the next load are not capped.
+        let _ = sys::set_file_size_limit(None);
         // The document is closed here; the instance stays (rule 9).
         drop(document);
         match saved {
-            Ok(true) => Ok(doc_type),
-            Ok(false) | Err(_) => Err(export_error(&args.output, args.max_output_bytes)),
+            Ok(true) if !capped => Ok(doc_type),
+            Ok(_) | Err(_) if capped => Err(limit_exceeded()),
+            Ok(_) | Err(_) => Err(export_error(&args.output, args.max_output_bytes)),
         }
     }
 }
@@ -300,8 +309,8 @@ fn limit_exceeded() -> WorkerError {
     )
 }
 
-/// Why `save_as` failed: the job's own cap (the file reached it, so
-/// `RLIMIT_FSIZE` stopped LibreOffice), a full disk, or an export error.
+/// Why `save_as` failed when no write passed the cap: the output file
+/// reached it anyway, a full disk, or an export error.
 fn export_error(output: &Path, max_output_bytes: u64) -> WorkerError {
     let written = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
     if written >= max_output_bytes {
