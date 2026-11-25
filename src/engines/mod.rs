@@ -5,6 +5,7 @@
 pub mod cli;
 pub mod config;
 pub mod conn;
+pub mod error;
 pub mod pool;
 pub mod process;
 pub mod slot;
