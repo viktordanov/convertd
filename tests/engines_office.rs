@@ -39,29 +39,29 @@ async fn within<T>(limit: Duration, what: &str, fut: impl std::future::Future<Ou
     }
 }
 
-fn dir_from(var: &str, probe: &str) -> Option<PathBuf> {
+fn dir_from(var: &str, probe: &str, what: &str) -> Option<PathBuf> {
     let Some(dir) = std::env::var_os(var).map(PathBuf::from) else {
-        eprintln!("skipped: {var} is not set");
+        eprintln!("skipped: no {what} ({var} is not set)");
         return None;
     };
     if dir.join(probe).exists() {
         Some(dir)
     } else {
-        eprintln!("skipped: no {probe} in {}", dir.display());
+        eprintln!("skipped: no {what} (no {probe} in {})", dir.display());
         None
     }
 }
 
 fn lo() -> Option<PathBuf> {
-    dir_from("LO_PROGRAM_DIR", "soffice.bin")
+    dir_from("LO_PROGRAM_DIR", "soffice.bin", "engine")
 }
 
 fn pdfium() -> Option<PathBuf> {
-    dir_from("PDFIUM_LIB_DIR", "libpdfium.so")
+    dir_from("PDFIUM_LIB_DIR", "libpdfium.so", "engine")
 }
 
 fn corpus() -> Option<PathBuf> {
-    dir_from("CONVERTD_CORPUS_DIR", "docx/small.docx")
+    dir_from("CONVERTD_CORPUS_DIR", "docx/small.docx", "corpus")
 }
 
 struct Scratch(PathBuf);
