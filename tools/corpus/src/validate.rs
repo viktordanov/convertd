@@ -193,13 +193,18 @@ fn check_semantics(expected: &Expected, outcome: &mut Outcome) {
                 _ => {}
             }
             if let Some(PageCount::Exact(pages)) = case.expect.page_count
-                && let Some(page) = case.expect.blank_pages.iter().find(|&&p| p > pages)
+                && let Some(page) = case
+                    .expect
+                    .blank_pages
+                    .iter()
+                    .flatten()
+                    .find(|&&p| p > pages)
             {
                 outcome.problems.push(format!(
                     "{at}: blank page {page} is past page_count {pages}"
                 ));
             }
-            for warning in &case.expect.warnings {
+            for warning in case.expect.warnings.iter().flatten() {
                 let allowed = detail_keys(&warning.code);
                 for key in warning.detail.keys() {
                     if !allowed.contains(&key.as_str()) {
