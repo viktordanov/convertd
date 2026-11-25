@@ -1,0 +1,3 @@
+# Clippy reads the nearest clippy.toml up the tree. The root one forbids
+# blocking waits on children for convertd's reaper; this standalone harness
+# has no reaper, so it starts from clippy's defaults.
