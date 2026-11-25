@@ -2,7 +2,7 @@
 
 The tests of the `convertd` crate run on the host. Most of them use fakes in place of LibreOffice and PDFium. The engine tests use the real engines when they find them, and skip when they do not.
 
-Build the tests with the cargo feature `test-hooks`. Without it, `pool.rs`, `process.rs` and `worker_test_role.rs` compile to empty test binaries, and nothing in them runs. CI always runs the tests with the feature.
+Build the tests with the cargo feature `test-hooks`. Without it, `pool.rs`, `process.rs`, `worker_test_role.rs` and `engines_poison.rs` compile to empty test binaries, and nothing in them runs. CI always runs the tests with the feature.
 
 ## Contents
 
@@ -36,7 +36,7 @@ Build the tests with the cargo feature `test-hooks`. Without it, `pool.rs`, `pro
 
 `cargo test --features test-hooks` also runs every test, but it has no per-test time limit and it runs the `slow_` tests. To run the engine tests for real, run them in the `dev` image that [docker/README.md](../docker/README.md) describes. That image sets `LO_PROGRAM_DIR` and `PDFIUM_LIB_DIR`. Next: read [Fakes](#fakes) before you write a test that needs an engine.
 
-<!-- memoria:section id="levels" files="convert_pdf.rs convert_bundle.rs detect.rs errors.rs ops.rs openapi_spec.rs upload.rs pool.rs process.rs worker_test_role.rs engines_office.rs engines_render.rs" -->
+<!-- memoria:section id="levels" files="convert_pdf.rs convert_bundle.rs detect.rs errors.rs ops.rs openapi_spec.rs upload.rs pool.rs process.rs worker_test_role.rs engines_poison.rs engines_office.rs engines_render.rs" -->
 ## Test levels
 
 The tests have three levels:
@@ -56,9 +56,10 @@ The integration tests:
 | `ops.rs` | The probes, `/v1/capabilities`, `/metrics`, `convertd healthcheck` and the drain | One test, for `SIGTERM` on the binary |
 | `openapi_spec.rs` | The cheap invariants of the spec that `convertd openapi` emits | No |
 | `upload.rs` | The streamed upload: digests, part rules, caps, the disk budget, and stalled and vanished clients | No |
-| `pool.rs` | The worker pool with `test` workers (level B) | Yes |
+| `pool.rs` | The worker pool with `test` workers (level B), including the RSS kill of a worker during its call | Yes |
 | `process.rs` | Spawning, scoped reaping and process-group kills. Some cases run on Linux only | Yes |
 | `worker_test_role.rs` | `convertd worker test`, driven over its pipes | Yes |
+| `engines_poison.rs` | The poison memory in the `OfficeLok` and `PdfPdfium` adapters, with `test` workers (level B) | Yes |
 | `engines_office.rs` | The office worker with the real LibreOffice, through the pool and the `OfficeEngine` adapter | No |
 | `engines_render.rs` | The render worker with the real PDFium, through the pool and the `PdfEngine` adapter | No |
 
@@ -67,7 +68,7 @@ The engine tests need `LO_PROGRAM_DIR` with `soffice.bin`, `PDFIUM_LIB_DIR` with
 `scripts/contract_test.sh` builds `convertd` with `test-hooks`, and the contract tests start it with `TEST_ENGINE=fake`. With `--image REF`, the script runs the tests against a container of that image instead. The contract tests prove that the server, the spec and the Go client agree. They do not prove that a conversion is correct, because the fake engine converts nothing.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="fakes" files="convert_pdf.rs pool.rs process.rs worker_test_role.rs" -->
+<!-- memoria:section id="fakes" files="convert_pdf.rs pool.rs process.rs worker_test_role.rs engines_poison.rs" -->
 ## Fakes
 
 Two fakes replace the engines at two depths. Both read the same markers.
@@ -84,7 +85,7 @@ At level A, a `429` comes from a marker or from the service's own permit. A `504
 
 Level B (`TEST_ENGINE=worker`) runs `convertd worker test` as a real worker process behind the real pool. The test worker answers `Convert`, `Inspect`, `Render`, `Assemble` and `Decrypt` with small valid files, driven by the markers. The queue, the deadline and the kill are real. The test worker also acts out the faults that the pool tests need.
 
-`pool.rs` and `process.rs` drive the test worker directly, through the pool and the spawner. `convertd serve` with `TEST_ENGINE=worker` runs both pools with test workers, but no test in this folder starts it that way.
+`pool.rs` and `process.rs` drive the test worker directly, through the pool and the spawner. `engines_poison.rs` drives it through the engine adapters. `convertd serve` with `TEST_ENGINE=worker` runs both pools with test workers, but no test in this folder starts it that way.
 
 ### Markers
 

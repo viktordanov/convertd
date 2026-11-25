@@ -87,7 +87,9 @@ Then `check` compares the fields that the expectation gives. For each `FONT_SUBS
 
 `check` prints `PASS` or `FAIL` for each case, with each failure and the observed value. It prints the observed page count of an `"unrecorded"` case as a note. Then it prints the passed and run cases for each tag. It exits 0 only if every selected case passed.
 
-On 2026-11-26, `check` ran against `TEST_ENGINE=fake convertd serve` from `main` at `1eaf591`, before lane 001 merged. 8 of 49 cases passed, after the expectation for `truncated` became 415. The others needed the `images` and `bundle` outputs, the encrypted-file detection or real engines. Lane 001 then merged the two outputs and the detection, and no `check` run after that merge is recorded. A pass against the fake proves the HTTP-level answers only. The listener and the `/BaseFont` arbiter are not proven until LibreOffice opens the files.
+The canary listener must share the network namespace of the service, because LibreOffice connects to the loopback address of its own container. The run of record used a harness container started with `--network container:<service>`. A harness on the host behind `-p` does not see such a connection.
+
+On 2026-11-26, `check` ran that way against the image `rs-convert-lead-runtime:wave2a`, with LibreOffice 26.8.3.1 and PDFium 8179, in arm64 Docker on an Apple-silicon Mac. 47 of the 55 cases of that time passed. The listener saw no connection, and the `/BaseFont` arbiter agreed with each `FONT_SUBSTITUTED` warning. No positive control has run yet, so zero connections does not yet prove that the canaries can connect. The lead then ruled on the eight failures: five expectations changed to what LibreOffice does, and the three image cases wait for the 415 of lane 001. `expected.json` also gained `docx-one-page` with two cases, so it now holds 57 cases. Its 1-page count comes from the same image, by a direct request. No full `check` run against the current expectations is recorded.
 <!-- /memoria:section -->
 
 ## Later subcommands

@@ -199,7 +199,21 @@ An earlier `runtime` build of the same day, with no real engines in convertd, ga
 
 These results prove conversion on arm64 under Docker only. They do not prove amd64, Kubernetes, Container Apps or gVisor.
 
-The amd64 proof at native speed needs the CI image job on the amd64 runners of GitHub. This job runs only by hand and monthly until the smoke file `corpus/smoke/small.docx` exists (plan 003 step 7). `smoke.sh` then checks the image size, the time to ready, one DOCX over HTTP and the font cache.
+The amd64 proof at native speed needs the CI image job on the amd64 runners of GitHub. The job runs only by hand and monthly. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`:
+
+```sh
+docker/smoke.sh rs-convert:ci docker/smoke/small.docx 770
+```
+
+`smoke.sh` runs the image with the production limits and checks five things:
+
+- The image size against the budget. The job uses 770 MB, the measured 733 MB of the arm64 `runtime` image plus 5 %, or the `IMAGE_MAX_MB` variable.
+- The time to ready.
+- One DOCX to PDF over HTTP, with the conversion time and the `Server-Timing` header.
+- That no job directory is left after the response.
+- That no fontconfig user cache is written.
+
+`smoke/small.docx` is the corpus entry `docx-small`, 36986 bytes. `corpus/generate.py` makes the same bytes, and its SHA-256 is in `corpus/expected.json`.
 
 Docker mounts a tmpfs with `noexec` by default. A program that runs from `/tmp` needs `--tmpfs /tmp:rw,exec`.
 <!-- /memoria:section -->

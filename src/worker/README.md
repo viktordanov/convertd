@@ -10,7 +10,7 @@ Four duties apply to every change in this folder:
 - **Call PDFium from one thread only.** PDFium is not thread safe. A worker has no tokio runtime and no thread of its own besides the main thread.
 - **Keep every `unsafe` block and every engine call in this folder.** No other folder of the crate holds them.
 
-`convertd worker office` runs LibreOffice through LibreOfficeKit, `convertd worker render` runs PDFium, and `convertd worker test` answers with fake results. The `test` role exists only in builds with the cargo feature `test-hooks`. Image assembly is not built yet. [Not built yet](#not-built-yet) lists what is missing.
+`convertd worker office` runs LibreOffice through LibreOfficeKit, `convertd worker render` runs PDFium, and `convertd worker test` answers with fake results. The `test` role exists only in builds with the cargo feature `test-hooks`. Image assembly is out of v1. [Not built yet](#not-built-yet) lists what is missing.
 
 The supervisor side is in [`src/engines/`](../engines/README.md), and the frames are in [`src/ipc/`](../ipc/README.md).
 
@@ -37,7 +37,7 @@ The supervisor side is in [`src/engines/`](../engines/README.md), and the frames
 4. **`Init`.** It reads the first frame. If the protocol version differs from `PROTOCOL_VERSION`, it sends `Fatal` and exits with status 1.
 5. **Engine start.** It starts the engine of its role and times the start as `bind_us`. If the start fails, it sends `Fatal` and exits with status 1. Otherwise it sends `Ready` with its PID, the engine version, `bind_us` and its RSS.
 
-The worker reads its RSS after every call. On Linux it reads `/proc/self/statm`, which it keeps open. On macOS it calls `proc_pidinfo` with `PROC_PIDTASKINFO`. On other systems the value is 0.
+The worker reads its RSS after every call. On Linux it reads `/proc/self/statm`, which it keeps open. On macOS it calls `proc_pidinfo` with `PROC_PIDTASKINFO`. On other systems the value is 0. `sys::rss_of(pid)` reads the RSS of another process in the same two ways, for the RSS watchdog of the supervisor in `src/engines/pool.rs`. It returns `None` when the process is gone or the system has no reader.
 
 A worker reads no configuration. The supervisor gives it a fixed environment and the `Init` frame, as the [slot directory section](../engines/README.md#slot-directory) of the engines README describes.
 <!-- /memoria:section -->
@@ -86,7 +86,9 @@ For `DiskFull` and `LimitExceeded`, `io_error` writes a fixed message with no pa
 
 1. It installs its own SIGXFSZ handler. LibreOffice's start-up installs a handler that turns a write past `RLIMIT_FSIZE` into a crash ("Fatal exception: Signal 25").
 2. It turns on the password callback and registers it once.
-3. With `Init.warmup`, it converts a DOCX, an XLSX and a PPTX to PDF before `Ready`. They are shaped like real documents: a Cambria and Calibri theme, styles, a heading, a list and a table in the DOCX, and Calibri styles and a formula in the XLSX. Thus the first real job finds the import paths, the substitute fonts and the PDF font embedding loaded. `warmup.rs` builds the files in memory as stored ZIP archives, so no binary fixture is in the repository.
+3. With `Init.warmup`, it converts a DOCX, an XLSX and a PPTX to PDF before `Ready`. A failed warm-up file goes to stderr and does not stop the worker. `warmup.rs` builds the files in memory as stored ZIP archives, so no binary fixture is in the repository.
+
+The DOCX and the XLSX are shaped like real documents. Both have a theme with Cambria headings and Calibri body text. The DOCX also has styles, a heading, a bullet list, Arial and Times New Roman runs and a table. The XLSX has Calibri styles, a bold header, a formula and two sheets. The PPTX has one text box and a theme with Calibri Light and Calibri. The aim is that the first real job finds the import paths, the substitute fonts and the PDF font embedding already loaded. It is not measured whether the first job then meets the target of plan 002, within 10 % of a later job.
 
 A `Convert` runs `preflight::scan` on the source first, timed apart as `preflight_us`, and returns the facts in the reply. Then it loads the file and exports PDF with explicit JSON filter options, so no setting comes from the profile. The type that LibreOffice loaded picks the options, not the requested family. An encrypted upload arrives as `source.docx` with the document family, whatever it holds, and LibreOffice finds the real type from the content:
 

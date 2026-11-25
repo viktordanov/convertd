@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# docker/smoke.sh (ledger item 003). First run in plan step 7, once convertd serves.
+# docker/smoke.sh (ledger item 003). The image job runs it with docker/smoke/small.docx.
 # Proves the image, not the conversions (those belong to lane 005's corpus runs):
 #   1. image size against a budget
 #   2. time from `docker run` to /readyz 200
@@ -11,6 +11,8 @@
 # Linux only (GNU date for the timer).
 #
 # Usage: docker/smoke.sh <image> <docx-file> [max-image-mb]
+#   for example: docker/smoke.sh rs-convert:ci docker/smoke/small.docx 770
+# Sizes are in MB of 10^6 bytes, as docker/README.md gives them.
 set -euo pipefail
 
 image="${1:?image}"; docx="${2:?docx file}"; max_mb="${3:-0}"
@@ -28,7 +30,7 @@ note() { printf '%-26s %s\n' "$1" "$2"; }
 bad()  { note "$1" "FAIL $2"; fail=1; }
 
 # 1. Size.
-size_mb=$(( $(docker image inspect -f '{{.Size}}' "${image}") / 1024 / 1024 ))
+size_mb=$(( $(docker image inspect -f '{{.Size}}' "${image}") / 1000 / 1000 ))
 note "image size" "${size_mb} MB"
 if [[ "${max_mb}" -gt 0 && "${size_mb}" -gt "${max_mb}" ]]; then bad "size budget" "> ${max_mb} MB"; fi
 
@@ -39,6 +41,7 @@ docker run -d --name "${name}" \
   --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges \
   --cpus 2 --memory 4g \
   -e API_KEY="${key}" -e OFFICE_WORKERS=1 -e RENDER_WORKERS=2 \
+  -e TMP_MAX_BYTES=1073741824 \
   "${image}" serve >/dev/null
 ready=0
 for _ in $(seq 1 120); do
@@ -49,16 +52,32 @@ t1=$(date +%s%N)
 if [[ "${ready}" == 1 ]]; then note "time to ready" "$(( (t1 - t0) / 1000000 )) ms"
 else bad "time to ready" "not ready after 60 s"; docker logs "${name}" | tail -n 50; exit 1; fi
 
-# 3. One DOCX over HTTP.
-status="$(docker run --rm --network "container:${name}" -v "${dir}:/in:ro" "${curl_image}" \
-  -sS -o - -w '%{stderr}%{http_code}' \
+# 3. One DOCX over HTTP. curl writes the status, the total time and the Server-Timing header
+# as the last line of its stderr; the body (a PDF, or the error JSON) goes to out.pdf.
+docker run --rm --network "container:${name}" -v "${dir}:/in:ro" "${curl_image}" \
+  -sS -o - -w '%{stderr}%{http_code} %{time_total} %header{server-timing}\n' \
   -H "Authorization: Bearer ${key}" \
   -F "file=@/in/${file}" -F 'options={"output":"pdf"};type=application/json' \
-  http://127.0.0.1:8080/v1/convert 2>"${out}/status" >"${out}/out.pdf"; cat "${out}/status")"
-if [[ "${status}" == 200 && "$(head -c 5 "${out}/out.pdf")" == "%PDF-" ]]; then note "docx to pdf" "ok"
-else bad "docx to pdf" "status ${status}"; fi
-# 001's layout: one job-<32hex> directory per job under TMP_DIR, deleted by the supervisor.
-left="$(docker exec "${name}" sh -c 'ls -d /tmp/convert/job-* 2>/dev/null | wc -l')"
+  http://127.0.0.1:8080/v1/convert 2>"${out}/status" >"${out}/out.pdf" || true
+status=""; total=""; timing=""
+read -r status total timing < <(tail -n 1 "${out}/status") || true
+if [[ "${status}" == 200 && "$(head -c 5 "${out}/out.pdf")" == "%PDF-" ]]; then
+  note "docx to pdf" "ok, $(wc -c < "${out}/out.pdf" | tr -d ' ') bytes in ${total} s"
+  note "server-timing" "${timing:-none}"
+else
+  bad "docx to pdf" "status ${status:-none}"
+  head -c 2000 "${out}/out.pdf"; echo
+  cat "${out}/status"
+  docker logs "${name}" 2>&1 | tail -n 50
+fi
+# 001's layout: one job-<32hex> directory per job under TMP_DIR. The supervisor deletes it when
+# the response ends, so the check waits up to 5 s.
+left=""
+for _ in $(seq 1 10); do
+  left="$(docker exec "${name}" sh -c 'ls -d /tmp/convert/job-* 2>/dev/null | wc -l')"
+  if [[ "${left}" == 0 ]]; then break; fi
+  sleep 0.5
+done
 if [[ "${left}" == 0 ]]; then note "job dirs cleaned" "ok"; else bad "job dirs cleaned" "${left} left"; fi
 
 # 4. The system font cache from the build is valid: no worker wrote a user cache.

@@ -87,10 +87,12 @@ Timings, warm worker (ms, third round):
 
 | Document | Load | Export | Total | Cold `soffice --convert-to` |
 | --- | --- | --- | --- | --- |
-| small.docx (1 page) | 22 | 3 | 25 | 154 |
+| small.docx (1 page; 2 pages, see the correction) | 22 | 3 | 25 | 154 |
 | long.docx (35 pages) | 40 | 27 | 67 | 202 |
 | sheet.xlsx (3 sheets) | 18 | 25 | 43 | 169 |
 | deck.pptx (20 slides) | 94 | 490 | 584 | 728 |
+
+**Correction (2026-11-26, wave two, round B):** small.docx renders 2 pages, not 1, in LibreOffice 26.8.3.1. The run of `corpus-bench check` against `rs-convert-lead-runtime:wave2a` and lane 002's decrypt test both show it. The page count in the first column was a label, not a measurement. The timings are unchanged. The one-page file of the overhead gate is now `docx-one-page` in `corpus/expected.json`.
 
 Init itself takes about 60 ms. The first document then costs about 90 ms
 more than later ones (filter and font loading). So a worker is warm after
