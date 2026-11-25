@@ -88,6 +88,8 @@ pub enum FakeBehavior {
     Fail(EngineError),
     /// Succeed; the PDF has this many pages.
     Pages(u32),
+    /// Panic inside the engine call (`FAKE:PANIC`).
+    Panic,
 }
 
 /// The settings both fakes share.
@@ -148,6 +150,7 @@ impl Settings {
             FakeBehavior::Pages(pages) => (Some(pages), Duration::ZERO),
             FakeBehavior::Fail(err) => return Err(err),
             FakeBehavior::Hang => std::future::pending().await,
+            FakeBehavior::Panic => panic!("FAKE:PANIC"),
             FakeBehavior::Delay(delay) => (None, delay),
         };
         let engine = delay + self.engine_time;
@@ -184,10 +187,11 @@ struct Played {
 #[cfg(feature = "test-hooks")]
 fn marker_behavior(head: &[u8]) -> Option<FakeBehavior> {
     use super::fake_markers::{self, Marker, MarkerCode};
-    Some(match fake_markers::find(head)? {
+    Some(match fake_markers::parse(head)? {
         Marker::DelayMs(ms) => FakeBehavior::Delay(Duration::from_millis(ms)),
         Marker::Pages(pages) => FakeBehavior::Pages(pages),
         Marker::Hang => FakeBehavior::Hang,
+        Marker::Panic => FakeBehavior::Panic,
         Marker::Code(code) => FakeBehavior::Fail(match code {
             MarkerCode::PasswordRequired => EngineError::PasswordRequired,
             MarkerCode::InvalidPassword => EngineError::InvalidPassword,

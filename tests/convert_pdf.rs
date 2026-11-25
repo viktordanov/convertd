@@ -589,6 +589,7 @@ async fn markers_drive_the_marker_fakes() {
         ("FAKE:TOO_MANY_REQUESTS", 429, Some("TOO_MANY_REQUESTS")),
         ("FAKE:SERVICE_UNAVAILABLE", 503, Some("SERVICE_UNAVAILABLE")),
         ("FAKE:INTERNAL_ERROR", 500, Some("INTERNAL_ERROR")),
+        ("FAKE:PANIC", 500, Some("INTERNAL_ERROR")),
         ("FAKE:DELAY_MS=200", 200, None),
         ("FAKE:PAGES=3", 200, None),
     ];

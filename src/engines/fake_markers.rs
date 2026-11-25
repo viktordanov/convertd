@@ -10,6 +10,9 @@
 //!   deadline);
 //! - `FAKE:PAGES=<n>`: the PDF has `n` pages (`n` ≥ 1);
 //! - `FAKE:HANG`: never answer, ignoring the deadline;
+//! - `FAKE:PANIC`: panic (level A: the handler's panic layer gives 500;
+//!   level B: the worker dies with 101). Not in INTERFACES.md §10's list;
+//!   lane 002's test worker uses it;
 //! - `FAKE:<CODE>`: fail with that code, one of [`MarkerCode`].
 //!
 //! The first marker by position wins. A `FAKE:` that is not followed by
@@ -30,6 +33,7 @@ pub enum Marker {
     DelayMs(u64),
     Pages(u32),
     Hang,
+    Panic,
     Code(MarkerCode),
 }
 
@@ -71,7 +75,7 @@ impl MarkerCode {
 }
 
 /// The first marker in the first [`SCAN_LIMIT`] bytes of `bytes`.
-pub fn find(bytes: &[u8]) -> Option<Marker> {
+pub fn parse(bytes: &[u8]) -> Option<Marker> {
     let window = &bytes[..bytes.len().min(SCAN_LIMIT)];
     memchr::memmem::find_iter(window, PREFIX)
         .find_map(|at| parse_after_prefix(&window[at + PREFIX.len()..]))
@@ -90,6 +94,9 @@ fn parse_after_prefix(rest: &[u8]) -> Option<Marker> {
     }
     if word(rest, b"HANG") {
         return Some(Marker::Hang);
+    }
+    if word(rest, b"PANIC") {
+        return Some(Marker::Panic);
     }
     MarkerCode::ALL
         .into_iter()
@@ -122,25 +129,26 @@ mod tests {
 
     #[test]
     fn each_marker() {
-        assert_eq!(find(b"FAKE:DELAY_MS=6000"), Some(Marker::DelayMs(6000)));
+        assert_eq!(parse(b"FAKE:DELAY_MS=6000"), Some(Marker::DelayMs(6000)));
         assert_eq!(
-            find(b"<w:t>FAKE:DELAY_MS=0</w:t>"),
+            parse(b"<w:t>FAKE:DELAY_MS=0</w:t>"),
             Some(Marker::DelayMs(0))
         );
-        assert_eq!(find(b"FAKE:PAGES=3<"), Some(Marker::Pages(3)));
-        assert_eq!(find(b"%FAKE:HANG\n"), Some(Marker::Hang));
+        assert_eq!(parse(b"FAKE:PAGES=3<"), Some(Marker::Pages(3)));
+        assert_eq!(parse(b"%FAKE:HANG\n"), Some(Marker::Hang));
+        assert_eq!(parse(b"FAKE:PANIC"), Some(Marker::Panic));
         for code in MarkerCode::ALL {
             let text = format!("<w:t>FAKE:{}</w:t>", code.as_str());
-            assert_eq!(find(text.as_bytes()), Some(Marker::Code(code)), "{text}");
+            assert_eq!(parse(text.as_bytes()), Some(Marker::Code(code)), "{text}");
         }
     }
 
     #[test]
     fn nothing_without_a_marker() {
-        assert_eq!(find(b""), None);
-        assert_eq!(find(b"%PDF-1.4 plain"), None);
-        assert_eq!(find(b"FAKE:"), None);
-        assert_eq!(find(b"fake:HANG"), None);
+        assert_eq!(parse(b""), None);
+        assert_eq!(parse(b"%PDF-1.4 plain"), None);
+        assert_eq!(parse(b"FAKE:"), None);
+        assert_eq!(parse(b"fake:HANG"), None);
     }
 
     #[test]
@@ -156,26 +164,29 @@ mod tests {
             "FAKE:DELAY_MS=-1",
             "FAKE:DELAY_MS=99999999999999999999",
             "FAKE:INTERNAL_ERRORS",
-            "FAKE:PANIC",
+            "FAKE:PANICS",
             "FAKE: HANG",
         ] {
-            assert_eq!(find(text.as_bytes()), None, "{text}");
+            assert_eq!(parse(text.as_bytes()), None, "{text}");
         }
     }
 
     #[test]
     fn first_by_position_wins() {
         let text = b"FAKE:PAGES=0 FAKE:CONVERSION_FAILED FAKE:HANG";
-        assert_eq!(find(text), Some(Marker::Code(MarkerCode::ConversionFailed)));
-        assert_eq!(find(b"FAKE:HANG FAKE:PAGES=2"), Some(Marker::Hang));
+        assert_eq!(
+            parse(text),
+            Some(Marker::Code(MarkerCode::ConversionFailed))
+        );
+        assert_eq!(parse(b"FAKE:HANG FAKE:PAGES=2"), Some(Marker::Hang));
     }
 
     #[test]
     fn only_the_first_mib_is_scanned() {
         let mut bytes = vec![b' '; SCAN_LIMIT - 9];
         bytes.extend_from_slice(b"FAKE:HANG");
-        assert_eq!(find(&bytes), Some(Marker::Hang));
+        assert_eq!(parse(&bytes), Some(Marker::Hang));
         bytes.insert(0, b' ');
-        assert_eq!(find(&bytes), None);
+        assert_eq!(parse(&bytes), None);
     }
 }
