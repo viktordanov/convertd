@@ -29,7 +29,7 @@ Each file in the corpus exercises one path through the service. The public corpu
 - The service rejects each hostile file within its limits.
 - LibreOffice makes no network connection.
 
-On 2026-11-26, `check` ran against the real engines (LibreOffice 26.8.3.1 and PDFium 8179 in the image `rs-convert-lead-runtime:wave2a`), and 47 of 55 cases passed. The expectations come from the rules in the 005 plan. Only the page counts that depend on layout were copied from that run. The lead then ruled on the eight failures. Five expectations changed to what LibreOffice does, and the three image cases wait for the 415 of lane 001.
+On 2026-11-26, `check` ran against the real engines (LibreOffice 26.8.3.1 and PDFium 8179 in the image `rs-convert-lead-runtime:wave2a`), and 47 of 55 cases passed. The expectations come from the rules in the 005 plan. Only the page counts that depend on layout were copied from that run. The lead then ruled on the eight failures. Five expectations changed to what LibreOffice does, The three image cases (`png`, `jpeg` and `png-bomb`) keep their expectations until lane 001 answers image uploads with `415`, because image inputs are out of v1.
 
 A pass does not prove that LibreOffice output matches Microsoft Office. The files are synthetic: Python libraries and hand-written XML make them, not Office. The private corpus carries the evidence from real documents.
 
@@ -43,7 +43,7 @@ The `origin` field of each entry in `expected.json` names its kind:
 
 | `origin` | Made by | In git | Hash |
 | --- | --- | --- | --- |
-| `generated` | `generate.py`, from python-docx, python-pptx, openpyxl, msoffcrypto, Pillow and hand-written XML, RTF and PDF | No, written to `out/` | Pinned, except `docx-encrypted` |
+| `generated` | `generate.py`, from python-docx, python-pptx, openpyxl, msoffcrypto, Pillow and hand-written XML, RTF and PDF | No, written to `out/` | Pinned, except the three encrypted files |
 | `hostile` | `generate.py --hostile`: the zip bomb, the XML entity bomb, the PNG pixel bomb, a truncated DOCX and HTML named `.doc` | No, written to `out/hostile/` | Pinned |
 | `fixture` | Committed bytes that no tool here can make, under `fixtures/` | Yes | Required, with a `licence` record |
 | `derived` | LibreOffice, from a generated file (`doc`, `xls`, `ppt`) | No | A hash or an `unhashed` reason, as for generated files |
@@ -77,18 +77,18 @@ The requested fonts follow the real template parts. The python-docx template has
 <!-- memoria:section id="hashes" files="generate.py expected.json requirements.txt" -->
 ## Deterministic bytes
 
-Two generator runs on one machine give the same bytes for every file except `docx-encrypted`. msoffcrypto draws a random salt and key on each run, so that entry has an `unhashed` reason instead of a hash.
+Two generator runs on one machine give the same bytes for every file except `docx-encrypted`, `pptx-encrypted` and `xlsx-encrypted`. msoffcrypto draws a random salt and key on each run, so these entries have an `unhashed` reason instead of a hash.
 
 The generator gets repeatable bytes in three ways. It rewrites every zip with a fixed time stamp, fixed attributes and deflate level 6, and it keeps the entry order and the part bytes. It replaces the save time that openpyxl writes into `docProps/core.xml`. It makes image noise from a seeded `random.Random`, not from Pillow's `effect_noise`, which uses C `rand()`.
 
-Deflate output can depend on the zlib build. The `generator` block of `expected.json` records the environment of the last `--write-hashes`: Python 3.13.18, zlib 1.2.12, Darwin-arm64. Before `docx-one-page` existed, the dev image `rs-convert-003-dev:arm64` (Python 3.13.5, zlib 1.3.1, Linux-aarch64) gave the same bytes for every file. `--check` prints a difference in environment first, then compares. No amd64 run exists yet.
+Deflate output can depend on the zlib build. The `generator` block of `expected.json` records the environment of the last `--write-hashes`: Python 3.13.18, zlib 1.2.12, Darwin-arm64. Before `docx-one-page` existed, the dev image `rs-convert-003-dev:arm64` (Python 3.13.5, zlib 1.3.1, Linux-aarch64) gave the same bytes for every file. `--check` prints a difference in environment first, then compares. No amd64 run exists yet. The `corpus` workflow runs on amd64 Linux runners, so its first run is the first amd64 check.
 
 `requirements.txt` pins every package, with a SHA-256 for every wheel. A change to a pin can change the bytes, so record the hashes again after it.
 
 The generator keeps the `docProps/app.xml` that the python-docx template writes: one page and the application "Microsoft Macintosh Word". Real third-party files look like that, and `docx-breaks12` uses it as the negative case for the page-count warning. Each run reads this fact back from the saved file.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="setup" files="generate.py requirements.txt" -->
+<!-- memoria:section id="setup" files="generate.py requirements.txt check.sh" -->
 ## Generation
 
 The generator needs Python 3.13. Run Python with `-I`, so that environment variables and user packages cannot change the output. Run these commands from the repository root:
@@ -102,7 +102,7 @@ On an Apple-silicon Mac, step 3 took about 12 s and wrote 47 MB (measured once w
 
 Each run checks its own output. Every file must open in its Python library, with two exceptions. The generator never parses the hostile files in `NEVER_PARSED`. For `docm` and `potx`, which python-docx and python-pptx refuse, it reads the main content type instead. The facts that the expectations use must read back from the saved bytes, and the size bounds in `SIZE_BOUNDS` must hold. A failed check stops the run with the file id.
 
-`corpus/check.sh` runs `--check` with nothing but a Python 3.13: it installs the pins into a temporary virtual environment, checks, and removes the environment. CI uses it after `actions/setup-python`. Run it from any directory as `corpus/check.sh`, or give the interpreter as its argument. On an Apple-silicon Mac with a warm pip cache it took about 14 s.
+`corpus/check.sh` runs `--check` with nothing but a Python 3.13: it installs the pins into a temporary virtual environment, checks, and removes the environment. The `corpus` workflow (`.github/workflows/corpus.yml`) runs `corpus/check.sh python` after `actions/setup-python` with Python 3.13. It runs on a push to `main` or a pull request that changes `corpus/` or the workflow, and on a manual dispatch. Run it from any directory as `corpus/check.sh`, or give the interpreter as its argument. On an Apple-silicon Mac with a warm pip cache it took about 14 s.
 
 `generate.py` has three other modes:
 
