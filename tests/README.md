@@ -143,6 +143,6 @@ The `test-full` job runs on a manual dispatch and once a month:
 cargo nextest run --locked --features test-hooks --profile full
 ```
 
-CI runs the tests only in the `test-hooks` build, because that build has every test of the plain build. Clippy compiles the plain build, so CI proves that it builds, but runs no tests on it. A change to Markdown files or to `docs/` only does not start this workflow.
+CI runs the tests only in the `test-hooks` build, because that build has every test of the plain build. Clippy compiles the plain build, so CI proves that it builds, but runs no tests on it. A change that touches only Markdown files, `docs/`, `memoria.lock` or `.claude/` does not start this workflow.
 
 The workflow sets neither `LO_PROGRAM_DIR` nor `PDFIUM_LIB_DIR`, so the engine tests skip in CI. CI does not run the corpus checks yet.
