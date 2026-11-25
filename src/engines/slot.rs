@@ -86,6 +86,8 @@ pub struct WorkerEnv {
     /// Variables passed through from the supervisor's environment.
     passthrough: Vec<(OsString, OsString)>,
     lc_paper: &'static str,
+    /// A directory put in front of [`WORKER_PATH`].
+    path_prefix: Option<PathBuf>,
     /// `LC_ALL` was set and is not passed on (it would override `LC_PAPER`).
     pub lc_all_dropped: bool,
 }
@@ -126,8 +128,18 @@ impl WorkerEnv {
                 Paper::A4 => "en_GB.UTF-8",
                 Paper::Letter => "en_US.UTF-8",
             },
+            path_prefix: None,
             lc_all_dropped,
         }
+    }
+
+    /// Puts `dir` in front of `PATH`. For the LibreOffice program
+    /// directory: the libreofficekit crate prepends it with a `;` (a
+    /// Windows separator) unless `PATH` already holds it, which would cut
+    /// `/usr/bin` off the worker's `PATH`.
+    pub fn with_path_prefix(mut self, dir: &Path) -> Self {
+        self.path_prefix = Some(dir.to_path_buf());
+        self
     }
 
     /// Every variable a worker in `slot` gets, sorted by name.
@@ -146,7 +158,7 @@ impl WorkerEnv {
             ("XDG_DATA_HOME".into(), sub("data")),
             ("XDG_RUNTIME_DIR".into(), sub("run")),
             ("LC_PAPER".into(), self.lc_paper.into()),
-            ("PATH".into(), WORKER_PATH.into()),
+            ("PATH".into(), self.path()),
             (
                 ENV_SUPERVISOR_PID.into(),
                 std::process::id().to_string().into(),
@@ -155,6 +167,18 @@ impl WorkerEnv {
         ]);
         vars.sort();
         vars
+    }
+
+    fn path(&self) -> OsString {
+        match &self.path_prefix {
+            Some(dir) => {
+                let mut path = dir.as_os_str().to_owned();
+                path.push(":");
+                path.push(WORKER_PATH);
+                path
+            }
+            None => WORKER_PATH.into(),
+        }
     }
 
     /// `program worker <role>` in `slot`, with this environment and all
@@ -236,6 +260,20 @@ mod tests {
             get("UserInstallation"),
             "file:///tmp/convert/workers/office-0/profile"
         );
+    }
+
+    #[test]
+    fn the_program_dir_goes_in_front_of_path() {
+        let env = WorkerEnv::from_vars(Vec::new(), Paper::A4)
+            .with_path_prefix(Path::new("/opt/libreoffice/program"));
+        let slot = SlotDir::new(Path::new("/tmp/w"), "office", 0);
+        let path = env
+            .vars(&slot, "office-0")
+            .into_iter()
+            .find(|(k, _)| k == "PATH")
+            .map(|(_, v)| v)
+            .unwrap();
+        assert_eq!(path, "/opt/libreoffice/program:/usr/bin:/bin");
     }
 
     #[test]

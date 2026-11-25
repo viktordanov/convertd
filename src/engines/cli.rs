@@ -217,7 +217,8 @@ pub mod ops {
             program,
             workers_dir: base.join("workers"),
             profile_template: std::env::var_os("LO_PROFILE_TEMPLATE").map(PathBuf::from),
-            env: WorkerEnv::from_process(paper),
+            env: WorkerEnv::from_process(paper)
+                .with_path_prefix(&env_dir("LO_PROGRAM_DIR", "/opt/libreoffice/program")),
             init: Init {
                 protocol: PROTOCOL_VERSION,
                 lo_program_dir: Some(env_dir("LO_PROGRAM_DIR", "/opt/libreoffice/program")),
@@ -731,7 +732,8 @@ pub mod bench {
             program,
             workers_dir: base.join("workers"),
             profile_template: None,
-            env: WorkerEnv::from_process(Paper::A4),
+            env: WorkerEnv::from_process(Paper::A4)
+                .with_path_prefix(&dir_var("LO_PROGRAM_DIR", "/opt/libreoffice/program")),
             init,
             size: u16::try_from(concurrency).map_err(|_| "too many workers".to_string())?,
             max_jobs: u32::MAX,

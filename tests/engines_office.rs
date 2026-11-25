@@ -111,7 +111,7 @@ fn base_spec(dir: &Path, name: &'static str, role: Role, init: Init) -> PoolSpec
 }
 
 fn office_spec(dir: &Path, lo: &Path, warmup: bool) -> PoolSpec {
-    base_spec(
+    let mut spec = base_spec(
         dir,
         "office",
         Role::Office,
@@ -121,7 +121,9 @@ fn office_spec(dir: &Path, lo: &Path, warmup: bool) -> PoolSpec {
             warmup,
             ..Init::default()
         },
-    )
+    );
+    spec.env = spec.env.with_path_prefix(lo);
+    spec
 }
 
 fn render_spec(dir: &Path, pdfium: &Path) -> PoolSpec {
@@ -725,7 +727,7 @@ async fn default_paper_sets_the_page_size_of_a_docx_without_one() {
                 } else {
                     "office-letter"
                 };
-                spec.env = WorkerEnv::from_vars(std::env::vars_os(), paper);
+                spec.env = WorkerEnv::from_vars(std::env::vars_os(), paper).with_path_prefix(&lo);
                 let pool = ready(spec).await;
                 let output = dir.join(&format!("{name}.pdf"));
                 OfficeLok::new(pool.clone())

@@ -157,7 +157,8 @@ pub async fn start(config: &Config) -> Result<Selected, String> {
         .map_err(|err| format!("failed to start the process spawner: {err}"))?;
     let program = std::env::current_exe()
         .map_err(|err| format!("failed to find the convertd binary: {err}"))?;
-    let env = WorkerEnv::from_process(config.engines.default_paper);
+    let env = WorkerEnv::from_process(config.engines.default_paper)
+        .with_path_prefix(&config.engines.lo_program_dir);
     if env.lc_all_dropped {
         tracing::warn!("LC_ALL is set; it is not passed to the workers, so LC_PAPER applies");
     }
