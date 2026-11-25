@@ -249,11 +249,12 @@ func openAll(t *testing.T, b *convert.Bundle) {
 	}
 }
 
-// Case 7.
-func TestConvertPNGToImages(t *testing.T) {
+// Case 7. The input is a PDF: the owner removed image uploads (lane 001
+// answers them with 415), so a PNG cannot reach output=images.
+func TestConvertPDFToImages(t *testing.T) {
 	ctx := testContext(t)
 	opts := convert.Options{Images: convert.ImageOptions{Format: convert.PNG, DPI: 96, Quality: 70, MaxEdge: 640}}
-	b, err := newFacade(t).ConvertToImages(ctx, "image.png", bytes.NewReader(pngImage()), opts)
+	b, err := newFacade(t).ConvertToImages(ctx, "doc.pdf", bytes.NewReader(onePagePDF()), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +272,7 @@ func TestConvertPNGToImages(t *testing.T) {
 	options, _ := json.Marshal(map[string]any{"output": "images", "images": map[string]any{
 		"format": "png", "dpi": 96, "quality": 70, "max_edge": 640,
 	}})
-	resp := rawConvertFile(t, newGenerated(t), options, "image.png", pngImage())
+	resp := rawConvertFile(t, newGenerated(t), options, "doc.pdf", onePagePDF())
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
