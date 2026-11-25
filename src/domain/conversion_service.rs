@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use super::conversion::{ConversionRequest, ConversionResult, Output, PdfOrigin, StageTimings};
 use super::detection::Detection;
-use super::document::Family;
+use super::document::{DocType, Family, Format};
 use super::engine::{
     Admission, AssembleJob, DecryptJob, EngineError, InspectJob, Inspection, OfficeEngine,
     OfficeJob, PdfEngine, RenderJob, RenderedPage,
@@ -135,9 +135,15 @@ impl ConversionService {
         };
         let paths = job.paths;
         let family = job.detection.format.family();
+        // Encrypted OOXML: provisional until the engine reports its type.
+        let mut format = job.detection.format;
 
         let (pdf, origin, inspection, facts) = match family {
             Family::Document | Family::Presentation | Family::Spreadsheet => {
+                // Fail fast: an encrypted package cannot open without one.
+                if job.detection.encrypted && job.request.password.is_none() {
+                    return Err(ConversionError::Engine(EngineError::PasswordRequired));
+                }
                 let max_output_bytes = self.reserve(
                     job.budget,
                     self.limits.pdf_output_bytes(job.upload.size_bytes),
@@ -160,6 +166,13 @@ impl ConversionService {
                     .await
                     .map_err(engine_error)?;
                 timings.add_call(&converted.timing);
+                if job.detection.encrypted {
+                    format = match converted.doc_type {
+                        DocType::Spreadsheet => Format::Xlsx,
+                        DocType::Presentation => Format::Pptx,
+                        DocType::Text | DocType::Drawing | DocType::Other => Format::Docx,
+                    };
+                }
                 timings.convert = Some(converted.timing.wall);
                 timings.convert_engine = Some(converted.timing.engine);
                 check_deadline()?;
@@ -294,7 +307,7 @@ impl ConversionService {
 
         let started = Instant::now();
         let verdict = verification::verify(&VerifyInput {
-            format: job.detection.format,
+            format,
             request: job.request,
             facts: facts.as_ref(),
             page_count: inspection.page_count,
@@ -307,8 +320,8 @@ impl ConversionService {
         Ok(ConversionResult {
             pdf,
             origin,
-            format: job.detection.format,
-            family,
+            format,
+            family: format.family(),
             encrypted: job.detection.encrypted || inspection.encrypted,
             page_count: inspection.page_count,
             pages,
@@ -459,6 +472,7 @@ mod tests {
         page_count: Option<u32>,
         /// Render one page fewer than asked.
         drop_a_page: bool,
+        doc_type: Option<DocType>,
         rendered: Mutex<Option<RenderJob>>,
     }
 
@@ -485,7 +499,7 @@ mod tests {
             }
             Ok(Converted {
                 pdf_bytes: 100,
-                doc_type: DocType::Text,
+                doc_type: self.doc_type.unwrap_or(DocType::Text),
                 facts: None,
                 timing: timing(30),
                 worker: WORKER,
@@ -606,6 +620,16 @@ mod tests {
     }
 
     fn run(script: Arc<Script>, format: Format, raw: RawOptions, budget: u64) -> Run {
+        run_detected(script, format, false, raw, budget)
+    }
+
+    fn run_detected(
+        script: Arc<Script>,
+        format: Format,
+        encrypted: bool,
+        raw: RawOptions,
+        budget: u64,
+    ) -> Run {
         let service = ConversionService::new(script.clone(), script, test_limits(), true);
         let paths = JobPaths {
             source: PathBuf::from(format!("/job/source.{}", format.extension())),
@@ -626,10 +650,7 @@ mod tests {
         let job = ConversionJob {
             paths: &paths,
             upload: &upload,
-            detection: Detection {
-                format,
-                encrypted: false,
-            },
+            detection: Detection { format, encrypted },
             request: &request,
             budget: &budget,
             deadline: Instant::now() + Duration::from_secs(60),
@@ -825,6 +846,41 @@ mod tests {
             matches!(err, ConversionError::Engine(EngineError::Internal(_))),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn encrypted_ooxml_needs_a_password_and_takes_the_engines_type() {
+        let script = Arc::new(Script::default());
+        let run1 = run_detected(
+            script.clone(),
+            Format::Docx,
+            true,
+            RawOptions::default(),
+            u64::MAX,
+        );
+        assert!(matches!(
+            run1.result,
+            Err(ConversionError::Engine(EngineError::PasswordRequired))
+        ));
+        assert!(
+            script.calls().is_empty(),
+            "no engine call without a password"
+        );
+
+        let script = Arc::new(Script {
+            doc_type: Some(DocType::Spreadsheet),
+            ..Default::default()
+        });
+        let raw = RawOptions {
+            password: Some("secret".into()),
+            ..Default::default()
+        };
+        let result = run_detected(script, Format::Docx, true, raw, u64::MAX)
+            .result
+            .unwrap();
+        assert_eq!(result.format, Format::Xlsx);
+        assert_eq!(result.family, Family::Spreadsheet);
+        assert!(result.encrypted);
     }
 
     #[test]

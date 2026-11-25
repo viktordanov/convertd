@@ -23,7 +23,7 @@ The design runs one supervisor and two pools of workers, all from the same binar
 
 Each engine runs in a worker process because a hostile file can crash it, hang it or make it grow without limit. At the deadline, the pool kills the worker's process group, and the supervisor keeps serving. LibreOfficeKit allows one instance per process for the life of the process, and PDFium is not thread-safe. Thus one worker holds one engine and runs one job at a time.
 
-The supervisor reads only enough of a file to route it. `detect/` reads the signature, the ZIP central directory, `[Content_Types].xml` and the ODF `mimetype` entry, in safe Rust with fixed caps. In the design, everything else that reads document content runs in a worker, including the pre-flight scan of office files.
+The supervisor reads only enough of a file to route it. `detect/` reads the signature, the ZIP central directory, `[Content_Types].xml`, the ODF `mimetype` entry and the stream names of an OLE2 file, in safe Rust with fixed caps. In the design, everything else that reads document content runs in a worker, including the pre-flight scan of office files.
 
 `main.rs` dispatches `convertd worker` first, before it builds a runtime, starts logging or reads the configuration. For `convertd serve`, `runtime.rs` builds a Tokio runtime with 2 worker threads, unless `TOKIO_WORKER_THREADS` sets another count. The blocking pool has at most 32 threads, and an idle blocking thread exits after 10 s.
 
@@ -65,7 +65,7 @@ The dependency rule keeps the domain at the center. `domain/` uses no other modu
 `domain/engine.rs` is the seam between the two sides. The conversion service calls the `OfficeEngine` and `PdfEngine` traits. Lane 002's adapters in `engines/` will implement them, and they are not written yet. `worker/` is the only place with `unsafe` code and engine calls. Changes to `domain/engine.rs` go through the lead.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="usage" files="rest/server.rs rest/convert_handlers.rs rest/upload.rs rest/body.rs rest/timing.rs domain/conversion_service.rs detect/mod.rs jobs/job_dir.rs jobs/disk_budget.rs bundle/zip_stored.rs rest/serialization/manifest.rs" -->
+<!-- memoria:section id="usage" files="detect/ole2.rs rest/server.rs rest/convert_handlers.rs rest/upload.rs rest/body.rs rest/timing.rs domain/conversion_service.rs detect/mod.rs jobs/job_dir.rs jobs/disk_budget.rs bundle/zip_stored.rs rest/serialization/manifest.rs" -->
 ## Request path
 
 One `POST /v1/convert` goes through these files:
@@ -95,6 +95,8 @@ rest/server.rs                    layers, outermost first
     └── body.rs                   file_body() or zip_body()
 ```
 
+An encrypted OOXML package is an OLE2 file whose type is inside the encryption. Without a password it answers 422 `PASSWORD_REQUIRED` before any engine call. With one, detection gives a provisional `docx`, and the document type that the office engine reports decides the format in `Convert-Source-Format` and the manifest. Whether LibreOfficeKit opens an encrypted spreadsheet or presentation named `source.docx` is not verified.
+
 The upload never sits whole in memory. The handler sends the chunks of the file part through a queue of four to one blocking sink. The sink computes SHA-256 and CRC-32 while it writes, then runs detection while the file is still in the page cache.
 
 The deadline is the end of the upload plus `timeout_seconds`. The engines enforce it inside each call, and the service makes sure that it has time left between calls. The handler drops the conversion 250 ms after the deadline and answers 504 `CONVERSION_TIMEOUT`. Dropping the future cancels the engine job.
@@ -112,7 +114,6 @@ Every 200 carries `Content-Length`, `Content-Disposition`, `X-Request-ID`, the `
 These parts of the design do not work yet:
 
 - **Engines**: `convertd serve` uses the `Unwired` engines. Every conversion answers 503 `SERVICE_UNAVAILABLE`, and `/readyz` answers 503 with `starting`. In a build with the `test-hooks` feature, `TEST_ENGINE=fake` selects the level-A fakes instead. `TEST_ENGINE=worker` is not wired either, and the office and render worker roles stop with "not built yet".
-- **OLE2 files**: `doc`, `xls`, `ppt`, `pps` and encrypted OOXML answer 415 with "unsupported format: ole2". `/v1/capabilities` already lists `doc`, `xls`, `ppt` and `pps`.
 - **Warnings**: the pre-flight scanners and the warning rules that compare their facts with the PDF are not written yet. `RENDER_CLAMPED` needs image output, so the service raises no warning. `Convert-Warning-Count` is always 0.
 - **Metrics and drain**: `/metrics` answers an empty body. On SIGTERM or SIGINT, the server stops accepting and finishes its open connections, with no drain step before that.
 <!-- /memoria:section -->

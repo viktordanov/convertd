@@ -535,6 +535,40 @@ async fn encrypted_pdf_needs_the_password_and_is_decrypted() {
     app.assert_no_jobs().await;
 }
 
+/// An encrypted OOXML package: an OLE2 file with the two streams.
+fn encrypted_ooxml() -> Vec<u8> {
+    let mut compound = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).unwrap();
+    for name in ["/EncryptionInfo", "/EncryptedPackage"] {
+        let mut stream = compound.create_stream(name).unwrap();
+        stream.write_all(b"not really encrypted").unwrap();
+    }
+    compound.flush().unwrap();
+    compound.into_inner().into_inner()
+}
+
+#[tokio::test]
+async fn encrypted_ooxml_needs_a_password_before_any_engine_runs() {
+    let app = App::new("encrypted-ooxml", &[]);
+    // An engine call would fail with 500: the 422 proves there was none.
+    app.office
+        .set_behavior(FakeBehavior::Fail(EngineError::Internal("called".into())));
+    let (response, body) = send(&app, file("locked.docx", &encrypted_ooxml())).await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(error_code(&body), "PASSWORD_REQUIRED");
+
+    app.office.set_behavior(FakeBehavior::Succeed);
+    let options = r#"{"password":"secret"}"#;
+    let (response, _) = send(
+        &app,
+        with_options("locked.xlsx", &encrypted_ooxml(), options),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    // The fake reports a text document for the provisional Document family.
+    assert_eq!(header_str(&response, "convert-source-format"), "docx");
+    app.assert_no_jobs().await;
+}
+
 #[tokio::test]
 async fn refused_inputs() {
     let app = App::new("refused", &[]);

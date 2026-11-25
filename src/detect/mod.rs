@@ -2,11 +2,12 @@
 //!
 //! Runs in the supervisor at the tail of the upload sink, while the file
 //! is page-cache hot: the signature, then for a ZIP its central directory
-//! and either `[Content_Types].xml` (OOXML) or `mimetype` (ODF). The type
-//! comes from the bytes, never from the file name. OLE2 (legacy Office,
-//! encrypted OOXML) arrives in plan step 10; until then it is 415.
+//! and either `[Content_Types].xml` (OOXML) or `mimetype` (ODF); for OLE2
+//! the names in its root storage (legacy Office, encrypted OOXML). The type
+//! comes from the bytes, never from the file name.
 
 pub mod odf;
+pub mod ole2;
 pub mod ooxml;
 pub mod signature;
 pub mod zip_scan;
@@ -31,7 +32,10 @@ pub fn detect_file<R: Read + Seek>(file: &mut R, size: u64) -> Result<Detection,
     let format = match signature::sniff(&head) {
         Sniff::Format(format) => format,
         Sniff::Zip => zip_format(file, size)?,
-        Sniff::Ole2 => return Err(DetectError::Unsupported { label: "ole2" }),
+        Sniff::Ole2 => {
+            file.seek(SeekFrom::Start(0))?;
+            return ole2::detect(file);
+        }
         Sniff::Unsupported(label) => return Err(DetectError::Unsupported { label }),
     };
     Ok(Detection {

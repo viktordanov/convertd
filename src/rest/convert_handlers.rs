@@ -419,10 +419,19 @@ fn log_finished(
     error_code: Option<&str>,
 ) {
     let s = &timings.stages;
+    // Encrypted OOXML has no known format until the engine reports it.
+    let (source_format, family) = match result {
+        Some((result, _)) => (result.format.id(), result.family.as_str()),
+        None if received.detection.encrypted => ("encrypted-ooxml", "unknown"),
+        None => (
+            received.detection.format.id(),
+            received.detection.format.family().as_str(),
+        ),
+    };
     tracing::info!(
         request_id,
-        source_format = received.detection.format.id(),
-        family = received.detection.format.family().as_str(),
+        source_format,
+        family,
         output = received.request.output.as_str(),
         page_count = result.map(|(r, _)| r.page_count),
         input_bytes = received.upload.size_bytes,
