@@ -1,5 +1,5 @@
-# A part of api/openapi.yaml, copied for the speccheck compare tests:
-# every path but /metrics, and the schemas those paths use plus PageInfo.
+# A part of api/openapi.yaml, copied for the speccheck compare tests and the
+# 3.1 transport self-tests: every path but /metrics, and every schema.
 # emitted-part.json is a hand-made OpenAPI 3.1 translation of it, written
 # the way utoipa emits a spec.
 openapi: 3.0.3
@@ -662,10 +662,173 @@ components:
             Put each sheet on a single page sized to its content, instead of
             splitting it across pages by its print layout.
 
+    Manifest:
+      type: object
+      description: |
+        The `manifest.json` at the root of every ZIP response. It describes
+        the source, the PDF, each rendered page and anything the service
+        noticed during conversion.
+      required:
+        - manifest_version
+        - request_id
+        - source
+        - page_count
+        - pages
+        - warnings
+        - engine
+        - timings_ms
+      properties:
+        manifest_version:
+          type: integer
+          enum: [1]
+          description: Version of this manifest layout.
+        request_id:
+          type: string
+          description: The correlation ID of the request that produced this bundle.
+        source:
+          $ref: '#/components/schemas/SourceInfo'
+        page_count:
+          type: integer
+          minimum: 1
+          description: Number of pages in the PDF, whether or not all were rendered.
+        pdf:
+          $ref: '#/components/schemas/PdfInfo'
+        images:
+          $ref: '#/components/schemas/ImageSettings'
+        pages:
+          type: array
+          description: One entry per rendered page, in page order.
+          items:
+            $ref: '#/components/schemas/PageInfo'
+        warnings:
+          type: array
+          description: Things the service noticed that may affect quality. Empty when all checks passed.
+          items:
+            $ref: '#/components/schemas/Warning'
+        engine:
+          $ref: '#/components/schemas/EngineInfo'
+        timings_ms:
+          $ref: '#/components/schemas/Timings'
+      example:
+        manifest_version: 1
+        request_id: 7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14
+        source:
+          filename: deck.pptx
+          format: pptx
+          family: presentation
+          size_bytes: 4821337
+          sha256: 9f2c6c1e0a4b7d3f5e8a1b2c3d4e5f60718293a4b5c6d7e8f901122334455667
+          encrypted: false
+        page_count: 2
+        pdf:
+          path: document.pdf
+          size_bytes: 1203344
+          origin: converted
+        images:
+          format: jpeg
+          dpi: 150
+          quality: 85
+        pages:
+          - number: 1
+            path: pages/0001.jpg
+            width_px: 2000
+            height_px: 1125
+            width_pt: 960
+            height_pt: 540
+            size_bytes: 184220
+            blank: false
+          - number: 2
+            path: pages/0002.jpg
+            width_px: 2000
+            height_px: 1125
+            width_pt: 960
+            height_pt: 540
+            size_bytes: 201877
+            blank: false
+        warnings:
+          - code: FONT_SUBSTITUTED
+            message: Aptos is not installed and was replaced by Carlito
+            detail:
+              requested: Aptos
+              substitute: Carlito
+        engine:
+          service_version: 1.0.0
+          libreoffice: 26.8.3.2
+          pdfium: '8125'
+          fingerprint: sha256:5b0f6e1c9a2d
+        timings_ms:
+          queue: 3
+          convert: 812
+          render: 240
+          total: 1071
+
+    SourceInfo:
+      type: object
+      description: What was uploaded.
+      required: [format, family, size_bytes, sha256, encrypted]
+      properties:
+        filename:
+          type: string
+          description: The file name sent with the upload, if any.
+        format:
+          type: string
+          description: The detected format, as listed by `/v1/capabilities`.
+          example: pptx
+        family:
+          $ref: '#/components/schemas/FormatFamily'
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: SHA-256 of the uploaded bytes, in lowercase hex.
+        encrypted:
+          type: boolean
+          description: Whether the upload was password-protected.
+
     FormatFamily:
       type: string
       enum: [document, presentation, spreadsheet, pdf, image]
       description: The broad kind of input, which decides how it is routed.
+
+    PdfInfo:
+      type: object
+      description: The PDF inside a `bundle`. Absent for `images`.
+      required: [path, size_bytes, origin]
+      properties:
+        path:
+          type: string
+          description: Path of the PDF inside the ZIP.
+          example: document.pdf
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        origin:
+          type: string
+          enum: [converted, passthrough, assembled]
+          description: |
+            How the PDF came to be.
+
+            - `converted`: produced by LibreOffice from an office file.
+            - `passthrough`: the upload was already a PDF and is returned unchanged, or decrypted when it was encrypted.
+            - `assembled`: built from an uploaded image.
+
+    ImageSettings:
+      type: object
+      description: The image settings that were actually applied, after defaults and server caps.
+      required: [format, dpi]
+      properties:
+        format:
+          $ref: '#/components/schemas/ImageFormat'
+        dpi:
+          type: integer
+        quality:
+          type: integer
+        max_edge:
+          type: integer
 
     PageInfo:
       type: object
@@ -700,6 +863,43 @@ components:
           type: boolean
           description: True when the rendered page is a single flat colour.
 
+    Warning:
+      type: object
+      description: A quality signal. Warnings never fail the request.
+      required: [code, message]
+      properties:
+        code:
+          $ref: '#/components/schemas/WarningCode'
+        message:
+          type: string
+          description: A human-readable sentence.
+        page:
+          type: integer
+          minimum: 1
+          description: The page the warning is about, when it concerns one page.
+        detail:
+          type: object
+          additionalProperties: true
+          description: Structured data for the warning. Its keys depend on `code`.
+
+    WarningCode:
+      type: string
+      enum:
+        - FONT_SUBSTITUTED
+        - PAGE_COUNT_MISMATCH
+        - BLANK_PAGE
+        - MACROS_IGNORED
+        - RENDER_CLAMPED
+      description: |
+        - `FONT_SUBSTITUTED`: a font the document asks for is not installed.
+          Text may reflow. `detail` has `requested` and `substitute`.
+        - `PAGE_COUNT_MISMATCH`: the PDF has a different number of pages than
+          the source declares. `detail` has `expected` and `actual`.
+        - `BLANK_PAGE`: a page that contains content rendered as a flat colour.
+        - `MACROS_IGNORED`: the document contains macros. They were not run.
+        - `RENDER_CLAMPED`: a server limit reduced the requested resolution.
+          `detail` has `requested_dpi` and `effective_dpi`.
+
     EngineInfo:
       type: object
       description: The software that produced the result.
@@ -720,6 +920,28 @@ components:
           type: string
           description: Same value as the `Convert-Engine-Fingerprint` header.
           example: sha256:5b0f6e1c9a2d
+
+    Timings:
+      type: object
+      description: Where the time went, in milliseconds.
+      required: [queue, convert, render, total]
+      properties:
+        queue:
+          type: integer
+          minimum: 0
+          description: Waiting for a free worker.
+        convert:
+          type: integer
+          minimum: 0
+          description: Producing the PDF. Zero for PDF uploads.
+        render:
+          type: integer
+          minimum: 0
+          description: Rendering and encoding page images.
+        total:
+          type: integer
+          minimum: 0
+          description: From the end of the upload to the start of the response.
 
     Capabilities:
       type: object
