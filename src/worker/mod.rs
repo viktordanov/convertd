@@ -5,12 +5,14 @@
 //! `Init`, starts its engine, answers `Ready` (or `Fatal`), then serves one
 //! call at a time until its input pipe closes.
 
+pub mod encode;
 pub mod office;
 pub mod output;
+pub mod render;
 pub mod sys;
-pub mod warmup;
 #[cfg(feature = "test-hooks")]
 pub mod test_worker;
+pub mod warmup;
 
 use std::fs::File;
 use std::time::{Duration, Instant};
@@ -123,7 +125,7 @@ pub fn run(role: Role) -> ! {
 fn start_engine(role: Role, init: &Init) -> Result<Box<dyn Engine>, String> {
     match role {
         Role::Office => office::OfficeWorker::start(init).map(|e| Box::new(e) as Box<dyn Engine>),
-        Role::Render => Err("failed to start the render engine: not built yet".into()),
+        Role::Render => render::RenderWorker::start(init).map(|e| Box::new(e) as Box<dyn Engine>),
         #[cfg(feature = "test-hooks")]
         Role::Test => test_worker::TestEngine::start(init).map(|e| Box::new(e) as Box<dyn Engine>),
     }
