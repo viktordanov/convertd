@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# docker/smoke.sh (ledger item 003). First run in plan step 7, once convertd serves.
+# Proves the image, not the conversions (those belong to lane 005's corpus runs):
+#   1. image size against a budget
+#   2. time from `docker run` to /readyz 200
+#   3. one DOCX to PDF over HTTP, with no job-<hex> directory left in TMP_DIR afterwards
+#   4. the baked fontconfig cache is used (no user cache written)
+# The container runs as the manifests run it: no network, read-only root, writable /tmp only,
+# UID 10001, no capabilities. The curl client joins the container's network namespace, so it
+# reaches the service on loopback and nothing reaches the outside.
+# Linux only (GNU date for the timer).
+#
+# Usage: docker/smoke.sh <image> <docx-file> [max-image-mb]
+set -euo pipefail
+
+image="${1:?image}"; docx="${2:?docx file}"; max_mb="${3:-0}"
+curl_image="${CURL_IMAGE:?set CURL_IMAGE to a pinned curl image, tag@sha256:...}"
+dir="$(cd "$(dirname "${docx}")" && pwd)"; file="$(basename "${docx}")"
+name="rs-convert-003-smoke-$$"
+out="$(mktemp -d)"
+key="smoke-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+fail=0
+
+cleanup() { docker rm -f "${name}" >/dev/null 2>&1 || true; rm -rf "${out}"; }
+trap cleanup EXIT
+note() { printf '%-26s %s\n' "$1" "$2"; }
+bad()  { note "$1" "FAIL $2"; fail=1; }
+
+# 1. Size.
+size_mb=$(( $(docker image inspect -f '{{.Size}}' "${image}") / 1024 / 1024 ))
+note "image size" "${size_mb} MB"
+if [[ "${max_mb}" -gt 0 && "${size_mb}" -gt "${max_mb}" ]]; then bad "size budget" "> ${max_mb} MB"; fi
+
+# 2. Time to ready.
+t0=$(date +%s%N)
+docker run -d --name "${name}" \
+  --network none --read-only --tmpfs /tmp:rw,size=2g,mode=1777 \
+  --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges \
+  --cpus 2 --memory 4g \
+  -e API_KEY="${key}" -e OFFICE_WORKERS=1 -e RENDER_WORKERS=2 \
+  "${image}" serve >/dev/null
+ready=0
+for _ in $(seq 1 120); do
+  if docker exec "${name}" convertd healthcheck >/dev/null 2>&1; then ready=1; break; fi
+  sleep 0.5
+done
+t1=$(date +%s%N)
+if [[ "${ready}" == 1 ]]; then note "time to ready" "$(( (t1 - t0) / 1000000 )) ms"
+else bad "time to ready" "not ready after 60 s"; docker logs "${name}" | tail -n 50; exit 1; fi
+
+# 3. One DOCX over HTTP.
+status="$(docker run --rm --network "container:${name}" -v "${dir}:/in:ro" "${curl_image}" \
+  -sS -o - -w '%{stderr}%{http_code}' \
+  -H "Authorization: Bearer ${key}" \
+  -F "file=@/in/${file}" -F 'options={"output":"pdf"};type=application/json' \
+  http://127.0.0.1:8080/v1/convert 2>"${out}/status" >"${out}/out.pdf"; cat "${out}/status")"
+if [[ "${status}" == 200 && "$(head -c 5 "${out}/out.pdf")" == "%PDF-" ]]; then note "docx to pdf" "ok"
+else bad "docx to pdf" "status ${status}"; fi
+# 001's layout: one job-<32hex> directory per job under TMP_DIR, deleted by the supervisor.
+left="$(docker exec "${name}" sh -c 'ls -d /tmp/convert/job-* 2>/dev/null | wc -l')"
+[[ "${left}" == 0 ]] && note "job dirs cleaned" "ok" || bad "job dirs cleaned" "${left} left"
+
+# 4. The system font cache from the build is valid: no worker wrote a user cache.
+# 002 puts each worker's XDG_CACHE_HOME in its slot under TMP_DIR.
+fcu="$(docker exec "${name}" sh -c 'find /tmp -path "*fontconfig*" -name "*.cache-*" 2>/dev/null | wc -l')"
+[[ "${fcu}" == 0 ]] && note "baked font cache used" "ok" || bad "baked font cache used" "${fcu} user cache files"
+
+exit "${fail}"

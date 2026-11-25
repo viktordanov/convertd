@@ -33,6 +33,14 @@ ARG PDFIUM_BUILD=8179
 ARG PDFIUM_SHA256_ARM64=18bb6d568257b28d14f6c3b8bfb48caf73d4615b319ca4d43b424c2a03431d9f
 ARG PDFIUM_SHA256_AMD64=b4766a6bf2856efbcc6c3cc7d6ae9022bdc6bb36ddc1acdd92d1f1873f773f4b
 
+# ---- cargo-chef, built once on the build platform ------------------------------------------
+FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS chef-tool
+ARG CARGO_CHEF_VERSION
+ARG CARGO_JOBS=2
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    test -n "${CARGO_CHEF_VERSION}" && \
+    cargo install cargo-chef --locked --version "${CARGO_CHEF_VERSION}" -j "${CARGO_JOBS}"
+
 # ---- Rust cross toolchain for $TARGETARCH --------------------------------------------------
 FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS rust-cross
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -62,6 +70,43 @@ RUN case "${TARGETARCH}" in \
     fi; \
     rustup target add --toolchain "${RUST_VERSION}" "${triple}"
 WORKDIR /src
+
+# ---- Dependency recipe ----------------------------------------------------------------------
+# Every path cargo reads when it parses the manifest: lane 001 declares [[test]] entries and
+# examples/overhead.rs, and cargo rejects a manifest whose declared target file is missing.
+# tests/ and examples/ are copied only when they exist (neither does yet). spikes/ is never
+# copied, so its manifests cannot enter the recipe.
+FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS planner
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+COPY --from=chef-tool /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
+WORKDIR /src
+RUN --mount=type=bind,target=/ctx \
+    cp -a /ctx/Cargo.toml /ctx/Cargo.lock /ctx/src .; \
+    for d in tests examples; do if [[ -d "/ctx/${d}" ]]; then cp -a "/ctx/${d}" .; fi; done; \
+    cargo chef prepare --recipe-path recipe.json
+
+# ---- convertd -------------------------------------------------------------------------------
+FROM rust-cross AS builder
+COPY --from=chef-tool /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
+COPY --from=planner /src/recipe.json recipe.json
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    cargo chef cook --release --locked --target "$(cat /etc/rust-target)" --recipe-path recipe.json
+# Read by the code with option_env!/env! (lane 001). Declared after cook so they do not
+# invalidate the dependency layer.
+ARG CONVERTD_VERSION=0.0.0-dev
+ARG CONVERTD_COMMIT=unknown
+ARG CONVERTD_BUILD_DATE=unknown
+# The real sources replace cook's skeleton; touch them so cargo never keeps a skeleton build.
+RUN --mount=type=bind,target=/ctx \
+    --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    cp -a /ctx/Cargo.toml /ctx/Cargo.lock /ctx/src .; \
+    for d in tests examples; do if [[ -d "/ctx/${d}" ]]; then cp -a "/ctx/${d}" .; fi; done; \
+    find src -name '*.rs' -exec touch {} +; \
+    triple="$(cat /etc/rust-target)"; \
+    cargo build --release --locked --target "${triple}" --bin convertd; \
+    install -D -m 0755 "target/${triple}/release/convertd" /out/convertd
 
 # ---- Spike binaries, only for the engine-check target --------------------------------------
 FROM rust-cross AS spike-build
@@ -251,3 +296,29 @@ WORKDIR /src
 FROM runtime-base AS engine-check
 COPY --from=lib-check /lib-check.ok /opt/convertd/lib-check.ok
 COPY --from=spike-build /out/ /usr/local/bin/
+
+# ---- The service image -----------------------------------------------------------------------
+FROM runtime-base AS runtime
+ARG LO_BUILD
+ARG PDFIUM_BUILD
+ARG CONVERTD_VERSION=0.0.0-dev
+ARG CONVERTD_COMMIT=unknown
+ARG CONVERTD_BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="rs-convert" \
+      org.opencontainers.image.description="convertd: office files, PDFs and images to PDF and page images" \
+      org.opencontainers.image.source="https://github.com/viktordanov/rs-convert" \
+      org.opencontainers.image.version="${CONVERTD_VERSION}" \
+      org.opencontainers.image.revision="${CONVERTD_COMMIT}" \
+      org.opencontainers.image.created="${CONVERTD_BUILD_DATE}" \
+      rs-convert.libreoffice.version="${LO_BUILD}" \
+      rs-convert.pdfium.version="chromium/${PDFIUM_BUILD}"
+# The licence label is added when item 007 picks one.
+# No init process: convertd is PID 1 and also sets itself as child subreaper (lane 002).
+COPY --from=lib-check /lib-check.ok /opt/convertd/lib-check.ok
+COPY --from=builder /out/convertd /usr/local/bin/convertd
+EXPOSE 8080
+# Docker and compose only; Kubernetes and Container Apps use their own HTTP probes.
+HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
+    CMD ["/usr/local/bin/convertd", "healthcheck"]
+ENTRYPOINT ["/usr/local/bin/convertd"]
+CMD ["serve"]
