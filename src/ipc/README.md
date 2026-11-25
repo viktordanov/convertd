@@ -46,9 +46,5 @@ A `WorkerError` has a `kind` and a message for the log. The message can hold pat
 <!-- memoria:section id="facts" files="facts.rs" -->
 ## Pre-flight facts
 
-`facts.rs` converts the domain's `SourceFacts` to `SourceFactsWire` and back. The domain type keeps `DeclaredPages::source` as a `&'static str`, so the supervisor maps the wire string back to a static one:
-
-- `ppt/presentation.xml` and `docProps/app.xml`, the sources that the scanners name, map directly.
-- Another source is leaked once and kept, for at most 32 distinct strings in the life of the process.
-- After those 32, a new source reads as `other`.
+`facts.rs` converts the domain's `SourceFacts` to `SourceFactsWire` and back. The domain type keeps `DeclaredPages::source` as a `&'static str`, so the supervisor maps the wire string back to a static one. `ppt/presentation.xml` and `docProps/app.xml`, the sources that the scanners name, map to themselves. Any other source reads as `other`.
 <!-- /memoria:section -->

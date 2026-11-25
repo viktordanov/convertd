@@ -163,7 +163,7 @@ After a load, export, limit or internal error, `OfficeLok` recycles the office w
 
 `PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`. The chunks run together. A crashed chunk is retried once. The pages come back in order. `engine` is the longest chunk, and the most severe chunk error wins: a timeout, then a crash, then a password error.
 
-`PdfPdfium::assemble` returns `Internal("image assembly is not built yet")`, which gives 500. Image assembly is plan step 11.
+`PdfPdfium::assemble` returns `Failed("image inputs are not supported yet")`, which gives 422 `CONVERSION_FAILED`. A 500 would tell callers to retry. Image assembly is plan step 11.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="selection" files="select.rs" -->
@@ -256,6 +256,6 @@ Lease, `Ping` and return took 3.6 to 3.8 µs at p50 for every role. Over HTTP, t
 These parts of plan 002 do not exist yet:
 
 - The RSS kill during a job. `PoolSpec::kill_rss` exists, but the pool does not enforce it (step 10).
-- Image assembly (step 11). `PdfPdfium::assemble` returns `Internal`.
+- Image assembly (step 11). `PdfPdfium::assemble` returns `Failed`.
 - The poison memory for documents that hang or crash (step 12).
 - `engine soak` and the fault and soak run (step 13).

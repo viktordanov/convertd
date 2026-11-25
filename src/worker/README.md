@@ -88,7 +88,7 @@ For `DiskFull` and `LimitExceeded`, `io_error` writes a fixed message with no pa
 2. It turns on the password callback and registers it once.
 3. With `Init.warmup`, it converts a tiny DOCX, XLSX and PPTX to PDF before `Ready`. `warmup.rs` builds them in memory as stored ZIP archives, so no binary fixture is in the repository.
 
-A `Convert` runs `preflight::scan` on the source first, timed apart as `preflight_us`, and returns the facts in the reply. Then it loads the file and exports PDF with explicit JSON filter options, so no setting comes from the profile:
+A `Convert` runs `preflight::scan` on the source first, timed apart as `preflight_us`, and returns the facts in the reply. Then it loads the file and exports PDF with explicit JSON filter options, so no setting comes from the profile. The type that LibreOffice loaded picks the options, not the requested family. An encrypted upload arrives as `source.docx` with the document family, whatever it holds, and LibreOffice finds the real type from the content:
 
 - **Presentations**: `ExportNotesPages`, `ExportOnlyNotesPages` and `ExportHiddenSlides`.
 - **Spreadsheets**: `SinglePageSheets`.
