@@ -58,8 +58,7 @@ func transformOptionsToRequest(output string, o Options) api.ConvertOptions {
 		req.Password = &o.Password
 	}
 	if o.Timeout > 0 {
-		seconds := int(math.Ceil(o.Timeout.Seconds()))
-		req.TimeoutSeconds = &seconds
+		setInt(&req.TimeoutSeconds, int(math.Ceil(o.Timeout.Seconds())))
 	}
 
 	if o.Images != (ImageOptions{}) {
@@ -69,13 +68,13 @@ func transformOptionsToRequest(output string, o Options) api.ConvertOptions {
 			images.Format = &format
 		}
 		if o.Images.DPI != 0 {
-			images.Dpi = &o.Images.DPI
+			setInt(&images.Dpi, o.Images.DPI)
 		}
 		if o.Images.Quality != 0 {
-			images.Quality = &o.Images.Quality
+			setInt(&images.Quality, o.Images.Quality)
 		}
 		if o.Images.MaxEdge != 0 {
-			images.MaxEdge = &o.Images.MaxEdge
+			setInt(&images.MaxEdge, o.Images.MaxEdge)
 		}
 		req.Images = &images
 	}
@@ -160,7 +159,7 @@ func transformManifestToResult(m api.Manifest) Manifest {
 		result.Warnings = append(result.Warnings, Warning{
 			Code:    string(w.Code),
 			Message: w.Message,
-			Page:    deref(w.Page),
+			Page:    int(deref(w.Page)),
 			Detail:  deref(w.Detail),
 		})
 	}
@@ -212,6 +211,14 @@ func transformCapabilitiesToResult(c api.Capabilities) *Capabilities {
 
 func milliseconds[T ~int | ~int32 | ~int64](n T) time.Duration {
 	return time.Duration(n) * time.Millisecond
+}
+
+// setInt points dst at a copy of v. The generated integer fields are int
+// from the hand-written 3.0 spec and int32 or int64 from the emitted 3.1
+// spec; T is inferred from dst, so the facade compiles against both.
+func setInt[T ~int | ~int32 | ~int64](dst **T, v int) {
+	x := T(v)
+	*dst = &x
 }
 
 func deref[T any](p *T) T {

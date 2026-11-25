@@ -1,6 +1,6 @@
 // Package convert is the hand-written client for the Convert API.
 //
-// It wraps the generated low-level client in the parent package and adds what
+// It wraps the generated low-level client in internal/api and adds what
 // callers need: streamed uploads, bundle unpacking, plain Go types and sentinel
 // errors that work with errors.Is.
 //

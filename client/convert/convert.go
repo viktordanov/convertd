@@ -127,7 +127,9 @@ func (c *Client) convert(ctx context.Context, output, filename string, file io.R
 
 	params := &api.ConvertDocumentParams{}
 	if opts.RequestID != "" {
-		requestID := api.RequestId(opts.RequestID)
+		// Assigned as a plain string: api.RequestId is an alias of string
+		// while the parameter is a component, and gone when it is inline.
+		requestID := opts.RequestID
 		params.XRequestID = &requestID
 	}
 
