@@ -3,4 +3,5 @@
 
 pub mod healthcheck;
 pub mod ops_handlers;
+pub mod serialization;
 pub mod server;
