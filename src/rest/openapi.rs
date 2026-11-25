@@ -99,6 +99,13 @@ const HEADERS: &[(&str, Option<f64>, HeaderExample)] = &[
         HeaderExample::Str("sha256:5b0f6e1c9a2d"),
     ),
     ("Retry-After", Some(1.0), HeaderExample::Int(5)),
+    (
+        "Server-Timing",
+        None,
+        HeaderExample::Str(
+            "recv;dur=4.210, detect;dur=0.031, queue;dur=0.004, lease;dur=0.012, spawn;dur=0.000, bind;dur=0.000, convert;dur=812.442, convert_engine;dur=809.118, verify;dur=1.305, package;dur=0.088, total;dur=815.901",
+        ),
+    ),
 ];
 
 enum HeaderExample {
