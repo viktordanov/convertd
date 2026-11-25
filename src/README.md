@@ -127,12 +127,13 @@ The scanners stream each part through quick-xml under fixed caps: 4 MiB per part
 <!-- memoria:section id="lifecycle" files="main.rs rest/server.rs rest/ops_handlers.rs observability/metrics.rs" -->
 ## Lifecycle and metrics
 
-`convertd serve` creates `TMP_DIR` and removes the `job-*` directories that a crash left. On SIGTERM or SIGINT it stops in four steps:
+`convertd serve` creates `TMP_DIR` and removes the `job-*` directories that a crash left. On SIGTERM or SIGINT it stops in five steps:
 
 1. It sets the draining flag: `/readyz` answers 503 with `draining`, and new conversions answer 503 `SERVICE_UNAVAILABLE` with `Retry-After: 5`.
-2. It calls the engines' `drain`, and waits until no request holds a permit, at most `SHUTDOWN_GRACE_SECONDS`. The listener stays open during this time. With the real pools, `drain` also refuses the next engine call of a request in flight, and that request answers 503, as [Selection](engines/README.md#selection) explains.
-3. It stops axum, which stops accepting and gives open connections 2 s more.
-4. It calls the engines' `shutdown` with `SHUTDOWN_GRACE_SECONDS`, then exits 0.
+2. It waits until no request holds a permit, at most `SHUTDOWN_GRACE_SECONDS`. The listener stays open during this time. A request admitted before the signal finishes, even if its upload is still arriving, and its later engine calls still get a worker.
+3. It calls the engines' `drain`, so the pools lease no more workers.
+4. It stops axum, which stops accepting and gives open connections 2 s more.
+5. It calls the engines' `shutdown` with `SHUTDOWN_GRACE_SECONDS`, then exits 0.
 
 `/metrics` renders one process-wide Prometheus recorder in the text format. 001 records `convert_requests_total`, `convert_stage_duration_seconds`, `convert_input_bytes`, `convert_warnings_total`, `convert_verify_skipped_total`, `convert_pages_rendered_total`, `convert_responses_cut_total` and `convert_disk_budget_bytes`. On Linux it adds the supervisor's RSS, peak RSS, open descriptors and threads from `/proc/self` at each scrape. A 200 whose body stalls or aborts counts once in `convert_requests_total` with code `OK` and once in `convert_responses_cut_total`. The pools and the adapters in `engines/` record their own metrics, which [engines/README.md](engines/README.md) lists. `METRICS_ENABLED=false` makes `/metrics` answer 404.
 <!-- /memoria:section -->

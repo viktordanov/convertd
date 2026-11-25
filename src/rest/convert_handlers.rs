@@ -101,11 +101,15 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
         .map(|id| id.as_str().to_owned())
         .unwrap_or_default();
     // Admission before the body is read: a 503 or 429 never reads it.
-    if state.draining.load(Ordering::Acquire) {
+    // The permit comes first and the drain flag second, so a request that
+    // the drain does not refuse holds a permit that `wait_idle` sees.
+    let permit = Arc::clone(&state.inflight).try_acquire_owned();
+    if state.draining.load(Ordering::SeqCst) {
+        drop(permit);
         metrics::request("unknown", "unknown", ErrorCode::ServiceUnavailable.as_str());
         return ApiError::unavailable("the service is shutting down").into_response();
     }
-    let Ok(permit) = Arc::clone(&state.inflight).try_acquire_owned() else {
+    let Ok(permit) = permit else {
         metrics::request("unknown", "unknown", ErrorCode::TooManyRequests.as_str());
         return ApiError::busy().into_response();
     };

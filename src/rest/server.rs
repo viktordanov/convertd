@@ -96,7 +96,7 @@ fn panic_response(panic: Box<dyn Any + Send + 'static>) -> Response {
 pub fn begin_drain(state: &AppState) {
     state
         .draining
-        .store(true, std::sync::atomic::Ordering::Release);
+        .store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Waits until no conversion holds a permit (the response pumps included),
