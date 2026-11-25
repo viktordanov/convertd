@@ -88,3 +88,82 @@ RUN --mount=type=cache,id=engine-downloads,target=/downloads,sharing=locked \
     cp -r /tmp/pdfium/licenses /out/pdfium/licenses; \
     chmod -R a+rX,go-w /out/pdfium; \
     rm -rf /tmp/lo /tmp/pdfium
+
+# ---- Runtime base: Debian userland, LibreOffice, PDFium, fonts, build-info, user -----------
+FROM ${RUNTIME_BASE} AS runtime-base
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+ARG LO_VERSION
+ARG LO_BUILD
+ARG PDFIUM_BUILD
+# 1 adds Noto CJK (size unmeasured).
+ARG FONTS_CJK=0
+# What dpkg never unpacks. docs: documentation, man pages, message catalogs (product only).
+# fonts: the Noto subset (product and dev, so both see the same families).
+COPY docker/dpkg/docs.cfg /etc/dpkg/dpkg.cfg.d/90-rs-convert-docs
+COPY docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
+# fonts.json: {family -> metric_compatible} for FONT_SUBSTITUTED (005 §5). The aliases add the
+# Office families Debian does not map; build-info.json records what fc-match then picks.
+COPY docker/fonts/fonts.json /etc/convertd/fonts.json
+COPY docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
+COPY docker/fonts/35-rs-convert-aliases.conf /etc/fonts/conf.d/35-rs-convert-aliases.conf
+# docker/install-engines.sh is shared with the dev target, so the two cannot drift. The script
+# and the .debs are bind mounts, so neither becomes a layer.
+RUN --mount=type=bind,from=engines,source=/out/debs,target=/debs \
+    --mount=type=bind,source=docker/libreoffice,target=/lo-config \
+    --mount=type=bind,source=docker/install-engines.sh,target=/install-engines.sh \
+    LO_VERSION="${LO_VERSION}" FONTS_CJK="${FONTS_CJK}" bash /install-engines.sh runtime
+COPY --from=engines /out/pdfium /opt/pdfium
+# Writes /opt/convertd/build-info.json (versions from the pinned args, fonts from fc-list,
+# font_substitutes from fc-match per family in probe-families.txt, and the default substitute).
+# The script stays in the image so a derived font image can run it again.
+COPY docker/write-build-info.sh /opt/convertd/write-build-info.sh
+COPY docker/fonts/probe-families.txt /opt/convertd/probe-families.txt
+RUN LO_VERSION="${LO_BUILD:-${LO_VERSION}}" PDFIUM_BUILD="${PDFIUM_BUILD}" \
+    bash /opt/convertd/write-build-info.sh
+# Names agreed with lane 002. PDFIUM_BUILD exists because PDFium has no version call.
+ENV HOME=/tmp \
+    LANG=C.UTF-8 \
+    SAL_USE_VCLPLUGIN=svp \
+    LO_PROGRAM_DIR=/opt/libreoffice/program \
+    PDFIUM_LIB_DIR=/opt/pdfium/lib \
+    PDFIUM_BUILD=${PDFIUM_BUILD} \
+    TMP_DIR=/tmp/convert \
+    PORT=8080 \
+    LOG_MODE=prod
+# Added in the same commit as docker/libreoffice/profile/, if lane 002 provides one:
+# ENV LO_PROFILE_TEMPLATE=/opt/convertd/lo-profile
+WORKDIR /tmp
+USER 10001:10001
+
+# ---- Native library check: readelf on the build platform, no emulation ---------------------
+# Every DT_NEEDED of every LibreOffice and PDFium object must resolve to a file in the target
+# rootfs, unless docker/libreoffice/ldd-allow.txt lists that exact "<object>: <library>" pair.
+# runtime and engine-check copy a marker from here, so BuildKit always runs it.
+FROM --platform=$BUILDPLATFORM ${RUNTIME_BASE} AS lib-check
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends binutils && rm -rf /var/lib/apt/lists/*
+COPY --from=runtime-base /opt /rootfs/opt
+COPY --from=runtime-base /usr/lib /rootfs/usr/lib
+COPY --from=runtime-base /etc/ld.so.conf.d /rootfs/etc/ld.so.conf.d
+COPY docker/libreoffice/ldd-allow.txt /allow.txt
+RUN case "${TARGETARCH}" in amd64) tri=x86_64-linux-gnu ;; arm64) tri=aarch64-linux-gnu ;; esac; \
+    dirs=("/rootfs/usr/lib/${tri}" /rootfs/usr/lib /rootfs/opt/libreoffice/program /rootfs/opt/pdfium/lib); \
+    while read -r d; do dirs+=("/rootfs${d}"); done < <(cat /rootfs/etc/ld.so.conf.d/*.conf 2>/dev/null | grep '^/' || true); \
+    grep -v -E '^[[:space:]]*(#|$)' /allow.txt > /allow.clean || true; \
+    readelf -d /rootfs/opt/libreoffice/program/libmergedlo.so | grep 'NEEDED.*libc\.so\.6' >/dev/null \
+      || { echo "positive control failed: readelf sees no libc.so.6 in libmergedlo.so" >&2; exit 1; }; \
+    missing=""; n=0; allowed=0; \
+    while IFS= read -r -d '' so; do \
+      n=$((n + 1)); \
+      while read -r lib; do \
+        found=0; for d in "${dirs[@]}"; do [[ -e "${d}/${lib}" ]] && { found=1; break; }; done; \
+        if [[ "${found}" == 0 ]]; then \
+          if grep -qxF "${so#/rootfs}: ${lib}" /allow.clean; then allowed=$((allowed + 1)); \
+          else missing+="${so#/rootfs}: ${lib}"$'\n'; fi; \
+        fi; \
+      done < <(readelf -d "${so}" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); \
+    done < <(find /rootfs/opt/libreoffice/program /rootfs/opt/pdfium/lib -name '*.so*' -type f -print0); \
+    if [[ -n "${missing}" ]]; then echo "unresolved libraries:" >&2; printf '%s' "${missing}" >&2; exit 1; fi; \
+    echo "lib-check (${TARGETARCH}): ${n} objects, every DT_NEEDED resolved except ${allowed}" \
+         "allow-listed pairs (docker/libreoffice/ldd-allow.txt)" | tee /lib-check.ok

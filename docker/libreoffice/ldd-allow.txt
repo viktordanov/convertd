@@ -1,0 +1,43 @@
+# Unresolved DT_NEEDED entries that lib-check (docker/Dockerfile) accepts. One line per
+# "<object>: <library>" pair, exactly as the gate prints it, so an allowed plugin cannot hide
+# a miss in any other object. Each group says why the object is never loaded by convertd.
+# Blank and comment lines are ignored. Found on LibreOffice 26.8.3.1 (arm64 and amd64).
+
+# avmedia playback backend (GStreamer); PDF export never plays media.
+/opt/libreoffice/program/libavmediagst.so: libgstpbutils-1.0.so.0
+/opt/libreoffice/program/libavmediagst.so: libgstaudio-1.0.so.0
+/opt/libreoffice/program/libavmediagst.so: libgstvideo-1.0.so.0
+/opt/libreoffice/program/libavmediagst.so: libgstbase-1.0.so.0
+/opt/libreoffice/program/libavmediagst.so: libgstreamer-1.0.so.0
+
+# avmedia playback backend (GTK 4); PDF export never plays media.
+/opt/libreoffice/program/libavmediagtk.so: libgtk-4.so.1
+/opt/libreoffice/program/libavmediagtk.so: libpangocairo-1.0.so.0
+/opt/libreoffice/program/libavmediagtk.so: libpango-1.0.so.0
+/opt/libreoffice/program/libavmediagtk.so: libharfbuzz.so.0
+/opt/libreoffice/program/libavmediagtk.so: libgdk_pixbuf-2.0.so.0
+/opt/libreoffice/program/libavmediagtk.so: libcairo-gobject.so.2
+/opt/libreoffice/program/libavmediagtk.so: libgraphene-1.0.so.0
+
+# avmedia playback backend (Qt 6); PDF export never plays media.
+/opt/libreoffice/program/libavmediaqt6.so: libQt6Core.so.6
+/opt/libreoffice/program/libavmediaqt6.so: libQt6Gui.so.6
+/opt/libreoffice/program/libavmediaqt6.so: libQt6Widgets.so.6
+/opt/libreoffice/program/libavmediaqt6.so: libQt6Multimedia.so.6
+/opt/libreoffice/program/libavmediaqt6.so: libQt6MultimediaWidgets.so.6
+
+# the GTK widget for LibreOfficeKit; convertd calls LOK directly.
+/opt/libreoffice/program/liblibreofficekitgtk.so: libgtk-3.so.0
+/opt/libreoffice/program/liblibreofficekitgtk.so: libgdk-3.so.0
+/opt/libreoffice/program/liblibreofficekitgtk.so: libpangocairo-1.0.so.0
+/opt/libreoffice/program/liblibreofficekitgtk.so: libpango-1.0.so.0
+/opt/libreoffice/program/liblibreofficekitgtk.so: libharfbuzz.so.0
+/opt/libreoffice/program/liblibreofficekitgtk.so: libcairo-gobject.so.2
+/opt/libreoffice/program/liblibreofficekitgtk.so: libgdk_pixbuf-2.0.so.0
+/opt/libreoffice/program/liblibreofficekitgtk.so: libatk-1.0.so.0
+
+# the Java OfficeBean; Java is not installed and is off.
+/opt/libreoffice/program/libofficebean.so: libjawt.so
+
+# the X11 VCL plugin; the image runs SAL_USE_VCLPLUGIN=svp (headless).
+/opt/libreoffice/program/libvclplug_genlo.so: libXrandr.so.2

@@ -1,0 +1,14 @@
+# The Dockerfile copies named paths only; this keeps the build context small and keeps
+# private or bulky files out of it. spikes/ stays: the engine-check target builds from it.
+.git
+target
+**/target
+client
+research
+docs
+api
+*.zip
+.env
+.env.*
+.claude
+corpus/private
