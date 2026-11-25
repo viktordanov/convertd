@@ -17,7 +17,7 @@
         "bench",
         "fonts"
       ],
-      "notes": "The spike's small.docx. Normal is Calibri, docDefaults resolve to the template's minor font Cambria: both are metric-compatible, so FONT negative.",
+      "notes": "The spike's small.docx. Normal is Calibri, docDefaults resolve to the template's minor font Cambria: both are metric-compatible, so FONT negative. LibreOffice 26.8.3.1 renders it as 2 pages (wave two, round B), not the 1 page that docs/m0-spikes.md first said. docx-one-page is the one-page file of the overhead gate.",
       "preflight": {
         "format": "docx",
         "encrypted": false,
@@ -45,7 +45,7 @@
             "family": "document",
             "encrypted": false,
             "pdf_origin": "converted",
-            "page_count": 1,
+            "page_count": 2,
             "warnings": []
           }
         },
@@ -57,7 +57,61 @@
           "expect": {
             "status": 200,
             "format": "docx",
-            "page_count": 1,
+            "page_count": 2,
+            "warning_count": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "docx-one-page",
+      "path": "out/docx/one-page.docx",
+      "origin": "generated",
+      "sha256": "b6d9656906b885b1baf9a443362a1268c073fc294d00a3a1cf1a64f1630712c2",
+      "tags": [
+        "bench"
+      ],
+      "notes": "The spike's document with two paragraphs instead of four, built to fit one page: the warm one-page DOCX of the overhead gate (INTERFACES.md section 11). On LibreOffice 26.8.3.1 on macOS, with the host's fonts, it renders 1 page. Record the count from the image's engines.",
+      "preflight": {
+        "format": "docx",
+        "encrypted": false,
+        "declared_pages": null,
+        "requested_fonts": [
+          "Calibri",
+          "Cambria"
+        ],
+        "macros": []
+      },
+      "cases": [
+        {
+          "name": "bundle",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "docx",
+            "family": "document",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": "unrecorded",
+            "warnings": []
+          }
+        },
+        {
+          "name": "pdf",
+          "options": {
+            "output": "pdf"
+          },
+          "expect": {
+            "status": 200,
+            "format": "docx",
+            "page_count": "unrecorded",
             "warning_count": 0
           }
         }
@@ -71,7 +125,7 @@
       "tags": [
         "bench"
       ],
-      "notes": "The spike's long.docx, undoctored: app.xml says 1 page and the spike rendered about 35. DOCX V1 is off, so no PAGE_COUNT_MISMATCH. Type the page count in from a reviewed check run.",
+      "notes": "The spike's long.docx, undoctored: app.xml says 1 page and the spike rendered about 35. DOCX V1 is off, so no PAGE_COUNT_MISMATCH. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
       "preflight": {
         "format": "docx",
         "encrypted": false,
@@ -99,7 +153,7 @@
             "family": "document",
             "encrypted": false,
             "pdf_origin": "converted",
-            "page_count": "unrecorded",
+            "page_count": 35,
             "warnings": []
           }
         },
@@ -111,7 +165,7 @@
           "expect": {
             "status": 200,
             "format": "docx",
-            "page_count": "unrecorded",
+            "page_count": 35,
             "warning_count": 0
           }
         }
@@ -162,11 +216,11 @@
       "id": "docx-empty-page",
       "path": "out/docx/empty-page.docx",
       "origin": "generated",
-      "sha256": "0ef656c2e0cfa9c64668b1f15f5738b99d5911c6ac6c33786d2ead0b63573986",
+      "sha256": "983d43b2d2ac701890347954e42c2a12d3d8af5ff7bfe86afbc47ccd5fd32594",
       "tags": [
         "blank"
       ],
-      "notes": "Page 2 holds only the end of a paragraph after a page break. The rendered page is flat but has no objects: BLANK negative.",
+      "notes": "Page 2 holds only an empty paragraph after a page break; LibreOffice drops a break that nothing follows, so the generator adds that paragraph. The rendered page is flat but has no objects: BLANK negative.",
       "preflight": {
         "format": "docx",
         "encrypted": false,
@@ -372,7 +426,7 @@
             "family": "document",
             "encrypted": true,
             "pdf_origin": "converted",
-            "page_count": 1,
+            "page_count": 2,
             "warnings": []
           }
         }
@@ -719,6 +773,64 @@
       ]
     },
     {
+      "id": "pptx-encrypted",
+      "path": "out/pptx/encrypted.pptx",
+      "origin": "generated",
+      "unhashed": "msoffcrypto draws a random salt and key on every run",
+      "tags": [
+        "passwords"
+      ],
+      "notes": "pptx-deck20 encrypted with OOXML agile encryption, password secret. Detection reports docx until the office engine reports the type, so only the password case can show pptx.",
+      "preflight": {
+        "format": "pptx",
+        "encrypted": true,
+        "declared_pages": null,
+        "requested_fonts": null,
+        "macros": null
+      },
+      "cases": [
+        {
+          "name": "no-password",
+          "options": {},
+          "expect": {
+            "status": 422,
+            "code": "PASSWORD_REQUIRED"
+          }
+        },
+        {
+          "name": "wrong-password",
+          "options": {
+            "password": "wrong"
+          },
+          "expect": {
+            "status": 422,
+            "code": "INVALID_PASSWORD"
+          }
+        },
+        {
+          "name": "password",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            },
+            "password": "secret"
+          },
+          "expect": {
+            "status": 200,
+            "format": "pptx",
+            "family": "presentation",
+            "encrypted": true,
+            "pdf_origin": "converted",
+            "page_count": 20,
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
       "id": "pptx-hidden",
       "path": "out/pptx/hidden.pptx",
       "origin": "generated",
@@ -791,7 +903,7 @@
       "tags": [
         "pages"
       ],
-      "notes": "sldIdLst lists 4 slides; the 4th part's root is p:notASlide. Unverified that LibreOffice drops it; if it does not, the V1 positive moves to a 001 unit test.",
+      "notes": "sldIdLst lists 4 slides. The 4th part's root is p:notASlide. LibreOffice 26.8.3.1 does not drop that slide: it renders a blank 4th page, so there is no page-count mismatch, and the V1 positive is a lane 001 unit test (lead ruling, wave two round B). LibreOffice paints a white background on every slide, so the empty page has objects, renders flat and raises BLANK_PAGE.",
       "preflight": {
         "format": "pptx",
         "encrypted": false,
@@ -819,14 +931,13 @@
             "family": "presentation",
             "encrypted": false,
             "pdf_origin": "converted",
-            "page_count": 3,
+            "page_count": 4,
             "warnings": [
               {
-                "code": "PAGE_COUNT_MISMATCH",
+                "code": "BLANK_PAGE",
+                "page": 4,
                 "detail": {
-                  "expected": 4,
-                  "actual": 3,
-                  "source": "ppt/presentation.xml"
+                  "colour": "#ffffff"
                 }
               }
             ]
@@ -1003,7 +1114,7 @@
       "tags": [
         "pages"
       ],
-      "notes": "A template with no sldIdLst: V1 skips a declared count of 0. No slide reaches a layout, so no font is requested. Type the page count in from a reviewed check run.",
+      "notes": "A template with no sldIdLst: V1 skips a declared count of 0. No slide reaches a layout, so no font is requested. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26. LibreOffice paints a white background on the one page, so it has objects, renders flat and raises BLANK_PAGE (lead ruling: keep V3).",
       "preflight": {
         "format": "potx",
         "encrypted": false,
@@ -1029,8 +1140,16 @@
             "family": "presentation",
             "encrypted": false,
             "pdf_origin": "converted",
-            "page_count": "unrecorded",
-            "warnings": []
+            "page_count": 1,
+            "warnings": [
+              {
+                "code": "BLANK_PAGE",
+                "page": 1,
+                "detail": {
+                  "colour": "#ffffff"
+                }
+              }
+            ]
           }
         }
       ]
@@ -1084,7 +1203,7 @@
       "tags": [
         "bench"
       ],
-      "notes": "The spike's sheet.xlsx: 3 sheets of 200 x 10 numbers. The styles font is Calibri with scheme=minor, and the theme minor font is Calibri. Type the default page count in from a reviewed check run.",
+      "notes": "The spike's sheet.xlsx: 3 sheets of 200 x 10 numbers. The styles font is Calibri with scheme=minor, and the theme minor font is Calibri. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
       "preflight": {
         "format": "xlsx",
         "encrypted": false,
@@ -1111,7 +1230,7 @@
             "family": "spreadsheet",
             "encrypted": false,
             "pdf_origin": "converted",
-            "page_count": "unrecorded",
+            "page_count": 15,
             "warnings": []
           }
         },
@@ -1146,8 +1265,66 @@
           "expect": {
             "status": 200,
             "format": "xlsx",
-            "page_count": "unrecorded",
+            "page_count": 15,
             "warning_count": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "xlsx-encrypted",
+      "path": "out/xlsx/encrypted.xlsx",
+      "origin": "generated",
+      "unhashed": "msoffcrypto draws a random salt and key on every run",
+      "tags": [
+        "passwords"
+      ],
+      "notes": "xlsx-sheet3 encrypted with OOXML agile encryption, password secret. Detection reports docx until the office engine reports the type, so only the password case can show xlsx. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
+      "preflight": {
+        "format": "xlsx",
+        "encrypted": true,
+        "declared_pages": null,
+        "requested_fonts": null,
+        "macros": null
+      },
+      "cases": [
+        {
+          "name": "no-password",
+          "options": {},
+          "expect": {
+            "status": 422,
+            "code": "PASSWORD_REQUIRED"
+          }
+        },
+        {
+          "name": "wrong-password",
+          "options": {
+            "password": "wrong"
+          },
+          "expect": {
+            "status": 422,
+            "code": "INVALID_PASSWORD"
+          }
+        },
+        {
+          "name": "password",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            },
+            "password": "secret"
+          },
+          "expect": {
+            "status": 200,
+            "format": "xlsx",
+            "family": "spreadsheet",
+            "encrypted": true,
+            "pdf_origin": "converted",
+            "page_count": 15,
+            "warnings": []
           }
         }
       ]
@@ -1160,7 +1337,7 @@
       "tags": [
         "bench"
       ],
-      "notes": "100,000 x 10 numbers in one sheet. The PDF likely exceeds MAX_RENDER_PAGES, so the bundle renders pages 1-5 only. Type the page count in from a reviewed check run.",
+      "notes": "100,000 x 10 numbers in one sheet. The PDF likely exceeds MAX_RENDER_PAGES, so the bundle renders pages 1-5 only. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
       "preflight": {
         "format": "xlsx",
         "encrypted": false,
@@ -1188,7 +1365,7 @@
             "family": "spreadsheet",
             "encrypted": false,
             "pdf_origin": "converted",
-            "page_count": "unrecorded",
+            "page_count": 2326,
             "warnings": []
           }
         },
@@ -1200,7 +1377,7 @@
           "expect": {
             "status": 200,
             "format": "xlsx",
-            "page_count": "unrecorded",
+            "page_count": 2326,
             "warning_count": 0
           }
         }
