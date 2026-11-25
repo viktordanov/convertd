@@ -23,9 +23,10 @@ esac
 # Pinned so that every machine generates the same code.
 OAPI_CODEGEN_VERSION="v2.9.0"
 
-# "reference" until lane 001's emitted spec matches api/openapi.yaml (ledger
-# 004 plan, step 7), then "emitted" for good. One edit, no auto-detection.
-SPEC_SOURCE="reference"
+# "emitted": api/openapi.json comes from `convertd openapi` (ledger 004 plan,
+# step 8). The hand-written api/openapi.yaml stays as the reference that the
+# emitted spec is compared with, until it is retired (step 11).
+SPEC_SOURCE="emitted"
 
 GENERATED=(client/internal/api/client.go client/go.mod client/go.sum)
 if [[ "$SPEC_SOURCE" == "emitted" ]]; then
