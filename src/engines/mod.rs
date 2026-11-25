@@ -9,6 +9,7 @@ pub mod conn;
 pub mod error;
 pub mod office_lok;
 pub mod pdf_pdfium;
+pub mod poison;
 pub mod pool;
 pub mod process;
 pub mod select;

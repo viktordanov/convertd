@@ -1,5 +1,6 @@
 //! `OfficeEngine` over the office pool (plan 002 step 8).
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -8,18 +9,26 @@ use crate::domain::conversion::{ExportOptions, SlideNotes};
 use crate::domain::document::{DocType, Family};
 use crate::domain::engine::{Admission, Converted, EngineError, OfficeEngine, OfficeJob};
 use crate::domain::verification::SourceFacts;
-use crate::engines::call::{admission, call, unexpected};
+use crate::engines::call::{admission, call_with_poison, unexpected};
+use crate::engines::poison::{Poison, PoisonList};
 use crate::engines::pool::Pool;
 use crate::ipc::{self, ConvertArgs, Op, Output, Secret, WorkerErrorKind};
 
 /// LibreOffice through the office pool.
 pub struct OfficeLok {
     pool: Pool,
+    poison: Option<Arc<PoisonList>>,
 }
 
 impl OfficeLok {
     pub fn new(pool: Pool) -> Self {
-        Self { pool }
+        Self { pool, poison: None }
+    }
+
+    /// Refuses documents that recently timed out or crashed a worker.
+    pub fn with_poison(mut self, poison: Option<Arc<PoisonList>>) -> Self {
+        self.poison = poison;
+        self
     }
 }
 
@@ -78,6 +87,10 @@ impl OfficeEngine for OfficeLok {
         adm: Admission,
         deadline: Instant,
     ) -> Result<Converted, EngineError> {
+        let poison = self.poison.as_ref().map(|list| Poison {
+            list: Arc::clone(list),
+            key: job.sha256,
+        });
         let op = Op::Convert(ConvertArgs {
             input: job.input,
             output: job.output,
@@ -86,7 +99,15 @@ impl OfficeEngine for OfficeLok {
             export: export(&job.export),
             max_output_bytes: job.max_output_bytes,
         });
-        let called = call(&self.pool, op, admission(adm), deadline, recycles).await?;
+        let called = call_with_poison(
+            &self.pool,
+            op,
+            admission(adm),
+            deadline,
+            recycles,
+            poison.as_ref(),
+        )
+        .await?;
         let Output::Converted(out) = called.output else {
             return Err(unexpected("convert"));
         };
