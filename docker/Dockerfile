@@ -74,37 +74,38 @@ RUN case "${TARGETARCH}" in \
 WORKDIR /src
 
 # ---- Dependency recipe ----------------------------------------------------------------------
-# Every path cargo reads when it parses the manifest: lane 001 declares [[test]] entries and
-# examples/overhead.rs, and cargo rejects a manifest whose declared target file is missing.
-# tests/ and examples/ are copied only when they exist (neither does yet). spikes/ is never
-# copied, so its manifests cannot enter the recipe.
+# Cargo.toml declares no [[test]], [[example]] or [[bench]] target and no build.rs, so the
+# manifest, the lock file and src/ are all that `cargo build --bin convertd` reads. tests/ and
+# examples/ stay out, so a test change does not rebuild convertd. If the manifest starts to
+# declare such a target, copy its folder here and in the builder, or cargo rejects the
+# manifest. spikes/ and tools/ are separate crates and never enter the recipe.
 FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS planner
-SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 COPY --from=chef-tool /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
 WORKDIR /src
-RUN --mount=type=bind,target=/ctx \
-    cp -a /ctx/Cargo.toml /ctx/Cargo.lock /ctx/src .; \
-    for d in tests examples; do if [[ -d "/ctx/${d}" ]]; then cp -a "/ctx/${d}" .; fi; done; \
-    cargo chef prepare --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo chef prepare --recipe-path recipe.json
 
 # ---- convertd -------------------------------------------------------------------------------
+# Cross-compiled on the build platform. cook builds the dependencies from the recipe alone, so
+# that layer stays cached until Cargo.toml or Cargo.lock changes.
 FROM rust-cross AS builder
 COPY --from=chef-tool /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
 COPY --from=planner /src/recipe.json recipe.json
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    cargo chef cook --release --locked --target "$(cat /etc/rust-target)" --recipe-path recipe.json
-# Read by the code with option_env!/env! (lane 001). Declared after cook so they do not
-# invalidate the dependency layer.
-ARG CONVERTD_VERSION=0.0.0-dev
-ARG CONVERTD_COMMIT=unknown
-ARG CONVERTD_BUILD_DATE=unknown
+    cargo chef cook --release --locked --target "$(cat /etc/rust-target)" --bin convertd \
+      --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+# The commit reaches the code through option_env!("CONVERTD_COMMIT") (src/rest/state.rs).
+# Declared after cook, so a new commit rebuilds only the crate. Unset when empty, so the code
+# sees None and not "".
+ARG CONVERTD_COMMIT
 # The real sources replace cook's skeleton; touch them so cargo never keeps a skeleton build.
-RUN --mount=type=bind,target=/ctx \
-    --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=cargo-git,target=/usr/local/cargo/git,sharing=locked \
-    cp -a /ctx/Cargo.toml /ctx/Cargo.lock /ctx/src .; \
-    for d in tests examples; do if [[ -d "/ctx/${d}" ]]; then cp -a "/ctx/${d}" .; fi; done; \
+    if [[ -z "${CONVERTD_COMMIT:-}" ]]; then unset CONVERTD_COMMIT; fi; \
     find src -name '*.rs' -exec touch {} +; \
     triple="$(cat /etc/rust-target)"; \
     cargo build --release --locked --target "${triple}" --bin convertd; \

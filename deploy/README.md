@@ -28,6 +28,7 @@ Both setups run one container with 2 CPU and 4 GiB per replica, `OFFICE_WORKERS=
 | `TMP_MAX_BYTES` | 3221225472 (3 GiB) | 3221225472 (`tmpMaxBytes`) |
 | Request time limit | none from the platform | 240 s on the ingress |
 | `TIMEOUT_MAX_SECONDS` | 210 | 210 (`timeoutMaxSeconds`) |
+| `TIMEOUT_DEFAULT_SECONDS` | 120 | the smaller of `timeoutDefaultSeconds` (120) and `timeoutMaxSeconds` |
 | CPU limit | none, requests only | 2 vCPU per replica |
 | Network | ClusterIP Service on port 80. A NetworkPolicy denies all egress, DNS included | internal ingress on port 8080. The environment VNet denies egress, outside this repository |
 | Security | non-root 10001, read-only root, no capabilities, `RuntimeDefault` seccomp | the numeric `USER` of the image. The other controls are believed to be unavailable |
@@ -36,7 +37,7 @@ Both setups run one container with 2 CPU and 4 GiB per replica, `OFFICE_WORKERS=
 
 The Container Apps values marked "believed" or set by the platform are not verified. [What is verified](#what-is-verified) lists them.
 
-Container Apps is believed to stop a request after 240 s (`PLAN.md` cites the limit). It is not verified whether the upload and the response stream count in it. The template keeps `TIMEOUT_MAX_SECONDS` at 210 until a measurement shows the margin (plan 003 step 9). convertd refuses to start if `TIMEOUT_MAX_SECONDS` is more than 210, or less than `TIMEOUT_DEFAULT_SECONDS` (120 by default). The template does not set `TIMEOUT_DEFAULT_SECONDS`. Thus a `timeoutMaxSeconds` below 120 stops every replica at start.
+Container Apps is believed to stop a request after 240 s (`PLAN.md` cites the limit). It is not verified whether the upload and the response stream count in it. The template keeps `TIMEOUT_MAX_SECONDS` at 210 until a measurement shows the margin (plan 003 step 9). convertd refuses to start if `TIMEOUT_MAX_SECONDS` is more than 210, or less than `TIMEOUT_DEFAULT_SECONDS`. The Bicep file thus sets `TIMEOUT_DEFAULT_SECONDS` to the smaller of the two parameters. Kustomize cannot compute a minimum. If an overlay lowers `TIMEOUT_MAX_SECONDS` below 120, lower `TIMEOUT_DEFAULT_SECONDS` in the same overlay.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="disk-budget" files="k8s/base/deployment.yaml aca/main.bicep" -->
@@ -75,10 +76,12 @@ The base leaves out a HorizontalPodAutoscaler, because the useful scale signal i
 `aca/main.bicep` creates one internal container app in a Container Apps environment that already exists. It does not create the environment, the VNet or Log Analytics. Deploy it like this:
 
 1. Make a copy of `aca/main.example.bicepparam` outside the repository, with your `environmentId` and `image`.
-2. Put the key in the environment: `export CONVERT_API_KEY='<key>'`. The parameter file reads it, so the key never enters a file.
-3. Show the change: `az deployment group what-if -g <rg> -f deploy/aca/main.bicep -p <your>.bicepparam`.
-4. Apply it: `az deployment group create -g <rg> -f deploy/aca/main.bicep -p <your>.bicepparam`.
-5. Read the `fqdn` output. Callers use `https://<fqdn>`.
+2. In the copy, change the `using` path to the path from the copy to `deploy/aca/main.bicep`. Bicep reads this path relative to the parameter file.
+3. Put the key in the environment: `export CONVERT_API_KEY='<key>'`. The parameter file reads it, so the key never enters a file.
+4. Show the change: `az deployment group what-if -g <rg> -f <repo>/deploy/aca/main.bicep -p <your>.bicepparam`.
+5. Apply it: `az deployment group create -g <rg> -f <repo>/deploy/aca/main.bicep -p <your>.bicepparam`.
+
+Pass to `-f` the same `main.bicep` that the `using` line names. Read the `fqdn` output of the deployment. Callers use `https://<fqdn>`.
 
 For a private registry, set `registryServer` and `registryIdentityId`. The identity is a user-assigned identity with pull rights on that registry. A public image needs neither. `apiKeyPrevious` holds the old key during a rotation.
 <!-- /memoria:section -->
