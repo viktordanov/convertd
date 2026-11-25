@@ -185,7 +185,7 @@ When you change the API in the server code:
 1. Run `../generate.sh`. It emits and validates `openapi.json`, compares it with the reference, regenerates the client and runs `go vet` and `go test -race`.
 2. Commit `api/openapi.json` and `internal/api/client.go` together.
 3. Commit a facade change in a separate commit.
-4. Run `../generate.sh --check`. It fails when a generated file differs from what generation produces or from `HEAD`, or when the repository has an untracked file under `api/` or `client/`. CI runs it in the `test` job.
+4. Run `../generate.sh --check`. It fails when a generated file differs from what generation produces or from `HEAD`. It also fails on an untracked file under `api/` or `client/`. CI runs it in the `test` job.
 
 `contract/` is a nested module that is never published or tagged. It holds `speccheck`, the validating transport that checks each response against the spec, the test harness, the live contract cases and the self-tests. `speccheck validate` checks one spec, and `speccheck compare` checks the emitted spec against the reference.
 
