@@ -71,7 +71,7 @@
       "tags": [
         "bench"
       ],
-      "notes": "The spike's long.docx, undoctored: app.xml says 1 page and the spike rendered about 35. DOCX V1 is off, so no PAGE_COUNT_MISMATCH. Type the page count in from a reviewed check run.",
+      "notes": "The spike's long.docx, undoctored: app.xml says 1 page and the spike rendered about 35. DOCX V1 is off, so no PAGE_COUNT_MISMATCH. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
       "preflight": {
         "format": "docx",
         "encrypted": false,
@@ -99,7 +99,7 @@
             "family": "document",
             "encrypted": false,
             "pdf_origin": "converted",
-            "page_count": "unrecorded",
+            "page_count": 35,
             "warnings": []
           }
         },
@@ -111,7 +111,7 @@
           "expect": {
             "status": 200,
             "format": "docx",
-            "page_count": "unrecorded",
+            "page_count": 35,
             "warning_count": 0
           }
         }
@@ -162,11 +162,11 @@
       "id": "docx-empty-page",
       "path": "out/docx/empty-page.docx",
       "origin": "generated",
-      "sha256": "0ef656c2e0cfa9c64668b1f15f5738b99d5911c6ac6c33786d2ead0b63573986",
+      "sha256": "983d43b2d2ac701890347954e42c2a12d3d8af5ff7bfe86afbc47ccd5fd32594",
       "tags": [
         "blank"
       ],
-      "notes": "Page 2 holds only the end of a paragraph after a page break. The rendered page is flat but has no objects: BLANK negative.",
+      "notes": "Page 2 holds only an empty paragraph after a page break; LibreOffice drops a break that nothing follows, so the generator adds that paragraph. The rendered page is flat but has no objects: BLANK negative.",
       "preflight": {
         "format": "docx",
         "encrypted": false,
@@ -1061,7 +1061,7 @@
       "tags": [
         "pages"
       ],
-      "notes": "A template with no sldIdLst: V1 skips a declared count of 0. No slide reaches a layout, so no font is requested. Type the page count in from a reviewed check run.",
+      "notes": "A template with no sldIdLst: V1 skips a declared count of 0. No slide reaches a layout, so no font is requested. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
       "preflight": {
         "format": "potx",
         "encrypted": false,
@@ -1087,7 +1087,7 @@
             "family": "presentation",
             "encrypted": false,
             "pdf_origin": "converted",
-            "page_count": "unrecorded",
+            "page_count": 1,
             "warnings": []
           }
         }
@@ -1142,7 +1142,7 @@
       "tags": [
         "bench"
       ],
-      "notes": "The spike's sheet.xlsx: 3 sheets of 200 x 10 numbers. The styles font is Calibri with scheme=minor, and the theme minor font is Calibri. Type the default page count in from a reviewed check run.",
+      "notes": "The spike's sheet.xlsx: 3 sheets of 200 x 10 numbers. The styles font is Calibri with scheme=minor, and the theme minor font is Calibri. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
       "preflight": {
         "format": "xlsx",
         "encrypted": false,
@@ -1169,7 +1169,7 @@
             "family": "spreadsheet",
             "encrypted": false,
             "pdf_origin": "converted",
-            "page_count": "unrecorded",
+            "page_count": 15,
             "warnings": []
           }
         },
@@ -1204,7 +1204,7 @@
           "expect": {
             "status": 200,
             "format": "xlsx",
-            "page_count": "unrecorded",
+            "page_count": 15,
             "warning_count": 0
           }
         }
@@ -1218,7 +1218,7 @@
       "tags": [
         "passwords"
       ],
-      "notes": "xlsx-sheet3 encrypted with OOXML agile encryption, password secret. Detection reports docx until the office engine reports the type, so only the password case can show xlsx.",
+      "notes": "xlsx-sheet3 encrypted with OOXML agile encryption, password secret. Detection reports docx until the office engine reports the type, so only the password case can show xlsx. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
       "preflight": {
         "format": "xlsx",
         "encrypted": true,
@@ -1262,7 +1262,7 @@
             "family": "spreadsheet",
             "encrypted": true,
             "pdf_origin": "converted",
-            "page_count": "unrecorded",
+            "page_count": 15,
             "warnings": []
           }
         }
@@ -1276,7 +1276,7 @@
       "tags": [
         "bench"
       ],
-      "notes": "100,000 x 10 numbers in one sheet. The PDF likely exceeds MAX_RENDER_PAGES, so the bundle renders pages 1-5 only. Type the page count in from a reviewed check run.",
+      "notes": "100,000 x 10 numbers in one sheet. The PDF likely exceeds MAX_RENDER_PAGES, so the bundle renders pages 1-5 only. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
       "preflight": {
         "format": "xlsx",
         "encrypted": false,
@@ -1304,7 +1304,7 @@
             "family": "spreadsheet",
             "encrypted": false,
             "pdf_origin": "converted",
-            "page_count": "unrecorded",
+            "page_count": 2326,
             "warnings": []
           }
         },
@@ -1316,7 +1316,7 @@
           "expect": {
             "status": 200,
             "format": "xlsx",
-            "page_count": "unrecorded",
+            "page_count": 2326,
             "warning_count": 0
           }
         }

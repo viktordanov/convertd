@@ -224,7 +224,10 @@ def docx_empty_page(_ctx):
     d = docx.Document()
     d.add_paragraph(LOREM)
     d.add_paragraph(LOREM)
-    d.add_page_break()  # page 2 holds only the end of this paragraph
+    d.add_page_break()
+    # LibreOffice 26.8 drops a page break that nothing follows, so an empty
+    # paragraph holds page 2 (measured in wave two, round B).
+    d.add_paragraph()
     return docx_bytes(d)
 
 
