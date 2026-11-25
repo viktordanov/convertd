@@ -8,6 +8,7 @@
 pub mod office;
 pub mod output;
 pub mod sys;
+pub mod warmup;
 #[cfg(feature = "test-hooks")]
 pub mod test_worker;
 

@@ -27,6 +27,9 @@ use crate::worker::output::io_error;
 use crate::worker::sys;
 use crate::worker::{Engine, Handled, micros};
 
+/// The output cap of a warm-up conversion.
+const WARMUP_MAX_OUTPUT: u64 = 16 << 20;
+
 /// A disk with less free space than this counts as full.
 pub const MIN_FREE_BYTES: u64 = 1024 * 1024;
 
@@ -92,11 +95,54 @@ impl OfficeWorker {
                 )
             })
             .unwrap_or_default();
-        Ok(Self {
+        let mut worker = Self {
             office,
             state,
             version,
-        })
+        };
+        if init.warmup {
+            worker.warm_up();
+        }
+        Ok(worker)
+    }
+
+    /// Converts one tiny document of each family, so the first real job
+    /// does not load the import filters and the PDF export. A failure is
+    /// reported on stderr and does not stop the worker.
+    fn warm_up(&mut self) {
+        let dir = std::env::temp_dir().join("convertd-warmup");
+        if let Err(err) = std::fs::create_dir_all(&dir) {
+            eprintln!("convertd worker: failed to create the warm-up directory: {err}");
+            return;
+        }
+        for file in crate::worker::warmup::files() {
+            let input = dir.join(file.name);
+            let output = input.with_extension("pdf");
+            if let Err(err) = std::fs::write(&input, &file.bytes) {
+                eprintln!("convertd worker: failed to write {}: {err}", file.name);
+                continue;
+            }
+            let args = ConvertArgs {
+                input: input.clone(),
+                output: output.clone(),
+                family: file.family,
+                password: None,
+                export: ExportOptions::default(),
+                max_output_bytes: WARMUP_MAX_OUTPUT,
+            };
+            let started = Instant::now();
+            match self.convert(&args, &mut EngineTimes::default()) {
+                Ok(_) => eprintln!(
+                    "convertd worker: warm-up {} took {} ms",
+                    file.name,
+                    started.elapsed().as_millis()
+                ),
+                Err(err) => eprintln!("convertd worker: warm-up {} failed: {err}", file.name),
+            }
+            let _ = std::fs::remove_file(&input);
+            let _ = std::fs::remove_file(&output);
+        }
+        let _ = std::fs::remove_dir(&dir);
     }
 
     fn convert(
