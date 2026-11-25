@@ -8,6 +8,7 @@ pub mod conn;
 pub mod error;
 pub mod pool;
 pub mod process;
+pub mod select;
 pub mod slot;
 
 pub use config::EngineConfig;

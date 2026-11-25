@@ -4,12 +4,10 @@
 use std::ffi::OsString;
 use std::io::Write;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use convertd::config::{self, Config, Env};
 use convertd::engines::cli::EngineCommand;
-use convertd::engines::fake::Unwired;
 use convertd::rest::state::{AppState, Engines};
 use convertd::rest::{healthcheck, openapi, server};
 use convertd::worker::Role;
@@ -161,40 +159,21 @@ fn serve() -> Result<(), String> {
             .local_addr()
             .map_err(|err| format!("failed to read the bound address: {err}"))?;
         tracing::info!(addr = %addr, "server listening");
-        let state = AppState::new(&config, engines(&config));
-        server::serve(listener, server::router(state), shutdown)
+        let selected = convertd::engines::select::start(&config).await?;
+        let engines = Engines {
+            office: selected.office,
+            pdf: selected.pdf,
+            readiness: selected.readiness,
+        };
+        let state = AppState::new(&config, engines);
+        let served = server::serve(listener, server::router(state), shutdown)
             .await
-            .map_err(|err| format!("failed to serve: {err}"))?;
+            .map_err(|err| format!("failed to serve: {err}"));
+        selected.handle.shutdown(config.server.shutdown_grace).await;
+        served?;
         tracing::info!("server stopped");
         Ok(())
     })
-}
-
-/// The engines for `serve`. Lane 002's engines are not wired yet (plan 001
-/// step 14): without `TEST_ENGINE`, and with `TEST_ENGINE=worker` until
-/// lane 002 wires it, every conversion is 503 and readyz says `starting`.
-fn engines(config: &Config) -> Engines {
-    #[cfg(feature = "test-hooks")]
-    if config.test_engine == Some(config::TestEngine::Fake) {
-        use convertd::engines::fake::{FakeOffice, FakePdf, FakeReadiness};
-        tracing::warn!("using the level-A fake engines (TEST_ENGINE=fake)");
-        return Engines {
-            office: Arc::new(FakeOffice::from_markers()),
-            pdf: Arc::new(FakePdf::from_markers()),
-            readiness: Arc::new(FakeReadiness::new(true)),
-        };
-    }
-    if config.test_engine.is_some() {
-        tracing::warn!("TEST_ENGINE=worker is not wired yet (lane 002); engines are unavailable");
-    } else {
-        tracing::warn!("the real engines are not wired yet (lane 002); engines are unavailable");
-    }
-    let unwired = Arc::new(Unwired);
-    Engines {
-        office: unwired.clone(),
-        pdf: unwired.clone(),
-        readiness: unwired,
-    }
 }
 
 /// Creates `TMP_DIR` and removes the job directories a crash left.
