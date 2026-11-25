@@ -8,16 +8,26 @@ use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
-use std::thread::JoinHandle;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use convertd::ipc::frame::{read_frame, write_frame};
 use convertd::ipc::*;
 
+/// No worker in these tests may live longer: past it the watchdog kills
+/// the worker, so every blocking read and wait ends and the test fails.
+const LIMIT: Duration = Duration::from_secs(30);
+
 struct Worker {
-    child: Child,
+    child: Arc<Mutex<Child>>,
+    pid: u32,
     stdin: Option<ChildStdin>,
     stdout: ChildStdout,
-    stderr: Option<JoinHandle<Vec<u8>>>,
+    stderr: mpsc::Receiver<Vec<u8>>,
+    /// Set by the watchdog when it killed the worker.
+    fired: Arc<AtomicBool>,
+    done: Arc<AtomicBool>,
     next_id: u64,
 }
 
@@ -34,21 +44,51 @@ impl Worker {
             .stderr(Stdio::piped());
         f(&mut cmd);
         let mut child = cmd.spawn().expect("spawn worker");
+        let pid = child.id();
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().unwrap();
         let mut stderr = child.stderr.take().unwrap();
-        let stderr = std::thread::spawn(move || {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
             let mut all = Vec::new();
             let _ = stderr.read_to_end(&mut all);
-            all
+            let _ = tx.send(all);
         });
+        let child = Arc::new(Mutex::new(child));
+        let fired = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        {
+            let (child, fired, done) = (Arc::clone(&child), Arc::clone(&fired), Arc::clone(&done));
+            std::thread::spawn(move || {
+                let until = Instant::now() + LIMIT;
+                while Instant::now() < until {
+                    if done.load(Ordering::Acquire) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                fired.store(true, Ordering::Release);
+                // std sends nothing once the child is reaped.
+                let _ = child.lock().unwrap().kill();
+            });
+        }
         Worker {
             child,
+            pid,
             stdin,
             stdout,
-            stderr: Some(stderr),
+            stderr: rx,
+            fired,
+            done,
             next_id: 1,
         }
+    }
+
+    fn check_watchdog(&self) {
+        assert!(
+            !self.fired.load(Ordering::Acquire),
+            "timed out after {LIMIT:?}: the watchdog killed the worker"
+        );
     }
 
     fn send(&mut self, req: &Request) {
@@ -56,7 +96,9 @@ impl Worker {
     }
 
     fn recv(&mut self) -> Option<Response> {
-        read_frame(&mut self.stdout, &mut Vec::new()).unwrap()
+        let frame = read_frame(&mut self.stdout, &mut Vec::new());
+        self.check_watchdog();
+        frame.unwrap()
     }
 
     fn init(&mut self, test: TestInit) -> Response {
@@ -96,12 +138,32 @@ impl Worker {
         self.call(op).result.expect_err("an error reply")
     }
 
-    /// Closes stdin and returns the exit status and everything on stderr.
+    /// Closes stdin and returns the exit status and everything on stderr,
+    /// within the watchdog's limit.
     fn finish(mut self) -> (ExitStatus, String) {
         drop(self.stdin.take());
-        let status = self.child.wait().unwrap();
-        let stderr = self.stderr.take().unwrap().join().unwrap();
+        let status = loop {
+            if let Some(status) = self.child.lock().unwrap().try_wait().unwrap() {
+                break status;
+            }
+            self.check_watchdog();
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        self.check_watchdog();
+        let stderr = self
+            .stderr
+            .recv_timeout(Duration::from_secs(10))
+            .expect("timed out reading the worker's stderr");
         (status, String::from_utf8_lossy(&stderr).into_owned())
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Release);
+        let mut child = self.child.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -121,7 +183,7 @@ fn ping_then_exit_zero_on_eof() {
     let mut w = Worker::spawn();
     let ready = w.ready();
     assert_eq!(ready.protocol, PROTOCOL_VERSION);
-    assert_eq!(ready.pid, w.child.id());
+    assert_eq!(ready.pid, w.pid);
     let reply = w.call(Op::Ping);
     assert_eq!(reply.result, Ok(Output::Pong));
     assert_eq!(reply.job, 1);
