@@ -1,0 +1,28 @@
+version = 3
+
+# The ledger is a working record, the spikes are frozen evidence and the research
+# study is a source. Lockfiles and the generated Go client are not prose inputs.
+ignore = [
+    "docs/ledger/**",
+    "spikes/**",
+    "research/**",
+    "Cargo.lock",
+    "tools/corpus/Cargo.lock",
+    "client/go.sum",
+    "client/contract/go.sum",
+    "client/internal/api/client.go",
+]
+include = []
+
+# Writing and structure rules live beside the documentation; see docs/documentation/memoria.md.
+[documentation]
+guidance = []
+guidance_files = ["docs/documentation/writing.md", "docs/documentation/sections.md", "docs/documentation/boundaries.md"]
+
+[fingerprints]
+default = "raw"
+languages = {}
+
+[lint]
+# Links to boundary READMEs hand off scope; this repository uses no imports yet.
+missing_import_hint = false
