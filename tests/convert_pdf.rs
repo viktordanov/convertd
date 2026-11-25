@@ -703,10 +703,12 @@ fn round_trip(addr: SocketAddr, body: &[u8]) -> u16 {
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
-    stream
-        .write_all(&head(body.len(), &format!("Bearer {KEY}")))
-        .unwrap();
-    stream.write_all(body).unwrap();
+    let mut request = head(body.len(), &format!("Bearer {KEY}"));
+    request.truncate(request.len() - 2);
+    request.extend_from_slice(b"Connection: close\r\n\r\n");
+    stream.write_all(&request).unwrap();
+    // A 429 is sent before the body is read; the server may then close.
+    let _ = stream.write_all(body);
     let status = read_status(&mut stream);
     let mut rest = Vec::new();
     let _ = stream.read_to_end(&mut rest);
