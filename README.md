@@ -2,7 +2,7 @@
 
 rs-convert is an HTTP service that converts office documents, PDFs and images into a PDF and per-page images.
 
-**Status: the service converts office documents and PDFs. It does not convert image inputs yet, and no container image is published.** `convertd serve` runs LibreOffice and PDFium in pools of worker processes. With the real engines, an image input (PNG, JPEG, TIFF, GIF, BMP or WebP) gets `422 CONVERSION_FAILED`. To run the real engines, build the `runtime` image from `docker/Dockerfile`. The quick start runs `convertd` from source with the level-A fake engine instead. The API is a draft (`1.0.0-draft.1`) and can change.
+**Status: the service converts office documents and PDFs. It does not convert image inputs yet, and no container image is published.** `convertd serve` runs LibreOffice and PDFium in pools of worker processes. With the real engines, an image input (PNG, JPEG, TIFF, GIF, BMP or WebP) gets `422 CONVERSION_FAILED`. To run the real engines, build the `runtime` image from `docker/Dockerfile`. The quick start shows this image, and a build from source with the level-A fake engine. The API is a draft (`1.0.0-draft.1`) and can change.
 
 ## Contents
 
@@ -35,7 +35,42 @@ The service has a narrow scope:
 <!-- memoria:section id="setup" files="Cargo.toml rust-toolchain.toml" -->
 ## Quick start
 
-This quick start builds `convertd` from source and runs it with the level-A fake engine, so it needs no LibreOffice or PDFium. To run the real engines, build the `runtime` target of `docker/Dockerfile`. [docker/README.md](docker/README.md) gives the targets and the build commands.
+The quick start has two paths. The container image runs the real engines and needs Docker. A build from source runs the level-A fake engine and needs only Rust.
+
+### The container image
+
+No image is published yet, so build it from the repository root. These commands ran on an Apple-silicon Mac (linux/arm64) with a Docker VM of about 4 GB. [docker/README.md](docker/README.md) gives the other targets and the build arguments.
+
+1. Build the `runtime` target:
+
+   ```bash
+   docker buildx build -f docker/Dockerfile --target runtime --build-arg CARGO_JOBS=4 --load -t rs-convert:local .
+   ```
+
+2. Start the image with a read-only root and a writable `/tmp`. One office worker and two render workers keep the run small. The defaults are half of the CPUs and all of the CPUs:
+
+   ```bash
+   docker run -d --name rs-convert --read-only --tmpfs /tmp:size=2g --cap-drop ALL --security-opt no-new-privileges \
+     -e API_KEY=dev-key -e OFFICE_WORKERS=1 -e RENDER_WORKERS=2 -p 127.0.0.1:8080:8080 rs-convert:local
+   ```
+
+3. Wait until `curl -sS http://127.0.0.1:8080/readyz` shows `"status":"ready"`. In the run on the Mac, this took about 1 s.
+
+4. Send a DOCX of your own:
+
+   ```bash
+   curl -sS -D - -o out.pdf -H "Authorization: Bearer dev-key" -F file=@report.docx http://127.0.0.1:8080/v1/convert
+   ```
+
+5. Stop and remove the container:
+
+   ```bash
+   docker stop rs-convert && docker rm rs-convert
+   ```
+
+Next: read [The API](#the-api) for the page images and the bundle.
+
+### From source, with the fake engine
 
 You need a Linux or macOS host with rustup. `rust-toolchain.toml` pins Rust 1.99.0, and rustup installs it on the first build. The test command uses [cargo-nextest](https://nexte.st).
 
