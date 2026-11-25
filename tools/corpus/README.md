@@ -89,7 +89,7 @@ Then `check` compares the fields that the expectation gives. For each `FONT_SUBS
 
 The canary listener must share the network namespace of the service, because LibreOffice connects to the loopback address of its own container. The run of record used a harness container started with `--network container:<service>`. A harness on the host behind `-p` does not see such a connection.
 
-On 2026-11-26, `check` ran that way against the image `rs-convert-lead-runtime:wave2a`, with real engines, and 47 of 55 cases passed. The listener saw no connection, and the `/BaseFont` arbiter agreed with each `FONT_SUBSTITUTED` warning. No positive control has run yet, so zero connections does not yet prove that the canaries can connect. The eight failures are open questions about the expectations and the warning rules.
+On 2026-11-26, `check` ran that way against the image `rs-convert-lead-runtime:wave2a`, with real engines, and 47 of 55 cases passed. The listener saw no connection, and the `/BaseFont` arbiter agreed with each `FONT_SUBSTITUTED` warning. No positive control has run yet, so zero connections does not yet prove that the canaries can connect. The lead then ruled on the eight failures: five expectations changed to what LibreOffice does, and the three image cases wait for the 415 of lane 001.
 <!-- /memoria:section -->
 
 ## Later subcommands
