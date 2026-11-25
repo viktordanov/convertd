@@ -106,14 +106,20 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
                 .into_response();
         }
     };
-    let received = match upload::receive(request, &job, state.service.limits()).await {
+    let mut detected = None;
+    let received = match upload::receive(request, &job, state.service.limits(), &mut detected).await
+    {
         Ok(received) => received,
         Err(err) => {
             let mut response =
                 ApiError::from_upload(&err, state.queue_wait_seconds).into_response();
-            if let UploadError::Detect(_) = err {
+            // Every response after detection carries Server-Timing: a
+            // detection error, and any error that follows it (an options
+            // part after the file, a spent budget at the true-up).
+            if detected.is_some() || matches!(err, UploadError::Detect(_)) {
                 let timings = RequestTimings {
                     recv: Some(started.elapsed()),
+                    detect: detected,
                     ..Default::default()
                 };
                 response
@@ -212,7 +218,11 @@ fn success(
             let api = ApiError::internal(format!("failed to open the result: {err}"));
             timings.total = Some(received.upload_done.elapsed());
             log_finished(request_id, received, None, timings, Some(api.code.as_str()));
-            return api.into_response();
+            let mut response = api.into_response();
+            response
+                .headers_mut()
+                .insert(SERVER_TIMING, timings.header());
+            return response;
         }
     };
     let (file, size) = file;

@@ -556,6 +556,40 @@ async fn refused_inputs() {
 }
 
 #[tokio::test]
+async fn server_timing_follows_detection() {
+    let app = App::new("timing-errors", &[]);
+    let bad = r#"{"images":{"dpi":10}}"#;
+    // Options after the file: refused after detection, so it is timed.
+    let parts = multipart(&[
+        Part {
+            name: "file",
+            file_name: Some("a.pdf"),
+            content_type: "application/octet-stream",
+            data: &pdf("x"),
+        },
+        Part {
+            name: "options",
+            file_name: None,
+            content_type: "application/json",
+            data: bad.as_bytes(),
+        },
+    ]);
+    let (response, body) = send(&app, parts).await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(error_code(&body), "VALIDATION_ERROR");
+    let timing = header_str(&response, "server-timing");
+    assert!(
+        timing.contains("recv;dur=") && timing.contains("detect;dur="),
+        "{timing}"
+    );
+    // Options first: refused before detection, so no Server-Timing.
+    let (response, _) = send(&app, with_options("a.pdf", &pdf("x"), bad)).await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(!response.headers().contains_key("server-timing"));
+    app.assert_no_jobs().await;
+}
+
+#[tokio::test]
 async fn markers_are_ignored_by_in_process_fakes() {
     // FakeBehavior is set directly; a marker in the upload changes nothing.
     let app = App::new("no-markers", &[]);

@@ -125,10 +125,14 @@ pub fn is_disk_full(err: &io::Error) -> bool {
 /// Reads the multipart body into `job`. Called after auth and the
 /// concurrency permit; rejects an oversized `Content-Length` before a byte
 /// is read.
+/// `detected` is set as soon as detection has run, so the caller knows
+/// that an error after it (such as an options part after the file) still
+/// gets `Server-Timing`.
 pub async fn receive(
     request: Request,
     job: &Arc<JobDir>,
     limits: &Limits,
+    detected: &mut Option<Duration>,
 ) -> Result<Received, UploadError> {
     let max_upload = limits.max_upload_bytes;
     let whole_stream = max_upload + OPTIONS_PART_MAX + FRAMING_MAX;
@@ -198,7 +202,9 @@ pub async fn receive(
                     .map_err(|err| UploadError::Sink(err.to_string()))?;
                 // A multer error explains a sink that stopped early.
                 forwarded?;
-                stored = Some((result?, file_name));
+                let result = result?;
+                *detected = Some(result.detect);
+                stored = Some((result, file_name));
             }
             other => {
                 return Err(UploadError::UnknownPart(
