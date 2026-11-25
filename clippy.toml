@@ -1,0 +1,12 @@
+# Blocking waits on child processes are forbidden (plan 002, "Needs from
+# 001"). A child is reaped only by the supervisor's reaper; one-off children
+# go through `engines::process::run_to_completion`.
+disallowed-methods = [
+    { path = "std::process::Command::output", reason = "use engines::process::run_to_completion; the reaper owns every wait" },
+    { path = "std::process::Command::status", reason = "use engines::process::run_to_completion; the reaper owns every wait" },
+    { path = "std::process::Child::wait", reason = "the reaper owns every wait" },
+    { path = "std::process::Child::try_wait", reason = "the reaper owns every wait" },
+    { path = "std::process::Child::wait_with_output", reason = "the reaper owns every wait" },
+    # tokio is built without `process`; the entry guards against turning it on.
+    { path = "tokio::process::Command::spawn", reason = "tokio's child reaping races the supervisor's reaper", allow-invalid = true },
+]
