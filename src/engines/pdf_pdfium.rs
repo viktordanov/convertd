@@ -322,8 +322,9 @@ impl PdfEngine for PdfPdfium {
         _adm: Admission,
         _deadline: Instant,
     ) -> Result<Assembled, EngineError> {
-        Err(EngineError::Internal(
-            "image assembly is not built yet".into(),
+        // 422, not 500: a 500 would tell callers to retry (the lead's ruling).
+        Err(EngineError::Failed(
+            "image inputs are not supported yet".into(),
         ))
     }
 }
