@@ -3,7 +3,6 @@
 package contract
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -34,7 +33,7 @@ func testContext(t *testing.T) context.Context {
 	return ctx
 }
 
-// requireOutput skips a ZIP case while the server answers that the output is
+// requireOutput skips a bundle or images case while the server answers that the output is
 // not built yet (lane 001 adds images and bundle in wave two, round A).
 func requireOutput(t *testing.T, err error, output string) {
 	t.Helper()
@@ -288,17 +287,15 @@ func TestConvertPNGToImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	entries, err := readArchive(raw)
 	if err != nil {
-		t.Fatalf("not a ZIP: %v", err)
+		t.Fatalf("not a tar.zst: %v", err)
 	}
-	mf, err := zr.Open("manifest.json")
-	if err != nil {
-		t.Fatal(err)
+	if len(entries) == 0 || entries[0].name != "manifest.json" {
+		t.Fatal("the archive does not start with manifest.json")
 	}
-	defer mf.Close()
 	var m api.Manifest
-	if err := json.NewDecoder(mf).Decode(&m); err != nil {
+	if err := json.Unmarshal(entries[0].data, &m); err != nil {
 		t.Fatal(err)
 	}
 	if m.Images == nil || string(m.Images.Format) != "png" || int(m.Images.Dpi) != 96 {
