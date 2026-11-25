@@ -22,7 +22,7 @@ use crate::worker::sys::{self, RssReader};
 use crate::worker::{Engine, Handled, micros};
 
 /// How far into the input the markers are looked for.
-pub const MARKER_SCAN_BYTES: u64 = 1024 * 1024;
+pub const MARKER_SCAN_BYTES: u64 = crate::engines::fake_markers::SCAN_LIMIT as u64;
 
 /// A4 in points: the fake page size.
 const PAGE: PageGeometry = PageGeometry {
@@ -60,51 +60,30 @@ impl Behavior {
     }
 }
 
-// TODO(001 fake_markers): replace `interim_markers` with
-// `crate::engines::fake_markers::parse` once lane 001's parser is on main,
-// mapping its result onto `Behavior` (INTERFACES.md §10: one parser for
-// level A and level B). This interim copy follows 001's rules (first
-// marker in the first 1 MiB wins, unknown markers are skipped) so the
-// level-B fixtures already work; the test `markers_drive_behavior` stays
-// and must pass unchanged against the shared parser.
-fn interim_markers(bytes: &[u8]) -> Behavior {
-    let window = &bytes[..bytes.len().min(MARKER_SCAN_BYTES as usize)];
-    for at in memchr::memmem::find_iter(window, b"FAKE:") {
-        let rest = &window[at + 5..];
-        let end = rest
-            .iter()
-            .position(|b| {
-                !(b.is_ascii_uppercase() || b.is_ascii_digit() || matches!(b, b'_' | b'='))
-            })
-            .unwrap_or(rest.len());
-        if let Some(behavior) = token(&rest[..end]) {
-            return behavior;
-        }
-    }
-    Behavior::Succeed
-}
+/// The behavior that the first `FAKE:` marker in `bytes` asks for, read
+/// with lane 001's parser, which level A uses too (INTERFACES.md §10).
+pub fn markers(bytes: &[u8]) -> Behavior {
+    use crate::engines::fake_markers::{Marker, MarkerCode, parse};
 
-fn token(token: &[u8]) -> Option<Behavior> {
-    let token = std::str::from_utf8(token).ok()?;
-    if let Some(ms) = token.strip_prefix("DELAY_MS=") {
-        return ms.parse().ok().map(|ms| Behavior::Delay { ms });
-    }
-    if let Some(n) = token.strip_prefix("PAGES=") {
-        return n.parse().ok().map(|n| Behavior::Pages { n });
-    }
-    let kind = match token {
-        "HANG" => return Some(Behavior::Hang),
-        "PANIC" => return Some(Behavior::Panic),
-        "PASSWORD_REQUIRED" => WorkerErrorKind::PasswordRequired,
-        "INVALID_PASSWORD" => WorkerErrorKind::InvalidPassword,
-        "LIMIT_EXCEEDED" => WorkerErrorKind::LimitExceeded,
-        "CONVERSION_FAILED" => WorkerErrorKind::LoadFailed,
-        "TOO_MANY_REQUESTS" => WorkerErrorKind::FakeQueueFull,
-        "SERVICE_UNAVAILABLE" => WorkerErrorKind::FakeUnavailable,
-        "INTERNAL_ERROR" => WorkerErrorKind::Internal,
-        _ => return None,
+    let Some(marker) = parse(bytes) else {
+        return Behavior::Succeed;
     };
-    Some(Behavior::Fail(kind))
+    let kind = match marker {
+        Marker::DelayMs(ms) => return Behavior::Delay { ms },
+        Marker::Pages(n) => return Behavior::Pages { n },
+        Marker::Hang => return Behavior::Hang,
+        Marker::Panic => return Behavior::Panic,
+        Marker::Code(code) => match code {
+            MarkerCode::PasswordRequired => WorkerErrorKind::PasswordRequired,
+            MarkerCode::InvalidPassword => WorkerErrorKind::InvalidPassword,
+            MarkerCode::LimitExceeded => WorkerErrorKind::LimitExceeded,
+            MarkerCode::ConversionFailed => WorkerErrorKind::LoadFailed,
+            MarkerCode::TooManyRequests => WorkerErrorKind::FakeQueueFull,
+            MarkerCode::ServiceUnavailable => WorkerErrorKind::FakeUnavailable,
+            MarkerCode::InternalError => WorkerErrorKind::Internal,
+        },
+    };
+    Behavior::Fail(kind)
 }
 
 /// The behaviour the markers in `path` ask for.
@@ -113,7 +92,7 @@ pub fn behavior_of(path: &Path) -> Result<Behavior, WorkerError> {
     File::open(path)
         .and_then(|f| f.take(MARKER_SCAN_BYTES).read_to_end(&mut bytes))
         .map_err(|err| io_error("read input", &err))?;
-    Ok(interim_markers(&bytes))
+    Ok(markers(&bytes))
 }
 
 /// A valid PDF of `pages` empty A4 pages. With more than one page it
@@ -429,8 +408,6 @@ impl Engine for TestEngine {
 mod tests {
     use super::*;
 
-    // Switches to `crate::engines::fake_markers::parse` with the TODO above;
-    // the expectations stay.
     #[test]
     fn markers_drive_behavior() {
         let cases: &[(&[u8], Behavior)] = &[
@@ -475,7 +452,7 @@ mod tests {
         ];
         for (bytes, expected) in cases {
             assert_eq!(
-                interim_markers(bytes),
+                markers(bytes),
                 *expected,
                 "{}",
                 String::from_utf8_lossy(bytes)
@@ -487,15 +464,15 @@ mod tests {
     fn markers_past_the_first_mib_are_ignored() {
         let mut bytes = vec![b' '; MARKER_SCAN_BYTES as usize];
         bytes.extend_from_slice(b"FAKE:HANG");
-        assert_eq!(interim_markers(&bytes), Behavior::Succeed);
+        assert_eq!(markers(&bytes), Behavior::Succeed);
     }
 
     #[test]
     fn fake_pdf_carries_the_page_count_and_a_valid_xref() {
         let pdf = fake_pdf(3);
         assert!(pdf.starts_with(b"%PDF-1.4\n"));
-        assert_eq!(interim_markers(&pdf), Behavior::Pages { n: 3 });
-        assert_eq!(interim_markers(&fake_pdf(1)), Behavior::Succeed);
+        assert_eq!(markers(&pdf), Behavior::Pages { n: 3 });
+        assert_eq!(markers(&fake_pdf(1)), Behavior::Succeed);
         // Every xref entry points at its object.
         let text = String::from_utf8(pdf.clone()).unwrap();
         let xref = text.find("xref\n").unwrap();
