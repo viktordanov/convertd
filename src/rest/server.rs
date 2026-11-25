@@ -9,12 +9,29 @@ use axum::routing::get;
 use axum::serve::ListenerExt;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
-use super::ops_handlers;
+use super::state::AppState;
+use super::{capabilities_handlers, convert_handlers, openapi, ops_handlers};
+
+/// Every route of the spec, with its documentation. Shared by the server
+/// and `convertd openapi`, so the two cannot drift.
+pub fn api_router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::with_openapi(openapi::base())
+        .routes(routes!(convert_handlers::convert))
+        .routes(routes!(capabilities_handlers::capabilities))
+        .routes(routes!(ops_handlers::healthz))
+        .routes(routes!(ops_handlers::readyz))
+        .routes(routes!(ops_handlers::metrics))
+}
 
 /// Every route the service serves.
-pub fn router() -> Router {
-    Router::new().route("/healthz", get(ops_handlers::healthz))
+pub fn router(state: AppState) -> Router {
+    let (router, _spec) = api_router().split_for_parts();
+    router
+        .route("/swagger/doc.json", get(ops_handlers::swagger_doc))
+        .with_state(state)
 }
 
 /// Binds `host:port`.
@@ -60,11 +77,27 @@ mod tests {
     use axum::http::{Request, StatusCode, header};
     use tower::ServiceExt;
 
+    use std::sync::Arc;
+
     use super::router;
+    use crate::config::{Config, Env};
+    use crate::engines::fake::Unwired;
+    use crate::rest::state::{AppState, Engines};
+
+    fn state() -> AppState {
+        let config = Config::from_env(&Env::from_pairs([("API_KEY", "k")], 2)).unwrap();
+        let unwired = Arc::new(Unwired);
+        let engines = Engines {
+            office: unwired.clone(),
+            pdf: unwired.clone(),
+            readiness: unwired,
+        };
+        AppState::new(&config, engines)
+    }
 
     #[tokio::test]
     async fn healthz_answers_ok() {
-        let response = router()
+        let response = router(state())
             .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
             .await
             .unwrap();

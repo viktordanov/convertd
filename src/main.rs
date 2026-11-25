@@ -2,12 +2,16 @@
 //! dispatch goes through the lead).
 
 use std::ffi::OsString;
+use std::io::Write;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use convertd::config::{self, Config, Env};
 use convertd::engines::cli::EngineCommand;
-use convertd::rest::{healthcheck, server};
+use convertd::engines::fake::Unwired;
+use convertd::rest::state::{AppState, Engines};
+use convertd::rest::{healthcheck, openapi, server};
 use convertd::worker::Role;
 use convertd::{engines, logging, runtime, worker};
 
@@ -109,10 +113,17 @@ fn main() -> ExitCode {
     }
 }
 
-/// Skeleton: an empty document until lane 001 step 3 emits the spec.
+/// The spec as pretty JSON and one newline on stdout, nothing else. Reads
+/// no environment and starts no logger.
 fn openapi() -> ExitCode {
-    println!("{{}}");
-    ExitCode::SUCCESS
+    let mut out = std::io::stdout().lock();
+    match writeln!(out, "{}", openapi::spec_json()).and_then(|()| out.flush()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("convertd openapi: failed to write the spec: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn healthcheck() -> ExitCode {
@@ -149,10 +160,23 @@ fn serve() -> Result<(), String> {
             .local_addr()
             .map_err(|err| format!("failed to read the bound address: {err}"))?;
         tracing::info!(addr = %addr, "server listening");
-        server::serve(listener, server::router(), shutdown)
+        let state = AppState::new(&config, engines(&config));
+        server::serve(listener, server::router(state), shutdown)
             .await
             .map_err(|err| format!("failed to serve: {err}"))?;
         tracing::info!("server stopped");
         Ok(())
     })
+}
+
+/// The engines for `serve`. Lane 002's engines are not wired yet (plan 001
+/// step 14), so without `TEST_ENGINE` every conversion is 503 and readyz
+/// says `starting`.
+fn engines(_config: &Config) -> Engines {
+    let unwired = Arc::new(Unwired);
+    Engines {
+        office: unwired.clone(),
+        pdf: unwired.clone(),
+        readiness: unwired,
+    }
 }
