@@ -162,13 +162,14 @@ Each worker process gets `<workers_dir>/<pool>-<slot>/` with the subdirectories 
 
 After a load, export, empty-document, limit or internal error, `OfficeLok` recycles the office worker, because LibreOffice's state is suspect. The password errors leave the worker in the pool. `PdfPdfium` recycles a render worker only after an internal error.
 
-`PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`. The chunks run together. A crashed chunk is retried once. The pages come back in order. `engine` is the longest chunk, and the most severe chunk error wins: a timeout, then a crash, then a password error.
+`PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`. The chunks run together. A crashed chunk is retried once on a fresh lease, if at least 1 s is left. The pages come back in order. `engine` is the longest chunk, and the most severe chunk error wins: a timeout, then a crash, then a password error.
 
 `PdfPdfium::assemble` returns `Failed("image inputs are not supported yet")`, which gives 422 `CONVERSION_FAILED`. A 500 tells callers to retry. Image inputs are out of v1 (the owner's decision).
 
 Poison memory (`poison.rs`) protects the workers from documents that hang or crash them. It is keyed by the upload's SHA-256 and shared by both pools, and it works like this:
 
-- A call that times out adds one strike. A crash that survived its retry adds two. In `convert`, a crash with no time left for the retry adds one.
+- A call that times out adds one strike. A crash that survived its retry adds two, and a crash with no time left for the retry adds one. A protocol error and the RSS kill add none. `poison::strikes_for` holds this rule for `convert` and for each render chunk.
+- A render strikes once, with the most strikes that one of its chunks earned.
 - At two strikes, `convert` and `render` return `Poisoned` before they lease a worker. `Poisoned` gives 422 `CONVERSION_FAILED`.
 - Each strike sets the expiry to now + `POISON_TTL_SECONDS`. An expired entry starts again from zero.
 - The list keeps at most 1024 documents. When it is full, the entry that expires first goes. `POISON_TTL_SECONDS=0` turns poison memory off.
