@@ -442,6 +442,20 @@ fn slow_sigterm_drains_then_exits() {
         503,
         "new work during the drain"
     );
+    let readyz = {
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream
+            .write_all(b"GET /readyz HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut answer = Vec::new();
+        let _ = stream.read_to_end(&mut answer);
+        String::from_utf8_lossy(&answer).into_owned()
+    };
+    assert!(readyz.starts_with("HTTP/1.1 503"), "{readyz}");
+    assert!(readyz.contains(r#""status":"draining""#), "{readyz}");
     assert_eq!(
         in_flight.join().unwrap(),
         200,
