@@ -2,7 +2,7 @@
 
 `docker/` builds the one rs-convert image: convertd, a pinned LibreOffice, a pinned PDFium, a fixed font set and `build-info.json`, for `linux/amd64` and `linux/arm64`.
 
-The product image does not convert documents yet. The `runtime` image builds and starts on arm64, but this convertd does not wire the real engines yet (lane 002, wave two). Until then `/readyz` answers 503. The parts below convertd are built and proved on both architectures: the engines, the fonts, the library check and the `dev` image.
+The product image converts documents on arm64. On 2026-11-26 the `runtime` image converted a DOCX, a PDF and a PPTX under Docker ([What is verified](#what-is-verified)). It is not run yet on amd64, Kubernetes, Container Apps or gVisor. The engines, the fonts and the library check are proved on both architectures.
 
 ## Contents
 
@@ -48,7 +48,7 @@ One `Dockerfile` holds every target, so the product and the test image use the s
 
 | Target | What it holds | State |
 | --- | --- | --- |
-| `runtime` (default) | `runtime-base` plus convertd, the OCI labels and the health check | Built and started on arm64. It does not convert until the real engines are wired |
+| `runtime` (default) | `runtime-base` plus convertd, the OCI labels and the health check | Built and run on arm64. It converts DOCX, PDF and PPTX |
 | `runtime-base` | Debian, the engines, the fonts, `build-info.json` and the user | Built and checked on arm64 and amd64 |
 | `dev` | `rust:1.99-trixie` plus the same engines, rustfmt, clippy, `locales` and `procps` | Built on arm64, for the engine tests of lane 002 |
 | `engine-check` | `runtime-base` plus the two spike binaries | Built and run on both architectures. Plan 003 step 7 removes it |
@@ -150,11 +150,11 @@ Then prove the new pins:
 <!-- memoria:section id="measurement" files="Dockerfile" -->
 ## Size
 
-These sizes are measurements without CJK fonts, on an arm64 Mac (Docker 29.8.2, OrbStack). The `runtime-base` sizes are from 2026-11-25, and the amd64 image was built under emulation. The `runtime` size is from 2026-11-26, with a convertd that has no real engines yet.
+These sizes are measurements without CJK fonts, on an arm64 Mac (Docker 29.8.2, OrbStack). The `runtime-base` sizes are from 2026-11-25, and the amd64 image was built under emulation. The `runtime` size is from 2026-11-26, with the real engines in convertd.
 
 | Image | Uncompressed (`docker image inspect`) | Compressed (`docker save \| gzip -6`) |
 | --- | --- | --- |
-| `runtime`, arm64 | 729 MB | 302 MB |
+| `runtime`, arm64 | 733 MB | 303 MB |
 | `runtime-base`, arm64 | 727 MB | 300 MB |
 | `runtime-base`, amd64 | 699 MB | 306 MB |
 | `dev`, arm64 | 2.78 GB | not measured |
@@ -183,17 +183,23 @@ On 2026-11-25 this check gave these results:
 - **amd64, under emulation on the arm64 Mac:** the same conversions and renders pass. Emulation proves function only, not timing.
 - **Both:** no fontconfig user cache is written under `/tmp`, and `lib-check` passes.
 
-On 2026-11-26 the arm64 `runtime` image gave these results, with a convertd that has no real engines yet:
+On 2026-11-26 the arm64 `runtime` image, built from `main` with the real engines, gave these results:
+
+- **Start:** with a read-only root, a tmpfs on `/tmp`, no capabilities, `no-new-privileges`, `OFFICE_WORKERS=1` and `RENDER_WORKERS=2`, `/readyz` answers 200 after about 1 s.
+- **Health check:** Docker reports `healthy` about 6 s after start, and `convertd healthcheck` exits 0.
+- **Conversions:** through a port published on `127.0.0.1`, a DOCX of 35 pages converts to PDF, a PDF to page images in a `tar.zst` bundle, and a PPTX to a bundle. Each request gets status 200.
+- **Stop:** `docker stop` sends `SIGTERM`, and convertd exits with code 0 after 281 ms. The log has no `ERROR` or `WARN` line.
+
+An earlier `runtime` build of the same day, with no real engines in convertd, gave these results:
 
 - **Configuration:** user `10001:10001`, `WORKDIR /tmp`, `ENTRYPOINT ["/usr/local/bin/convertd"]`, `CMD ["serve"]`, and the OCI labels with the commit and both engine versions.
-- **Start:** with a read-only root, a tmpfs on `/tmp`, no capabilities and no network, convertd runs as PID 1 and creates `/tmp/convert`. `/healthz` answers 200, and `/readyz` answers 503 because no engine is available.
+- **Start:** with a read-only root, a tmpfs on `/tmp`, no capabilities and no network, convertd runs as PID 1 and creates `/tmp/convert`. `/healthz` answers 200.
 - **Health check:** `convertd healthcheck` exits 1 while `/readyz` answers 503, and also when nothing listens.
-- **Stop:** `docker stop` sends `SIGTERM`, and convertd exits with code 0 after 80 ms.
 - **Build cache:** after a change in `src/`, the cooked dependency layer comes from the cache, and the rebuild takes 18 s.
 
-These results do not prove a conversion in the product image. That check follows the merge of the real engines.
+These results prove conversion on arm64 under Docker only. They do not prove amd64, Kubernetes, Container Apps or gVisor.
 
-The check does not prove amd64 at native speed. That proof needs the CI image job on the amd64 runners of GitHub. This job runs only by hand and monthly until convertd converts and the smoke file exists (plan 003 step 7). `smoke.sh` then checks the image size, the time to ready, one DOCX over HTTP and the font cache.
+The amd64 proof at native speed needs the CI image job on the amd64 runners of GitHub. This job runs only by hand and monthly until the smoke file `corpus/smoke/small.docx` exists (plan 003 step 7). `smoke.sh` then checks the image size, the time to ready, one DOCX over HTTP and the font cache.
 
 Docker mounts a tmpfs with `noexec` by default. A program that runs from `/tmp` needs `--tmpfs /tmp:rw,exec`.
 <!-- /memoria:section -->

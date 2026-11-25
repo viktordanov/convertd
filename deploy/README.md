@@ -2,7 +2,7 @@
 
 `deploy/` holds the files that run the rs-convert image as an internal service: a kustomize base with a gVisor overlay for Kubernetes, and one Bicep file for Azure Container Apps.
 
-Know two facts before you use these files. First, the product image does not convert documents yet: convertd wires the real engines in wave two, and the `runtime` image is not built until then. Second, no file here has run against a live cluster or a live Azure environment. The Kubernetes files render and pass a schema check offline, the Bicep file compiles in CI, and [What is verified](#what-is-verified) lists what that proves.
+Know two facts before you use these files. First, the `runtime` image is proved to convert documents only under Docker on arm64 ([docker/README.md](../docker/README.md#what-is-verified)). Second, no file here has run against a live cluster or a live Azure environment. The Kubernetes files render and pass a schema check offline, and the Bicep file compiled in CI before its last change. [What is verified](#what-is-verified) lists what that proves.
 
 ## Contents
 
@@ -101,9 +101,11 @@ On Container Apps, `activeRevisionsMode` is `Single`, and there is no `preStop` 
 
 These checks ran on 2026-11-25. Plan 003 steps 8 to 10 do the live checks, on the cluster and the Azure subscription of the owner.
 
+On 2026-11-26 both setups got `TIMEOUT_DEFAULT_SECONDS`, and the Bicep file got `timeoutDefaultSeconds` and bounds on both timeout parameters. `kubectl kustomize` renders the changed base and overlay. kubeconform and `az bicep build` did not run on these changes, and no `bicep build-params` ran on a copied parameter file.
+
 | Check | Kubernetes | Azure Container Apps |
 | --- | --- | --- |
-| The files render or compile | `kubectl kustomize` (v1.33.9) renders the base and the overlay | not run locally. `az bicep build` passes in CI |
+| The files render or compile | `kubectl kustomize` (v1.33.9) renders the base and the overlay | not run locally. `az bicep build` passed in CI on the 2026-11-25 file |
 | Schema | `kubeconform -strict` (v0.8.0) passes for all 7 resources | not checked |
 | A live deployment turns ready | not done | not done |
 | Probe, grace and storage limits | standard Kubernetes fields. The `preStop` sleep needs 1.30 or later | believed: at most 10 probe failures, at most 600 s grace, 8 GiB storage at 2 vCPU |

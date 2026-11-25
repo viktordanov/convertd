@@ -47,7 +47,7 @@ A worker reads no configuration. The supervisor gives it a fixed environment and
 
 After `Ready`, the worker reads one `Call` at a time and writes one `Reply` with the same `id`. The worker answers `Ping` itself. It gives every other operation to its engine through the `Engine` trait, whose `handle` returns the result and the engine times.
 
-The `job` field of a reply counts every call that this process served, `Ping` included. The `rss_bytes` field is the RSS after the call. The engine times run from just before the document is opened to just after the last engine call. Process start, the bind and IPC are outside them.
+The `job` field of a reply counts every call that this process served, `Ping` included. The `rss_bytes` field is the RSS after the call. The engine times run from just before the document is opened to just after the last engine call. Process start, the bind and IPC are outside them. If a reply does not fit in one 16 MiB frame, the worker sends a `LimitExceeded` error with the same `id` instead.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="failure" files="mod.rs sys.rs" -->
@@ -94,6 +94,8 @@ A `Convert` runs `preflight::scan` on the source first, timed apart as `prefligh
 - **Spreadsheets**: `SinglePageSheets`.
 - **Text documents**: `ExportNotes` off.
 
+Only an encrypted DOCX has a test of this path (`tests/engines_office.rs`). An encrypted spreadsheet or presentation is not tested.
+
 The callback counts the password prompts of one load. A failed load is `PasswordRequired` after one prompt without a password, `InvalidPassword` after a second prompt with a password, and `LoadFailed` otherwise.
 
 The export runs with `RLIMIT_FSIZE` at `max_output_bytes`. The load runs under a looser cap, `max(4 × max_output_bytes, 1 GiB)`, because it writes LibreOffice's own temp files. The SIGXFSZ handler records a write past either cap, and the job is then `LimitExceeded`. A failed save with no such write is `DiskFull` when `statvfs` shows less than 1 MiB free, and `ExportFailed` otherwise.
@@ -109,8 +111,8 @@ A password with a NUL byte is `InvalidPassword` before any engine call, in both 
 The operations do this:
 
 - **Inspect** reads the page count and the page sizes without loading the pages. `encrypted` comes from the security handler revision. `needs_password` comes from a second open without the password. With `probe_dpi`, it renders each page in grayscale and reports the object count and the flat check, timed apart as `probe_us`.
-- **Render** scales each page by `min(dpi / 72, max_edge / longer edge)` into a BGRA bitmap. JPEG takes the BGRA bytes directly. PNG (fast, adaptive filter) and lossy WebP take one pass to RGB. Each file gets its CRC-32. The output budget covers all pages, and an error removes every file of the job.
-- **Decrypt** calls `FPDF_SaveAsCopy` with `FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY` through the raw bindings, into a buffer under the output cap. The crate's own save cannot remove security. On PDFium 8179 the copy opens without a password and has no security handler (tested in the dev image).
+- **Render** scales each page by `min(dpi / 72, max_edge / longer edge)` into a BGRA bitmap. JPEG takes the BGRA bytes directly. PNG (fast, adaptive filter) and lossy WebP take one pass to RGB. Before PDFium allocates the bitmap, a page whose long edge passes the format's limit is `LimitExceeded`: 65535 px for JPEG and 16383 px for WebP. Each file gets its CRC-32. The output budget covers all pages, and an error removes every file of the job.
+- **Decrypt** calls `FPDF_SaveAsCopy` with `FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY` through the raw bindings, into a buffer under the output cap. The crate's own save cannot remove security. On PDFium 8179 the copy opens without a password and has no security handler (tested in the dev image). The worker also opens the copy again without a password. If the copy still has a security handler, the job is `ExportFailed`.
 
 A missing password is `PasswordRequired`, and a wrong one is `InvalidPassword`. The flat check (`encode::flat`) is true when every pixel is within 4 levels per channel of pixel (0,0).
 <!-- /memoria:section -->

@@ -2,7 +2,7 @@
 
 rs-convert is an HTTP service that converts office documents, PDFs and images into a PDF and per-page images.
 
-**Status: the service does not convert documents yet.** The HTTP path works from upload to response with a test fake in place of the engines. The next wave of work will connect the real LibreOffice and PDFium engines. Until then, `convertd serve` answers every conversion with `503`, and `/readyz` reports `starting`. This is also true for the image. The API is a draft (`1.0.0-draft.1`) and can change.
+**Status: the service converts office documents and PDFs. It does not convert image inputs yet, and no container image is published.** `convertd serve` runs LibreOffice and PDFium in pools of worker processes. With the real engines, an image input (PNG, JPEG, TIFF, GIF, BMP or WebP) gets `422 CONVERSION_FAILED`. To run the real engines, build the `runtime` image from `docker/Dockerfile`. The quick start runs `convertd` from source with the level-A fake engine instead. The API is a draft (`1.0.0-draft.1`) and can change.
 
 ## Contents
 
@@ -34,6 +34,8 @@ The service has a narrow scope:
 
 <!-- memoria:section id="setup" files="Cargo.toml rust-toolchain.toml" -->
 ## Quick start
+
+This quick start builds `convertd` from source and runs it with the level-A fake engine, so it needs no LibreOffice or PDFium. To run the real engines, build the `runtime` target of `docker/Dockerfile`. [docker/README.md](docker/README.md) gives the targets and the build commands.
 
 You need a Linux or macOS host with rustup. `rust-toolchain.toml` pins Rust 1.99.0, and rustup installs it on the first build. The test command uses [cargo-nextest](https://nexte.st).
 
@@ -78,31 +80,28 @@ x-request-id: df997c7b55784260b1bbdf216c48ba0d
 `TEST_ENGINE` works only in a build with the `test-hooks` feature, and the image never has it. Next: read [tests/README.md](tests/README.md) for the other test commands.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="usage" files="api/openapi.yaml" -->
+<!-- memoria:section id="usage" files="api/openapi.yaml api/openapi.json" -->
 ## The API
 
 One endpoint does the work. `POST /v1/convert` takes a multipart upload with a `file` part and an optional `options` part in JSON. The service detects the format from the bytes, never from the file name.
 
-The `output` option selects the response: the PDF (`pdf`, the default), a ZIP of page images (`images`), or a ZIP with the PDF and the page images (`bundle`). Each ZIP holds a `manifest.json` that describes the pages and the warnings.
+The `output` option selects the response: the PDF (`pdf`, the default), the page images (`images`), or the PDF and the page images (`bundle`). The service sends `images` and `bundle` as a tar archive in one zstd frame: `application/zstd`, named `<stem>.tar.zst`. The archive starts with a `manifest.json` that describes the pages and the warnings. In a bundle, `document.pdf` comes next. The pages follow as `pages/NNNN.<ext>`.
 
-**Target behavior.** This call returns the PDF and JPEG page images at 150 DPI in one ZIP:
+This call returns the PDF and JPEG page images at 150 DPI in one archive:
 
 ```bash
 curl -sS -H "Authorization: Bearer $CONVERT_API_KEY" \
   -F file=@deck.pptx \
   -F 'options={"output":"bundle","images":{"format":"jpeg","dpi":150}};type=application/json' \
-  -o deck.zip \
+  -o deck.tar.zst \
   "$CONVERT_HOST/v1/convert"
 ```
 
-Today the request path has these limits:
-
-- Only `output=pdf` works. The service answers `images` and `bundle` with `422 VALIDATION_ERROR`.
-- Legacy binary Office files (`.doc`, `.xls`, `.ppt`, `.pps`) and encrypted OOXML files get `415`.
+`zstd -dc deck.tar.zst | tar -tf -` lists the entries. Legacy binary Office files (`.doc`, `.xls`, `.ppt`, `.pps`) go to LibreOffice, as OOXML files do. An encrypted file without the `password` option gets `422 PASSWORD_REQUIRED`.
 
 Every `/v1` route needs the API key as a bearer token. The probes (`/healthz`, `/readyz`) and `/metrics` take no key. `GET /v1/capabilities` lists the formats, the limits and the engine versions of a deployment.
 
-The reference contract is [api/openapi.yaml](api/openapi.yaml), in OpenAPI 3.0.3. The server emits its own OpenAPI 3.1 spec with `convertd openapi` and serves the same bytes at `/swagger/doc.json`. `speccheck compare`, in `client/contract/`, compares the two.
+`convertd openapi` emits the OpenAPI 3.1 spec. The repository holds its output as [api/openapi.json](api/openapi.json), and the server serves the same bytes at `/swagger/doc.json`. `generate.sh` generates the Go client from this file. The hand-written [api/openapi.yaml](api/openapi.yaml), in OpenAPI 3.0.3, stays as the reference contract. `speccheck compare`, in `client/contract/`, compares the two.
 <!-- /memoria:section -->
 
 ## Boundaries
@@ -126,7 +125,7 @@ Each folder in this list has a README for its own readers.
 - [tests/README.md](tests/README.md) covers the test levels, the two fakes, the nextest profiles and the commands that CI runs.
 - [corpus/README.md](corpus/README.md) covers the generated test corpus and the expected result for each file.
 - [tools/corpus/README.md](tools/corpus/README.md) covers `corpus-bench`, the tool that checks the corpus and its expectations.
-- `generate.sh` regenerates the Go client from the spec and tests it. `scripts/contract_test.sh` runs the contract tests against a real `convertd`.
+- `generate.sh` emits the spec with `convertd openapi`, regenerates the Go client from it and tests the client. `scripts/contract_test.sh` runs the contract tests against a real `convertd`.
 - Every push and pull request runs `memoria check` (`.github/workflows/memoria.yml`). The check fails while a README waits for review after a change to its sources. [Memoria in this repository](docs/documentation/memoria.md) gives the review steps.
 <!-- /memoria:section -->
 

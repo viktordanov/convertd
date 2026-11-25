@@ -2,7 +2,7 @@
 
 `src/` is the `convertd` crate: one binary that runs as the supervisor (`convertd serve`) or as a worker (`convertd worker <role>`).
 
-The engines are not wired into `convertd serve` yet. Without the level-A fakes, every conversion answers 503, as [Not wired yet](#not-wired-yet) explains.
+`convertd serve` runs LibreOffice and PDFium in worker pools, unless `TEST_ENGINE` selects a test fake. Without `PDFIUM_BUILD`, `convertd serve` does not start. [Engine selection](#engine-selection) gives the details.
 
 ## Contents
 
@@ -11,13 +11,13 @@ The engines are not wired into `convertd serve` yet. Without the level-A fakes, 
 3. [Request path](#request-path)
 4. [Warnings](#warnings)
 5. [Lifecycle and metrics](#lifecycle-and-metrics)
-6. [Not wired yet](#not-wired-yet)
+6. [Engine selection](#engine-selection)
 7. [Configuration](#configuration)
 
 <!-- memoria:section id="overview" files="main.rs runtime.rs" -->
 ## Process model
 
-The design runs one supervisor and two pools of workers, all from the same binary:
+The service runs one supervisor and two pools of workers, all from the same binary:
 
 - **Supervisor**: `convertd serve`. It owns the HTTP API, the job directories, the disk budget and the pools. It never loads LibreOffice or PDFium.
 - **Office worker**: `convertd worker office`. It runs LibreOffice through LibreOfficeKit.
@@ -25,7 +25,7 @@ The design runs one supervisor and two pools of workers, all from the same binar
 
 Each engine runs in a worker process because a hostile file can crash it, hang it or make it grow without limit. At the deadline, the pool kills the worker's process group, and the supervisor keeps serving. LibreOfficeKit allows one instance per process for the life of the process, and PDFium is not thread-safe. Thus one worker holds one engine and runs one job at a time.
 
-The supervisor reads only enough of a file to route it. `detect/` reads the signature, the ZIP central directory, `[Content_Types].xml` and the ODF `mimetype` entry. For an OLE2 file it reads only the stream names. All of it is safe Rust with fixed caps. In the design, everything else that reads document content runs in a worker, including the pre-flight scan of office files.
+The supervisor reads only enough of a file to route it. `detect/` reads the signature, the ZIP central directory, `[Content_Types].xml` and the ODF `mimetype` entry. For an OLE2 file it reads only the stream names. All of it is safe Rust with fixed caps. Everything else that reads document content runs in a worker, including the pre-flight scan of office files.
 
 `main.rs` dispatches `convertd worker` first, before it builds a runtime, starts logging or reads the configuration. For `convertd serve`, `runtime.rs` builds a Tokio runtime with 2 worker threads, unless `TOKIO_WORKER_THREADS` sets another count. The blocking pool has at most 32 threads, and an idle blocking thread exits after 10 s.
 
@@ -49,22 +49,22 @@ The supervisor's request path uses five layers:
 
 Lane 002 owns the worker side:
 
-- **`engines/`**: the pools, process control and the supervisor's end of each worker connection.
+- **`engines/`**: the pools, process control, the engine adapters, the engine selection and the supervisor's end of each worker connection.
 - **`worker/`**: the worker processes and the engines in them.
 - **`ipc/`**: the frames and messages between the supervisor and a worker.
 
 The rest of the crate supports both sides:
 
-- **`main.rs`**: the command line and all the wiring. Only `main.rs` picks the engines and builds the application state.
+- **`main.rs`**: the command line and all the wiring. It starts the engines through `engines/select.rs` and builds the application state.
 - **`config.rs`**, **`logging.rs`** and **`runtime.rs`**: the configuration, the log output and the Tokio runtime.
 - **`preflight/`**: the pure scanners that the office worker calls before LibreOffice loads a file.
 - **`observability/`**: the metric names and the Prometheus recorder.
 
 The dependency rule keeps the domain at the center. `domain/` uses no other module of the crate, and no HTTP, async runtime, serde, IPC or FFI crate. The test `domain_has_no_forbidden_imports` in `domain/engine.rs` fails when a domain file imports one of them.
 
-`detect/` and `jobs/` depend on `domain/` only. `preflight/` depends on `domain/` and on the ZIP reader in `detect/zip_scan.rs`. `rest/` depends on `domain/`, `detect/`, `jobs/` and `config.rs`, and it imports `engines/` only in its tests. `rest/response.rs` is the only place that maps an error to an HTTP status. `rest/serialization/` holds the only serde types of the supervisor's request path.
+`detect/` and `jobs/` depend on `domain/` only. `preflight/` depends on `domain/`, on the ZIP reader in `detect/zip_scan.rs` and on the OLE2 entry cap in `detect/ole2.rs`. `rest/` depends on `domain/`, `detect/`, `jobs/`, `bundle/`, `observability/` and `config.rs`, and it imports `engines/` only in its tests. `rest/response.rs` is the only place that maps an error to an HTTP status. `rest/serialization/` holds the only serde types of the supervisor's request path.
 
-`domain/engine.rs` is the seam between the two sides. The conversion service calls the `OfficeEngine` and `PdfEngine` traits. Lane 002's adapters in `engines/` will implement them, and they are not written yet. `worker/` is the only place with `unsafe` code and engine calls. Changes to `domain/engine.rs` go through the lead.
+`domain/engine.rs` is the seam between the two sides. The conversion service calls the `OfficeEngine` and `PdfEngine` traits. Lane 002's adapters `OfficeLok` and `PdfPdfium` in `engines/` implement them over the pools. `worker/` is the only place with `unsafe` code and engine calls. Changes to `domain/engine.rs` go through the lead.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="usage" files="detect/ole2.rs rest/server.rs rest/convert_handlers.rs rest/upload.rs rest/body.rs rest/timing.rs domain/conversion_service.rs detect/mod.rs jobs/job_dir.rs jobs/disk_budget.rs bundle/tar_zst.rs rest/serialization/manifest.rs" -->
@@ -117,7 +117,7 @@ Warnings compare what an office source declares with what the engines produced. 
 
 - **`PAGE_COUNT_MISMATCH`**: PPTX family only, when the declared count differs from the PDF. It is skipped when hidden slides or notes pages are included, and for a template with no slides.
 - **`FONT_SUBSTITUTED`**: a requested family that `build-info.json` does not list, unless `fonts.json` marks it metric-compatible and its substitute is installed. At most 32 per request. Without `build-info.json`, as outside the image, the check is skipped.
-- **`BLANK_PAGE`**: a page with content that rendered as one flat colour, from the rendered page or the probe render.
+- **`BLANK_PAGE`**: a page with content that rendered as one flat color, from the rendered page or the probe render.
 - **`MACROS_IGNORED`**: a VBA project, an Excel 4 macro sheet, an ODF `Basic/` module or `Scripts/` entry, or an OLE2 macro storage.
 - **`RENDER_CLAMPED`**: `MAX_DPI` or `MAX_EDGE_PX` lowered the requested resolution.
 
@@ -130,25 +130,25 @@ The scanners stream each part through quick-xml under fixed caps: 4 MiB per part
 `convertd serve` creates `TMP_DIR` and removes the `job-*` directories that a crash left. On SIGTERM or SIGINT it stops in four steps:
 
 1. It sets the draining flag: `/readyz` answers 503 with `draining`, and new conversions answer 503 `SERVICE_UNAVAILABLE` with `Retry-After: 5`.
-2. It calls the engines' `drain`, and waits until no request holds a permit, at most `SHUTDOWN_GRACE_SECONDS`. The listener stays open during this time.
+2. It calls the engines' `drain`, and waits until no request holds a permit, at most `SHUTDOWN_GRACE_SECONDS`. The listener stays open during this time. With the real pools, `drain` also refuses the next engine call of a request in flight, and that request answers 503, as [Selection](engines/README.md#selection) explains.
 3. It stops axum, which stops accepting and gives open connections 2 s more.
 4. It calls the engines' `shutdown` with `SHUTDOWN_GRACE_SECONDS`, then exits 0.
 
-`/metrics` renders one process-wide Prometheus recorder in the text format. 001 records `convert_requests_total`, `convert_stage_duration_seconds`, `convert_input_bytes`, `convert_warnings_total`, `convert_verify_skipped_total`, `convert_pages_rendered_total`, `convert_responses_cut_total` and `convert_disk_budget_bytes`. On Linux it adds the supervisor's RSS, peak RSS, open descriptors and threads from `/proc/self` at each scrape. A 200 whose body stalls or aborts counts once in `convert_requests_total` with code `OK` and once in `convert_responses_cut_total`. `METRICS_ENABLED=false` makes `/metrics` answer 404.
+`/metrics` renders one process-wide Prometheus recorder in the text format. 001 records `convert_requests_total`, `convert_stage_duration_seconds`, `convert_input_bytes`, `convert_warnings_total`, `convert_verify_skipped_total`, `convert_pages_rendered_total`, `convert_responses_cut_total` and `convert_disk_budget_bytes`. On Linux it adds the supervisor's RSS, peak RSS, open descriptors and threads from `/proc/self` at each scrape. A 200 whose body stalls or aborts counts once in `convert_requests_total` with code `OK` and once in `convert_responses_cut_total`. The pools and the adapters in `engines/` record their own metrics, which [engines/README.md](engines/README.md) lists. `METRICS_ENABLED=false` makes `/metrics` answer 404.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="contract" files="main.rs" -->
-## Not wired yet
+## Engine selection
 
-This part of the design does not work yet:
+`main.rs` calls `engines::select::start` once, after it binds the listener and before it builds the application state. `TEST_ENGINE` picks the real pools, the level-B test worker or the level-A fakes. `config.rs` accepts `TEST_ENGINE` only in a build with the `test-hooks` feature. If `PDFIUM_BUILD` is not set, `convertd serve` stops with an error. [Selection](engines/README.md#selection) gives the three modes and the readiness states.
 
-- **Engines**: `convertd serve` uses the `Unwired` engines. Every conversion answers 503 `SERVICE_UNAVAILABLE`, and `/readyz` answers 503 with `starting`. In a build with the `test-hooks` feature, `TEST_ENGINE=fake` selects the level-A fakes instead. `TEST_ENGINE=worker` is not wired either, and the office and render worker roles stop with "not built yet".
+Image inputs do not convert yet: the assembly answers 422 `CONVERSION_FAILED`. [Not built yet](engines/README.md#not-built-yet) lists the other parts that are missing.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="setup" files="config.rs" -->
 ## Configuration
 
-`config.rs` parses every environment variable by hand when `convertd serve` starts. A bad value stops `convertd serve` before it listens, and the error names the variable. Lane 002's engine and pool variables are parsed in [engines/config.rs](engines/config.rs). The two parsers hold the names, the defaults and the checks. `convertd openapi` and `convertd worker` do not parse this configuration.
+`config.rs` parses every environment variable by hand when `convertd serve` starts. A bad value stops `convertd serve` before it listens, and the error names the variable. Lane 002's engine and pool variables are parsed in [engines/config.rs](engines/config.rs). The two parsers hold the names, the defaults and the checks. `convertd openapi`, `convertd worker` and `convertd engine` do not parse this configuration.
 
 `FONTS_PATH` (default `/etc/convertd/fonts.json`) names the `{family: metric_compatible}` table for `FONT_SUBSTITUTED`. A missing file only logs a warning, and then no family counts as metric-compatible.
 <!-- /memoria:section -->

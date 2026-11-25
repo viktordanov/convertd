@@ -193,7 +193,7 @@ When you change the API in the server code:
 
 `../scripts/contract_test.sh` builds convertd with the `test-hooks` feature and runs the contract tests against the level A fake. CI runs it in the `test` job. `../scripts/contract_test.sh --image REF` runs them against an image. `cd contract && go test ./...` runs only the spec tools and the self-tests, and it needs no server.
 
-The script prints the skipped cases with their reasons, the findings and the declared `(operationId, status)` pairs that no case observed. The bundle and images cases skip while the server answers that those outputs are not available yet. The early-answer case skips with a finding when the write error from [Errors and retries](#errors-and-retries) occurs.
+The script prints the skipped cases with their reasons, the findings and the declared `(operationId, status)` pairs that no case observed. The early-answer case skips with a finding when the write error from [Errors and retries](#errors-and-retries) occurs.
 
 The live cases prove that the service, the spec and this client agree on the responses that the cases exercise. They do not prove the quality of a conversion, because the level A fake replaces the engines.
 <!-- /memoria:section -->

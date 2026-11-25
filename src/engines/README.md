@@ -139,13 +139,13 @@ Each worker process gets `<workers_dir>/<pool>-<slot>/` with the subdirectories 
 | `TMPDIR` | `<slot>/tmp` |
 | `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_RUNTIME_DIR` | `<slot>/cache`, `<slot>/config`, `<slot>/data`, `<slot>/run` |
 | `LC_PAPER` | `en_GB.UTF-8` for `DEFAULT_PAPER=A4`, `en_US.UTF-8` for `Letter` |
-| `PATH` | `/usr/bin:/bin` |
+| `PATH` | `<LO_PROGRAM_DIR>:/usr/bin:/bin` |
 | `LANG` | from the supervisor, or `C.UTF-8` |
 | `FONTCONFIG_FILE`, `FONTCONFIG_PATH`, `FONTCONFIG_SYSROOT`, `TZ`, `LD_LIBRARY_PATH` | from the supervisor, if set |
 | `LC_*` other than `LC_ALL` and `LC_PAPER` | from the supervisor, if set |
 | `CONVERTD_SUPERVISOR_PID`, `CONVERTD_WORKER_ID` | the supervisor's PID, and `<pool>-<slot>` |
 
-A worker never gets `LC_ALL`, because it overrides `LC_PAPER`. `WorkerEnv::lc_all_dropped` records that the supervisor had it. LibreOfficeKit 26.8.3 does not take the paper size from `LC_PAPER` or `LANG`: in the dev image, a DOCX with no page size comes out Letter with every setting (measured 2026-11-26). Thus `DEFAULT_PAPER` has no effect yet.
+`WorkerEnv::with_path_prefix` puts `LO_PROGRAM_DIR` first in `PATH`. Without it, the libreofficekit crate adds the directory with a `;` separator and cuts `/usr/bin` off the worker's `PATH`. A worker never gets `LC_ALL`, because it overrides `LC_PAPER`. `WorkerEnv::lc_all_dropped` records that the supervisor had it. LibreOfficeKit 26.8.3 does not take the paper size from `LC_PAPER` or `LANG`: in the dev image, a DOCX with no page size comes out Letter with every setting (measured 2026-11-26). Thus `DEFAULT_PAPER` has no effect yet.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="adapters" files="call.rs office_lok.rs pdf_pdfium.rs" -->
@@ -159,7 +159,7 @@ A worker never gets `LC_ALL`, because it overrides `LC_PAPER`. `WorkerEnv::lc_al
 4. If the worker crashed and at least 1 s is left, it retries once on a new lease with `Continue`. It never retries after a timeout or an error that the engine reported.
 5. It maps the error through `EngineFailure` to the domain's `EngineError`, and logs the worker's message at debug only.
 
-After a load, export, limit or internal error, `OfficeLok` recycles the office worker, because LibreOffice's state is suspect. The password errors leave the worker in the pool. `PdfPdfium` recycles a render worker only after an internal error.
+After a load, export, empty-document, limit or internal error, `OfficeLok` recycles the office worker, because LibreOffice's state is suspect. The password errors leave the worker in the pool. `PdfPdfium` recycles a render worker only after an internal error.
 
 `PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`. The chunks run together. A crashed chunk is retried once. The pages come back in order. `engine` is the longest chunk, and the most severe chunk error wins: a timeout, then a crash, then a password error.
 
@@ -184,7 +184,7 @@ After a load, export, limit or internal error, `OfficeLok` recycles the office w
 - `starting` while a pool has never had a `Ready` worker.
 - `degraded` when a pool had a `Ready` worker and has none now.
 
-`EngineHandle::drain` stops new leases. `EngineHandle::shutdown(grace)` waits up to `grace` for the calls in flight, kills every worker and removes `$TMP_DIR/workers`.
+`EngineHandle::drain` stops new leases in both pools at once. Thus a request in flight that needs one more engine call after the drain gets `Unavailable`, which is 503: for example, the inspect after an office convert. No test covers a drain with the real pools. `EngineHandle::shutdown(grace)` waits up to `grace` for the calls in flight, kills every worker and removes `$TMP_DIR/workers`.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="failure" files="error.rs" -->
@@ -217,7 +217,7 @@ After a load, export, limit or internal error, `OfficeLok` recycles the office w
 | `LO_PROGRAM_DIR` | `/opt/libreoffice/program` |
 | `LO_PROFILE_TEMPLATE` | unset |
 | `PDFIUM_LIB_DIR` | `/opt/pdfium/lib` |
-| `PDFIUM_BUILD` | unset |
+| `PDFIUM_BUILD` | unset; `convertd serve` with the real engines needs it |
 | `POISON_TTL_SECONDS` | 600 (0 turns poison memory off) |
 | `DEFAULT_PAPER` | `A4` (or `Letter`) |
 
@@ -229,7 +229,7 @@ The worker counts, the job, RSS and age limits, and `WORKER_KILL_RSS_MB` must be
 
 `convertd engine bench --role test|office|render` measures the cost of the pool. It times lease, `Ping` and return through a real pool, and spawn to `Ready` through the pool's own start path, warm-up included. With `--file`, it also times three real jobs on that file, so the first job shows against the third. It prints a table on stderr and one JSON summary line on stdout. The flags are `--n` (10000), `--concurrency` (1), `--spawns` (50) and `--warmup` (500). The `test` role needs a build with `--features test-hooks`.
 
-`convertd engine convert`, `inspect`, `render` and `decrypt` run one engine call through a pool and the adapter, with no HTTP. Each call prints one JSON line with the wall, engine, overhead and queue times, the workers and their job numbers. A password comes from the variable that `--password-env` names, never from the command line. `engine soak` is not built yet.
+`convertd engine convert`, `inspect`, `render` and `decrypt` run one engine call through a pool and the adapter, with no HTTP. Each call prints one JSON line with the wall, engine, overhead and queue times, the workers and their job numbers. A password comes from the variable that `--password-env` names, never from the command line. `engine assemble` and `engine soak` are not built yet.
 
 One measurement, made on 2026-11-25 at commit `1eaf917`, on macOS (Darwin 27.3.0), Apple M4 Max with 14 cores. It used a release build with `--features test-hooks`, `--n 10000` and `--spawns 50`. Other jobs kept the load average at 6 to 10, so the tails are noisy:
 

@@ -9,7 +9,7 @@ Only paths and options cross the pipe. The upload, the PDF and the page images s
 <!-- memoria:section id="contract" files="frame.rs" -->
 ## Frames
 
-A frame is a `u32` little-endian body length and a UTF-8 JSON body of at most 16 MiB (`MAX_FRAME_BYTES`). The writer sends each frame with one `write_all`. The reader returns these results:
+A frame is a `u32` little-endian body length and a UTF-8 JSON body of at most 16 MiB (`MAX_FRAME_BYTES`). The writer sends each frame with one `write_all`. It refuses a body above 16 MiB with `FrameError::TooLarge` before it writes a byte. The reader returns these results:
 
 - **EOF before a length**: `Ok(None)`, a clean end.
 - **EOF inside a frame**: `FrameError::Truncated`.
