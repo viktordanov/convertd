@@ -351,7 +351,9 @@ struct PoolInner {
     live: AtomicUsize,
     ready_once: AtomicBool,
     backoff: AtomicBool,
-    draining: AtomicBool,
+    draining: Arc<AtomicBool>,
+    /// Worker starts that have not finished, so shutdown can wait for them.
+    starts: Arc<AtomicUsize>,
     /// Wakes waiters when the pool becomes unavailable.
     unavailable: Notify,
     events: mpsc::UnboundedSender<Event>,
@@ -400,7 +402,8 @@ impl Pool {
             live: AtomicUsize::new(0),
             ready_once: AtomicBool::new(false),
             backoff: AtomicBool::new(false),
-            draining: AtomicBool::new(false),
+            draining: Arc::new(AtomicBool::new(false)),
+            starts: Arc::new(AtomicUsize::new(0)),
             unavailable: Notify::new(),
             events,
             handles: Arc::default(),
@@ -633,6 +636,12 @@ impl Pool {
         }
         for child in &handles {
             let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+        }
+        // A start already under way would recreate its slot after the
+        // clean-up; it sees `draining` and gives up, so wait for it.
+        let until = Instant::now() + Duration::from_secs(5);
+        while inner.starts.load(Ordering::Acquire) > 0 && Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
         let spec = Arc::clone(&inner.spec);
         let max_slot = inner.max_slot.load(Ordering::Acquire);
@@ -1055,11 +1064,14 @@ impl Manager {
             );
             pool.starting.fetch_add(1, Ordering::AcqRel);
             pool.max_slot.fetch_max(u32::from(slot), Ordering::AcqRel);
+            pool.starts.fetch_add(1, Ordering::AcqRel);
             let start = Start {
                 spec: Arc::clone(&self.spec),
                 spawner: self.spawner.clone(),
                 events: pool.events.clone(),
                 handles: Arc::clone(&pool.handles),
+                draining: Arc::clone(&pool.draining),
+                starts: Arc::clone(&pool.starts),
                 slot,
                 generation,
                 fate,
@@ -1237,6 +1249,8 @@ pub async fn start_once(
         spawner: spawner.clone(),
         events,
         handles: Arc::default(),
+        draining: Arc::new(AtomicBool::new(false)),
+        starts: Arc::new(AtomicUsize::new(1)),
         slot,
         generation: 0,
         fate: Arc::new(Fate::default()),
@@ -1261,6 +1275,8 @@ struct Start {
     spawner: Spawner,
     events: mpsc::UnboundedSender<Event>,
     handles: Handles,
+    draining: Arc<AtomicBool>,
+    starts: Arc<AtomicUsize>,
     slot: u16,
     generation: u32,
     fate: Arc<Fate>,
@@ -1270,12 +1286,20 @@ impl Start {
     async fn run(self) {
         let (slot, generation) = (self.slot, self.generation);
         let events = self.events.clone();
+        let starts = Arc::clone(&self.starts);
         let result = self.start().await.map(Box::new);
+        // After a shutdown the manager is gone and the worker is dropped
+        // (killed) with the unsent event.
         let _ = events.send(Event::Started {
             slot,
             generation,
             result,
         });
+        starts.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    fn shutting_down(&self) -> bool {
+        self.draining.load(Ordering::Acquire)
     }
 
     async fn start(self) -> Result<Worker, String> {
@@ -1288,6 +1312,9 @@ impl Start {
             .await
             .map_err(|err| format!("failed to prepare the slot: {err}"))?
             .map_err(|err| format!("failed to prepare the slot: {err}"))?;
+        if self.shutting_down() {
+            return Err("failed to start the worker: the pool is shutting down".into());
+        }
 
         let cmd = spec
             .env
@@ -1300,6 +1327,13 @@ impl Start {
             .map_err(|err| format!("failed to spawn the worker: {err}"))?;
         let child = spawned.child;
         lock(&self.handles).insert((self.slot, self.generation), child.clone());
+        // Shutdown sets `draining` before it kills the registered handles,
+        // under the same lock: either it saw this child or this sees it.
+        if self.shutting_down() {
+            child.kill_group();
+            lock(&self.handles).remove(&(self.slot, self.generation));
+            return Err("failed to start the worker: the pool is shutting down".into());
+        }
         tracing::debug!(
             pool = spec.name,
             worker_id = %worker_id,

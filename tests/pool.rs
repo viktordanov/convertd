@@ -605,3 +605,28 @@ async fn worker_ready_is_logged_with_spawn_and_bind_times() {
     assert!(line["rss_bytes"].as_u64().is_some());
     finish(pool, "ready-log").await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_during_a_replacement_start_leaves_nothing_behind() {
+    let mut spec = spec("shutdown-start", 1);
+    // The replacement is slow to get ready, so it is mid-start at shutdown.
+    spec.init.test.ready_delay_ms = 300;
+    let workers_dir = spec.workers_dir.clone();
+    let pool = ready(spec).await;
+    let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+    let _ = lease.call(test_op(TestOp::Abort), after(5000)).await;
+    drop(lease);
+    while pool.status().starting == 0 {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    pool.shutdown(Duration::from_millis(100)).await;
+    assert_eq!(
+        pool.spawner().live_children(),
+        0,
+        "a worker outlived shutdown"
+    );
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(!workers_dir.exists(), "a slot came back after shutdown");
+    assert_eq!(pool.spawner().live_children(), 0);
+    let _ = std::fs::remove_dir_all(base_dir("shutdown-start"));
+}
