@@ -164,14 +164,14 @@ After a load, export, empty-document, limit or internal error, `OfficeLok` recyc
 
 `PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`. The chunks run together. A crashed chunk is retried once. The pages come back in order. `engine` is the longest chunk, and the most severe chunk error wins: a timeout, then a crash, then a password error.
 
-`PdfPdfium::assemble` returns `Failed("image inputs are not supported yet")`, which gives 422 `CONVERSION_FAILED`. A 500 would tell callers to retry. Image inputs are out of v1 (the owner's decision).
+`PdfPdfium::assemble` returns `Failed("image inputs are not supported yet")`, which gives 422 `CONVERSION_FAILED`. A 500 tells callers to retry. Image inputs are out of v1 (the owner's decision).
 
 Poison memory (`poison.rs`) protects the workers from documents that hang or crash them. It is keyed by the upload's SHA-256 and shared by both pools, and it works like this:
 
 - A timeout adds one strike. A crash that survived its retry adds two.
 - At two strikes, `convert` and `render` return `Poisoned` (422) before they lease a worker.
 - Each strike sets the expiry to now + `POISON_TTL_SECONDS`. An expired entry starts again from zero.
-- The list keeps at most 1024 documents; when it is full, the entry that expires first goes. `POISON_TTL_SECONDS=0` turns poison memory off.
+- The list keeps at most 1024 documents. When it is full, the entry that expires first goes. `POISON_TTL_SECONDS=0` turns poison memory off.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="selection" files="select.rs" -->
