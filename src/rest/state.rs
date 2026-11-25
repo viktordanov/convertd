@@ -9,6 +9,7 @@ use axum::http::HeaderValue;
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 
+use super::middleware::auth::ApiKeys;
 use super::openapi;
 use super::serialization::build_info::BuildInfo;
 use super::serialization::capabilities::{Capabilities, ServiceInfo};
@@ -42,6 +43,9 @@ impl Deref for AppState {
 
 pub struct Shared {
     pub service: ConversionService,
+    pub api_keys: ApiKeys,
+    /// `QUEUE_WAIT_SECONDS`, the `Retry-After` of a queue timeout.
+    pub queue_wait_seconds: u32,
     pub readiness: Arc<dyn Readiness>,
     /// `Convert-Engine-Fingerprint`, computed once.
     pub fingerprint: HeaderValue,
@@ -94,6 +98,12 @@ impl AppState {
                 config.limits.clone(),
                 config.server.verify_probe_render,
             ),
+            api_keys: ApiKeys::new(
+                &config.server.api_key,
+                config.server.api_key_previous.as_ref(),
+            ),
+            queue_wait_seconds: u32::try_from(config.engines.queue_wait.as_secs())
+                .unwrap_or(u32::MAX),
             readiness: engines.readiness,
             fingerprint: HeaderValue::from_str(&fingerprint)
                 .unwrap_or_else(|_| HeaderValue::from_static("sha256:unknown")),

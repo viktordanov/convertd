@@ -6,6 +6,7 @@ use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
+use super::response::ApiError;
 use super::serialization::probes::{Health, Readiness};
 use super::state::AppState;
 use crate::domain::readiness::ReadinessStatus;
@@ -74,7 +75,7 @@ pub async fn metrics() -> impl IntoResponse {
 /// the spec, like the reference.
 pub async fn swagger_doc(State(state): State<AppState>) -> Response {
     if !state.swagger_enabled {
-        return StatusCode::NOT_FOUND.into_response();
+        return ApiError::not_found().into_response();
     }
     (
         [(header::CONTENT_TYPE, "application/json")],
