@@ -167,11 +167,28 @@ impl Drop for Worker {
     }
 }
 
-fn scratch(name: &str) -> PathBuf {
+/// A scratch directory, removed when the guard drops, also when the test
+/// fails. Removal errors are ignored: the directory is under the temp dir,
+/// and a failed clean-up must not fail or mask the test.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn join(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch(name: &str) -> Scratch {
     let dir = std::env::temp_dir().join(format!("convertd-002-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    Scratch(dir)
 }
 
 fn write(path: &Path, bytes: &[u8]) {
@@ -290,7 +307,6 @@ fn panic_marker_exits_101() {
     let (status, stderr) = w.finish();
     assert_eq!(status.code(), Some(101));
     assert!(stderr.contains("FAKE:PANIC"));
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -414,7 +430,6 @@ fn fake_operations_write_valid_outputs() {
     );
 
     w.finish();
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -445,5 +460,4 @@ fn markers_and_caps_give_errors() {
     assert_eq!(std::fs::read_dir(&pages).unwrap().count(), 0);
 
     w.finish();
-    std::fs::remove_dir_all(dir).unwrap();
 }
