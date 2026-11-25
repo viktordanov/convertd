@@ -1,0 +1,208 @@
+<!-- memoria:section id="overview" files="mod.rs" -->
+# Engines
+
+`src/engines/` is the supervisor's side of the engines: it starts worker processes, reaps them, and lends them to calls through one pool for each role.
+
+Three duties apply to every change in this folder:
+
+- **No supervisor code waits on a child outside the reaper.** `clippy.toml` bans `Command::output`, `Command::status`, `Child::wait`, `Child::try_wait` and `Child::wait_with_output`. A one-off helper program runs through `Spawner::run_to_completion`.
+- **Every worker starts through `Spawner::spawn`.** The spawn runs on the long-lived `convertd-spawner` thread, because on Linux the parent-death signal of a worker follows the thread that started it.
+- **A worker leaves only by SIGKILL of its process group.** The supervisor never asks a worker to shut down, so no LibreOffice teardown runs. The [worker README](../worker/README.md) gives the reason.
+
+The pool runs today with the `test` role only. The office and render engines, the adapters for the engine traits and the start of the pools in `convertd serve` are not built yet. [Not built yet](#not-built-yet) lists them.
+
+The worker side is in [`src/worker/`](../worker/README.md), and the frames between the two sides are in [`src/ipc/`](../ipc/README.md). `fake.rs` and `fake_markers.rs` hold lane 001's level-A fakes and the `FAKE:` marker parser. This README does not cover them.
+
+## Contents
+
+1. [Concepts](#concepts)
+2. [Spawner and reaper](#spawner-and-reaper)
+3. [Pool and lease](#pool-and-lease)
+4. [Admission queue](#admission-queue)
+5. [Recycling](#recycling)
+6. [Slot directory](#slot-directory)
+7. [Errors](#errors)
+8. [Configuration](#configuration)
+9. [Measurement](#measurement)
+10. [Not built yet](#not-built-yet)
+
+## Concepts
+
+- **Spawner**: starts each worker in its own process group and registers it. Its **reaper** collects the exit of every registered child.
+- **Pool**: the workers of one role, with the task that replaces them. A **lease** gives one idle worker to one call.
+- **Admission queue**: the bounded wait for a lease. It gives `QueueFull` or `QueueTimeout` when the pool is busy.
+- **Recycling**: the replacement of a worker after a job count, an RSS limit, an age or a suspect engine error.
+- **Slot directory**: the private folder and environment of one worker process, made new for each process.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="process" files="process.rs" -->
+## Spawner and reaper
+
+`Spawner::new(mode)` must run inside a tokio runtime. It listens for SIGCHLD before the first spawn and starts the reaper task. A clone of a `Spawner` shares its registry.
+
+`Spawner::spawn(cmd)` puts the child in its own process group, so its PGID equals its PID. The caller sets the environment, the directory and the stdio. The spawn runs on one process-wide thread, `convertd-spawner`, which never exits. That thread holds the registry lock across the spawn and the insert, so the reaper never sees an exit before the child is registered.
+
+The reaper wakes on each SIGCHLD and every 2 s (`REAP_TICK`) as a safety net. For each registered child, it does these steps:
+
+1. It peeks with `waitid(P_PID, WEXITED | WNOHANG | WNOWAIT)`, which leaves the child unreaped.
+2. If the child exited, it sends SIGKILL to the group while the zombie still holds the PGID. Thus the signal cannot reach a process that reused the PID.
+3. It reaps the child with `waitpid` and sends the status to every `ChildHandle` of that child.
+
+After that, it sweeps the groups of dead children with `waitid(P_PGID)` until `ECHILD`. The reaper touches only the PIDs that its own `Spawner` registered. Thus two spawners in one test process, or a library that waits on its own child, keep their exit statuses.
+
+`ReaperMode::Owned` is the default for tests and the `engine` CLI. `ReaperMode::ProcessWide` is for `convertd serve`. It also reaps unknown children and logs each one as `stray child reaped`. On Linux it makes the supervisor a child subreaper first, so strays that leave their group reparent to it. In this mode, other code in the process must not wait on a child of its own.
+
+`ChildHandle::kill_group()` sends SIGKILL to the group under the registry lock. It sends nothing and returns `false` once the child is reaped, so a recycled PID never gets the signal. `ChildHandle::wait()` waits for the reaper and is cancel safe. When the last `Spawner` handle is dropped, it kills and reaps every child that is still registered, before it returns.
+
+`Spawner::run_to_completion(cmd, timeout)` runs a helper with stdin from `/dev/null` and captures at most 4 MiB of stdout and of stderr. Past the timeout, it kills the group and returns an error of kind `TimedOut`.
+
+`drain_stderr(fd, worker_id)` reads a worker's stderr until EOF, so a full pipe never blocks the worker. With debug logging on, it logs each line as `worker stderr`, cut to 512 bytes. With debug logging off, it reads the bytes and drops them. EOF does not mean that the worker is gone, because its children can hold the pipe open.
+
+`set_not_dumpable()` marks the supervisor as not dumpable on Linux, so a worker with the same UID cannot read `/proc/<supervisor>/environ`. No code calls it yet.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="pool" files="pool.rs conn.rs" -->
+## Pool and lease
+
+`Pool::start(spec, spawner)` removes the stale slot directories of this pool, starts a manager task, and returns at once. The manager then starts `spec.size` workers in the background. `PoolSpec` holds the role, the program path, the slot root, the worker environment, the `Init` frame and the limits.
+
+A worker start has four steps. The manager makes the slot directory new, spawns `convertd worker <role>`, sends `Init`, and waits for `Ready` within `start_timeout`. A `Fatal` answer, an exit or the timeout is a failed start. After a failed start, the manager waits 0.5 s, then doubles the wait up to 30 s. A `Ready` resets the wait to 0.5 s.
+
+The pool keeps its idle workers in one list next to a FIFO-fair `tokio::sync::Semaphore`. The number of permits equals the number of idle workers. `Pool::lease(deadline, admission)` takes a permit and pops a worker. It drops a popped worker that has exited or is retired, and tries again. `Pool::try_lease()` takes an idle worker or returns `None`, and never waits.
+
+`Lease::call(op, deadline)` writes one frame and waits for the reply, the exit of the worker, or the deadline. The deadline is an absolute `std::time::Instant`. The results are as follows:
+
+- **Reply**: the reply with the same `id`. The lease stores the worker's job count and RSS from it.
+- **Deadline passed**: the lease kills the process group and returns `CallError::Timeout`.
+- **EOF or exit**: the lease kills the group and waits at most 100 ms for the exit status. It returns `CallError::Crashed { status }` and logs `worker crashed`.
+- **Bad frame**: a wrong `id`, invalid JSON or an oversize frame. The lease kills the worker and returns `CallError::Protocol`.
+
+The `Drop` of a `Lease` decides what happens to the worker. If the call future was dropped before its reply, the worker is killed, because its reply then reaches the next lease. A dead worker, or one that failed a call, goes too. Otherwise the [recycling](#recycling) rules decide.
+
+A lease also reports where its time went. `queued()` is the wait for a permit, and `leased()` is the whole `lease` call. `spawned_on_path()` gives the spawn and bind times when the worker became ready while this lease waited for it. `worker_ref()` names the pool, the slot, the generation and the job number.
+
+`Pool::status()` returns a `PoolStatus`: the target size, the idle, busy and starting workers, the waiting leases, and the flags `ready_once`, `backoff` and `draining`. Each new worker process gets the next generation number of its pool, starting at 1.
+
+`Pool::drain()` makes every new lease `Unavailable` and releases the waiting leases. `Pool::shutdown(grace)` drains, then waits up to `grace` for busy leases to end. Then it kills every worker of the pool, waits for starts that are under way, and removes the slot directories. It removes the slot root too when no other pool has slots in it.
+
+The manager logs these events:
+
+- `worker ready`, with `role`, `pool`, `worker_id`, `pid`, `generation`, `spawn_us`, `bind_us` and `rss_bytes`. `spawn_us` runs from the spawn request to `Ready` and includes `bind_us`. The slot preparation is outside it.
+- `worker recycled`, with the reason `jobs`, `rss`, `age` or `error`, and `worker killed`, with the reason `timeout` or `cancelled`.
+- `worker start failed`, with `error` and `backoff_ms`. `worker started` is a debug event.
+
+The pool sets three metrics: `convert_workers{pool,state}` for `idle`, `busy` and `starting`, `convert_worker_restarts_total{pool,reason}`, and `convert_queue_depth{pool}`.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="contract" files="pool.rs" -->
+## Admission queue
+
+A lease waits only when no worker is idle. Then the admission mode sets the limit of the wait:
+
+- **`Admission::Queue`** is for the first engine call of a request. At most `queue_capacity` leases of this mode can wait. The next one gets `QueueFull` at once. A lease waits until the deadline or `queue_wait`, whichever comes first. If `queue_wait` comes first, the result is `QueueTimeout`. Otherwise it is `DeadlineExpired`.
+- **`Admission::Continue`** is for a later call of a request that the queue already admitted. It waits until the deadline and does not count against `queue_capacity`.
+
+A lease takes its place in the queue with one atomic increment and then compares the result with the capacity. Thus leases that arrive together cannot pass the bound together. The fair semaphore gives the workers to waiting leases in the order in which they arrived. `status().waiting` counts the waiting leases of both modes.
+
+While the pool has no live worker and its last start failed, a lease is `Unavailable` at once. The pool also wakes the leases that wait at that moment, and each one returns `Unavailable`.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="lifecycle" files="pool.rs" -->
+## Recycling
+
+When a lease ends, `recycle_decision` uses the numbers in the worker's last reply, so the supervisor reads no `/proc` file. It applies the first rule that matches:
+
+1. `Lease::recycle_after()` was called: kill now, reason `error`.
+2. The RSS is at least `max_rss`: kill now, reason `rss`.
+3. `max_jobs` is 1 or less and the worker served a call: kill now, reason `jobs`.
+4. The job count is at least `max_jobs`: replace first, reason `jobs`.
+5. The age since `Ready` is at least `max_age`: replace first, reason `age`.
+
+**Kill now** kills the worker, and the manager then starts a new one. **Replace first** keeps the old worker leasable while the manager starts its replacement in a free slot. When the replacement is `Ready`, the old worker is killed, at once if it is idle or else when its lease ends. Thus a pool of one worker is never empty during the swap. The cost is a second process for the time of one start.
+
+With `max_jobs` at 1, a process never serves two calls. A `Ping` counts as a call. The manager also checks the idle workers for `max_age` every `age_check`.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="slot" files="slot.rs" -->
+## Slot directory
+
+Each worker process gets `<workers_dir>/<pool>-<slot>/` with the subdirectories `profile`, `tmp`, `cache`, `config`, `data` and `run`, all mode 0700. `SlotDir::prepare` removes the slot and creates it again for each new process, so a file that one worker plants never reaches the next. If a profile template is set, `prepare` copies it into `profile/` and skips symbolic links and special files. The slot name uses the pool name, because at level B both pools run the `test` role.
+
+`WorkerEnv` builds the environment of a worker after `env_clear()`, so no service secret such as `API_KEY` reaches a worker. A worker gets exactly these variables:
+
+| Variable | Value |
+| --- | --- |
+| `UserInstallation` | `file://<slot>/profile` |
+| `HOME` | `<slot>` |
+| `TMPDIR` | `<slot>/tmp` |
+| `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_RUNTIME_DIR` | `<slot>/cache`, `<slot>/config`, `<slot>/data`, `<slot>/run` |
+| `LC_PAPER` | `en_GB.UTF-8` for `DEFAULT_PAPER=A4`, `en_US.UTF-8` for `Letter` |
+| `PATH` | `/usr/bin:/bin` |
+| `LANG` | from the supervisor, or `C.UTF-8` |
+| `FONTCONFIG_FILE`, `FONTCONFIG_PATH`, `FONTCONFIG_SYSROOT`, `TZ`, `LD_LIBRARY_PATH` | from the supervisor, if set |
+| `LC_*` other than `LC_ALL` and `LC_PAPER` | from the supervisor, if set |
+| `CONVERTD_SUPERVISOR_PID`, `CONVERTD_WORKER_ID` | the supervisor's PID, and `<pool>-<slot>` |
+
+A worker never gets `LC_ALL`, because it overrides `LC_PAPER`. `WorkerEnv::lc_all_dropped` records that the supervisor had it. That LibreOffice reads `LC_PAPER` is not verified.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="failure" files="error.rs" -->
+## Errors
+
+`EngineFailure` has the variants of the domain's `EngineError` (`src/domain/engine.rs`), so the adapters only convert one into the other. Its texts are fixed, because worker messages can hold paths. The worker message goes to the log only. The conversions are as follows:
+
+- **Lease errors**: `QueueFull`, `QueueTimeout` and `Unavailable` keep their names. `DeadlineExpired` becomes `Timeout`.
+- **Call errors**: `Timeout` stays. `Crashed` and `Protocol` become `Crashed`, because the pool killed the worker in both cases.
+- **Worker errors**: the password errors keep their names. `LoadFailed`, `ExportFailed` and `EmptyDocument` become `Failed`. `Io`, `Unsupported` and `Internal` become `Internal`.
+- **Disk errors**: `DiskFull` stays apart from `LimitExceeded`. A full disk comes from other jobs and is worth a retry. `LimitExceeded` is this job's own cap and is final.
+- **Test role errors**: `FakeQueueFull` and `FakeUnavailable` become `QueueFull` and `Unavailable`, so level-B fixtures give the same statuses as level A.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="setup" files="config.rs" -->
+## Configuration
+
+`EngineConfig::from_env` parses the engine variables. No code builds a `PoolSpec` from it yet. The defaults are these:
+
+| Variable | Default |
+| --- | --- |
+| `OFFICE_WORKERS` | half of the CPUs, at least 1 |
+| `RENDER_WORKERS` | all of the CPUs |
+| `QUEUE_CAPACITY` | 2 × `OFFICE_WORKERS` |
+| `QUEUE_WAIT_SECONDS` | 10 |
+| `WORKER_MAX_JOBS` | 50 |
+| `WORKER_MAX_RSS_MB` | 1024 |
+| `WORKER_MAX_AGE_SECONDS` | 3600 |
+| `WORKER_KILL_RSS_MB` | 2048 |
+| `LO_PROGRAM_DIR` | `/opt/libreoffice/program` |
+| `LO_PROFILE_TEMPLATE` | unset |
+| `PDFIUM_LIB_DIR` | `/opt/pdfium/lib` |
+| `PDFIUM_BUILD` | unset |
+| `POISON_TTL_SECONDS` | 600 (0 turns poison memory off) |
+| `DEFAULT_PAPER` | `A4` (or `Letter`) |
+
+The worker counts, the job, RSS and age limits, and `WORKER_KILL_RSS_MB` must be at least 1.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="measurement" files="cli.rs" -->
+## Measurement
+
+`convertd engine bench --role test` measures the cost of the pool with no engine time. It needs a build with `--features test-hooks`. It times lease, `Ping` and return through a real pool, and spawn to `Ready` through the pool's own start path. It prints a table on stderr and one JSON summary line on stdout. The flags are `--n` (10000), `--concurrency` (1), `--spawns` (50) and `--warmup` (500). The roles `office` and `render` exit with status 2 until the engines exist. The other `engine` subcommands also exit with status 2.
+
+One measurement, made on 2026-11-25 at commit `1eaf917`, on macOS (Darwin 27.3.0), Apple M4 Max with 14 cores. It used a release build with `--features test-hooks`, `--n 10000` and `--spawns 50`. Other jobs kept the load average at 6 to 10, so the tails are noisy:
+
+| µs, three runs, one caller | p50 | p95 | p99 |
+| --- | --- | --- | --- |
+| lease + `Ping` + return | 7.0 / 11.2 / 9.9 | 15.3 / 114.1 / 17.9 | 23.2 / 592.6 / 26.8 |
+| spawn to `Ready` | 1951 / 2146 / 2248 | 2185 / 5844 / 5469 | 2484 / 8984 / 5689 |
+
+The lease alone took 0.1 µs at p50. Spawn to `Ready` is the floor for a process with no engine, because the `test` role binds nothing. These numbers are not measured in the Linux dev image or under gVisor.
+<!-- /memoria:section -->
+
+## Not built yet
+
+These parts of plan 002 do not exist yet:
+
+- The office worker with LibreOfficeKit and the render worker with PDFium (steps 7 and 8).
+- The implementations of `OfficeEngine` and `PdfEngine`, and the `Engines` facade that `convertd serve` starts (step 9). Until then, `serve` uses lane 001's `Unwired` engines, without `TEST_ENGINE` and with `TEST_ENGINE=worker`. Every conversion then gets 503.
+- The RSS kill during a job. `PoolSpec::kill_rss` exists, but the pool does not enforce it (step 10).
+- Image assembly in a real engine, and the poison memory for documents that hang or crash (steps 11 and 12).
