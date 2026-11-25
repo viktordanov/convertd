@@ -50,6 +50,9 @@ spec:
             - {name: OFFICE_WORKERS, value: "1"}
             - {name: RENDER_WORKERS, value: "2"}
             - {name: TIMEOUT_MAX_SECONDS, value: "210"}
+            # convertd refuses to start if TIMEOUT_DEFAULT_SECONDS > TIMEOUT_MAX_SECONDS. Set it
+            # with the maximum: an overlay that lowers the maximum below 120 lowers this too.
+            - {name: TIMEOUT_DEFAULT_SECONDS, value: "120"}
             - {name: SHUTDOWN_GRACE_SECONDS, value: "210"}
             - {name: SANDBOX, value: "off"}
             # The run-time disk budget for everything under TMP_DIR (lane 001). It MUST stay

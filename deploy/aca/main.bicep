@@ -52,12 +52,21 @@ param concurrentRequests int = 2
 param shutdownGraceSeconds int = 210
 
 @description('Upper bound for timeout_seconds (contract: 5-210). Lower it only if step 9 measures that the 240 s platform limit cuts requests earlier.')
+@minValue(5)
+@maxValue(210)
 param timeoutMaxSeconds int = 210
+
+@description('timeout_seconds when a request sets none. convertd refuses to start if it is more than TIMEOUT_MAX_SECONDS, so the app gets min(timeoutDefaultSeconds, timeoutMaxSeconds).')
+@minValue(5)
+@maxValue(210)
+param timeoutDefaultSeconds int = 120
 
 @description('Disk budget for everything under TMP_DIR (lane 001). Must stay below the EmptyDir size minus 1 GiB of headroom for worker slots, profiles and logs. ACA fixes the replica storage by vCPU (unverified: 8 GiB at 2 vCPU); the volume is treated as 4 GiB.')
 param tmpMaxBytes int = 3221225472
 
 var useIdentity = !empty(registryIdentityId)
+// convertd checks TIMEOUT_DEFAULT_SECONDS <= TIMEOUT_MAX_SECONDS at start (src/config.rs).
+var timeoutDefault = min(timeoutDefaultSeconds, timeoutMaxSeconds)
 var secrets = concat(
   [ { name: 'api-key', value: apiKey } ],
   empty(apiKeyPrevious) ? [] : [ { name: 'api-key-previous', value: apiKeyPrevious } ]
@@ -108,6 +117,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'OFFICE_WORKERS', value: '1' }
             { name: 'RENDER_WORKERS', value: '2' }
             { name: 'TIMEOUT_MAX_SECONDS', value: string(timeoutMaxSeconds) }
+            { name: 'TIMEOUT_DEFAULT_SECONDS', value: string(timeoutDefault) }
             { name: 'SHUTDOWN_GRACE_SECONDS', value: string(shutdownGraceSeconds) }
             { name: 'TMP_MAX_BYTES', value: string(tmpMaxBytes) }
             { name: 'SANDBOX', value: 'off' }
