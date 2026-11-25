@@ -5,7 +5,7 @@
 
 Four duties apply to every change in this folder:
 
-- **Never drop the LibreOffice `Office` instance.** A second instance in one process is refused, and dropping it destroys the instance. A worker leaves only through `sys::exit`, which calls `_exit`, so no destructor runs.
+- **Never drop the LibreOffice `Office` instance.** A second instance in one process is refused, and dropping it destroys the instance. A worker exits on its own only through `sys::exit`, which calls `_exit`, so no destructor runs.
 - **Never call `trim_memory`.** On LibreOffice 26.8.3 the next document load then crashes with SIGBUS (`docs/m0-spikes.md`).
 - **Call PDFium from one thread only.** PDFium is not thread safe. A worker has no tokio runtime and no thread of its own besides the main thread.
 - **Keep every `unsafe` block and every engine call in this folder.** No other folder of the crate holds them.
@@ -29,7 +29,7 @@ The supervisor side is in [`src/engines/`](../engines/README.md), and the frames
 
 `main.rs` dispatches `convertd worker <role>` to `worker::run(role)` before it builds a runtime, installs logging or reads the configuration. `run` never returns. It does these steps in order:
 
-1. **Process set-up** (`sys::setup`). On Linux, it arms the parent-death signal (SIGKILL). If `CONVERTD_SUPERVISOR_PID` is set and is not the parent, it exits with status 0. It sets SIGXFSZ to ignored, so a write past `RLIMIT_FSIZE` fails with `EFBIG`.
+1. **Process set-up** (`sys::setup`). On Linux, it arms the parent-death signal (SIGKILL). Also on Linux, if `CONVERTD_SUPERVISOR_PID` is set and is not the parent, it exits with status 0. It sets SIGXFSZ to ignored, so a write past `RLIMIT_FSIZE` fails with `EFBIG`.
 2. **Descriptor moves.** It copies fds 0 and 1 to new close-on-exec descriptors for the frames. Then it points fd 1 at stderr and fd 0 at `/dev/null`, so an engine that prints to stdout cannot corrupt a frame.
 3. **Panic hook.** A panic writes its message to stderr and exits with status 101, with no unwinding through engine state.
 4. **`Init`.** It reads the first frame. If the protocol version differs from `PROTOCOL_VERSION`, it sends `Fatal` and exits with status 1.
@@ -51,7 +51,7 @@ The `job` field of a reply counts every call that this process served, `Ping` in
 <!-- memoria:section id="failure" files="mod.rs sys.rs" -->
 ## Leaving
 
-A worker leaves only through `sys::exit`, which calls `_exit`. The exit status tells why:
+A worker exits on its own only through `sys::exit`, which calls `_exit`. The exit status tells why:
 
 | Status | Cause |
 | --- | --- |
@@ -80,7 +80,7 @@ For `DiskFull` and `LimitExceeded`, `io_error` writes a fixed message with no pa
 <!-- memoria:section id="test-role" files="test_worker.rs" -->
 ## Test role
 
-`convertd worker test` has no engine. It serves the pool tests, the `engine bench` command and level B. `Init.test` can make its start fail (`fatal`) or slow (`ready_delay_ms`, which counts as `bind_us`).
+`convertd worker test` has no engine. It serves the pool tests and the `engine bench` command. Level B will use it when `TEST_ENGINE=worker` is wired. `Init.test` can make its start fail (`fatal`) or slow (`ready_delay_ms`, which counts as `bind_us`).
 
 It answers `Convert`, `Inspect`, `Render`, `Assemble` and `Decrypt` with small valid files. The `FAKE:` markers in the first 1 MiB of the input file control the answer, and the first marker wins:
 

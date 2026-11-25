@@ -82,7 +82,7 @@ Today `pool.rs` and `process.rs` drive the test worker directly, through the poo
 
 ### Markers
 
-A marker is a string anywhere in the first 1 MiB of the input file. `engines::fake_markers::parse` reads it, and the first marker in the file wins:
+A marker is a string anywhere in the first 1 MiB of the input file, and the first marker in the file wins. Level A reads markers with `engines::fake_markers::parse`. The level-B test worker reads them with an interim copy of the same rules in `src/worker/test_worker.rs`, until it changes to the shared parser. The markers are:
 
 - `FAKE:DELAY_MS=<n>` answers after `n` milliseconds, never past the deadline.
 - `FAKE:PAGES=<n>` gives a PDF with `n` pages.
@@ -97,9 +97,9 @@ A fixture that must get to the office queue is a DOCX with the marker in a store
 
 `test-hooks` is the one cargo feature for test code in the crate. It is off by default, and the image build never turns it on. It controls three things:
 
-- The `TEST_ENGINE` variable. Without the feature, `convertd serve` stops at start-up with `failed to parse TEST_ENGINE: test engines need a build with cargo feature test-hooks`.
+- The `TEST_ENGINE` variable. If `TEST_ENGINE` is set in a build without the feature, `convertd serve` stops at start-up with `failed to parse TEST_ENGINE: test engines need a build with cargo feature test-hooks`.
 - The `convertd worker test` subcommand.
-- The `FAKE:` marker parser. Without the feature, no code reads markers.
+- The `FAKE:` marker parsers. Without the feature, no code reads markers.
 
 ## nextest profiles
 

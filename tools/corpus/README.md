@@ -47,7 +47,7 @@ The `--corpus` flag names the folder that the `path` fields are relative to, by 
 The checks run in this order:
 
 1. The JSON Schema in `expected.schema.json`. If it fails, `validate` stops here.
-2. The rules that a schema cannot state: unique ids, paths and case names, no `.` or `..` path parts, `min` not more than `max`, known warning detail keys, and sorted requested fonts.
+2. The rules that a schema cannot state: unique ids, paths and case names, no `.` or `..` path parts, `min` not more than `max`, no blank page past an exact page count, known warning detail keys, and sorted requested fonts with no duplicates.
 3. Each listed file exists as a regular file, not a link, and matches its `sha256`.
 4. No file under `out/` or `fixtures/` is missing from `expected.json`. `validate` ignores `.DS_Store` files.
 5. Git tracks nothing under `out/` or `private/`. Outside a git work tree, `validate` skips this check with a note.

@@ -2,7 +2,7 @@
 
 rs-convert is an HTTP service that converts office documents, PDFs and images into a PDF and per-page images.
 
-**Status: the service does not convert documents yet.** The HTTP path works from upload to response with a test fake in place of the engines. The real LibreOffice and PDFium engines are wired in the next wave of work. Until then, `convertd serve` answers every conversion with `503`, and `/readyz` reports `starting`. This is also true for the image. The API is a draft (`1.0.0-draft.1`) and can change.
+**Status: the service does not convert documents yet.** The HTTP path works from upload to response with a test fake in place of the engines. The next wave of work will connect the real LibreOffice and PDFium engines. Until then, `convertd serve` answers every conversion with `503`, and `/readyz` reports `starting`. This is also true for the image. The API is a draft (`1.0.0-draft.1`) and can change.
 
 ## Contents
 

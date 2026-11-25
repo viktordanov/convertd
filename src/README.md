@@ -99,7 +99,7 @@ The deadline is the end of the upload plus `timeout_seconds`. The engines enforc
 
 The response pump is one blocking task. It reads the PDF in 64 KiB chunks and sends them to the response body through a queue of four. The pump, not the body, owns the job directory and the permit. If the client stops reading for `IO_IDLE_TIMEOUT_SECONDS`, the pump stops, logs `RESPONSE_STALLED` and releases both.
 
-Every 200 carries `Content-Length`, `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers and `Server-Timing`. An error after detection also carries `Server-Timing`. `rest/timing.rs` builds the header and computes the overhead and the strict overhead for the `conversion finished` log line.
+Every 200 carries `Content-Length`, `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers and `Server-Timing`. A detection error and a conversion error also carry `Server-Timing`. `rest/timing.rs` builds the header and computes the overhead and the strict overhead for the `conversion finished` log line.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="contract" files="main.rs rest/upload.rs detect/mod.rs rest/ops_handlers.rs rest/server.rs bundle/mod.rs preflight/mod.rs observability/mod.rs" -->
@@ -109,8 +109,8 @@ These parts of the design do not work yet:
 
 - **Engines**: `convertd serve` uses the `Unwired` engines. Every conversion answers 503 `SERVICE_UNAVAILABLE`, and `/readyz` answers 503 with `starting`. In a build with the `test-hooks` feature, `TEST_ENGINE=fake` selects the level-A fakes instead. `TEST_ENGINE=worker` is not wired either, and the office and render worker roles stop with "not built yet".
 - **ZIP output**: `output=images` and `output=bundle` answer 422 `VALIDATION_ERROR` with "output images is not available yet" or "output bundle is not available yet".
-- **OLE2 files**: `doc`, `xls`, `ppt` and encrypted OOXML answer 415 with "unsupported format: ole2". `/v1/capabilities` already lists `doc`, `xls`, `ppt` and `pps`.
-- **Warnings**: the warning rules and the pre-flight scanners are not written yet, so the service raises no warning. `Convert-Warning-Count` is always 0.
+- **OLE2 files**: `doc`, `xls`, `ppt`, `pps` and encrypted OOXML answer 415 with "unsupported format: ole2". `/v1/capabilities` already lists `doc`, `xls`, `ppt` and `pps`.
+- **Warnings**: the pre-flight scanners and the warning rules that compare their facts with the PDF are not written yet. `RENDER_CLAMPED` needs image output, so the service raises no warning. `Convert-Warning-Count` is always 0.
 - **Metrics and drain**: `/metrics` answers an empty body. On SIGTERM or SIGINT, the server stops accepting and finishes its open connections, with no drain step before that.
 <!-- /memoria:section -->
 

@@ -2,7 +2,7 @@
 
 `deploy/` holds the files that run the rs-convert image as an internal service: a kustomize base with a gVisor overlay for Kubernetes, and one Bicep file for Azure Container Apps.
 
-Know two facts before you use these files. First, the product image does not convert documents yet: convertd wires the real engines in wave two, and the `runtime` image is not built until then. Second, no file here has run against a live cluster or a live Azure environment. The files render and validate offline, and [What is verified](#what-is-verified) lists what that proves.
+Know two facts before you use these files. First, the product image does not convert documents yet: convertd wires the real engines in wave two, and the `runtime` image is not built until then. Second, no file here has run against a live cluster or a live Azure environment. The Kubernetes files render and pass a schema check offline, the Bicep file compiles in CI, and [What is verified](#what-is-verified) lists what that proves.
 
 ## Contents
 
@@ -23,7 +23,7 @@ Both setups run one container with 2 CPU and 4 GiB per replica, `OFFICE_WORKERS=
 | Startup probe | `GET /readyz` every 2 s, 60 failures: 120 s | `GET /readyz` after 2 s, every 10 s, 10 failures: about 100 s |
 | Readiness probe | `GET /readyz` every 5 s, 2 failures | the same |
 | Liveness probe | `GET /healthz` every 10 s, timeout 3 s, 3 failures | the same |
-| Termination grace | `preStop` sleep 5 s, then 230 s (5 + 210 + 15) | 225 s (`shutdownGraceSeconds` + 15), no `preStop` |
+| Termination grace | 230 s in total (5 s `preStop` sleep + 210 + 15) | 225 s (`shutdownGraceSeconds` + 15), no `preStop` |
 | Temp volume on `/tmp` | `emptyDir` with `sizeLimit: 4Gi` on node disk | `EmptyDir` on the replica storage. The platform sets its size |
 | `TMP_MAX_BYTES` | 3221225472 (3 GiB) | 3221225472 (`tmpMaxBytes`) |
 | Request time limit | none from the platform | 240 s on the ingress |
@@ -86,7 +86,7 @@ For a private registry, set `registryServer` and `registryIdentityId`. The ident
 <!-- memoria:section id="lifecycle" files="k8s/base/deployment.yaml aca/main.bicep" -->
 ## Shutdown and rollout
 
-convertd gets `SIGTERM` when the platform stops a replica. The manifests set `SHUTDOWN_GRACE_SECONDS=210`, the same as `TIMEOUT_MAX_SECONDS`, so a job with the longest permitted timeout can finish. With the convertd default of 30 s, each rollout stops every conversion that runs longer than 30 s. The platform grace is 15 s more than `SHUTDOWN_GRACE_SECONDS`, so the platform does not kill the process first.
+convertd gets `SIGTERM` when the platform stops a replica. The manifests set `SHUTDOWN_GRACE_SECONDS=210`, the same as `TIMEOUT_MAX_SECONDS`, so a job with the longest permitted timeout can finish. With the convertd default of 30 s, each rollout stops every conversion that runs longer than 30 s. After `SIGTERM`, the platform waits 15 s more than `SHUTDOWN_GRACE_SECONDS`, so it does not kill the process first.
 
 On Kubernetes, the `preStop` sleep of 5 s comes first, so the Service removes the endpoint before `SIGTERM`. The native `sleep` action needs Kubernetes 1.30 or later. The rollout uses `maxSurge: 1` and `maxUnavailable: 0`. The new pod is ready before the old one stops, so a long grace delays only the exit of the old pod.
 
@@ -100,7 +100,7 @@ These checks ran on 2026-11-25. Plan 003 steps 8 to 10 do the live checks, on th
 
 | Check | Kubernetes | Azure Container Apps |
 | --- | --- | --- |
-| The files render or compile | `kubectl kustomize` (v1.33.9) renders the base and the overlay | not run locally. CI runs `az bicep build` |
+| The files render or compile | `kubectl kustomize` (v1.33.9) renders the base and the overlay | not run locally. `az bicep build` passes in CI |
 | Schema | `kubeconform -strict` (v0.8.0) passes for all 7 resources | not checked |
 | A live deployment turns ready | not done | not done |
 | Probe, grace and storage limits | standard Kubernetes fields. The `preStop` sleep needs 1.30 or later | believed: at most 10 probe failures, at most 600 s grace, 8 GiB storage at 2 vCPU |

@@ -176,18 +176,18 @@ The client ignores manifest fields that it does not know, and it keeps every enu
 <!-- memoria:section id="contributing" files="oapi-codegen.yaml convert/api_surface_test.go contract/go.mod contract/harness_test.go contract/cmd/speccheck/main.go" -->
 ## For contributors
 
-`convert` wraps the generated client in `internal/api/client.go`. oapi-codegen generates that file from `../api/openapi.yaml` with the settings in `oapi-codegen.yaml`. Go's internal rule keeps the generated package out of other modules. No exported identifier in `convert` uses a generated type, and `convert/api_surface_test.go` fails when one does.
+`convert` wraps the generated client in `internal/api/client.go`. oapi-codegen generates that file from `../api/openapi.yaml` with the settings in `oapi-codegen.yaml`. Go's internal rule lets only code under `client/` import the generated package. No exported identifier in `convert` uses a generated type, and `convert/api_surface_test.go` fails when one does.
 
 When you change the spec:
 
 1. Run `../generate.sh`. It validates the spec, regenerates the client and runs `go vet` and `go test -race`.
 2. Commit the spec and `internal/api/client.go` together.
 3. Commit a facade change in a separate commit.
-4. Run `../generate.sh --check`. It fails when a generated file differs from the spec or from `HEAD`. CI does not run it at this time.
+4. Run `../generate.sh --check`. It fails when a generated file differs from the spec or from `HEAD`, or when the repository has an untracked file under `api/` or `client/`. CI does not run it at this time.
 
-`contract/` is a nested module that is never published or tagged. It holds `speccheck` and the contract tests. `speccheck validate` checks one spec, and `speccheck compare` checks the emitted spec against the reference.
+`contract/` is a nested module that is never published or tagged. It holds `speccheck`, the validating transport that checks each response against the spec, the test harness and their self-tests. No live contract case exists yet. `speccheck validate` checks one spec, and `speccheck compare` checks the emitted spec against the reference.
 
 `../scripts/contract_test.sh` builds convertd with the `test-hooks` feature and runs the contract tests against the level A fake. `../scripts/contract_test.sh --image REF` runs them against an image. `cd contract && go test ./...` runs only the spec tools and the self-tests, and it needs no server.
 
-The contract tests prove that the service, the spec and this client agree on the responses that the cases exercise. They do not prove the quality of a conversion.
+The live cases will prove that the service, the spec and this client agree on the responses that the cases exercise. They will not prove the quality of a conversion. Until they exist, a pass proves only that the harness and the validating transport work.
 <!-- /memoria:section -->

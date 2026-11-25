@@ -43,7 +43,7 @@ The `origin` field of each entry in `expected.json` names its kind:
 
 | `origin` | Made by | In git | Hash |
 | --- | --- | --- | --- |
-| `generated` | `generate.py`, from python-docx, python-pptx, openpyxl, msoffcrypto and hand-written XML, RTF and PDF | No, written to `out/` | Pinned, except `docx-encrypted` |
+| `generated` | `generate.py`, from python-docx, python-pptx, openpyxl, msoffcrypto, Pillow and hand-written XML, RTF and PDF | No, written to `out/` | Pinned, except `docx-encrypted` |
 | `hostile` | `generate.py --hostile`: the zip bomb, the XML entity bomb, the PNG pixel bomb, a truncated DOCX and HTML named `.doc` | No, written to `out/hostile/` | Pinned |
 | `fixture` | Committed bytes that no tool here can make, under `fixtures/` | Yes | Required, with a `licence` record |
 | `derived` | LibreOffice, from a generated file (`doc`, `xls`, `ppt`) | No | A hash or an `unhashed` reason, as for generated files |
@@ -63,13 +63,13 @@ The private corpus lives in `CORPUS_PRIVATE_DIR`, by default `corpus/private/`, 
 
 `expected.json` lists every file with its path, origin, hash, tags, pre-flight facts and cases. `expected.schema.json` is its JSON Schema (draft 2020-12, schema version 1), and `corpus-bench validate` applies it.
 
-- **`preflight`** gives what the scanners must read from the bytes alone: format, encryption, the declared slide count, the requested Latin font families and the macro parts. Lane 001 uses it in unit tests with no engine. `null` means that a scan does not apply or cannot run. An empty list means that the scan ran and found nothing.
-- **`cases`** gives one request each: the `options` part, as the API takes it, and an `expect` block. A case uses `output=bundle` by default, because only the ZIP carries the manifest.
+- **`preflight`** gives what the scanners must read from the bytes alone: format, encryption, the declared slide count, the requested Latin font families and the macro parts. It is for the unit tests of lane 001, which run with no engine. No test reads it yet. `null` means that a scan does not apply or cannot run. An empty list means that the scan ran and found nothing.
+- **`cases`** gives one request each: the `options` part, as the API takes it, and an `expect` block. Most cases set `output` to `bundle`, because only the ZIP carries the manifest. The options go to the service as they are, so a case without `output` gets the API default, `pdf`.
 - **`expect`** gives the status, and the error `code` when the status is not 200. It can also give the format, family, PDF origin, page count, warnings, blank pages and the allowed canary connections (always 0).
 - **`warnings`** match as a multiset on code and page. `detail` matches as a subset, and `"*"` matches any value. `unless_installed` drops a font warning when `/v1/capabilities` lists the family.
 - **`page_count`** is a number, a `{min, max}` range or `"unrecorded"`. Seven cases are `"unrecorded"`: their count depends on layout, and a person must copy it from a reviewed `check` run.
 
-The requested fonts follow the real template parts. The python-docx template has Calibri as its major font and Cambria as its minor font. Its default text uses the minor font, so every generated DOCX requests Cambria. The warning rules are in [the 005 plan, section 5](../docs/ledger/005-corpus-bench/plan.md).
+The requested fonts follow the real template parts. The python-docx template has Calibri as its major font and Cambria as its minor font. Its default text uses the minor font, so a generated DOCX requests Cambria unless its theme changes the minor font, as in `docx-aptos-theme`. The warning rules are in [the 005 plan, section 5](../docs/ledger/005-corpus-bench/plan.md).
 <!-- /memoria:section -->
 
 <!-- memoria:section id="hashes" files="generate.py expected.json requirements.txt" -->
@@ -98,7 +98,7 @@ The generator needs Python 3.13. Run Python with `-I`, so that environment varia
 
 On an Apple-silicon Mac, step 3 took about 12 s and wrote 47 MB (measured once with the pins in `requirements.txt`). Without `--hostile`, the generator leaves out the hostile files and the canaries, and `validate` then reports them as missing.
 
-Each run checks its own output. Every file must open in its Python library, the facts that the expectations use must read back from the saved bytes, and the size bounds in `SIZE_BOUNDS` must hold. A failed check stops the run with the file id.
+Each run checks its own output. Every file must open in its Python library, except the hostile files in `NEVER_PARSED`. The facts that the expectations use must read back from the saved bytes, and the size bounds in `SIZE_BOUNDS` must hold. A failed check stops the run with the file id.
 
 `generate.py` has three other modes:
 
@@ -116,9 +116,11 @@ A new generated file needs a builder and an entry:
 2. Add the id, the path under `out/`, the builder and the hostile flag to `ENTRIES`.
 3. If the file has a fact that an expectation depends on, read it back in `check_facts`.
 4. Add the entry and its cases to `expected.json`.
-5. Run `generate.py --write-hashes`, then `generate.py --check` and `corpus-bench validate`.
+5. Run `generate.py --write-hashes`, then `generate.py --check`.
 
-If a file cannot have stable bytes, add its id and the reason to `UNHASHED`. If the file is hostile, check only its size and headers in `check_hostile`, and never parse it.
+These two modes generate the files into a temporary directory. `validate` reads `corpus/out`, so write the corpus again with step 3 of [Generation](#generation) before you run `corpus-bench validate`.
+
+If a file cannot have stable bytes, add its id and the reason to `UNHASHED`. If the generator must never parse the file, add its id to `NEVER_PARSED`. The self-check then gives it only to `check_hostile`, which checks its size and headers.
 
 A committed fixture needs `sha256` and a `licence` record (`spdx`, `source`, and an optional `url` and `notice`) in its entry. `validate` fails on a fixture file that `expected.json` does not list.
 

@@ -3,7 +3,7 @@
 
 `src/ipc/` defines the frames that the supervisor and a worker send over the worker's stdin and stdout pipes. It is internal: no other lane depends on these types.
 
-Only paths and options cross the pipe. The upload, the PDF and the page images stay in the job directory, where the worker reads and writes them. The types are serde types for the wire, not domain types: `src/engines/` converts between the two.
+Only paths and options cross the pipe. The upload, the PDF and the page images stay in the job directory, where the worker reads and writes them. The types are serde types for the wire, not domain types. The engine adapters in `src/engines/` will convert between the two, and they are not built yet.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="contract" files="frame.rs" -->

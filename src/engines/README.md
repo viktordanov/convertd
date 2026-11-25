@@ -7,7 +7,7 @@ Three duties apply to every change in this folder:
 
 - **No supervisor code waits on a child outside the reaper.** `clippy.toml` bans `Command::output`, `Command::status`, `Child::wait`, `Child::try_wait` and `Child::wait_with_output`. A one-off helper program runs through `Spawner::run_to_completion`.
 - **Every worker starts through `Spawner::spawn`.** The spawn runs on the long-lived `convertd-spawner` thread, because on Linux the parent-death signal of a worker follows the thread that started it.
-- **A worker leaves only by SIGKILL of its process group.** The supervisor never asks a worker to shut down, so no LibreOffice teardown runs. The [worker README](../worker/README.md) gives the reason.
+- **The supervisor ends a worker only by SIGKILL of its process group.** The supervisor never asks a worker to shut down, so no LibreOffice teardown runs. The [worker README](../worker/README.md) gives the reason.
 
 The pool runs today with the `test` role only. The office and render engines, the adapters for the engine traits and the start of the pools in `convertd serve` are not built yet. [Not built yet](#not-built-yet) lists them.
 
@@ -50,7 +50,7 @@ The reaper wakes on each SIGCHLD and every 2 s (`REAP_TICK`) as a safety net. Fo
 
 After that, it sweeps the groups of dead children with `waitid(P_PGID)` until `ECHILD`. The reaper touches only the PIDs that its own `Spawner` registered. Thus two spawners in one test process, or a library that waits on its own child, keep their exit statuses.
 
-`ReaperMode::Owned` is the default for tests and the `engine` CLI. `ReaperMode::ProcessWide` is for `convertd serve`. It also reaps unknown children and logs each one as `stray child reaped`. On Linux it makes the supervisor a child subreaper first, so strays that leave their group reparent to it. In this mode, other code in the process must not wait on a child of its own.
+`ReaperMode::Owned` is for tests and the `engine` CLI. `ReaperMode::ProcessWide` is for `convertd serve`. It also reaps unknown children and logs each one as `stray child reaped`. On Linux it makes the supervisor a child subreaper first, so strays that leave their group reparent to it. In this mode, other code in the process must not wait on a child of its own.
 
 `ChildHandle::kill_group()` sends SIGKILL to the group under the registry lock. It sends nothing and returns `false` once the child is reaped, so a recycled PID never gets the signal. `ChildHandle::wait()` waits for the reaper and is cancel safe. When the last `Spawner` handle is dropped, it kills and reaps every child that is still registered, before it returns.
 
@@ -85,7 +85,7 @@ A lease also reports where its time went. `queued()` is the wait for a permit, a
 
 `Pool::drain()` makes every new lease `Unavailable` and releases the waiting leases. `Pool::shutdown(grace)` drains, then waits up to `grace` for busy leases to end. Then it kills every worker of the pool, waits for starts that are under way, and removes the slot directories. It removes the slot root too when no other pool has slots in it.
 
-The manager logs these events:
+The pool logs these events:
 
 - `worker ready`, with `role`, `pool`, `worker_id`, `pid`, `generation`, `spawn_us`, `bind_us` and `rss_bytes`. `spawn_us` runs from the spawn request to `Ready` and includes `bind_us`. The slot preparation is outside it.
 - `worker recycled`, with the reason `jobs`, `rss`, `age` or `error`, and `worker killed`, with the reason `timeout` or `cancelled`.
@@ -149,7 +149,7 @@ A worker never gets `LC_ALL`, because it overrides `LC_PAPER`. `WorkerEnv::lc_al
 <!-- memoria:section id="failure" files="error.rs" -->
 ## Errors
 
-`EngineFailure` has the variants of the domain's `EngineError` (`src/domain/engine.rs`), so the adapters only convert one into the other. Its texts are fixed, because worker messages can hold paths. The worker message goes to the log only. The conversions are as follows:
+`EngineFailure` has the variants of the domain's `EngineError` (`src/domain/engine.rs`), so the adapters will only convert one into the other. Its texts are fixed, because worker messages can hold paths. The worker message goes to the log only. The conversions are as follows:
 
 - **Lease errors**: `QueueFull`, `QueueTimeout` and `Unavailable` keep their names. `DeadlineExpired` becomes `Timeout`.
 - **Call errors**: `Timeout` stays. `Crashed` and `Protocol` become `Crashed`, because the pool killed the worker in both cases.
@@ -202,7 +202,7 @@ The lease alone took 0.1 µs at p50. Spawn to `Ready` is the floor for a process
 
 These parts of plan 002 do not exist yet:
 
-- The office worker with LibreOfficeKit and the render worker with PDFium (steps 7 and 8).
+- The render worker with PDFium and the office worker with LibreOfficeKit (steps 7 and 8).
 - The implementations of `OfficeEngine` and `PdfEngine`, and the `Engines` facade that `convertd serve` starts (step 9). Until then, `serve` uses lane 001's `Unwired` engines, without `TEST_ENGINE` and with `TEST_ENGINE=worker`. Every conversion then gets 503.
 - The RSS kill during a job. `PoolSpec::kill_rss` exists, but the pool does not enforce it (step 10).
 - Image assembly in a real engine, and the poison memory for documents that hang or crash (steps 11 and 12).

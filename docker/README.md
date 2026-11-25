@@ -25,7 +25,7 @@ The image is `debian:trixie-slim` with only what convertd uses. Each part has a 
 - **No network tools.** curl, ca-certificates and procps are not in the product image. All downloads happen in the `engines` build stage.
 - **No documentation.** The dpkg excludes in `dpkg/docs.cfg` drop docs, man pages and message catalogs before dpkg unpacks them. They keep the `copyright` file of each package.
 
-The image runs as user and group `10001:10001` (`convertd`), with `HOME=/tmp`. The root file system is read-only in every deployment, and `/tmp` is the only writable path. The image ships nothing under `/tmp`, because a mount there hides it. There is no init process: convertd is PID 1 and reaps its own children.
+The image runs as user and group `10001:10001` (`convertd`), with `HOME=/tmp`. The Kubernetes manifest and the engine check make the root file system read-only, and `/tmp` is the only writable path. Container Apps is believed to have no read-only option. The image ships nothing under `/tmp`, because a mount there hides it. There is no init process: convertd is PID 1 and reaps its own children.
 
 The paths and variables that other parts of the service depend on:
 
@@ -82,7 +82,7 @@ The build arguments:
 | `RUST_IMAGE`, `RUNTIME_BASE`, `CARGO_CHEF_VERSION` | base images by index digest, and the cargo-chef version |
 | `FONTS_CJK` | `1` adds Noto CJK (size not measured) |
 | `CARGO_JOBS` | Cargo jobs per platform, 2 by default |
-| `CONVERTD_VERSION`, `CONVERTD_COMMIT`, `CONVERTD_BUILD_DATE` | the values that `convertd --version` prints |
+| `CONVERTD_VERSION`, `CONVERTD_COMMIT`, `CONVERTD_BUILD_DATE` | the OCI version, revision and created labels. convertd also compiles in `CONVERTD_COMMIT` for `/v1/capabilities` and the engine fingerprint. `convertd --version` prints the version from `Cargo.toml` |
 <!-- /memoria:section -->
 
 <!-- memoria:section id="contract" files="fonts/fonts.json fonts/10-libreoffice-fonts.conf fonts/35-rs-convert-aliases.conf fonts/probe-families.txt dpkg/fonts.cfg write-build-info.sh install-engines.sh" -->
@@ -109,7 +109,7 @@ Devanagari, Thai, Ethiopic and CJK have no font. Text in these scripts renders a
 
 The fontconfig cache is built into the image, so no worker writes a user cache at start. This works only if fontconfig and LibreOffice use the same directory names. LibreOffice registers `share/fonts/truetype` and `program/resource/common/fonts` by their real path, `/opt/libreoffice26.8/…`, and fontconfig keys its cache on the path as written. Thus `install-engines.sh` rewrites `fonts/10-libreoffice-fonts.conf` to the real directory before `fc-cache` runs. With the symlink path, each LibreOffice start wrote two cache files under `$HOME/.cache/fontconfig`.
 
-To add licensed fonts, build a derived image. It copies the fonts, runs `fc-cache -s -f`, and runs `/opt/convertd/write-build-info.sh` again as root, so `build-info.json` stays true. Private fonts then never enter this repository.
+To add licensed fonts, build a derived image. It copies the fonts, runs `fc-cache -s -f`, and runs `/opt/convertd/write-build-info.sh` again as root, so `build-info.json` stays true. The script needs `LO_VERSION` set to the four-part build, such as `26.8.3.1`, because the image does not set it. Private fonts then never enter this repository.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="library-check" files="Dockerfile libreoffice/ldd-allow.txt" -->
@@ -123,7 +123,7 @@ The `lib-check` stage runs `readelf -d` on every LibreOffice and PDFium shared o
 <!-- memoria:section id="pins" files="Dockerfile install-engines.sh" -->
 ## Moving to a new LibreOffice or PDFium
 
-Every download has an exact version and a SHA-256 check, and an empty hash fails the build. The commit that changes a pin records each new value and where it came from. Do the monthly rebuild the same way: bump the base image digests and the engine pins together.
+Every engine download has an exact version and a SHA-256 check, and an empty hash fails the build. Debian packages are not pinned: a rebuild gets the current trixie packages for the pinned base image. The commit that changes a pin records each new value and where it came from. Do the monthly rebuild the same way: bump the base image digests and the engine pins together.
 
 For a new LibreOffice release:
 
