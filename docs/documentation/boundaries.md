@@ -33,7 +33,7 @@ Keep the API description short and link to the spec. Keep design history in `PLA
 
 ## src/README.md
 
-Give a contributor the mental model of the `convertd` crate. Start with the process model: one supervisor, office and render workers, and why every parser runs in a worker process that the supervisor can kill. Then the layers (domain, rest, detect, jobs, bundle, engines, worker, ipc) and the dependency rule between them. Then the path of one request as a tree, from the upload to the response. Link to the three worker-side READMEs for their detail, and to the configuration table instead of repeating it.
+Give a contributor the mental model of the `convertd` crate. Start with the process model: one supervisor, office and render workers, and why every engine runs in a worker process that the supervisor can kill. The supervisor itself runs only bounded detection of the format: the signature, the ZIP central directory and a few small entries. Then the layers (domain, rest, detect, jobs, bundle, engines, worker, ipc) and the dependency rule between them. Then the path of one request as a tree, from the upload to the response. Link to the three worker-side READMEs for their detail, and to the configuration table instead of repeating it.
 
 ## src/engines/, src/worker/ and src/ipc/ READMEs
 
