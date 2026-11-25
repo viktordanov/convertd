@@ -1,0 +1,12 @@
+# deploy/k8s/overlays/gvisor/kustomization.yaml
+# Same pod under gVisor. Needs a RuntimeClass named "gvisor" (see runtimeclass.yaml).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - target: {kind: Deployment, name: convertd}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/runtimeClassName
+        value: gvisor

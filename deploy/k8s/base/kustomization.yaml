@@ -1,0 +1,22 @@
+# deploy/k8s/base/kustomization.yaml. Render: kubectl kustomize deploy/k8s/base
+# The image name is a parameter. Set it in your own overlay, outside the repository:
+#   resources: [<path to>/deploy/k8s/base]        # or .../overlays/gvisor
+#   images: [{name: rs-convert, newName: <registry>/rs-convert, newTag: v<x.y.z>}]
+# or run `kustomize edit set image rs-convert=<registry>/rs-convert:v<x.y.z>` in it.
+# The API key Secret is not part of the base; create it once per namespace:
+#   kubectl create secret generic convertd-api-key --from-literal=API_KEY='<key>'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+labels:
+  - pairs:
+      app.kubernetes.io/name: convertd
+      app.kubernetes.io/part-of: rs-convert
+    includeSelectors: false   # selectors are explicit in each file and never change
+    includeTemplates: true
+resources:
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml
+images:
+  - name: rs-convert          # the placeholder used in deployment.yaml
+    newTag: v0.0.0            # overlays replace newName and newTag

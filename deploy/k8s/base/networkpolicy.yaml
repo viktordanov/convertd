@@ -1,0 +1,17 @@
+# deploy/k8s/base/networkpolicy.yaml.
+# The service needs no outbound network, not even DNS (PLAN.md:432), so all egress is denied.
+# Ingress is open to the cluster on 8080; an overlay narrows it with `from:` selectors.
+# Enforced only if the cluster's CNI implements NetworkPolicy (unverified for the owner's cluster).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: convertd
+spec:
+  podSelector:                     # explicit: kustomize does not create matchLabels here,
+    matchLabels:                   # and an empty selector would cut egress for the whole namespace
+      app.kubernetes.io/name: convertd
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - {port: 8080, protocol: TCP}
+  egress: []

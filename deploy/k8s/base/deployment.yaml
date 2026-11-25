@@ -1,0 +1,95 @@
+# deploy/k8s/base/deployment.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: convertd
+spec:
+  replicas: 1                       # minimum 1: workers take time to warm (PLAN.md:541)
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0             # the new pod is ready before the old one drains
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: convertd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: convertd
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # preStop (5) + SHUTDOWN_GRACE_SECONDS (210) + margin (15). See plan.md, Decision 1.
+      terminationGracePeriodSeconds: 230
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault       # container runtime default filter, not item 006
+      containers:
+        - name: convertd
+          image: rs-convert
+          args: ["serve"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef: {name: convertd-api-key, key: API_KEY}
+            - name: API_KEY_PREVIOUS
+              valueFrom:
+                secretKeyRef: {name: convertd-api-key, key: API_KEY_PREVIOUS, optional: true}
+            - {name: LOG_MODE, value: prod}
+            - {name: TMP_DIR, value: /tmp/convert}
+            # Explicit: with no CPU limit, "half the cores" would read the node's cores.
+            - {name: OFFICE_WORKERS, value: "1"}
+            - {name: RENDER_WORKERS, value: "2"}
+            - {name: TIMEOUT_MAX_SECONDS, value: "210"}
+            - {name: SHUTDOWN_GRACE_SECONDS, value: "210"}
+            - {name: SANDBOX, value: "off"}
+            # The run-time disk budget for everything under TMP_DIR (lane 001). It MUST stay
+            # below sizeLimit minus the headroom (1 GiB for worker slots, profiles and logs):
+            # TMP_MAX_BYTES <= 4Gi - 1Gi. Change them together, or a full volume evicts the pod.
+            - {name: TMP_MAX_BYTES, value: "3221225472"}     # 3 GiB
+          resources:
+            requests:
+              cpu: "2"
+              memory: 4Gi
+              ephemeral-storage: 4Gi       # = sizeLimit: the scheduler reserves the whole volume
+            limits:
+              memory: 4Gi                # no CPU limit on purpose: CFS throttling adds latency
+              ephemeral-storage: 4Gi       # = request = sizeLimit; logs fit in the 1 GiB headroom
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:                  # up to 120 s for the first warm worker per pool
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:                 # supervisor only; a busy pool never restarts the pod
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              sleep: {seconds: 5}        # endpoint removal propagates before SIGTERM; K8s >= 1.30
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 4Gi               # TMP_MAX_BYTES (3 GiB) + 1 GiB headroom (slots, profiles, logs); node disk

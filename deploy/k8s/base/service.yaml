@@ -1,0 +1,14 @@
+# deploy/k8s/base/service.yaml. Internal only: no Ingress in the base.
+# Any proxy placed in front must allow requests longer than 240 s.
+apiVersion: v1
+kind: Service
+metadata:
+  name: convertd
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: convertd
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
