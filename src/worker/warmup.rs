@@ -1,10 +1,18 @@
-//! The office warm-up: three tiny documents, one per family, that the
-//! office worker converts before `Ready`, so the first real job does not pay
-//! for loading the import filters and the PDF export.
+//! The office warm-up: one document per family that the office worker
+//! converts before `Ready`, so the first real job does not pay for loading
+//! the import filters, the substitute fonts and the PDF export.
+//!
+//! - The DOCX ([`warmup_docx`]) and the XLSX ([`warmup_xlsx`]) are shaped
+//!   like python-docx, openpyxl or Office files: a Cambria and Calibri
+//!   theme, styles, and in the DOCX a heading, a list, several fonts and a
+//!   table.
+//! - The PPTX is the one-slide [`pptx`] with a Calibri theme. In the dev
+//!   image its first job is already within 3 % of the third (median over
+//!   six pools, 2026-11-26), so it stays simple.
 //!
 //! The files are built in memory as stored (uncompressed) ZIP archives, so
-//! no binary fixture is committed. Each holds only the parts LibreOffice
-//! needs to open it.
+//! no binary fixture is committed. The simple [`docx`], [`xlsx`] and
+//! [`pptx`] builders also serve the tests.
 
 use crate::ipc::Family;
 

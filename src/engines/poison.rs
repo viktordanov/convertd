@@ -24,6 +24,19 @@ pub const TIMEOUT_STRIKES: u32 = 1;
 /// Strikes for a call that crashed again after its retry.
 pub const CRASH_STRIKES: u32 = 2;
 
+/// The strikes one engine call earns, the one rule for every operation:
+/// a timeout 1, a crash 2 when it survived the retry and 1 when there was
+/// no time for one, a protocol error or the RSS kill 0.
+pub fn strikes_for(err: &crate::engines::pool::CallError, retried: bool) -> u32 {
+    use crate::engines::pool::CallError;
+    match err {
+        CallError::Timeout => TIMEOUT_STRIKES,
+        CallError::Crashed { .. } if retried => CRASH_STRIKES,
+        CallError::Crashed { .. } => TIMEOUT_STRIKES,
+        CallError::Protocol(_) | CallError::TooBig { .. } => 0,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Entry {
     strikes: u32,
@@ -138,6 +151,17 @@ mod tests {
 
     fn list(ttl_ms: u64) -> Arc<PoisonList> {
         PoisonList::new(Duration::from_millis(ttl_ms)).unwrap()
+    }
+
+    #[test]
+    fn one_rule_for_the_strikes() {
+        use crate::engines::pool::CallError;
+        let crash = CallError::Crashed { status: None };
+        assert_eq!(strikes_for(&CallError::Timeout, false), 1);
+        assert_eq!(strikes_for(&crash, true), 2);
+        assert_eq!(strikes_for(&crash, false), 1);
+        assert_eq!(strikes_for(&CallError::Protocol("x".into()), true), 0);
+        assert_eq!(strikes_for(&CallError::TooBig { rss: 1 }, false), 0);
     }
 
     #[test]

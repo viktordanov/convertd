@@ -152,9 +152,10 @@ impl OfficeWorker {
         Ok(worker)
     }
 
-    /// Converts one tiny document of each family, so the first real job
-    /// does not load the import filters and the PDF export. A failure is
-    /// reported on stderr and does not stop the worker.
+    /// Converts the warm-up documents of `warmup::files` (one per family,
+    /// shaped like real ones), so the first real job does not load the
+    /// import filters, the substitute fonts and the PDF export. A failure
+    /// is reported on stderr and does not stop the worker.
     fn warm_up(&mut self) {
         let dir = std::env::temp_dir().join("convertd-warmup");
         if let Err(err) = std::fs::create_dir_all(&dir) {

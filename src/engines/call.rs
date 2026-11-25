@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::domain::engine::{Admission as DomainAdmission, EngineError, EngineTiming, WorkerRef};
 use crate::engines::error::EngineFailure;
-use crate::engines::poison::{CRASH_STRIKES, Poison, TIMEOUT_STRIKES};
+use crate::engines::poison::{Poison, strikes_for};
 use crate::engines::pool::{Admission, CallError, Pool};
 use crate::ipc::{Op, Output, Reply, WorkerErrorKind};
 
@@ -146,13 +146,9 @@ pub async fn call_with_poison(
             }
             Err(err) => {
                 if let Some(p) = poison {
-                    match err {
-                        CallError::Timeout => p.list.strike(&p.key, TIMEOUT_STRIKES),
-                        CallError::Crashed { .. } if retried => {
-                            p.list.strike(&p.key, CRASH_STRIKES);
-                        }
-                        CallError::Crashed { .. } => p.list.strike(&p.key, TIMEOUT_STRIKES),
-                        CallError::Protocol(_) | CallError::TooBig { .. } => {}
+                    let strikes = strikes_for(&err, retried);
+                    if strikes > 0 {
+                        p.list.strike(&p.key, strikes);
                     }
                 }
                 return Err(EngineFailure::from(err).into());

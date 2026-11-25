@@ -247,3 +247,72 @@ async fn renders_are_poisoned_too_and_ttl_zero_turns_it_off() {
     )
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_render_crash_counts_by_the_same_rule_as_a_convert_crash() {
+    within(
+        TEST,
+        "a_render_crash_counts_by_the_same_rule_as_a_convert_crash",
+        async {
+            let dir = Scratch::new("poison-render-crash");
+            let panics = dir.join("panic.pdf");
+            std::fs::write(&panics, b"%PDF FAKE:PANIC").unwrap();
+            let out = dir.join("pages");
+            std::fs::create_dir_all(&out).unwrap();
+            let job = |sha256| RenderJob {
+                pdf: panics.clone(),
+                password: None,
+                pages: vec![1],
+                format: ImageFormat::Jpeg,
+                dpi: 72,
+                quality: 85,
+                max_edge: 0,
+                out_dir: out.clone(),
+                sha256,
+                max_output_bytes: 1 << 20,
+            };
+            let pool = pool(&dir.0).await;
+            let list = PoisonList::new(Duration::from_secs(60)).unwrap();
+            let pdf = PdfPdfium::new(pool.clone()).with_poison(Some(list.clone()));
+
+            // Less than 1 s left: no retry, so the crash counts one strike.
+            let no_time = [5u8; 32];
+            let short = || Instant::now() + Duration::from_millis(800);
+            let err = pdf
+                .render(job(no_time), Admission::Queue, short())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Crashed);
+            assert!(
+                !list.is_poisoned(&no_time),
+                "a crash with no retry counts one strike"
+            );
+            let err = pdf
+                .render(job(no_time), Admission::Queue, short())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Crashed);
+            assert!(list.is_poisoned(&no_time), "two single strikes poison");
+
+            // Time to retry: the retry crashes too, which counts two at once.
+            let retried = [6u8; 32];
+            let long = || Instant::now() + Duration::from_secs(10);
+            let err = pdf
+                .render(job(retried), Admission::Queue, long())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Crashed);
+            assert!(
+                list.is_poisoned(&retried),
+                "a crash after its retry counts two"
+            );
+            let err = pdf
+                .render(job(retried), Admission::Queue, long())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Poisoned);
+            pool.shutdown(Duration::from_secs(1)).await;
+        },
+    )
+    .await;
+}
