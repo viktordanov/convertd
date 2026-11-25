@@ -21,12 +21,12 @@ pub fn files() -> Vec<WarmupFile> {
         WarmupFile {
             name: "warmup.docx",
             family: Family::Document,
-            bytes: docx(TEXT),
+            bytes: warmup_docx(),
         },
         WarmupFile {
             name: "warmup.xlsx",
             family: Family::Spreadsheet,
-            bytes: xlsx(TEXT),
+            bytes: warmup_xlsx(),
         },
         WarmupFile {
             name: "warmup.pptx",
@@ -137,9 +137,7 @@ pub fn pptx(text: &str) -> Vec<u8> {
     let slide_tree = format!(
         r#"<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id="2" name="Text"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="914400" y="914400"/><a:ext cx="7315200" cy="914400"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US"/><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld>"#
     );
-    let theme = format!(
-        r#"{XML}<a:theme xmlns:a="{A}" name="Warm-up"><a:themeElements><a:clrScheme name="Warm-up"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="1F497D"/></a:dk2><a:lt2><a:srgbClr val="EEECE1"/></a:lt2><a:accent1><a:srgbClr val="4F81BD"/></a:accent1><a:accent2><a:srgbClr val="C0504D"/></a:accent2><a:accent3><a:srgbClr val="9BBB59"/></a:accent3><a:accent4><a:srgbClr val="8064A2"/></a:accent4><a:accent5><a:srgbClr val="4BACC6"/></a:accent5><a:accent6><a:srgbClr val="F79646"/></a:accent6><a:hlink><a:srgbClr val="0000FF"/></a:hlink><a:folHlink><a:srgbClr val="800080"/></a:folHlink></a:clrScheme><a:fontScheme name="Warm-up"><a:majorFont><a:latin typeface="DejaVu Sans"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="DejaVu Sans"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="Warm-up"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>"#
-    );
+    let theme = theme("Calibri Light", "Calibri");
     let kind = |name: &str| {
         format!("application/vnd.openxmlformats-officedocument.presentationml.{name}+xml")
     };
@@ -224,6 +222,187 @@ pub fn pptx(text: &str) -> Vec<u8> {
     ])
 }
 
+/// A DrawingML theme with `major` (headings) and `minor` (body) Latin fonts.
+fn theme(major: &str, minor: &str) -> String {
+    const A: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
+    format!(
+        r#"{XML}<a:theme xmlns:a="{A}" name="Warm-up"><a:themeElements><a:clrScheme name="Warm-up"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="1F497D"/></a:dk2><a:lt2><a:srgbClr val="EEECE1"/></a:lt2><a:accent1><a:srgbClr val="4F81BD"/></a:accent1><a:accent2><a:srgbClr val="C0504D"/></a:accent2><a:accent3><a:srgbClr val="9BBB59"/></a:accent3><a:accent4><a:srgbClr val="8064A2"/></a:accent4><a:accent5><a:srgbClr val="4BACC6"/></a:accent5><a:accent6><a:srgbClr val="F79646"/></a:accent6><a:hlink><a:srgbClr val="0000FF"/></a:hlink><a:folHlink><a:srgbClr val="800080"/></a:folHlink></a:clrScheme><a:fontScheme name="Warm-up"><a:majorFont><a:latin typeface="{major}"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="{minor}"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="Warm-up"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>"#
+    )
+}
+
+/// The warm-up DOCX: shaped like a python-docx or Word document, so the
+/// first real job finds its import paths, fonts and layout code loaded. It
+/// has a theme with Cambria headings and Calibri body text (Caladea and
+/// Carlito in the image), styles with a heading, a bullet list, bold,
+/// italic, Arial and Times New Roman runs, and a bordered table.
+pub fn warmup_docx() -> Vec<u8> {
+    const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let rel = |name: &str| format!("{R}/{name}");
+    let kind = |name: &str| format!("application/vnd.openxmlformats-officedocument.{name}+xml");
+    let run = |text: &str, props: &str| {
+        format!("<w:r><w:rPr>{props}</w:rPr><w:t xml:space=\"preserve\">{text}</w:t></w:r>")
+    };
+    let cell = |text: &str| {
+        format!(
+            r#"<w:tc><w:tcPr><w:tcW w:w="4500" w:type="dxa"/></w:tcPr><w:p>{}</w:p></w:tc>"#,
+            run(text, "")
+        )
+    };
+    let body = format!(
+        r#"<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>{h}</w:p><w:p>{a}{b}{i}{arial}{times}</w:p><w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>{item}</w:p><w:tbl><w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="9000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="4500"/><w:gridCol w:w="4500"/></w:tblGrid><w:tr>{c1}{c2}</w:tr><w:tr>{c3}{c4}</w:tr></w:tbl><w:p>{end}</w:p>"#,
+        h = run("Warm-up heading", ""),
+        a = run("Body text in the theme font. ", ""),
+        b = run("Bold. ", "<w:b/>"),
+        i = run("Italic. ", "<w:i/>"),
+        arial = run("Arial. ", r#"<w:rFonts w:ascii="Arial" w:hAnsi="Arial"/>"#),
+        times = run(
+            "Times New Roman.",
+            r#"<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/>"#
+        ),
+        item = run("A list item.", ""),
+        c1 = cell("A1"),
+        c2 = cell("B1"),
+        c3 = cell("A2"),
+        c4 = cell("B2"),
+        end = run("The end.", ""),
+    );
+    let border =
+        |side: &str| format!(r#"<w:{side} w:val="single" w:sz="4" w:space="0" w:color="auto"/>"#);
+    let borders: String = ["top", "left", "bottom", "right", "insideH", "insideV"]
+        .iter()
+        .map(|s| border(s))
+        .collect();
+    let styles = format!(
+        r#"{XML}<w:styles xmlns:w="{W}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi" w:eastAsiaTheme="minorEastAsia" w:cstheme="minorBidi"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="en-US"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="200" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="480" w:after="0"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:rFonts w:asciiTheme="majorHAnsi" w:hAnsiTheme="majorHAnsi"/><w:b/><w:color w:val="365F91"/><w:sz w:val="28"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:pPr><w:ind w:left="720"/></w:pPr></w:style><w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:tblPr><w:tblCellMar><w:left w:w="108" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style><w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:basedOn w:val="TableNormal"/><w:tblPr><w:tblBorders>{borders}</w:tblBorders></w:tblPr></w:style></w:styles>"#
+    );
+    let numbering = format!(
+        r#"{XML}<w:numbering xmlns:w="{W}"><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="•"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr><w:rPr><w:rFonts w:ascii="Symbol" w:hAnsi="Symbol"/></w:rPr></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>"#
+    );
+    let font = |name: &str| {
+        format!(
+            r#"<w:font w:name="{name}"><w:family w:val="auto"/><w:pitch w:val="variable"/></w:font>"#
+        )
+    };
+    let fonts: String = ["Calibri", "Cambria", "Arial", "Times New Roman", "Symbol"]
+        .iter()
+        .map(|f| font(f))
+        .collect();
+    stored_zip(&[
+        (
+            "[Content_Types].xml",
+            content_types(&[
+                (
+                    "/word/document.xml",
+                    &kind("wordprocessingml.document.main"),
+                ),
+                ("/word/styles.xml", &kind("wordprocessingml.styles")),
+                ("/word/numbering.xml", &kind("wordprocessingml.numbering")),
+                ("/word/settings.xml", &kind("wordprocessingml.settings")),
+                ("/word/fontTable.xml", &kind("wordprocessingml.fontTable")),
+                (
+                    "/word/theme/theme1.xml",
+                    "application/vnd.openxmlformats-officedocument.theme+xml",
+                ),
+            ]),
+        ),
+        (
+            "_rels/.rels",
+            rels(&[("rId1", REL_DOC, "word/document.xml")]),
+        ),
+        (
+            "word/_rels/document.xml.rels",
+            rels(&[
+                ("rId1", &rel("styles"), "styles.xml"),
+                ("rId2", &rel("numbering"), "numbering.xml"),
+                ("rId3", &rel("settings"), "settings.xml"),
+                ("rId4", &rel("fontTable"), "fontTable.xml"),
+                ("rId5", &rel("theme"), "theme/theme1.xml"),
+            ]),
+        ),
+        (
+            "word/document.xml",
+            format!(
+                r#"{XML}<w:document xmlns:w="{W}" xmlns:r="{R}"><w:body>{body}</w:body></w:document>"#
+            ),
+        ),
+        ("word/styles.xml", styles),
+        ("word/numbering.xml", numbering),
+        (
+            "word/settings.xml",
+            format!(
+                r#"{XML}<w:settings xmlns:w="{W}"><w:defaultTabStop w:val="720"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>"#
+            ),
+        ),
+        (
+            "word/fontTable.xml",
+            format!(r#"{XML}<w:fonts xmlns:w="{W}">{fonts}</w:fonts>"#),
+        ),
+        ("word/theme/theme1.xml", theme("Cambria", "Calibri")),
+    ])
+}
+
+/// The warm-up XLSX: a styled workbook with the theme, Calibri cells, a
+/// bold header, numbers, a formula and two sheets, as openpyxl and Excel
+/// write them.
+pub fn warmup_xlsx() -> Vec<u8> {
+    const S: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    const R: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let rel = |name: &str| format!("{R}/{name}");
+    let kind = |name: &str| format!("application/vnd.openxmlformats-officedocument.{name}+xml");
+    let sheet = |name: &str| {
+        format!(
+            r#"{XML}<worksheet xmlns="{S}"><sheetData><row r="1"><c r="A1" t="inlineStr" s="1"><is><t>{name}</t></is></c><c r="B1" t="inlineStr" s="1"><is><t>Value</t></is></c></row><row r="2"><c r="A2" t="inlineStr"><is><t>One</t></is></c><c r="B2"><v>1.5</v></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>Two</t></is></c><c r="B3"><f>B2*2</f><v>3</v></c></row></sheetData></worksheet>"#
+        )
+    };
+    stored_zip(&[
+        (
+            "[Content_Types].xml",
+            content_types(&[
+                ("/xl/workbook.xml", &kind("spreadsheetml.sheet.main")),
+                (
+                    "/xl/worksheets/sheet1.xml",
+                    &kind("spreadsheetml.worksheet"),
+                ),
+                (
+                    "/xl/worksheets/sheet2.xml",
+                    &kind("spreadsheetml.worksheet"),
+                ),
+                ("/xl/styles.xml", &kind("spreadsheetml.styles")),
+                (
+                    "/xl/theme/theme1.xml",
+                    "application/vnd.openxmlformats-officedocument.theme+xml",
+                ),
+            ]),
+        ),
+        ("_rels/.rels", rels(&[("rId1", REL_DOC, "xl/workbook.xml")])),
+        (
+            "xl/workbook.xml",
+            format!(
+                r#"{XML}<workbook xmlns="{S}" xmlns:r="{R}"><sheets><sheet name="First" sheetId="1" r:id="rId1"/><sheet name="Second" sheetId="2" r:id="rId2"/></sheets></workbook>"#
+            ),
+        ),
+        (
+            "xl/_rels/workbook.xml.rels",
+            rels(&[
+                ("rId1", &rel("worksheet"), "worksheets/sheet1.xml"),
+                ("rId2", &rel("worksheet"), "worksheets/sheet2.xml"),
+                ("rId3", &rel("styles"), "styles.xml"),
+                ("rId4", &rel("theme"), "theme/theme1.xml"),
+            ]),
+        ),
+        ("xl/worksheets/sheet1.xml", sheet("First")),
+        ("xl/worksheets/sheet2.xml", sheet("Second")),
+        (
+            "xl/styles.xml",
+            format!(
+                r#"{XML}<styleSheet xmlns="{S}"><fonts count="2"><font><sz val="11"/><name val="Calibri"/><family val="2"/><scheme val="minor"/></font><font><b/><sz val="11"/><name val="Calibri"/><family val="2"/><scheme val="minor"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>"#
+            ),
+        ),
+        ("xl/theme/theme1.xml", theme("Cambria", "Calibri")),
+    ])
+}
+
 /// A ZIP archive of `entries`, every one stored without compression.
 pub fn stored_zip(entries: &[(&str, String)]) -> Vec<u8> {
     let mut out = Vec::new();
@@ -271,6 +450,34 @@ pub fn stored_zip(entries: &[(&str, String)]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_part_of_the_warmup_files_is_well_formed_xml() {
+        use std::io::Read;
+
+        for file in files() {
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&file.bytes))
+                .unwrap_or_else(|err| panic!("{}: {err}", file.name));
+            for i in 0..archive.len() {
+                let mut entry = archive.by_index(i).unwrap();
+                let name = format!("{:?}", entry.name());
+                let mut xml = String::new();
+                entry.read_to_string(&mut xml).unwrap();
+                let mut reader = quick_xml::Reader::from_str(&xml);
+                let mut depth = 0i32;
+                loop {
+                    match reader.read_event() {
+                        Ok(quick_xml::events::Event::Start(_)) => depth += 1,
+                        Ok(quick_xml::events::Event::End(_)) => depth -= 1,
+                        Ok(quick_xml::events::Event::Eof) => break,
+                        Ok(_) => {}
+                        Err(err) => panic!("{} {name}: {err}", file.name),
+                    }
+                }
+                assert_eq!(depth, 0, "{} {name}: unbalanced", file.name);
+            }
+        }
+    }
 
     #[test]
     fn detection_reads_each_warmup_file_as_its_family() {
