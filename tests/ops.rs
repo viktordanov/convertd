@@ -222,7 +222,7 @@ async fn capabilities_follow_the_schema_and_build_info() {
     let build_info = dir.join("build-info.json");
     std::fs::write(
         &build_info,
-        r#"{"libreoffice":"26.8.3.1","pdfium":"8179","fonts":["DejaVu Sans","Carlito","Caladea"]}"#,
+        r#"{"libreoffice":"26.8.3.1","pdfium":"8179","fonts":["DejaVu Sans,DejaVu Sans Condensed","Carlito","Caladea","Carlito"]}"#,
     )
     .unwrap();
     let path = build_info.to_str().unwrap().to_owned();

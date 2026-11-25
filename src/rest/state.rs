@@ -87,7 +87,15 @@ impl AppState {
             commit: option_env!("CONVERTD_COMMIT").map(str::to_owned),
         };
         let unknown = || "unknown".to_owned();
-        let mut fonts = build_info.fonts.clone();
+        // fc-list prints a face's names comma-separated; capabilities and
+        // the fingerprint list each face's first name.
+        let mut fonts: Vec<String> = build_info
+            .fonts
+            .iter()
+            .filter_map(|entry| entry.split(',').next())
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .collect();
         fonts.sort();
         fonts.dedup();
         let libreoffice = build_info.libreoffice.clone().unwrap_or_else(unknown);
