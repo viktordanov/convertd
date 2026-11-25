@@ -2,14 +2,18 @@
 //! dispatch goes through the lead).
 
 use std::ffi::OsString;
+use std::io::Write;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use convertd::config::{self, Config, Env};
 use convertd::engines::cli::EngineCommand;
-use convertd::rest::{healthcheck, server};
+use convertd::engines::fake::Unwired;
+use convertd::rest::state::{AppState, Engines};
+use convertd::rest::{healthcheck, openapi, server};
 use convertd::worker::Role;
-use convertd::{engines, logging, runtime, worker};
+use convertd::{engines, jobs, logging, runtime, worker};
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
@@ -109,10 +113,17 @@ fn main() -> ExitCode {
     }
 }
 
-/// Skeleton: an empty document until lane 001 step 3 emits the spec.
+/// The spec as pretty JSON and one newline on stdout, nothing else. Reads
+/// no environment and starts no logger.
 fn openapi() -> ExitCode {
-    println!("{{}}");
-    ExitCode::SUCCESS
+    let mut out = std::io::stdout().lock();
+    match writeln!(out, "{}", openapi::spec_json()).and_then(|()| out.flush()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("convertd openapi: failed to write the spec: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn healthcheck() -> ExitCode {
@@ -135,6 +146,7 @@ fn healthcheck() -> ExitCode {
 fn serve() -> Result<(), String> {
     let config = Config::from_process().map_err(|err| err.to_string())?;
     logging::init(config.server.log_mode).map_err(|err| err.to_string())?;
+    prepare_tmp_dir(&config)?;
     let runtime = runtime::serve(config.server.tokio_worker_threads)
         .map_err(|err| format!("failed to build the runtime: {err}"))?;
 
@@ -149,10 +161,51 @@ fn serve() -> Result<(), String> {
             .local_addr()
             .map_err(|err| format!("failed to read the bound address: {err}"))?;
         tracing::info!(addr = %addr, "server listening");
-        server::serve(listener, server::router(), shutdown)
+        let state = AppState::new(&config, engines(&config));
+        server::serve(listener, server::router(state), shutdown)
             .await
             .map_err(|err| format!("failed to serve: {err}"))?;
         tracing::info!("server stopped");
         Ok(())
     })
+}
+
+/// The engines for `serve`. Lane 002's engines are not wired yet (plan 001
+/// step 14): without `TEST_ENGINE`, and with `TEST_ENGINE=worker` until
+/// lane 002 wires it, every conversion is 503 and readyz says `starting`.
+fn engines(config: &Config) -> Engines {
+    #[cfg(feature = "test-hooks")]
+    if config.test_engine == Some(config::TestEngine::Fake) {
+        use convertd::engines::fake::{FakeOffice, FakePdf, FakeReadiness};
+        tracing::warn!("using the level-A fake engines (TEST_ENGINE=fake)");
+        return Engines {
+            office: Arc::new(FakeOffice::from_markers()),
+            pdf: Arc::new(FakePdf::from_markers()),
+            readiness: Arc::new(FakeReadiness::new(true)),
+        };
+    }
+    if config.test_engine.is_some() {
+        tracing::warn!("TEST_ENGINE=worker is not wired yet (lane 002); engines are unavailable");
+    } else {
+        tracing::warn!("the real engines are not wired yet (lane 002); engines are unavailable");
+    }
+    let unwired = Arc::new(Unwired);
+    Engines {
+        office: unwired.clone(),
+        pdf: unwired.clone(),
+        readiness: unwired,
+    }
+}
+
+/// Creates `TMP_DIR` and removes the job directories a crash left.
+fn prepare_tmp_dir(config: &Config) -> Result<(), String> {
+    let dir = &config.server.tmp_dir;
+    std::fs::create_dir_all(dir)
+        .map_err(|err| format!("failed to create TMP_DIR {}: {err}", dir.display()))?;
+    match jobs::job_dir::sweep_stale(dir) {
+        Ok(0) => {}
+        Ok(removed) => tracing::info!(removed, "removed stale job directories"),
+        Err(err) => tracing::warn!(error = %err, "failed to sweep TMP_DIR"),
+    }
+    Ok(())
 }

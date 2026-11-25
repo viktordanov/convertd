@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
+use crate::domain::limits::Limits;
 use crate::engines::EngineConfig;
 
 /// The cap on `TIMEOUT_MAX_SECONDS`.
@@ -237,7 +238,7 @@ impl FromStr for TestEngine {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub server: ServerConfig,
-    pub limits: LimitsConfig,
+    pub limits: Limits,
     pub engines: EngineConfig,
     pub sandbox: Sandbox,
     /// `None` means the real engines.
@@ -277,17 +278,6 @@ impl ServerConfig {
     }
 }
 
-/// Request caps.
-#[derive(Debug, Clone)]
-pub struct LimitsConfig {
-    pub max_upload_bytes: u64,
-    pub timeout_default: Duration,
-    pub timeout_max: Duration,
-    pub max_render_pages: u32,
-    pub max_dpi: u16,
-    pub max_edge_px: u32,
-}
-
 impl Config {
     /// Parses the process environment.
     pub fn from_process() -> Result<Self, ConfigError> {
@@ -296,9 +286,11 @@ impl Config {
 
     /// Parses `env`. `API_KEY` is required.
     pub fn from_env(env: &Env) -> Result<Self, ConfigError> {
+        let server = ServerConfig::from_env(env)?;
+        let limits = limits_from_env(env, server.max_output_bytes())?;
         Ok(Self {
-            server: ServerConfig::from_env(env)?,
-            limits: LimitsConfig::from_env(env)?,
+            server,
+            limits,
             engines: EngineConfig::from_env(env)?,
             sandbox: env.parse("SANDBOX", Sandbox::Off)?,
             test_engine: test_engine(env)?,
@@ -345,33 +337,31 @@ impl ServerConfig {
     }
 }
 
-impl LimitsConfig {
-    fn from_env(env: &Env) -> Result<Self, ConfigError> {
-        let timeout_max: u64 = env.positive("TIMEOUT_MAX_SECONDS", TIMEOUT_MAX_CAP_SECONDS)?;
-        if timeout_max > TIMEOUT_MAX_CAP_SECONDS {
-            return Err(ConfigError::new(
-                "TIMEOUT_MAX_SECONDS",
-                format!("must be at most {TIMEOUT_MAX_CAP_SECONDS}, got {timeout_max}"),
-            ));
-        }
-        let timeout_default: u64 = env.positive("TIMEOUT_DEFAULT_SECONDS", 120)?;
-        if timeout_default > timeout_max {
-            return Err(ConfigError::new(
-                "TIMEOUT_DEFAULT_SECONDS",
-                format!(
-                    "must be at most TIMEOUT_MAX_SECONDS ({timeout_max}), got {timeout_default}"
-                ),
-            ));
-        }
-        Ok(Self {
-            max_upload_bytes: env.positive("MAX_UPLOAD_BYTES", 125_829_120)?,
-            timeout_default: Duration::from_secs(timeout_default),
-            timeout_max: Duration::from_secs(timeout_max),
-            max_render_pages: env.positive("MAX_RENDER_PAGES", 500)?,
-            max_dpi: env.positive("MAX_DPI", 300)?,
-            max_edge_px: env.positive("MAX_EDGE_PX", 4096)?,
-        })
+/// The request caps; `max_output_bytes` comes from `TMP_MAX_BYTES`.
+fn limits_from_env(env: &Env, max_output_bytes: u64) -> Result<Limits, ConfigError> {
+    let timeout_max: u64 = env.positive("TIMEOUT_MAX_SECONDS", TIMEOUT_MAX_CAP_SECONDS)?;
+    if timeout_max > TIMEOUT_MAX_CAP_SECONDS {
+        return Err(ConfigError::new(
+            "TIMEOUT_MAX_SECONDS",
+            format!("must be at most {TIMEOUT_MAX_CAP_SECONDS}, got {timeout_max}"),
+        ));
     }
+    let timeout_default: u64 = env.positive("TIMEOUT_DEFAULT_SECONDS", 120)?;
+    if timeout_default > timeout_max {
+        return Err(ConfigError::new(
+            "TIMEOUT_DEFAULT_SECONDS",
+            format!("must be at most TIMEOUT_MAX_SECONDS ({timeout_max}), got {timeout_default}"),
+        ));
+    }
+    Ok(Limits {
+        max_upload_bytes: env.positive("MAX_UPLOAD_BYTES", 125_829_120)?,
+        timeout_default: Duration::from_secs(timeout_default),
+        timeout_max: Duration::from_secs(timeout_max),
+        max_render_pages: env.positive("MAX_RENDER_PAGES", 500)?,
+        max_dpi: env.positive("MAX_DPI", 300)?,
+        max_edge_px: env.positive("MAX_EDGE_PX", 4096)?,
+        max_output_bytes,
+    })
 }
 
 fn test_engine(env: &Env) -> Result<Option<TestEngine>, ConfigError> {

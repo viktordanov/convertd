@@ -4,17 +4,91 @@ use std::future::Future;
 use std::io;
 use std::net::IpAddr;
 
+use std::any::Any;
+
 use axum::Router;
+use axum::middleware::{from_fn, from_fn_with_state};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::serve::ListenerExt;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
+use tower_http::catch_panic::CatchPanicLayer;
+use tower_http::timeout::RequestBodyTimeoutLayer;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
-use super::ops_handlers;
+use super::middleware::{access_log, auth, request_id};
+use super::response::ApiError;
+use super::state::AppState;
+use super::{capabilities_handlers, convert_handlers, openapi, ops_handlers};
+
+/// The `/v1` routes, behind the API key.
+fn v1_routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(convert_handlers::convert))
+        .routes(routes!(capabilities_handlers::capabilities))
+}
+
+/// The probes and metrics, without a key.
+fn ops_routes() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(ops_handlers::healthz))
+        .routes(routes!(ops_handlers::readyz))
+        .routes(routes!(ops_handlers::metrics))
+}
+
+/// Every route of the spec, with its documentation. Built from the same
+/// route sets as the server, so `convertd openapi` cannot drift from it.
+pub fn api_router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::with_openapi(openapi::base())
+        .merge(v1_routes())
+        .merge(ops_routes())
+}
 
 /// Every route the service serves.
-pub fn router() -> Router {
-    Router::new().route("/healthz", get(ops_handlers::healthz))
+pub fn router(state: AppState) -> Router {
+    router_with(state, Router::new())
+}
+
+/// [`router`] plus `extra` routes (without auth), under the same layers.
+/// For tests that need a route of their own, such as one that panics.
+#[doc(hidden)]
+pub fn router_with(state: AppState, extra: Router<AppState>) -> Router {
+    let (v1, _) = v1_routes().split_for_parts();
+    let v1 = v1
+        .route_layer(from_fn_with_state(state.api_keys.clone(), auth::auth))
+        .layer(RequestBodyTimeoutLayer::new(state.io_idle_timeout));
+    let (ops, _) = ops_routes().split_for_parts();
+    Router::new()
+        .merge(v1)
+        .merge(ops)
+        .route("/swagger/doc.json", get(ops_handlers::swagger_doc))
+        .merge(extra)
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed)
+        // Outermost last: request_id, access_log, then the panic layer.
+        .layer(CatchPanicLayer::custom(panic_response))
+        .layer(from_fn(access_log::access_log))
+        .layer(from_fn(request_id::request_id))
+        .with_state(state)
+}
+
+async fn not_found() -> Response {
+    ApiError::not_found().into_response()
+}
+
+async fn method_not_allowed() -> Response {
+    ApiError::method_not_allowed().into_response()
+}
+
+fn panic_response(panic: Box<dyn Any + Send + 'static>) -> Response {
+    let message = panic
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_default();
+    ApiError::internal(format!("handler panicked: {message}")).into_response()
 }
 
 /// Binds `host:port`.
@@ -60,11 +134,27 @@ mod tests {
     use axum::http::{Request, StatusCode, header};
     use tower::ServiceExt;
 
+    use std::sync::Arc;
+
     use super::router;
+    use crate::config::{Config, Env};
+    use crate::engines::fake::Unwired;
+    use crate::rest::state::{AppState, Engines};
+
+    fn state() -> AppState {
+        let config = Config::from_env(&Env::from_pairs([("API_KEY", "k")], 2)).unwrap();
+        let unwired = Arc::new(Unwired);
+        let engines = Engines {
+            office: unwired.clone(),
+            pdf: unwired.clone(),
+            readiness: unwired,
+        };
+        AppState::new(&config, engines)
+    }
 
     #[tokio::test]
     async fn healthz_answers_ok() {
-        let response = router()
+        let response = router(state())
             .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
             .await
             .unwrap();

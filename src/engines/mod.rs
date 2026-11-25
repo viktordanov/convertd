@@ -11,3 +11,7 @@ pub mod process;
 pub mod slot;
 
 pub use config::EngineConfig;
+
+// Lane 001's level-A fakes and the shared marker parser.
+pub mod fake;
+pub mod fake_markers;
