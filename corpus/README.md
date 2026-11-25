@@ -36,7 +36,7 @@ A pass does not prove that LibreOffice output matches Microsoft Office. The file
 [`tools/corpus/README.md`](../tools/corpus/README.md) describes `corpus-bench`, the harness that reads `expected.json`.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="kinds" files="generate.py expected.json .gitignore" -->
+<!-- memoria:section id="kinds" files="generate.py expected.json" -->
 ## Kinds of file
 
 The `origin` field of each entry in `expected.json` names its kind:
