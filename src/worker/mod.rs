@@ -17,6 +17,7 @@ pub mod warmup;
 use std::fs::File;
 use std::time::{Duration, Instant};
 
+use crate::ipc::FrameError;
 use crate::ipc::frame::{read_frame, write_frame};
 use crate::ipc::{
     EngineTimes, Fatal, Init, Op, Output, PROTOCOL_VERSION, Ready, Reply, Request, Response,
@@ -153,15 +154,39 @@ fn serve(
             Op::Ping => Handled::ok(Output::Pong),
             op => engine.handle(op),
         };
+        let rss_bytes = rss.read();
         let reply = Response::Reply(Reply {
             id: call.id,
             job: jobs,
             engine: handled.engine,
-            rss_bytes: rss.read(),
+            rss_bytes,
             result: handled.result,
         });
-        send(&mut output, &reply, &mut out);
+        match write_frame(&mut output, &reply, &mut out) {
+            Ok(()) => {}
+            // Refused before any byte was written: answer with an error that
+            // fits, instead of leaving without a reply.
+            Err(FrameError::TooLarge { .. }) => {
+                let small = Response::Reply(Reply {
+                    id: call.id,
+                    job: jobs,
+                    engine: handled.engine,
+                    rss_bytes,
+                    result: Err(oversize_reply()),
+                });
+                send(&mut output, &small, &mut out);
+            }
+            Err(err) => die(0, &format!("failed to send a frame: {err}")),
+        }
     }
+}
+
+/// The error for a reply that does not fit in one frame.
+pub fn oversize_reply() -> WorkerError {
+    WorkerError::new(
+        crate::ipc::WorkerErrorKind::LimitExceeded,
+        "failed to answer: the reply exceeds the 16 MiB frame limit",
+    )
 }
 
 fn send(output: &mut File, msg: &Response, buf: &mut Vec<u8>) {
