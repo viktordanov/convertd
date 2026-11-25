@@ -79,8 +79,9 @@ pub struct ImageSettings {
 }
 
 /// The `options` part as sent, before range checks. Built by `rest/`
-/// from its DTO; every field is optional.
-#[derive(Debug, Clone, Default)]
+/// from its DTO; every field is optional. No `Debug`: it holds the
+/// password in the clear.
+#[derive(Clone, Default)]
 pub struct RawOptions {
     pub output: Option<Output>,
     pub pages: Option<String>,
