@@ -1496,6 +1496,7 @@ type ConvertDocumentResponse200Headers struct {
 	ConvertPageCount         *int
 	ConvertSourceFormat      *string
 	ConvertWarningCount      *int
+	ServerTiming             *string
 	XRequestID               *string
 }
 
@@ -2028,6 +2029,13 @@ func ParseConvertDocumentResponse(rsp *http.Response) (*ConvertDocumentResponse,
 				return nil, err
 			}
 			headers.ConvertWarningCount = &value
+		}
+		if values := rsp.Header.Values("Server-Timing"); len(values) > 0 {
+			var value string
+			if err := runtime.BindStyledParameterWithOptions("simple", "Server-Timing", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			}
+			headers.ServerTiming = &value
 		}
 		if values := rsp.Header.Values("X-Request-ID"); len(values) > 0 {
 			var value string
