@@ -87,7 +87,7 @@ Then `check` compares the fields that the expectation gives. For each `FONT_SUBS
 
 `check` prints `PASS` or `FAIL` for each case, with each failure and the observed value. It prints the observed page count of an `"unrecorded"` case as a note. Then it prints the passed and run cases for each tag. It exits 0 only if every selected case passed.
 
-On 2026-11-26, `check` ran against `TEST_ENGINE=fake convertd serve` from `main` at `1eaf591`. 7 of 49 cases passed. The others need the `images` and `bundle` outputs, the encrypted-file detection or real engines. A pass against the fake proves the HTTP-level answers only. The listener and the `/BaseFont` arbiter are not proven until LibreOffice opens the files.
+On 2026-11-26, `check` ran against `TEST_ENGINE=fake convertd serve` from `main` at `1eaf591`. 8 of 49 cases passed, after the expectation for `truncated` became 415. The others need the `images` and `bundle` outputs, the encrypted-file detection or real engines. A pass against the fake proves the HTTP-level answers only. The listener and the `/BaseFont` arbiter are not proven until LibreOffice opens the files.
 <!-- /memoria:section -->
 
 ## Later subcommands
