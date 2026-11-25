@@ -254,6 +254,17 @@ fn bytes_decide_not_names() {
 }
 
 #[test]
+fn a_docx_that_mentions_pdf_is_a_docx() {
+    let types = content_types(OOXML[0].0);
+    let bytes = zip(&[
+        entry("[Content_Types].xml", types.as_bytes()),
+        entry("word/document.xml", b"<w:t>%PDF-1.7 is a file format</w:t>"),
+    ]);
+    assert!(memchr::memmem::find(&bytes[..bytes.len().min(1024)], b"%PDF-").is_some());
+    assert_eq!(detect(&bytes).unwrap(), Format::Docx);
+}
+
+#[test]
 fn ambiguous_and_unknown_archives() {
     let types = content_types(OOXML[0].0);
     let both = zip(&[

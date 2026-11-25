@@ -21,9 +21,15 @@ const OLE2: &[u8] = &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
 
 /// Classifies `head`, the first bytes of the file (up to [`HEAD_LEN`]).
+/// The magics at offset 0 come first, so a ZIP or an image whose first KiB
+/// happens to hold `%PDF-` (a DOCX that mentions it in a stored part) is
+/// not taken for a PDF.
 pub fn sniff(head: &[u8]) -> Sniff {
-    if memchr::memmem::find(&head[..head.len().min(1024)], b"%PDF-").is_some() {
-        return Sniff::Format(Format::Pdf);
+    if head.starts_with(b"PK\x03\x04") {
+        return Sniff::Zip;
+    }
+    if head.starts_with(OLE2) {
+        return Sniff::Ole2;
     }
     if head.starts_with(b"{\\rtf") {
         return Sniff::Format(Format::Rtf);
@@ -46,11 +52,9 @@ pub fn sniff(head: &[u8]) -> Sniff {
     if is_bmp(head) {
         return Sniff::Format(Format::Bmp);
     }
-    if head.starts_with(b"PK\x03\x04") {
-        return Sniff::Zip;
-    }
-    if head.starts_with(OLE2) {
-        return Sniff::Ole2;
+    // PDF readers accept junk before the header, within the first KiB.
+    if memchr::memmem::find(&head[..head.len().min(1024)], b"%PDF-").is_some() {
+        return Sniff::Format(Format::Pdf);
     }
     Sniff::Unsupported(label(head))
 }
@@ -116,6 +120,12 @@ mod tests {
         for (head, want) in cases {
             assert_eq!(sniff(head), want, "{:?}", String::from_utf8_lossy(head));
         }
+        // A ZIP or PNG that mentions %PDF- early is still a ZIP or PNG.
+        assert_eq!(
+            sniff(b"PK\x03\x04....%PDF-1.4 in a stored part"),
+            Sniff::Zip
+        );
+        assert_eq!(sniff(b"\x89PNG\r\n\x1a\n%PDF-"), Sniff::Format(Format::Png));
         let mut late = vec![b' '; 1020];
         late.extend_from_slice(b"%PDF-1.4");
         assert_ne!(sniff(&late), Sniff::Format(Format::Pdf));
