@@ -88,7 +88,8 @@ info:
     version, LibreOffice version, PDFium version or font set.
 
   license:
-    name: TBD (to be chosen before the first public release)
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
 
 servers:
   - url: http://localhost:8080

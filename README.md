@@ -98,3 +98,8 @@ Where each proposal stands. Open work and decisions are tracked in
 Not candidates for cutting: separate worker processes with hard deadlines, the
 bounded queue, the output warnings, the baseline and corpus, and the contract
 tests.
+
+## Licence
+
+Apache-2.0. See `LICENSE`. The Docker image also bundles LibreOffice
+(MPL-2.0), PDFium (BSD-style) and fonts under their own licences.
