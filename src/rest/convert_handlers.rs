@@ -245,10 +245,14 @@ async fn success(
 ) -> Response {
     let output = received.request.output;
     let prepared = match output {
-        Output::Pdf => File::open(&result.pdf)
-            .and_then(|file| Ok((file.metadata()?.len(), file)))
-            .map(|(size, file)| Prepared::Pdf { file, size })
-            .map_err(|err| ApiError::internal(format!("failed to open the result: {err}"))),
+        Output::Pdf => {
+            // A few entries: cheap enough on this thread.
+            settle(&job);
+            File::open(&result.pdf)
+                .and_then(|file| Ok((file.metadata()?.len(), file)))
+                .map(|(size, file)| Prepared::Pdf { file, size })
+                .map_err(|err| ApiError::internal(format!("failed to open the result: {err}")))
+        }
         Output::Images | Output::Bundle => {
             let manifest = ManifestInput::new(state, received, request_id, timings);
             let job = Arc::clone(&job);
@@ -364,6 +368,15 @@ impl ManifestInput {
     }
 }
 
+/// Gives back the disk reservation that the finished engine calls did not
+/// use, so a long download holds only what is on disk. On an error the
+/// whole reservation stays until the job ends, which is safe.
+fn settle(job: &JobDir) {
+    if let Err(err) = job.settle_budget() {
+        tracing::warn!(error = %err, "failed to measure the job directory; its reservation stays");
+    }
+}
+
 /// Builds the tar.zst plan: `manifest.json`, then `document.pdf` for a
 /// bundle, then `pages/NNNN.<ext>` in page order. Sizes come from `fstat`;
 /// the page paths come from the page numbers, never from the engine's file
@@ -373,6 +386,7 @@ fn plan_tar(
     input: &ManifestInput,
     result: &ConversionResult,
 ) -> Result<Prepared, ApiError> {
+    settle(job);
     let format = input.request.images.format;
     let io = |err: std::io::Error| ApiError::internal(format!("failed to plan the bundle: {err}"));
     let pages: Vec<(String, std::path::PathBuf)> = result

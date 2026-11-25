@@ -72,6 +72,14 @@ impl App {
     }
 
     async fn send(&self, file_name: &str, data: &[u8], options: &str) -> (Response, Vec<u8>) {
+        let response = self.start(file_name, data, options).await;
+        let (parts, body) = response.into_parts();
+        let bytes = to_bytes(body, 64 << 20).await.unwrap().to_vec();
+        (Response::from_parts(parts, Body::empty()), bytes)
+    }
+
+    /// The response with its body not yet read: the job stays open.
+    async fn start(&self, file_name: &str, data: &[u8], options: &str) -> Response {
         let body = multipart(file_name, data, options);
         let request = Request::post("/v1/convert")
             .header(header::AUTHORIZATION, format!("Bearer {KEY}"))
@@ -83,10 +91,7 @@ impl App {
             .header("x-request-id", "zip-test-request")
             .body(Body::from(body))
             .unwrap();
-        let response = self.router().oneshot(request).await.unwrap();
-        let (parts, body) = response.into_parts();
-        let bytes = to_bytes(body, 64 << 20).await.unwrap().to_vec();
-        (Response::from_parts(parts, Body::empty()), bytes)
+        self.router().oneshot(request).await.unwrap()
     }
 }
 
@@ -382,6 +387,51 @@ async fn render_limits() {
     );
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["code"], "LIMIT_EXCEEDED");
+    app.assert_no_jobs().await;
+    assert_eq!(app.state.disk_budget.used(), 0);
+}
+
+/// Once the engines are done, a job holds only what is on disk, not the
+/// render's whole `max_output_bytes` (`TMP_MAX_BYTES / 4`). So bundles
+/// whose downloads are still open do not starve the next request.
+#[tokio::test]
+async fn open_downloads_hold_only_their_files() {
+    // 12 MiB: 3 MiB per render. Each upload is 1 MiB of bytes that zstd
+    // cannot shrink, so a download outlasts the pump's queue and holds its
+    // job until it is read.
+    let app = App::new(
+        "give-back",
+        &[("TMP_MAX_BYTES", "12582912")],
+        FakeBehavior::Pages(2),
+    );
+    let mut upload = pdf();
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    upload.extend((0..1 << 20).map(|_| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state as u8
+    }));
+    let mut open = Vec::new();
+    for n in 0..6 {
+        let response = app.start("a.pdf", &upload, r#"{"output":"bundle"}"#).await;
+        assert_eq!(response.status(), StatusCode::OK, "bundle {n}");
+        open.push(response);
+    }
+    // Without the give-back each open job would hold 4 MiB, and the
+    // fourth would find the budget spent.
+    let used = app.state.disk_budget.used();
+    assert!(used < 7 << 20, "{used} bytes still reserved");
+    assert!(
+        used >= 6 << 20,
+        "{used}: the open downloads keep their files"
+    );
+    let mut entries = Vec::new();
+    for response in open {
+        let bytes = to_bytes(response.into_body(), 8 << 20).await.unwrap();
+        entries.push(read_bundle(&bytes).len());
+    }
+    assert_eq!(entries, [4; 6], "manifest, PDF and two pages each");
     app.assert_no_jobs().await;
     assert_eq!(app.state.disk_budget.used(), 0);
 }
