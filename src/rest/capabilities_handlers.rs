@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum::http::header;
 use axum::response::IntoResponse;
 
-use super::openapi::{InternalError, RequestId, Unauthorized};
+use super::openapi::{InternalError, RequestIdParam, Unauthorized};
 use super::serialization::capabilities::Capabilities;
 use super::state::AppState;
 
@@ -21,7 +21,7 @@ use super::state::AppState;
     path = "/v1/capabilities",
     operation_id = "getCapabilities",
     tag = "discovery",
-    params(RequestId),
+    params(RequestIdParam),
     responses(
         (status = 200, description = "The capabilities of this deployment.",
             headers(("X-Request-ID" = String, description = "The correlation ID of this request.")),

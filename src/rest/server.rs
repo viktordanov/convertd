@@ -14,6 +14,7 @@ use axum::serve::ListenerExt;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tower_http::catch_panic::CatchPanicLayer;
+use tower_http::timeout::RequestBodyTimeoutLayer;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
@@ -55,7 +56,9 @@ pub fn router(state: AppState) -> Router {
 #[doc(hidden)]
 pub fn router_with(state: AppState, extra: Router<AppState>) -> Router {
     let (v1, _) = v1_routes().split_for_parts();
-    let v1 = v1.route_layer(from_fn_with_state(state.api_keys.clone(), auth::auth));
+    let v1 = v1
+        .route_layer(from_fn_with_state(state.api_keys.clone(), auth::auth))
+        .layer(RequestBodyTimeoutLayer::new(state.io_idle_timeout));
     let (ops, _) = ops_routes().split_for_parts();
     Router::new()
         .merge(v1)

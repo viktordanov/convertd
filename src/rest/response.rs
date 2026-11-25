@@ -273,6 +273,37 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// `attachment` with the upload's stem and `extension`: an ASCII
+/// `filename` fallback and an RFC 6266 `filename*=UTF-8''…`.
+pub fn content_disposition(file_name: Option<&str>, extension: &str) -> HeaderValue {
+    let stem = file_name
+        .map(|name| match name.rsplit_once('.') {
+            Some((stem, _)) if !stem.is_empty() => stem,
+            _ => name,
+        })
+        .filter(|stem| !stem.trim().is_empty())
+        .unwrap_or("document");
+    let ascii: String = stem
+        .chars()
+        .map(|c| match c {
+            ' '..='~' if c != '"' && c != '\\' && c != '%' => c,
+            _ => '_',
+        })
+        .collect();
+    let mut encoded = String::with_capacity(stem.len() * 3);
+    for byte in stem.bytes() {
+        if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    let value = format!(
+        "attachment; filename=\"{ascii}.{extension}\"; filename*=UTF-8''{encoded}.{extension}"
+    );
+    HeaderValue::from_str(&value).unwrap_or_else(|_| HeaderValue::from_static("attachment"))
+}
+
 /// The logged detail of an error response, read by the access log.
 #[derive(Debug, Clone)]
 pub struct ErrorDetail(pub String);
@@ -488,6 +519,35 @@ mod tests {
                 .as_deref(),
             Some("disk_full")
         );
+    }
+
+    #[test]
+    fn content_disposition_names() {
+        let cases = [
+            (
+                Some("deck.pptx"),
+                "attachment; filename=\"deck.pdf\"; filename*=UTF-8''deck.pdf",
+            ),
+            (
+                Some("report.final.docx"),
+                "attachment; filename=\"report.final.pdf\"; filename*=UTF-8''report.final.pdf",
+            ),
+            (
+                Some("Bericht über \"Q3\".docx"),
+                "attachment; filename=\"Bericht _ber _Q3_.pdf\"; filename*=UTF-8''Bericht%20%C3%BCber%20%22Q3%22.pdf",
+            ),
+            (
+                Some(".hidden"),
+                "attachment; filename=\".hidden.pdf\"; filename*=UTF-8''.hidden.pdf",
+            ),
+            (
+                None,
+                "attachment; filename=\"document.pdf\"; filename*=UTF-8''document.pdf",
+            ),
+        ];
+        for (name, want) in cases {
+            assert_eq!(content_disposition(name, "pdf"), want, "{name:?}");
+        }
     }
 
     #[test]

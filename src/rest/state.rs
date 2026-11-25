@@ -2,12 +2,14 @@
 
 use std::io;
 use std::ops::Deref;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::http::HeaderValue;
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
 
 use super::middleware::auth::ApiKeys;
 use super::openapi;
@@ -18,6 +20,7 @@ use crate::config::Config;
 use crate::domain::conversion_service::ConversionService;
 use crate::domain::engine::{OfficeEngine, PdfEngine};
 use crate::domain::readiness::Readiness;
+use crate::jobs::DiskBudget;
 
 /// The service version in capabilities, manifests and the fingerprint.
 pub const SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -43,6 +46,14 @@ impl Deref for AppState {
 
 pub struct Shared {
     pub service: ConversionService,
+    /// `MAX_CONCURRENT_REQUESTS`: taken before the body is read, released
+    /// by the response pump.
+    pub inflight: Arc<Semaphore>,
+    /// `TMP_MAX_BYTES`.
+    pub disk_budget: DiskBudget,
+    pub tmp_dir: PathBuf,
+    /// `IO_IDLE_TIMEOUT_SECONDS`: upload stall and response stall.
+    pub io_idle_timeout: Duration,
     pub api_keys: ApiKeys,
     /// `QUEUE_WAIT_SECONDS`, the `Retry-After` of a queue timeout.
     pub queue_wait_seconds: u32,
@@ -98,6 +109,10 @@ impl AppState {
                 config.limits.clone(),
                 config.server.verify_probe_render,
             ),
+            inflight: Arc::new(Semaphore::new(config.server.max_concurrent_requests)),
+            disk_budget: DiskBudget::new(config.server.tmp_max_bytes),
+            tmp_dir: config.server.tmp_dir.clone(),
+            io_idle_timeout: config.server.io_idle_timeout,
             api_keys: ApiKeys::new(
                 &config.server.api_key,
                 config.server.api_key_previous.as_ref(),

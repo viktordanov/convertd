@@ -1,10 +1,24 @@
 //! `POST /v1/convert`.
 
+use std::fs::File;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use axum::extract::{Request, State};
+use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
+use super::body::{Pump, file_body};
+use super::middleware::request_id::RequestId;
+use super::response::{ApiError, content_disposition};
+use super::timing::{RequestTimings, micros};
+use super::upload::{self, Received, UploadError};
+use crate::domain::conversion::ConversionResult;
+use crate::domain::conversion_service::{ConversionError, ConversionJob};
+use crate::jobs::JobDir;
+
 use super::openapi::{
-    BadRequest, ConversionTimeout, FileTooLarge, InternalError, RequestId, ServiceUnavailable,
+    BadRequest, ConversionTimeout, FileTooLarge, InternalError, RequestIdParam, ServiceUnavailable,
     TooManyRequests, Unauthorized, Unprocessable, UnsupportedFormat,
 };
 use super::serialization::options::ConvertRequestDoc;
@@ -37,7 +51,7 @@ use super::state::AppState;
     path = "/v1/convert",
     operation_id = "convertDocument",
     tag = "conversion",
-    params(RequestId),
+    params(RequestIdParam),
     request_body(
         content = ConvertRequestDoc,
         content_type = "multipart/form-data",
@@ -74,8 +88,199 @@ use super::state::AppState;
         (status = 504, response = ConversionTimeout),
     ),
 )]
-pub async fn convert(State(_state): State<AppState>, _request: Request) -> Response {
-    axum::http::StatusCode::NOT_IMPLEMENTED.into_response()
+pub async fn convert(State(state): State<AppState>, request: Request) -> Response {
+    let started = Instant::now();
+    let request_id = request
+        .extensions()
+        .get::<RequestId>()
+        .map(|id| id.as_str().to_owned())
+        .unwrap_or_default();
+    // Admission before the body is read: a 429 never reads the upload.
+    let Ok(permit) = Arc::clone(&state.inflight).try_acquire_owned() else {
+        return ApiError::busy().into_response();
+    };
+    let job = match JobDir::create(&state.tmp_dir, &state.disk_budget) {
+        Ok(job) => job,
+        Err(err) => {
+            return ApiError::from_upload(&upload::map_io(err), state.queue_wait_seconds)
+                .into_response();
+        }
+    };
+    let received = match upload::receive(request, &job, state.service.limits()).await {
+        Ok(received) => received,
+        Err(err) => {
+            let mut response =
+                ApiError::from_upload(&err, state.queue_wait_seconds).into_response();
+            if let UploadError::Detect(_) = err {
+                let timings = RequestTimings {
+                    recv: Some(started.elapsed()),
+                    ..Default::default()
+                };
+                response
+                    .headers_mut()
+                    .insert(SERVER_TIMING, timings.header());
+            }
+            return response;
+        }
+    };
+
+    let mut timings = RequestTimings {
+        recv: Some(received.upload_done - started),
+        detect: Some(received.detect),
+        ..Default::default()
+    };
+    let deadline = received.upload_done + received.request.timeout;
+    let paths = job.paths(received.detection.format);
+    let outcome = {
+        let conversion = state.service.convert(
+            ConversionJob {
+                paths: &paths,
+                upload: &received.upload,
+                detection: received.detection,
+                request: &received.request,
+                budget: job.budget(),
+                deadline,
+            },
+            &mut timings.stages,
+        );
+        // The engines enforce the deadline; this backstop turns a hung
+        // engine into a 504. Dropping the future cancels the engine job.
+        match tokio::time::timeout_at((deadline + BACKSTOP_GRACE).into(), conversion).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(ConversionError::Timeout {
+                seconds: received.request.timeout.as_secs(),
+            }),
+        }
+    };
+    let package_started = Instant::now();
+    match outcome {
+        Ok(result) => success(
+            &state,
+            &received,
+            result,
+            job,
+            permit,
+            &request_id,
+            &mut timings,
+            package_started,
+        ),
+        Err(err) => {
+            let api = ApiError::from_conversion(&err, state.queue_wait_seconds);
+            timings.total = Some(received.upload_done.elapsed());
+            log_finished(
+                &request_id,
+                &received,
+                None,
+                &timings,
+                Some(api.code.as_str()),
+            );
+            let mut response = api.into_response();
+            response
+                .headers_mut()
+                .insert(SERVER_TIMING, timings.header());
+            response
+        }
+    }
+}
+
+/// How long after the deadline the backstop fires, so that the engine's
+/// own `Timeout` (with its kill logged) wins in the normal case.
+pub const BACKSTOP_GRACE: Duration = Duration::from_millis(250);
+
+const SERVER_TIMING: HeaderName = HeaderName::from_static("server-timing");
+const SOURCE_FORMAT: HeaderName = HeaderName::from_static("convert-source-format");
+const PAGE_COUNT: HeaderName = HeaderName::from_static("convert-page-count");
+const WARNING_COUNT: HeaderName = HeaderName::from_static("convert-warning-count");
+const FINGERPRINT: HeaderName = HeaderName::from_static("convert-engine-fingerprint");
+
+/// The 200: headers first, then the body pump, which owns the job
+/// directory and the permit from here on.
+#[allow(clippy::too_many_arguments)]
+fn success(
+    state: &AppState,
+    received: &Received,
+    result: ConversionResult,
+    job: Arc<JobDir>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    request_id: &str,
+    timings: &mut RequestTimings,
+    package_started: Instant,
+) -> Response {
+    let file = match File::open(&result.pdf).and_then(|file| Ok((file.metadata()?.len(), file))) {
+        Ok((size, file)) => (file, size),
+        Err(err) => {
+            let api = ApiError::internal(format!("failed to open the result: {err}"));
+            timings.total = Some(received.upload_done.elapsed());
+            log_finished(request_id, received, None, timings, Some(api.code.as_str()));
+            return api.into_response();
+        }
+    };
+    let (file, size) = file;
+    let warning_count = received.warnings.len() + result.warnings.len();
+    timings.package = Some(package_started.elapsed());
+    timings.total = Some(received.upload_done.elapsed());
+    log_finished(request_id, received, Some((&result, size)), timings, None);
+
+    let body = file_body(
+        file,
+        size,
+        Pump {
+            job,
+            permit,
+            idle: state.io_idle_timeout,
+            request_id: request_id.to_owned(),
+        },
+    );
+    let mut response = (StatusCode::OK, body).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/pdf"),
+    );
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        content_disposition(received.upload.file_name.as_deref(), "pdf"),
+    );
+    headers.insert(SOURCE_FORMAT, HeaderValue::from_static(result.format.id()));
+    headers.insert(PAGE_COUNT, HeaderValue::from(result.page_count));
+    headers.insert(WARNING_COUNT, HeaderValue::from(warning_count));
+    headers.insert(FINGERPRINT, state.fingerprint.clone());
+    headers.insert(SERVER_TIMING, timings.header());
+    response
+}
+
+/// The `conversion finished` line: PLAN's fields plus the §11 overheads,
+/// in microseconds.
+fn log_finished(
+    request_id: &str,
+    received: &Received,
+    result: Option<(&ConversionResult, u64)>,
+    timings: &RequestTimings,
+    error_code: Option<&str>,
+) {
+    let s = &timings.stages;
+    tracing::info!(
+        request_id,
+        source_format = received.detection.format.id(),
+        family = received.detection.format.family().as_str(),
+        output = received.request.output.as_str(),
+        page_count = result.map(|(r, _)| r.page_count),
+        input_bytes = received.upload.size_bytes,
+        output_bytes = result.map(|(_, size)| size),
+        warning_count = result.map(|(r, _)| r.warnings.len() + received.warnings.len()),
+        recv_us = timings.recv.map(micros),
+        queue_us = micros(s.queue),
+        convert_us = s.convert.map(micros),
+        decrypt_us = s.decrypt.map(micros),
+        inspect_us = s.inspect.map(micros),
+        engine_us = micros(s.engine_total()),
+        total_us = timings.total.map(micros),
+        overhead_us = micros(timings.overhead()),
+        overhead_strict_us = micros(timings.overhead_strict()),
+        error_code,
+        "conversion finished"
+    );
 }
 
 // A binary response body, for the spec only.

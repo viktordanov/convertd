@@ -34,6 +34,14 @@ pub async fn access_log(request: Request, next: Next) -> Response {
     let response = next.run(request).await;
     let (parts, body) = response.into_parts();
     let complete = http_body::Body::is_end_stream(&body);
+    // hyper stops polling after Content-Length bytes, so a full body may
+    // never report its end.
+    let expected = parts
+        .headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
+        .or_else(|| http_body::Body::size_hint(&body).exact());
     let guard = LogGuard {
         started,
         method,
@@ -42,6 +50,7 @@ pub async fn access_log(request: Request, next: Next) -> Response {
         status: parts.status,
         detail: parts.extensions.get::<ErrorDetail>().map(|d| d.0.clone()),
         bytes: 0,
+        expected,
         complete,
     };
     Response::from_parts(parts, Body::new(LoggedBody { inner: body, guard }))
@@ -57,19 +66,21 @@ struct LogGuard {
     status: StatusCode,
     detail: Option<String>,
     bytes: u64,
+    expected: Option<u64>,
     complete: bool,
 }
 
 impl Drop for LogGuard {
     fn drop(&mut self) {
         let duration_us = u64::try_from(self.started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let complete = self.complete || self.expected == Some(self.bytes);
         tracing::info!(
             method = %self.method,
             path = %self.path,
             status_code = self.status.as_u16(),
             duration_us,
             bytes = self.bytes,
-            complete = self.complete,
+            complete,
             request_id = %self.request_id,
             detail = self.detail.as_deref(),
             "http request"

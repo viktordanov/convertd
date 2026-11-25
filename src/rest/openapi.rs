@@ -166,7 +166,7 @@ pub fn spec_json() -> String {
 #[derive(IntoParams)]
 #[into_params(parameter_in = Header)]
 #[allow(dead_code)]
-pub struct RequestId {
+pub struct RequestIdParam {
     /// Correlation ID. If present it is echoed in the response, the logs and
     /// the manifest. If absent the service generates one.
     #[param(
