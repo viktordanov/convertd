@@ -840,3 +840,41 @@ async fn encrypted_decks_and_sheets_named_docx_keep_their_export_keys() {
     )
     .await;
 }
+
+/// The RSS watchdog against a real office worker (plan 002 step 10). An
+/// office worker holds about 250 MB at Ready, so a 64 MiB kill limit trips
+/// on the first sample of the call. The watchdog samples every 200 ms, so
+/// the job must run longer than that: 4000 pages take about a second.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_office_worker_over_the_kill_limit_gives_limit_exceeded() {
+    let Some(lo) = lo() else { return };
+    within(
+        TEST,
+        "an_office_worker_over_the_kill_limit_gives_limit_exceeded",
+        async {
+            let dir = Scratch::new("office-kill-rss");
+            let source = dir.join("source.docx");
+            std::fs::write(&source, docx_pages(4000)).unwrap();
+            let mut spec = office_spec(dir.path(), &lo, false);
+            spec.kill_rss = 64 << 20;
+            let pool = ready(spec).await;
+            let office = OfficeLok::new(pool.clone());
+            let started = Instant::now();
+            let err = office
+                .convert(
+                    job(source, dir.join("document.pdf"), Family::Document),
+                    DomainAdmission::Queue,
+                    deadline(),
+                )
+                .await
+                .unwrap_err();
+            let took = started.elapsed();
+            eprintln!("watchdog: {err:?} after {took:?}");
+            assert!(matches!(err, EngineError::LimitExceeded(_)), "{err:?}");
+            assert!(took < Duration::from_secs(2), "took {took:?}");
+            assert!(!dir.join("document.pdf").exists(), "a partial PDF stayed");
+            pool.shutdown(Duration::from_secs(5)).await;
+        },
+    )
+    .await;
+}
