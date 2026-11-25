@@ -4,5 +4,8 @@
 
 pub mod cli;
 pub mod config;
+pub mod conn;
+pub mod process;
+pub mod slot;
 
 pub use config::EngineConfig;

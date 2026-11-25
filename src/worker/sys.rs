@@ -47,13 +47,13 @@ fn die_with_supervisor() -> io::Result<()> {
 
     set_parent_process_death_signal(Some(Signal::KILL))?;
     // The supervisor may have died before the signal was armed.
-    if let Some(expected) = std::env::var(ENV_SUPERVISOR_PID)
+    let expected = std::env::var(ENV_SUPERVISOR_PID)
         .ok()
-        .and_then(|v| v.parse::<i32>().ok())
+        .and_then(|v| v.parse::<i32>().ok());
+    if let Some(expected) = expected
+        && getppid().map(|p| p.as_raw_nonzero().get()) != Some(expected)
     {
-        if getppid().map(|p| p.as_raw_nonzero().get()) != Some(expected) {
-            exit(0);
-        }
+        exit(0);
     }
     Ok(())
 }
