@@ -31,6 +31,21 @@ cd contract
 go run ./cmd/speccheck validate ../../api/openapi.yaml
 ```
 
+## Contract tests
+
+`contract/` also holds the contract tests. They drive the generated client
+and this facade against a running convertd and check every response, and the
+`manifest.json` of every bundle, against the committed spec.
+
+```bash
+../scripts/contract_test.sh               # builds convertd with test-hooks, fake engine
+../scripts/contract_test.sh --image REF   # against a built image
+cd contract && go test ./...              # spec tools and self-tests only, no server
+```
+
+The live cases carry the `contract` build tag. With that tag and neither
+`CONVERTD_BIN` nor `CONVERT_HOST` set, the run exits 1 instead of skipping.
+
 ## Using it
 
 ```go
