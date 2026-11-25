@@ -21,6 +21,7 @@ out="$(mktemp -d)"
 key="smoke-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 fail=0
 
+# shellcheck disable=SC2317  # called through the EXIT trap
 cleanup() { docker rm -f "${name}" >/dev/null 2>&1 || true; rm -rf "${out}"; }
 trap cleanup EXIT
 note() { printf '%-26s %s\n' "$1" "$2"; }
@@ -58,11 +59,12 @@ if [[ "${status}" == 200 && "$(head -c 5 "${out}/out.pdf")" == "%PDF-" ]]; then 
 else bad "docx to pdf" "status ${status}"; fi
 # 001's layout: one job-<32hex> directory per job under TMP_DIR, deleted by the supervisor.
 left="$(docker exec "${name}" sh -c 'ls -d /tmp/convert/job-* 2>/dev/null | wc -l')"
-[[ "${left}" == 0 ]] && note "job dirs cleaned" "ok" || bad "job dirs cleaned" "${left} left"
+if [[ "${left}" == 0 ]]; then note "job dirs cleaned" "ok"; else bad "job dirs cleaned" "${left} left"; fi
 
 # 4. The system font cache from the build is valid: no worker wrote a user cache.
 # 002 puts each worker's XDG_CACHE_HOME in its slot under TMP_DIR.
 fcu="$(docker exec "${name}" sh -c 'find /tmp -path "*fontconfig*" -name "*.cache-*" 2>/dev/null | wc -l')"
-[[ "${fcu}" == 0 ]] && note "baked font cache used" "ok" || bad "baked font cache used" "${fcu} user cache files"
+if [[ "${fcu}" == 0 ]]; then note "baked font cache used" "ok"
+else bad "baked font cache used" "${fcu} user cache files"; fi
 
 exit "${fail}"
