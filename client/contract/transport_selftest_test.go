@@ -326,6 +326,18 @@ func TestSelfTestTransportRecordsCoverage(t *testing.T) {
 	srv := cannedServer(t, canned{200, map[string]string{"Content-Type": "text/plain"}, []byte("up 1\n")})
 	rt, rec := selfTestTransport(t)
 	rt.record = true
+	// Leave the live run's coverage report as this test found it.
+	metrics := observation{operationID: "getMetrics", status: "200"}
+	coverage.Lock()
+	seenBefore := coverage.seen[metrics]
+	coverage.Unlock()
+	t.Cleanup(func() {
+		coverage.Lock()
+		defer coverage.Unlock()
+		if !seenBefore {
+			delete(coverage.seen, metrics)
+		}
+	})
 	makeCall(t, callMetrics, srv.URL, rt)
 	if got := rec.all(); len(got) != 0 {
 		t.Fatalf("unexpected reports: %v", got)
