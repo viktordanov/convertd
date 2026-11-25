@@ -6,5 +6,5 @@ generate:
   models: true
   client: true
 output-options:
-  # Keep schemas that no path references, such as Manifest (it lives inside the ZIP).
+  # Keep schemas that no path references, such as Manifest (it lives inside the tar.zst bundle).
   skip-prune: true

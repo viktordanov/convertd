@@ -38,8 +38,8 @@ func WithHTTPClient(httpClient *http.Client) Option {
 	return func(c *config) { c.httpClient = httpClient }
 }
 
-// WithTempDir sets where downloaded bundles are kept until Bundle.Close.
-// The default is the system temp directory.
+// WithTempDir sets the parent directory in which each bundle is unpacked
+// and kept until Bundle.Close. The default is the system temp directory.
 func WithTempDir(dir string) Option {
 	return func(c *config) { c.tempDir = dir }
 }
