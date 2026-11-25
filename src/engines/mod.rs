@@ -4,5 +4,7 @@
 
 pub mod cli;
 pub mod config;
+pub mod fake;
+pub mod fake_markers;
 
 pub use config::EngineConfig;
