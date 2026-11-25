@@ -153,7 +153,7 @@ Each folder in this list has a README for its own readers.
 - [deploy/README.md](deploy/README.md) covers the manifests for Kubernetes and Azure Container Apps.
 - `build_docker.sh` builds the image for linux/amd64 and linux/arm64 and pushes it to a repository that you name.
 
-<!-- memoria:section id="contributing" files="generate.sh scripts/contract_test.sh" -->
+<!-- memoria:section id="contributing" files="generate.sh scripts/contract_test.sh .github/workflows/image.yml .config/nextest.toml" -->
 ### Contributing to it
 
 - [src/README.md](src/README.md) covers the `convertd` crate: its process model and its layers.

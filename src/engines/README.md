@@ -154,7 +154,7 @@ Each worker process gets `<workers_dir>/<pool>-<slot>/` with the subdirectories 
 `OfficeLok` implements `OfficeEngine` over the office pool, and `PdfPdfium` implements `PdfEngine` over the render pool. Each call runs these steps through `call::call`:
 
 1. It leases a worker with the request's admission mode and sends one operation, with the request's deadline.
-2. It fills `EngineTiming` with the queue, lease, wall and engine times. When the worker started on the request's path, it adds the spawn and bind times.
+2. It fills `EngineTiming` with the queue, lease, wall and engine times, and with the pre-flight time that the office worker reports (zero for other calls). When the worker started on the request's path, it adds the spawn and bind times.
 3. It records `convert_engine_overhead_seconds{pool,op}`, the wall time less the engine and queue times.
 4. If the worker crashed and at least 1 s is left, it retries once on a new lease with `Continue`. It never retries after a timeout or an error that the engine reported.
 5. It maps the error through `EngineFailure` to the domain's `EngineError`, and logs the worker's message at debug only.
