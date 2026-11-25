@@ -469,6 +469,7 @@ mod tests {
             bind: Some(Duration::from_millis(2)),
             wall: Duration::from_millis(engine_ms + 3),
             engine: Duration::from_millis(engine_ms),
+            preflight: Duration::ZERO,
         }
     }
 

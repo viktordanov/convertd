@@ -92,6 +92,7 @@ pub async fn call(
                     bind: spawned.map(|(_, bind)| bind),
                     wall: started.elapsed(),
                     engine: Duration::from_micros(reply.engine.engine_us),
+                    preflight: Duration::from_micros(reply.engine.preflight_us),
                 };
                 metrics::histogram!(
                     "convert_engine_overhead_seconds",

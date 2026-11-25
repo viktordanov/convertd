@@ -297,6 +297,7 @@ impl PdfEngine for PdfPdfium {
             bind: spawned.map(|(_, bind)| bind),
             wall: started.elapsed(),
             engine: longest,
+            preflight: Duration::ZERO,
         };
         metrics::histogram!(
             "convert_engine_overhead_seconds",

@@ -116,6 +116,10 @@ pub struct EngineTiming {
     pub wall: Duration,
     /// Inside the worker (rule 4); the longest chunk for split calls.
     pub engine: Duration,
+    /// The office worker's pre-flight scan before the load (INTERFACES
+    /// §13). Worker time but not engine time, so it counts as overhead;
+    /// zero for calls without pre-flight.
+    pub preflight: Duration,
 }
 
 /// Which worker ran a job, for logs.

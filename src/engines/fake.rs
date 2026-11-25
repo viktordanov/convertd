@@ -173,6 +173,7 @@ impl Settings {
             bind: None,
             wall: started.elapsed(),
             engine,
+            preflight: Duration::ZERO,
         }
     }
 }
