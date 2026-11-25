@@ -18,6 +18,8 @@ pub struct FileEntry {
     pub path: String,
     pub sha256: Option<String>,
     pub preflight: Option<Preflight>,
+    /// Empty for a fixture, which is an input of the generator.
+    #[serde(default)]
     pub cases: Vec<Case>,
 }
 

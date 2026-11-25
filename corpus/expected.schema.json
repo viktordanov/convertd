@@ -35,7 +35,7 @@
     "file": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "path", "origin", "tags", "cases"],
+      "required": ["id", "path", "origin", "tags"],
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
         "path": {
@@ -72,6 +72,7 @@
         "notes": { "type": "string" },
         "preflight": { "$ref": "#/$defs/preflight" },
         "cases": {
+          "description": "Required for every origin except fixture: a fixture is an input of the generator, never sent to the service.",
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/$defs/case" }
@@ -82,8 +83,10 @@
           "if": { "properties": { "origin": { "const": "fixture" } } },
           "then": {
             "required": ["sha256", "licence"],
+            "not": { "required": ["cases"] },
             "properties": { "path": { "pattern": "^fixtures/" } }
-          }
+          },
+          "else": { "required": ["cases"] }
         },
         {
           "if": { "properties": { "origin": { "enum": ["generated", "hostile", "derived"] } } },

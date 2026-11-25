@@ -7,7 +7,9 @@
 //!    safe relative paths, `min <= max`, known warning detail keys, sorted
 //!    requested fonts;
 //! 3. every listed file exists as a regular file and matches its SHA-256;
-//! 4. no file under `out/` or `fixtures/` is unlisted;
+//! 4. no file under `out/` or `fixtures/` is unlisted, except
+//!    `fixtures/SOURCES.md`, and the files under `fixtures/` stay within
+//!    [`FIXTURES_BUDGET`];
 //! 5. git tracks nothing under `out/` or `private/`.
 
 use std::collections::{BTreeSet, HashSet};
@@ -27,6 +29,10 @@ const LISTED_DIRS: [&str; 2] = ["out", "fixtures"];
 const UNTRACKED_DIRS: [&str; 2] = ["out", "private"];
 /// Files the operating system drops into directories on its own.
 const IGNORED_NAMES: [&str; 1] = [".DS_Store"];
+/// The record of where each fixture comes from, the one unlisted file allowed.
+const FIXTURE_SOURCES: &str = "fixtures/SOURCES.md";
+/// The most bytes all committed fixtures may take together.
+pub const FIXTURES_BUDGET: u64 = 2 << 20;
 /// The `page_count` of a case whose count is typed in from a reviewed `check` run.
 const UNRECORDED: &str = "unrecorded";
 
@@ -282,13 +288,34 @@ fn check_unlisted(corpus: &Path, expected: &Expected, outcome: &mut Outcome) {
             continue;
         }
         found.sort();
+        if dir == "fixtures" {
+            check_fixtures_budget(corpus, &found, outcome);
+        }
         for rel in found {
-            if !listed.contains(rel.as_str()) {
+            if !listed.contains(rel.as_str()) && rel != FIXTURE_SOURCES {
                 outcome
                     .problems
                     .push(format!("{rel}: not listed in expected.json"));
             }
         }
+    }
+}
+
+/// The committed fixtures, `SOURCES.md` included, must fit [`FIXTURES_BUDGET`].
+fn check_fixtures_budget(corpus: &Path, found: &[String], outcome: &mut Outcome) {
+    let mut total = 0u64;
+    for rel in found {
+        match fs::symlink_metadata(corpus.join(rel)) {
+            Ok(meta) => total += meta.len(),
+            Err(err) => outcome
+                .problems
+                .push(format!("failed to read the size of {rel}: {err}")),
+        }
+    }
+    if total > FIXTURES_BUDGET {
+        outcome.problems.push(format!(
+            "fixtures/ holds {total} bytes, more than the {FIXTURES_BUDGET} byte budget"
+        ));
     }
 }
 
@@ -361,7 +388,8 @@ mod tests {
                     "preflight": {"format": "docx", "encrypted": false, "declared_pages": null,
                                   "requested_fonts": ["Calibri", "Cambria"], "macros": []},
                     "cases": [{"name": "bundle", "options": {"output": "bundle"},
-                               "expect": {"status": 200, "page_count": 1, "warnings": []}}]
+                               "expect": {"status": 200, "page_count": 1, "warnings": [
+                                   {"code": "MACROS_IGNORED", "detail": {"kind": "vba"}}]}}]
                 },
                 {
                     "id": "docx-encrypted", "path": "out/docx/encrypted.docx", "origin": "generated",
@@ -370,12 +398,9 @@ mod tests {
                                "expect": {"status": 422, "code": "PASSWORD_REQUIRED"}}]
                 },
                 {
-                    "id": "docm-vba", "path": "fixtures/vbaProject.bin", "origin": "fixture",
+                    "id": "vba-project", "path": "fixtures/vbaProject.bin", "origin": "fixture",
                     "sha256": sha(FIXTURE), "licence": {"spdx": "Apache-2.0", "source": "test"},
-                    "tags": ["macros"],
-                    "cases": [{"name": "pdf", "options": {},
-                               "expect": {"status": 200, "warnings": [
-                                   {"code": "MACROS_IGNORED", "detail": {"kind": "vba"}}]}}]
+                    "tags": ["macros"]
                 }
             ]
         })
@@ -392,6 +417,7 @@ mod tests {
         fs::write(root.join("out/docx/small.docx"), SMALL).expect("small");
         fs::write(root.join("out/docx/encrypted.docx"), b"random").expect("encrypted");
         fs::write(root.join("fixtures/vbaProject.bin"), FIXTURE).expect("fixture");
+        fs::write(root.join("fixtures/SOURCES.md"), b"# Fixture sources").expect("sources");
         dir
     }
 
@@ -412,7 +438,7 @@ mod tests {
         let dir = corpus(&document());
         let outcome = validate(&dir);
         assert!(outcome.passed(), "{:?}", outcome.problems);
-        assert_eq!((outcome.files, outcome.cases), (3, 3));
+        assert_eq!((outcome.files, outcome.cases), (3, 2));
     }
 
     #[test]
@@ -441,7 +467,7 @@ mod tests {
         fs::write(dir.path().join("fixtures/vbaProject.bin"), b"changed").expect("write");
         assert_fails_with(
             &validate(&dir),
-            "docm-vba: fixtures/vbaProject.bin has sha256",
+            "vba-project: fixtures/vbaProject.bin has sha256",
         );
     }
 
@@ -490,6 +516,31 @@ mod tests {
     }
 
     #[test]
+    fn a_fixture_with_cases_fails_the_schema() {
+        let mut doc = document();
+        doc["files"][2]["cases"] = doc["files"][0]["cases"].clone();
+        assert_fails_with(&validate(&corpus(&doc)), "schema: /files/2");
+    }
+
+    #[test]
+    fn a_file_other_than_a_fixture_needs_cases() {
+        let mut doc = document();
+        doc["files"][0]
+            .as_object_mut()
+            .expect("object")
+            .remove("cases");
+        assert_fails_with(&validate(&corpus(&doc)), "schema: /files/0");
+    }
+
+    #[test]
+    fn fixtures_over_the_budget_fail() {
+        let dir = corpus(&document());
+        let big = vec![0u8; usize::try_from(FIXTURES_BUDGET).expect("fits")];
+        fs::write(dir.path().join("fixtures/SOURCES.md"), big).expect("write");
+        assert_fails_with(&validate(&dir), "more than the 2097152 byte budget");
+    }
+
+    #[test]
     fn a_duplicate_id_fails() {
         let mut doc = document();
         doc["files"][1]["id"] = json!("docx-small");
@@ -499,7 +550,7 @@ mod tests {
     #[test]
     fn an_unknown_detail_key_fails() {
         let mut doc = document();
-        doc["files"][2]["cases"][0]["expect"]["warnings"][0]["detail"] = json!({"type": "vba"});
+        doc["files"][0]["cases"][0]["expect"]["warnings"][0]["detail"] = json!({"type": "vba"});
         assert_fails_with(
             &validate(&corpus(&doc)),
             "MACROS_IGNORED has no detail key \"type\"",
