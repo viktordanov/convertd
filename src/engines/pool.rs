@@ -1331,6 +1331,9 @@ impl Start {
         // under the same lock: either it saw this child or this sees it.
         if self.shutting_down() {
             child.kill_group();
+            // Shutdown waits for this start, so it must also see the child
+            // reaped, not only killed.
+            let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
             lock(&self.handles).remove(&(self.slot, self.generation));
             return Err("failed to start the worker: the pool is shutting down".into());
         }
