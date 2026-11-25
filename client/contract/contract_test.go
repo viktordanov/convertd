@@ -33,15 +33,6 @@ func testContext(t *testing.T) context.Context {
 	return ctx
 }
 
-// requireOutput skips a bundle or images case while the server answers that the output is
-// not built yet (lane 001 adds images and bundle in wave two, round A).
-func requireOutput(t *testing.T, err error, output string) {
-	t.Helper()
-	if errors.Is(err, convert.ErrInvalidRequest) && strings.Contains(err.Error(), "output "+output+" is not available yet") {
-		t.Skipf("the server does not produce output=%s yet (lane 001, wave two round A): %v", output, err)
-	}
-}
-
 // rawConvert posts a hand-built multipart body through the generated client,
 // for requests the facade cannot express.
 func rawConvert(t *testing.T, g *api.Client, parts map[string][]byte) *http.Response {
@@ -215,7 +206,6 @@ func TestConvertDOCXToBundle(t *testing.T) {
 	ctx := testContext(t)
 	f := newFacade(t)
 	b, err := f.ConvertToBundle(ctx, "doc.docx", bytes.NewReader(docx()), convert.Options{})
-	requireOutput(t, err, "bundle")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +254,6 @@ func TestConvertPNGToImages(t *testing.T) {
 	ctx := testContext(t)
 	opts := convert.Options{Images: convert.ImageOptions{Format: convert.PNG, DPI: 96, Quality: 70, MaxEdge: 640}}
 	b, err := newFacade(t).ConvertToImages(ctx, "image.png", bytes.NewReader(pngImage()), opts)
-	requireOutput(t, err, "images")
 	if err != nil {
 		t.Fatal(err)
 	}
