@@ -33,6 +33,47 @@ ARG PDFIUM_BUILD=8179
 ARG PDFIUM_SHA256_ARM64=18bb6d568257b28d14f6c3b8bfb48caf73d4615b319ca4d43b424c2a03431d9f
 ARG PDFIUM_SHA256_AMD64=b4766a6bf2856efbcc6c3cc7d6ae9022bdc6bb36ddc1acdd92d1f1873f773f4b
 
+# ---- Rust cross toolchain for $TARGETARCH --------------------------------------------------
+FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS rust-cross
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+ARG RUST_VERSION
+ARG TARGETARCH
+ARG BUILDARCH
+# The Docker VM has about 4 GB, and buildx builds both platforms at once. build_docker.sh
+# passes 2 for a two-platform build and 4 for one.
+ARG CARGO_JOBS=2
+# RUSTUP_TOOLCHAIN overrides rust-toolchain.toml, so rustup does not fetch rustfmt/clippy here.
+ENV RUSTUP_TOOLCHAIN=${RUST_VERSION} \
+    CARGO_BUILD_JOBS=${CARGO_JOBS} \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+    CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc \
+    AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+    AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
+RUN case "${TARGETARCH}" in \
+      amd64) triple=x86_64-unknown-linux-gnu;  cross="gcc-x86-64-linux-gnu libc6-dev-amd64-cross" ;; \
+      arm64) triple=aarch64-unknown-linux-gnu; cross="gcc-aarch64-linux-gnu libc6-dev-arm64-cross" ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    echo "${triple}" > /etc/rust-target; \
+    if [[ "${TARGETARCH}" != "${BUILDARCH}" ]]; then \
+      apt-get update && apt-get install -y --no-install-recommends ${cross} && rm -rf /var/lib/apt/lists/*; \
+    fi; \
+    rustup target add --toolchain "${RUST_VERSION}" "${triple}"
+WORKDIR /src
+
+# ---- Spike binaries, only for the engine-check target --------------------------------------
+FROM rust-cross AS spike-build
+COPY spikes/lok ./spikes/lok
+COPY spikes/pdfium ./spikes/pdfium
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    triple="$(cat /etc/rust-target)"; \
+    for s in lok pdfium; do \
+      cargo build --release --locked --target "${triple}" --manifest-path "spikes/${s}/Cargo.toml"; \
+      install -D -m 0755 "spikes/${s}/target/${triple}/release/spike-${s}" "/out/spike-${s}"; \
+    done
+
 # ---- Engine downloads: built on the build platform, never in the runtime ------------------
 # Each download lands in a cache mount under its SHA-256 and is checked before use. TDF removes
 # a point release from /stable/ when the next one ships; the archive keeps it under the
@@ -205,3 +246,8 @@ ENV HOME=/home/convertd \
     CARGO_HOME=/home/convertd/.cargo
 USER 10001:10001
 WORKDIR /src
+
+# ---- Engine check (plan steps 2-4 only) -----------------------------------------------------
+FROM runtime-base AS engine-check
+COPY --from=lib-check /lib-check.ok /opt/convertd/lib-check.ok
+COPY --from=spike-build /out/ /usr/local/bin/
