@@ -135,14 +135,18 @@ async fn run_cases(
     let target = args.target.trim_end_matches('/');
     let caps = capabilities(&client, target, &args.api_key).await?;
     let mut results = Vec::new();
+    // Connections already charged to a case. One running total, so that a
+    // connection between cases (during /healthz, say) goes to the next case.
+    let mut charged = listener.count();
     for file in selected(args, expected) {
         for case in &file.cases {
-            let before = listener.count();
             let started = Instant::now();
             let mut obs = request(&client, target, args, file, case, caps.default_timeout).await;
             let millis = started.elapsed().as_millis();
             tokio::time::sleep(LISTENER_GRACE).await;
-            obs.connections = listener.count() - before;
+            let now = listener.count();
+            obs.connections = now - charged;
+            charged = now;
             obs.healthy_after = healthy(&client, target).await;
             let verdict = evaluate(case, &obs, &caps.context);
             let result = result(file, case, &obs, verdict, millis);
@@ -150,7 +154,30 @@ async fn run_cases(
             results.push(result);
         }
     }
+    tokio::time::sleep(LISTENER_GRACE).await;
+    if let Some(late) = late_connections(listener.count() - charged) {
+        print_result(&late);
+        results.push(late);
+    }
     Ok(results)
+}
+
+/// A failed pseudo-case for connections that came after the last case.
+fn late_connections(count: u64) -> Option<CaseResult> {
+    (count > 0).then(|| CaseResult {
+        id: "listener".into(),
+        case: "after-the-last-case".into(),
+        tags: Vec::new(),
+        output: String::new(),
+        status: 0,
+        code: None,
+        passed: false,
+        failures: vec![format!(
+            "the canary listener saw {count} connection(s) after the last case"
+        )],
+        notes: Vec::new(),
+        millis: 0,
+    })
 }
 
 struct Capabilities {
@@ -452,6 +479,14 @@ mod tests {
             ExitCode::FAILURE
         );
         assert_eq!(exit_code(&[]), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn a_connection_after_the_last_case_fails_the_run() {
+        assert!(late_connections(0).is_none());
+        let late = late_connections(2).expect("a result");
+        assert!(!late.passed);
+        assert_eq!(exit_code(&[r(true, &["smoke"]), late]), ExitCode::FAILURE);
     }
 
     #[test]

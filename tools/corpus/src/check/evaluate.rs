@@ -192,7 +192,8 @@ pub fn evaluate(case: &Case, obs: &Observed, ctx: &Context) -> Verdict {
                 .push(format!("blank pages {got:?}, expected {want:?}"));
         }
     }
-    if let Some(m) = manifest {
+    // Only a bundle carries the PDF; `images` has no /BaseFont to read.
+    if let (Some(m), "bundle") = (manifest, case.output()) {
         font_arbiter(&mut v, &m.warnings, obs.base_fonts.as_ref());
     }
     v
@@ -678,6 +679,25 @@ mod tests {
         still_there.base_fonts = Some(BTreeSet::from(["Carlito".into(), "CAAAAA+Aptos".into()]));
         let f = failures(&c, &still_there);
         assert!(f[0].contains("/BaseFont has Aptos"), "{f:?}");
+    }
+
+    #[test]
+    fn the_font_arbiter_skips_images_output() {
+        let c = case(json!({"output": "images"}), json!({"status": 200}));
+        let mut obs = bundle(
+            1,
+            vec![warning(
+                "FONT_SUBSTITUTED",
+                None,
+                json!({"requested": "Aptos", "substitute": "Carlito"}),
+            )],
+        );
+        obs.base_fonts = None;
+        obs.pdf_valid = None;
+        if let Some(m) = obs.manifest.as_mut() {
+            m.pdf = None;
+        }
+        assert!(failures(&c, &obs).is_empty());
     }
 
     #[test]
