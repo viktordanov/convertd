@@ -310,8 +310,8 @@ type ConvertOptions struct {
 	// Output What the response contains.
 	//
 	// - `pdf`: the PDF, as `application/pdf`.
-	// - `images`: page images and a manifest, as `application/zip`.
-	// - `bundle`: the PDF, page images and a manifest, as `application/zip`.
+	// - `images`: page images and a manifest, as `application/zstd` (tar.zst).
+	// - `bundle`: the PDF, page images and a manifest, as `application/zstd` (tar.zst).
 	Output *OutputKind `json:"output,omitempty"`
 
 	// Pages Which pages to render as images, 1-based. A comma-separated list of
@@ -490,7 +490,7 @@ type Limits struct {
 	MaxUploadBytes int64 `json:"max_upload_bytes"`
 }
 
-// Manifest The `manifest.json` at the root of every ZIP response. It describes
+// Manifest The `manifest.json` at the root of every tar.zst response. It describes
 // the source, the PDF, each rendered page and anything the service
 // noticed during conversion.
 //
@@ -533,8 +533,8 @@ type ManifestManifestVersion int
 // OutputKind What the response contains.
 //
 // - `pdf`: the PDF, as `application/pdf`.
-// - `images`: page images and a manifest, as `application/zip`.
-// - `bundle`: the PDF, page images and a manifest, as `application/zip`.
+// - `images`: page images and a manifest, as `application/zstd` (tar.zst).
+// - `bundle`: the PDF, page images and a manifest, as `application/zstd` (tar.zst).
 type OutputKind string
 
 // PageInfo One rendered page.
@@ -549,7 +549,7 @@ type PageInfo struct {
 	// Number 1-based page number in the PDF.
 	Number int32 `json:"number"`
 
-	// Path Path of the image inside the ZIP.
+	// Path Path of the image inside the archive.
 	//
 	// Example: pages/0001.jpg
 	Path      string `json:"path"`
@@ -569,7 +569,7 @@ type PdfInfo struct {
 	// - `assembled`: built from an uploaded image.
 	Origin PdfInfoOrigin `json:"origin"`
 
-	// Path Path of the PDF inside the ZIP.
+	// Path Path of the PDF inside the archive.
 	//
 	// Example: document.pdf
 	Path      string `json:"path"`
