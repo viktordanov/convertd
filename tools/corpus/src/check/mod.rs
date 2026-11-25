@@ -322,10 +322,11 @@ fn read_body(obs: &mut Observed, output: &str, bytes: &[u8]) {
     let pdf = if output == "pdf" {
         Some(bytes.to_vec())
     } else {
-        match read_zip(bytes) {
-            Ok((manifest, pdf)) => {
-                obs.manifest = Some(manifest);
-                pdf
+        match read_bundle(bytes) {
+            Ok(bundle) => {
+                obs.manifest = Some(bundle.manifest);
+                obs.entries = Some(bundle.entries);
+                bundle.pdf
             }
             Err(err) => {
                 obs.body_error = Some(err);
@@ -352,32 +353,54 @@ fn memfind(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-/// The manifest and, for a bundle, `document.pdf`.
-fn read_zip(bytes: &[u8]) -> Result<(Manifest, Option<Vec<u8>>), String> {
-    let mut archive =
-        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|err| format!("not a ZIP: {err}"))?;
-    let manifest: Manifest = {
-        let mut entry = archive
-            .by_name("manifest.json")
-            .map_err(|err| format!("no manifest.json: {err}"))?;
-        let mut text = Vec::new();
-        entry
-            .read_to_end(&mut text)
-            .map_err(|err| format!("failed to read manifest.json: {err}"))?;
-        serde_json::from_slice(&text)
-            .map_err(|err| format!("failed to parse manifest.json: {err}"))?
-    };
-    let pdf = match archive.by_name("document.pdf") {
-        Ok(mut entry) => {
-            let mut pdf = Vec::new();
+/// What a tar.zst answer holds (INTERFACES.md §9, "Bundle format").
+struct Bundle {
+    manifest: Manifest,
+    pdf: Option<Vec<u8>>,
+    /// Every entry name, in archive order.
+    entries: Vec<String>,
+}
+
+/// Reads a zstd-compressed ustar stream: `manifest.json`, then
+/// `document.pdf` for `bundle`, then `pages/NNNN.<ext>`.
+fn read_bundle(bytes: &[u8]) -> Result<Bundle, String> {
+    let tar = zstd::stream::decode_all(bytes).map_err(|err| format!("not a zstd stream: {err}"))?;
+    let mut archive = tar::Archive::new(Cursor::new(tar));
+    let mut manifest = None;
+    let mut pdf = None;
+    let mut entries = Vec::new();
+    let all = archive
+        .entries()
+        .map_err(|err| format!("not a tar stream: {err}"))?;
+    for entry in all {
+        let mut entry = entry.map_err(|err| format!("failed to read a tar entry: {err}"))?;
+        let name = entry
+            .path()
+            .map_err(|err| format!("failed to read a tar entry name: {err}"))?
+            .to_string_lossy()
+            .into_owned();
+        if name == "manifest.json" || name == "document.pdf" {
+            let mut body = Vec::new();
             entry
-                .read_to_end(&mut pdf)
-                .map_err(|err| format!("failed to read document.pdf: {err}"))?;
-            Some(pdf)
+                .read_to_end(&mut body)
+                .map_err(|err| format!("failed to read {name}: {err}"))?;
+            if name == "manifest.json" {
+                manifest = Some(
+                    serde_json::from_slice(&body)
+                        .map_err(|err| format!("failed to parse manifest.json: {err}"))?,
+                );
+            } else {
+                pdf = Some(body);
+            }
         }
-        Err(_) => None,
-    };
-    Ok((manifest, pdf))
+        entries.push(name);
+    }
+    let manifest = manifest.ok_or("the bundle has no manifest.json")?;
+    Ok(Bundle {
+        manifest,
+        pdf,
+        entries,
+    })
 }
 
 fn result(
@@ -522,31 +545,70 @@ mod tests {
         assert_eq!(obs.pdf_valid, Some(false));
     }
 
-    #[test]
-    fn a_bundle_gives_its_manifest_and_pdf() {
-        use std::io::Write;
-        let mut buf = Vec::new();
-        {
-            let mut zip = zip::ZipWriter::new(Cursor::new(&mut buf));
-            let stored = zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored);
-            zip.start_file("manifest.json", stored).expect("start");
-            zip.write_all(
-                br#"{"page_count":1,"source":{"format":"pdf","family":"pdf","encrypted":false},
-                    "pdf":{"origin":"passthrough"},"pages":[],"warnings":[]}"#,
-            )
-            .expect("write");
-            zip.start_file("document.pdf", stored).expect("start");
-            zip.write_all(b"%PDF-1.4\n%%EOF\n").expect("write");
-            zip.finish().expect("finish");
+    /// A tar.zst stream with these entries, as lane 001 writes it.
+    fn tar_zst(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut tar = tar::Builder::new(Vec::new());
+        for (name, body) in entries {
+            let mut header = tar::Header::new_ustar();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_mtime(0);
+            header.set_cksum();
+            tar.append_data(&mut header, name, *body).expect("append");
         }
+        let tar = tar.into_inner().expect("tar");
+        zstd::stream::encode_all(&tar[..], 1).expect("zstd")
+    }
+
+    #[test]
+    fn a_bundle_gives_its_manifest_pdf_and_entry_order() {
+        let manifest: &[u8] = br#"{"page_count":1,"source":{"format":"pdf","family":"pdf","encrypted":false},
+            "pdf":{"origin":"passthrough"},"pages":[{"number":1,"path":"pages/0001.png","width_px":1,
+            "height_px":1,"blank":false}],"warnings":[]}"#;
+        let bytes = tar_zst(&[
+            ("manifest.json", manifest),
+            ("document.pdf", b"%PDF-1.4\n%%EOF\n"),
+            ("pages/0001.png", b"png"),
+        ]);
         let mut obs = Observed {
             status: 200,
             ..Observed::default()
         };
-        read_body(&mut obs, "bundle", &buf);
+        read_body(&mut obs, "bundle", &bytes);
         assert_eq!(obs.body_error, None);
+        assert_eq!(
+            obs.entries.as_deref(),
+            Some(
+                &[
+                    "manifest.json".to_string(),
+                    "document.pdf".into(),
+                    "pages/0001.png".into()
+                ][..]
+            )
+        );
         assert_eq!(obs.manifest.map(|m| m.source.format), Some("pdf".into()));
         assert_eq!(obs.pdf_valid, Some(true));
+    }
+
+    #[test]
+    fn a_zip_or_a_bundle_without_a_manifest_is_unreadable() {
+        let mut obs = Observed {
+            status: 200,
+            ..Observed::default()
+        };
+        read_body(&mut obs, "bundle", b"PK\x03\x04 not zstd");
+        assert!(
+            obs.body_error
+                .is_some_and(|e| e.starts_with("not a zstd stream"))
+        );
+        let mut obs = Observed {
+            status: 200,
+            ..Observed::default()
+        };
+        read_body(&mut obs, "images", &tar_zst(&[("pages/0001.png", b"png")]));
+        assert_eq!(
+            obs.body_error.as_deref(),
+            Some("the bundle has no manifest.json")
+        );
     }
 }

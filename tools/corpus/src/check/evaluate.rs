@@ -27,6 +27,8 @@ pub struct Observed {
     /// `%PDF-` and holds `%%EOF`. `None` when the response has no PDF.
     pub pdf_valid: Option<bool>,
     pub manifest: Option<Manifest>,
+    /// The entry names of a tar.zst answer, in archive order.
+    pub entries: Option<Vec<String>>,
     /// The `/BaseFont` names in the PDF, when it was read.
     pub base_fonts: Option<BTreeSet<String>>,
     /// A body that could not be read as the content type says.
@@ -66,6 +68,8 @@ pub struct PdfInfo {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PageInfo {
     pub number: u32,
+    #[serde(default)]
+    pub path: String,
     pub width_px: u32,
     pub height_px: u32,
     pub blank: bool,
@@ -128,14 +132,14 @@ pub fn evaluate(case: &Case, obs: &Observed, ctx: &Context) -> Verdict {
         return v;
     }
     let manifest = obs.manifest.as_ref();
-    let zip = case.output() != "pdf";
+    let archive = case.output() != "pdf";
     if let Some(want) = &expect.format {
         let got = manifest
             .map(|m| m.source.format.clone())
             .or_else(|| obs.source_format.clone());
         compare(&mut v, "format", got.as_deref(), Some(want.as_str()));
     }
-    if zip {
+    if archive {
         if let Some(want) = &expect.family {
             compare(
                 &mut v,
@@ -169,7 +173,7 @@ pub fn evaluate(case: &Case, obs: &Observed, ctx: &Context) -> Verdict {
             obs.warning_count
         ));
     }
-    if let (Some(want), true) = (&expect.warnings, zip) {
+    if let (Some(want), true) = (&expect.warnings, archive) {
         match manifest {
             Some(m) => warnings(&mut v, &m.warnings, want, expect.warnings_mode, ctx),
             None => v
@@ -177,7 +181,7 @@ pub fn evaluate(case: &Case, obs: &Observed, ctx: &Context) -> Verdict {
                 .push("no manifest to read the warnings from".into()),
         }
     }
-    if let (Some(want), true) = (&expect.blank_pages, zip)
+    if let (Some(want), true) = (&expect.blank_pages, archive)
         && let Some(m) = manifest
     {
         let got: BTreeSet<u32> = m
@@ -237,7 +241,7 @@ fn invariants(case: &Case, obs: &Observed, ctx: &Context, v: &mut Verdict) {
     let want_type = if case.output() == "pdf" {
         "application/pdf"
     } else {
-        "application/zip"
+        "application/zstd"
     };
     let got_type = obs
         .content_type
@@ -253,10 +257,21 @@ fn invariants(case: &Case, obs: &Observed, ctx: &Context, v: &mut Verdict) {
     }
     let Some(m) = &obs.manifest else {
         if case.output() != "pdf" && obs.body_error.is_none() {
-            v.failures.push("the ZIP has no manifest.json".into());
+            v.failures.push("the bundle has no manifest.json".into());
         }
         return;
     };
+    if let Some(entries) = &obs.entries {
+        let mut want = vec!["manifest.json".to_string()];
+        if case.output() == "bundle" {
+            want.push("document.pdf".into());
+        }
+        want.extend(m.pages.iter().map(|p| p.path.clone()));
+        if *entries != want {
+            v.failures
+                .push(format!("bundle entries {entries:?}, expected {want:?}"));
+        }
+    }
     if obs.page_count != Some(m.page_count) {
         v.failures.push(format!(
             "Convert-Page-Count {:?}, manifest page_count {}",
@@ -468,7 +483,7 @@ mod tests {
     fn bundle(pages: u32, warnings: Vec<Warning>) -> Observed {
         Observed {
             status: 200,
-            content_type: Some("application/zip".into()),
+            content_type: Some("application/zstd".into()),
             source_format: Some("docx".into()),
             page_count: Some(pages),
             warning_count: Some(warnings.len() as u32),
@@ -486,6 +501,7 @@ mod tests {
                 pages: (1..=pages)
                     .map(|number| PageInfo {
                         number,
+                        path: format!("pages/{number:04}.png"),
                         width_px: 413,
                         height_px: 584,
                         blank: false,
@@ -493,6 +509,12 @@ mod tests {
                     .collect(),
                 warnings,
             }),
+            entries: Some(
+                ["manifest.json".to_string(), "document.pdf".into()]
+                    .into_iter()
+                    .chain((1..=pages).map(|n| format!("pages/{n:04}.png")))
+                    .collect(),
+            ),
             base_fonts: Some(BTreeSet::from(["BAAAAA+Carlito".into()])),
             healthy_after: true,
             ..Observed::default()
@@ -694,6 +716,7 @@ mod tests {
         );
         obs.base_fonts = None;
         obs.pdf_valid = None;
+        obs.entries = Some(vec!["manifest.json".into(), "pages/0001.png".into()]);
         if let Some(m) = obs.manifest.as_mut() {
             m.pdf = None;
         }
@@ -712,6 +735,22 @@ mod tests {
             m.pages[1].blank = true;
         }
         assert!(failures(&c, &obs).is_empty());
+    }
+
+    #[test]
+    fn bundle_entries_must_come_in_the_contract_order() {
+        let c = case(json!({"output": "bundle"}), json!({"status": 200}));
+        let mut obs = bundle(1, vec![]);
+        obs.entries = Some(vec![
+            "document.pdf".into(),
+            "manifest.json".into(),
+            "pages/0001.png".into(),
+        ]);
+        let f = failures(&c, &obs);
+        assert!(
+            f[0].starts_with("bundle entries [\"document.pdf\""),
+            "{f:?}"
+        );
     }
 
     #[test]
@@ -744,6 +783,7 @@ mod tests {
             m.pages.remove(0);
             m.pages[0].width_px = 5000;
         }
+        obs.entries = None;
         assert_eq!(
             failures(&c, &obs),
             ["page 2 is 5000 x 584 px, more than MAX_EDGE_PX 4096"]
@@ -808,14 +848,14 @@ mod tests {
         };
         let obs = Observed {
             status: 200,
-            content_type: Some("application/zip".into()),
+            content_type: Some("application/zstd".into()),
             pdf_valid: Some(true),
             healthy_after: true,
             ..Observed::default()
         };
         assert_eq!(
             failures(&c, &obs),
-            ["Content-Type Some(\"application/zip\"), expected application/pdf"]
+            ["Content-Type Some(\"application/zstd\"), expected application/pdf"]
         );
     }
 }
