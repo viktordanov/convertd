@@ -648,3 +648,85 @@ impl Readiness for Unwired {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn renders_each_image_format() {
+        let dir = std::env::temp_dir().join(format!("convertd-fake-render-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pdf = dir.join("document.pdf");
+        std::fs::write(&pdf, ONE_PAGE_PDF).unwrap();
+        let fake = FakePdf::new(FakeBehavior::Succeed);
+        let magic: [(ImageFormat, &[u8]); 3] = [
+            (ImageFormat::Png, b"\x89PNG"),
+            (ImageFormat::Jpeg, b"\xFF\xD8\xFF"),
+            (ImageFormat::Webp, b"RIFF"),
+        ];
+        for (format, magic) in magic {
+            let job = RenderJob {
+                pdf: pdf.clone(),
+                password: None,
+                pages: vec![1, 2],
+                format,
+                dpi: 150,
+                quality: 85,
+                max_edge: 4096,
+                out_dir: dir.clone(),
+                sha256: [0; 32],
+                max_output_bytes: 1 << 20,
+            };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let rendered = fake.render(job, Admission::Queue, deadline).await.unwrap();
+            assert_eq!(rendered.pages.len(), 2);
+            for page in &rendered.pages {
+                let path: PathBuf = dir.join(&page.file_name);
+                let bytes = std::fs::read(&path).unwrap();
+                assert!(bytes.starts_with(magic), "{format:?}");
+                assert_eq!(page.crc32, Some(crc32fast::hash(&bytes)));
+                assert_eq!(page.size_bytes, bytes.len() as u64);
+                let decoded = image::load_from_memory(&bytes).unwrap();
+                assert_eq!((decoded.width(), decoded.height()), (1, 1));
+            }
+            assert_eq!(
+                rendered.pages[1].file_name,
+                format!("0002.{}", format.extension())
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn render_stops_at_max_output_bytes() {
+        let dir = std::env::temp_dir().join(format!("convertd-fake-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pdf = dir.join("document.pdf");
+        std::fs::write(&pdf, ONE_PAGE_PDF).unwrap();
+        let job = RenderJob {
+            pdf,
+            password: None,
+            pages: (1..=50).collect(),
+            format: ImageFormat::Png,
+            dpi: 150,
+            quality: 85,
+            max_edge: 4096,
+            out_dir: dir.clone(),
+            sha256: [0; 32],
+            max_output_bytes: 100,
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let err = FakePdf::new(FakeBehavior::Succeed)
+            .render(job, Admission::Queue, deadline)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EngineError::LimitExceeded(_)), "{err:?}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
