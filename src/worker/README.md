@@ -96,7 +96,9 @@ A `Convert` runs `preflight::scan` on the source first, timed apart as `prefligh
 
 The callback counts the password prompts of one load. A failed load is `PasswordRequired` after one prompt without a password, `InvalidPassword` after a second prompt with a password, and `LoadFailed` otherwise.
 
-The export runs with `RLIMIT_FSIZE` at `max_output_bytes`. The load does not, because it writes LibreOffice's own temp files. The SIGXFSZ handler records a write past the cap, and the job is then `LimitExceeded`. A failed save with no such write is `DiskFull` when `statvfs` shows less than 1 MiB free, and `ExportFailed` otherwise.
+The export runs with `RLIMIT_FSIZE` at `max_output_bytes`. The load runs under a looser cap, `max(4 × max_output_bytes, 1 GiB)`, because it writes LibreOffice's own temp files. The SIGXFSZ handler records a write past either cap, and the job is then `LimitExceeded`. A failed save with no such write is `DiskFull` when `statvfs` shows less than 1 MiB free, and `ExportFailed` otherwise.
+
+A password with a NUL byte is `InvalidPassword` before any engine call, in both workers, because the bindings cannot pass it on. The office worker always answers a password prompt, since LibreOffice waits for the answer.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="render" files="render.rs encode.rs" -->
