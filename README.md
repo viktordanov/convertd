@@ -49,7 +49,7 @@ cd client/contract && go run ./cmd/speccheck validate ../../api/openapi.yaml
 # or simply: ./generate.sh
 ```
 
-The script exits non-zero if the structure, an embedded example or the `pages`
+`speccheck` exits non-zero if the structure, an embedded example or the `pages`
 pattern is wrong.
 
 ## The Go client
