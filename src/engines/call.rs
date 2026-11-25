@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::domain::engine::{Admission as DomainAdmission, EngineError, EngineTiming, WorkerRef};
 use crate::engines::error::EngineFailure;
+use crate::engines::poison::{CRASH_STRIKES, Poison, TIMEOUT_STRIKES};
 use crate::engines::pool::{Admission, CallError, Pool};
 use crate::ipc::{Op, Output, Reply, WorkerErrorKind};
 
@@ -54,6 +55,25 @@ pub async fn call(
     deadline: Instant,
     recycle: fn(WorkerErrorKind) -> bool,
 ) -> Result<Called, EngineError> {
+    call_with_poison(pool, op, adm, deadline, recycle, None).await
+}
+
+/// [`call`] with poison memory: a poisoned document is refused before the
+/// lease, a timeout adds one strike, and a crash adds two when it survived
+/// the retry (one when there was no time for a retry).
+pub async fn call_with_poison(
+    pool: &Pool,
+    op: Op,
+    adm: Admission,
+    deadline: Instant,
+    recycle: fn(WorkerErrorKind) -> bool,
+    poison: Option<&Poison>,
+) -> Result<Called, EngineError> {
+    if let Some(p) = poison
+        && p.list.is_poisoned(&p.key)
+    {
+        return Err(EngineError::Poisoned);
+    }
     let started = Instant::now();
     let mut adm = adm;
     let mut first_queue = None;
@@ -124,7 +144,19 @@ pub async fn call(
                 retried = true;
                 adm = Admission::Continue;
             }
-            Err(err) => return Err(EngineFailure::from(err).into()),
+            Err(err) => {
+                if let Some(p) = poison {
+                    match err {
+                        CallError::Timeout => p.list.strike(&p.key, TIMEOUT_STRIKES),
+                        CallError::Crashed { .. } if retried => {
+                            p.list.strike(&p.key, CRASH_STRIKES);
+                        }
+                        CallError::Crashed { .. } => p.list.strike(&p.key, TIMEOUT_STRIKES),
+                        CallError::Protocol(_) | CallError::TooBig { .. } => {}
+                    }
+                }
+                return Err(EngineFailure::from(err).into());
+            }
         }
     }
 }

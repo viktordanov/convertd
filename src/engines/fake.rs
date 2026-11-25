@@ -1,7 +1,7 @@
 //! Level-A fake engines (lane 001): [`FakeOffice`] and [`FakePdf`] behind
 //! the domain traits, selected with `TEST_ENGINE=fake` in `test-hooks`
-//! builds. Also [`Unwired`], which stands in until lane 002's engines are
-//! wired.
+//! builds. Also [`Unwired`], an engine that answers every call with
+//! `Unavailable`, for in-process tests that need no engine.
 //!
 //! No real pool, queue, deadline kill or process: a 429 comes from
 //! `FAKE:TOO_MANY_REQUESTS` or from the service's own permit, a 504 from
@@ -593,8 +593,8 @@ impl Readiness for FakeReadiness {
 }
 
 /// No engine: every call is `Unavailable` (503) and readiness stays
-/// `starting`. `serve` uses it while lane 002's engines are not wired
-/// (plan 001 step 14), so the probes still answer.
+/// `starting`. In-process tests use it where no engine is needed; `serve`
+/// runs the real pools or level B (`engines::select`).
 pub struct Unwired;
 
 #[async_trait]

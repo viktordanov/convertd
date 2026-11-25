@@ -34,8 +34,9 @@ impl EngineCommand {
 /// name, unparsed, so this lane defines its own flags without touching
 /// `main.rs`.
 ///
-/// Only `bench` exists in wave one; the other commands need the engines
-/// (plan 002 steps 7, 8 and 13).
+/// `bench`, `convert`, `inspect`, `render` and `decrypt` exist; `soak`
+/// (plan 002 step 13) and `assemble` (image inputs are out of v1) answer
+/// "not implemented yet".
 pub fn run(command: EngineCommand, args: Vec<OsString>) -> ExitCode {
     match command {
         EngineCommand::Bench => bench::run(args),

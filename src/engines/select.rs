@@ -19,6 +19,7 @@ use crate::domain::engine::{OfficeEngine, PdfEngine};
 use crate::domain::readiness::{PoolStatus, Readiness, ReadinessSnapshot, ReadinessStatus};
 use crate::engines::office_lok::OfficeLok;
 use crate::engines::pdf_pdfium::PdfPdfium;
+use crate::engines::poison::PoisonList;
 use crate::engines::pool::{Pool, PoolSpec};
 use crate::engines::process::{ReaperMode, Spawner};
 use crate::engines::slot::WorkerEnv;
@@ -212,9 +213,11 @@ pub async fn start(config: &Config) -> Result<Selected, String> {
         level_b,
         "engine pools starting"
     );
+    // One poison memory for both pools; None when POISON_TTL_SECONDS is 0.
+    let poison = PoisonList::new(engines.poison_ttl);
     Ok(Selected {
-        office: Arc::new(OfficeLok::new(office.clone())),
-        pdf: Arc::new(PdfPdfium::new(render.clone())),
+        office: Arc::new(OfficeLok::new(office.clone()).with_poison(poison.clone())),
+        pdf: Arc::new(PdfPdfium::new(render.clone()).with_poison(poison)),
         readiness: Arc::new(PoolReadiness::new(office.clone(), render.clone())),
         handle: EngineHandle {
             pools: vec![office, render],

@@ -9,7 +9,7 @@ Three duties apply to every change in this folder:
 - **Every worker starts through `Spawner::spawn`.** The spawn runs on the long-lived `convertd-spawner` thread, because on Linux the parent-death signal of a worker follows the thread that started it.
 - **The supervisor ends a worker only by SIGKILL of its process group.** The supervisor never asks a worker to shut down, so no LibreOffice teardown runs. The [worker README](../worker/README.md) gives the reason.
 
-`convertd serve` runs two pools: the office pool runs LibreOffice and the render pool runs PDFium. `select.rs` starts them, and `OfficeLok` and `PdfPdfium` implement the engine traits over them. The RSS kill during a job, image assembly, poison memory and the soak run are not built yet. [Not built yet](#not-built-yet) lists them.
+`convertd serve` runs two pools: the office pool runs LibreOffice and the render pool runs PDFium. `select.rs` starts them, and `OfficeLok` and `PdfPdfium` implement the engine traits over them. A call that passes `WORKER_KILL_RSS_MB` kills its worker, and poison memory refuses documents that recently hung or crashed one. The soak run is not built yet, and image inputs are out of v1. [Not built yet](#not-built-yet) lists them.
 
 The worker side is in [`src/worker/`](../worker/README.md), and the frames between the two sides are in [`src/ipc/`](../ipc/README.md). `fake.rs` and `fake_markers.rs` hold lane 001's level-A fakes and the `FAKE:` marker parser. This README does not cover them.
 
@@ -78,6 +78,7 @@ The pool keeps its idle workers in one list next to a FIFO-fair `tokio::sync::Se
 - **Deadline passed**: the lease kills the process group and returns `CallError::Timeout`.
 - **EOF or exit**: the lease kills the group and waits at most 100 ms for the exit status. It returns `CallError::Crashed { status }` and logs `worker crashed`.
 - **Bad frame**: a wrong `id`, invalid JSON or an oversize frame. The lease kills the worker and returns `CallError::Protocol`.
+- **Memory over `kill_rss`**: the call samples the worker's RSS every 200 ms while it waits. At `kill_rss` it kills the process group and returns `CallError::TooBig`, which maps to `LimitExceeded` and is never retried. On a platform where the supervisor cannot read the RSS, the watchdog does not run.
 
 The `Drop` of a `Lease` decides what happens to the worker. If the call future was dropped before its reply, the worker is killed, because its reply then reaches the next lease. A dead worker, or one that failed a call, goes too. Otherwise the [recycling](#recycling) rules decide.
 
@@ -148,7 +149,7 @@ Each worker process gets `<workers_dir>/<pool>-<slot>/` with the subdirectories 
 `WorkerEnv::with_path_prefix` puts `LO_PROGRAM_DIR` first in `PATH`. Without it, the libreofficekit crate adds the directory with a `;` separator and cuts `/usr/bin` off the worker's `PATH`. A worker never gets `LC_ALL`, because it overrides `LC_PAPER`. `WorkerEnv::lc_all_dropped` records that the supervisor had it. LibreOfficeKit 26.8.3 does not take the paper size from `LC_PAPER` or `LANG`: in the dev image, a DOCX with no page size comes out Letter with every setting (measured 2026-11-26). Thus `DEFAULT_PAPER` has no effect yet.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="adapters" files="call.rs office_lok.rs pdf_pdfium.rs" -->
+<!-- memoria:section id="adapters" files="call.rs office_lok.rs pdf_pdfium.rs poison.rs" -->
 ## Engine adapters
 
 `OfficeLok` implements `OfficeEngine` over the office pool, and `PdfPdfium` implements `PdfEngine` over the render pool. Each call runs these steps through `call::call`:
@@ -163,7 +164,14 @@ After a load, export, empty-document, limit or internal error, `OfficeLok` recyc
 
 `PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`. The chunks run together. A crashed chunk is retried once. The pages come back in order. `engine` is the longest chunk, and the most severe chunk error wins: a timeout, then a crash, then a password error.
 
-`PdfPdfium::assemble` returns `Failed("image inputs are not supported yet")`, which gives 422 `CONVERSION_FAILED`. A 500 would tell callers to retry. Image assembly is plan step 11.
+`PdfPdfium::assemble` returns `Failed("image inputs are not supported yet")`, which gives 422 `CONVERSION_FAILED`. A 500 tells callers to retry. Image inputs are out of v1 (the owner's decision).
+
+Poison memory (`poison.rs`) protects the workers from documents that hang or crash them. It is keyed by the upload's SHA-256 and shared by both pools, and it works like this:
+
+- A timeout adds one strike. A crash that survived its retry adds two.
+- At two strikes, `convert` and `render` return `Poisoned` (422) before they lease a worker.
+- Each strike sets the expiry to now + `POISON_TTL_SECONDS`. An expired entry starts again from zero.
+- The list keeps at most 1024 documents. When it is full, the entry that expires first goes. `POISON_TTL_SECONDS=0` turns poison memory off.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="selection" files="select.rs" -->
@@ -255,7 +263,6 @@ Lease, `Ping` and return took 3.6 to 3.8 µs at p50 for every role. Over HTTP, t
 
 These parts of plan 002 do not exist yet:
 
-- The RSS kill during a job. `PoolSpec::kill_rss` exists, but the pool does not enforce it (step 10).
-- Image assembly (step 11). `PdfPdfium::assemble` returns `Failed`.
-- The poison memory for documents that hang or crash (step 12).
 - `engine soak` and the fault and soak run (step 13).
+
+Image assembly (step 11) is out of v1, so `PdfPdfium::assemble` returns `Failed`.

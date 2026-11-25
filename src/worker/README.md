@@ -86,7 +86,7 @@ For `DiskFull` and `LimitExceeded`, `io_error` writes a fixed message with no pa
 
 1. It installs its own SIGXFSZ handler. LibreOffice's start-up installs a handler that turns a write past `RLIMIT_FSIZE` into a crash ("Fatal exception: Signal 25").
 2. It turns on the password callback and registers it once.
-3. With `Init.warmup`, it converts a tiny DOCX, XLSX and PPTX to PDF before `Ready`. `warmup.rs` builds them in memory as stored ZIP archives, so no binary fixture is in the repository.
+3. With `Init.warmup`, it converts a DOCX, an XLSX and a PPTX to PDF before `Ready`. They are shaped like real documents: a Cambria and Calibri theme, styles, a heading, a list and a table in the DOCX, and Calibri styles and a formula in the XLSX. Thus the first real job finds the import paths, the substitute fonts and the PDF font embedding loaded. `warmup.rs` builds the files in memory as stored ZIP archives, so no binary fixture is in the repository.
 
 A `Convert` runs `preflight::scan` on the source first, timed apart as `preflight_us`, and returns the facts in the reply. Then it loads the file and exports PDF with explicit JSON filter options, so no setting comes from the profile. The type that LibreOffice loaded picks the options, not the requested family. An encrypted upload arrives as `source.docx` with the document family, whatever it holds, and LibreOffice finds the real type from the content:
 
@@ -151,5 +151,6 @@ A fake PDF has `n` empty A4 pages. When `n` is not 1, it carries a `FAKE:PAGES=<
 
 These parts of plan 002 do not exist yet:
 
-- Image assembly (step 11). The render worker answers `Assemble` with `Unsupported`.
 - The font list of `Inspect` with `collect_fonts`. It is always empty.
+
+Image assembly is out of v1, so the render worker answers `Assemble` with `Unsupported`.

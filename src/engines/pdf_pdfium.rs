@@ -1,5 +1,6 @@
 //! `PdfEngine` over the render pool (plan 002 step 7).
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -12,6 +13,7 @@ use crate::domain::engine::{
 };
 use crate::engines::call::{Called, admission, call, unexpected, worker_ref};
 use crate::engines::error::EngineFailure;
+use crate::engines::poison::{CRASH_STRIKES, PoisonList, TIMEOUT_STRIKES};
 use crate::engines::pool::{Admission as PoolAdmission, CallError, Lease, Pool};
 use crate::ipc::{self, DecryptArgs, InspectArgs, Op, Output, RenderArgs, Secret, WorkerErrorKind};
 
@@ -22,11 +24,19 @@ pub const RENDER_CHUNK_MIN_PAGES: usize = 4;
 /// PDFium through the render pool.
 pub struct PdfPdfium {
     pool: Pool,
+    poison: Option<Arc<PoisonList>>,
 }
 
 impl PdfPdfium {
     pub fn new(pool: Pool) -> Self {
-        Self { pool }
+        Self { pool, poison: None }
+    }
+
+    /// Refuses renders of documents that recently timed out or crashed a
+    /// worker.
+    pub fn with_poison(mut self, poison: Option<Arc<PoisonList>>) -> Self {
+        self.poison = poison;
+        self
     }
 }
 
@@ -230,6 +240,11 @@ impl PdfEngine for PdfPdfium {
         adm: Admission,
         deadline: Instant,
     ) -> Result<Rendered, EngineError> {
+        if let Some(list) = &self.poison
+            && list.is_poisoned(&job.sha256)
+        {
+            return Err(EngineError::Poisoned);
+        }
         let started = Instant::now();
         let first = self
             .pool
@@ -287,6 +302,14 @@ impl PdfEngine for PdfPdfium {
             }
         }
         if let Some(err) = failure {
+            // A chunk's crash already survived its retry when it gets here.
+            if let Some(list) = &self.poison {
+                match err {
+                    EngineError::Timeout => list.strike(&job.sha256, TIMEOUT_STRIKES),
+                    EngineError::Crashed => list.strike(&job.sha256, CRASH_STRIKES),
+                    _ => {}
+                }
+            }
             return Err(err);
         }
         pages.sort_by_key(|p| p.number);

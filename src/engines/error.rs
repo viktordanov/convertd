@@ -55,6 +55,10 @@ impl From<CallError> for EngineFailure {
             CallError::Timeout => EngineFailure::Timeout,
             // A worker that breaks the protocol was killed like a crashed one.
             CallError::Crashed { .. } | CallError::Protocol(_) => EngineFailure::Crashed,
+            // The job's own cap: its worker passed WORKER_KILL_RSS_MB.
+            CallError::TooBig { .. } => {
+                EngineFailure::LimitExceeded("the conversion used too much memory".into())
+            }
         }
     }
 }
@@ -105,6 +109,10 @@ mod tests {
         assert_eq!(F::from(CallError::Timeout), F::Timeout);
         assert_eq!(F::from(CallError::Crashed { status: None }), F::Crashed);
         assert_eq!(F::from(CallError::Protocol("x".into())), F::Crashed);
+        assert!(matches!(
+            F::from(CallError::TooBig { rss: 1 }),
+            F::LimitExceeded(_)
+        ));
     }
 
     #[test]

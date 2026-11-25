@@ -46,8 +46,8 @@ pub struct EngineConfig {
     pub lo_program_dir: PathBuf,
     pub lo_profile_template: Option<PathBuf>,
     pub pdfium_lib_dir: PathBuf,
-    /// Set in the image from the pinned build; `serve` with the real
-    /// engines needs it (not enforced in the skeleton).
+    /// Set in the image from the pinned build. `serve` with the real
+    /// engines refuses to start without it (`engines::select`).
     pub pdfium_build: Option<String>,
     /// Zero turns poison memory off.
     pub poison_ttl: Duration,
