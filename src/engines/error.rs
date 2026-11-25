@@ -144,3 +144,62 @@ mod tests {
         }
     }
 }
+
+impl From<EngineFailure> for crate::domain::engine::EngineError {
+    fn from(failure: EngineFailure) -> Self {
+        use crate::domain::engine::EngineError as E;
+        match failure {
+            EngineFailure::QueueFull => E::QueueFull,
+            EngineFailure::QueueTimeout => E::QueueTimeout,
+            EngineFailure::Unavailable => E::Unavailable,
+            EngineFailure::DiskFull => E::DiskFull,
+            EngineFailure::Timeout => E::Timeout,
+            EngineFailure::PasswordRequired => E::PasswordRequired,
+            EngineFailure::InvalidPassword => E::InvalidPassword,
+            EngineFailure::LimitExceeded(m) => E::LimitExceeded(m),
+            EngineFailure::Failed(m) => E::Failed(m),
+            EngineFailure::Crashed => E::Crashed,
+            EngineFailure::Poisoned => E::Poisoned,
+            EngineFailure::Internal(m) => E::Internal(m),
+        }
+    }
+}
+
+#[cfg(test)]
+mod domain_tests {
+    use super::*;
+    use crate::domain::engine::EngineError;
+
+    #[test]
+    fn every_failure_keeps_its_variant_in_the_domain() {
+        let pairs = [
+            (EngineFailure::QueueFull, EngineError::QueueFull),
+            (EngineFailure::QueueTimeout, EngineError::QueueTimeout),
+            (EngineFailure::Unavailable, EngineError::Unavailable),
+            (EngineFailure::DiskFull, EngineError::DiskFull),
+            (EngineFailure::Timeout, EngineError::Timeout),
+            (
+                EngineFailure::PasswordRequired,
+                EngineError::PasswordRequired,
+            ),
+            (EngineFailure::InvalidPassword, EngineError::InvalidPassword),
+            (
+                EngineFailure::LimitExceeded("a".into()),
+                EngineError::LimitExceeded("a".into()),
+            ),
+            (
+                EngineFailure::Failed("b".into()),
+                EngineError::Failed("b".into()),
+            ),
+            (EngineFailure::Crashed, EngineError::Crashed),
+            (EngineFailure::Poisoned, EngineError::Poisoned),
+            (
+                EngineFailure::Internal("c".into()),
+                EngineError::Internal("c".into()),
+            ),
+        ];
+        for (failure, error) in pairs {
+            assert_eq!(EngineError::from(failure), error);
+        }
+    }
+}
