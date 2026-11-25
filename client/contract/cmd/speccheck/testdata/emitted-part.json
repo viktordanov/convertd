@@ -1,0 +1,917 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Convert API",
+    "description": "Converts office documents.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    },
+    "version": "1.0.0-draft.1"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Liveness probe",
+        "operationId": "getLiveness",
+        "responses": {
+          "200": {
+            "description": "The process is alive.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/readyz": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "operationId": "getReadiness",
+        "responses": {
+          "200": {
+            "description": "Ready.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "tags": [
+          "discovery"
+        ],
+        "operationId": "getCapabilities",
+        "parameters": [
+          {
+            "name": "X-Request-ID",
+            "in": "header",
+            "description": "Correlation ID.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The capabilities.",
+            "headers": {
+              "X-Request-ID": {
+                "description": "The correlation ID of this request.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Capabilities"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The API key is missing or wrong.",
+            "headers": {
+              "x-request-id": {
+                "description": "The correlation ID of this request.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error.",
+            "headers": {
+              "X-Request-ID": {
+                "description": "The correlation ID of this request.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/convert": {
+      "post": {
+        "tags": [
+          "conversion"
+        ],
+        "operationId": "convertDocument",
+        "parameters": [
+          {
+            "name": "X-Request-ID",
+            "in": "header",
+            "description": "Correlation ID.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/ConvertRequest"
+              },
+              "encoding": {
+                "file": {
+                  "contentType": "application/octet-stream"
+                },
+                "options": {
+                  "contentType": "application/json"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The conversion succeeded.",
+            "headers": {
+              "X-Request-ID": {
+                "description": "The correlation ID of this request.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Convert-Source-Format": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Convert-Page-Count": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 1
+                }
+              },
+              "Convert-Warning-Count": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              },
+              "Convert-Engine-Fingerprint": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Server-Timing": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed.",
+            "headers": {
+              "X-Request-ID": {
+                "description": "The correlation ID of this request.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized.",
+            "headers": {
+              "X-Request-ID": {
+                "description": "The correlation ID of this request.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Too large.",
+            "headers": {
+              "X-Request-ID": {
+                "description": "The correlation ID of this request.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Unsupported.",
+            "headers": {
+              "X-Request-ID": {
+                "description": "The correlation ID of this request.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable.",
+            "headers": {
+              "X-Request-ID": {
+                "description": "The correlation ID of this request.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Busy.",
+            "headers": {
+              "X-Request-ID": {
+                "description": "The correlation ID of this request.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal.",
+            "headers": {
+              "X-Request-ID": {
+                "description": "The correlation ID of this request.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Unavailable.",
+            "headers": {
+              "X-Request-ID": {
+                "description": "The correlation ID of this request.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Timeout.",
+            "headers": {
+              "X-Request-ID": {
+                "description": "The correlation ID of this request.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Capabilities": {
+        "type": "object",
+        "required": [
+          "service",
+          "engine",
+          "inputs",
+          "outputs",
+          "image_formats",
+          "limits",
+          "fonts"
+        ],
+        "properties": {
+          "service": {
+            "$ref": "#/components/schemas/ServiceInfo"
+          },
+          "engine": {
+            "$ref": "#/components/schemas/EngineInfo"
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InputFormat"
+            }
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OutputKind"
+            }
+          },
+          "image_formats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImageFormat"
+            }
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          },
+          "fonts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ConvertOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "output": {
+            "$ref": "#/components/schemas/OutputKind",
+            "default": "pdf"
+          },
+          "pages": {
+            "type": "string",
+            "maxLength": 256,
+            "pattern": "^[0-9]+(-[0-9]*)?(,[0-9]+(-[0-9]*)?)*$"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 256,
+            "writeOnly": true
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 5,
+            "default": 120,
+            "maximum": 210
+          },
+          "images": {
+            "$ref": "#/components/schemas/ImageOptions"
+          },
+          "slides": {
+            "$ref": "#/components/schemas/SlideOptions"
+          },
+          "sheets": {
+            "$ref": "#/components/schemas/SheetOptions"
+          }
+        }
+      },
+      "ConvertRequest": {
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary"
+          },
+          "options": {
+            "$ref": "#/components/schemas/ConvertOptions"
+          }
+        }
+      },
+      "EngineInfo": {
+        "type": "object",
+        "required": [
+          "service_version",
+          "pdfium",
+          "fingerprint"
+        ],
+        "properties": {
+          "service_version": {
+            "type": "string"
+          },
+          "libreoffice": {
+            "type": "string"
+          },
+          "pdfium": {
+            "type": "string"
+          },
+          "fingerprint": {
+            "type": "string"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "error",
+          "code"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          }
+        }
+      },
+      "ErrorCode": {
+        "type": "string",
+        "enum": [
+          "BAD_REQUEST",
+          "UNAUTHORIZED",
+          "NOT_FOUND",
+          "FILE_TOO_LARGE",
+          "UNSUPPORTED_FORMAT",
+          "VALIDATION_ERROR",
+          "PASSWORD_REQUIRED",
+          "INVALID_PASSWORD",
+          "LIMIT_EXCEEDED",
+          "CONVERSION_FAILED",
+          "TOO_MANY_REQUESTS",
+          "INTERNAL_ERROR",
+          "SERVICE_UNAVAILABLE",
+          "CONVERSION_TIMEOUT"
+        ]
+      },
+      "FormatFamily": {
+        "type": "string",
+        "enum": [
+          "document",
+          "presentation",
+          "spreadsheet",
+          "pdf",
+          "image"
+        ]
+      },
+      "Health": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok"
+            ]
+          }
+        }
+      },
+      "ImageFormat": {
+        "type": "string",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ]
+      },
+      "ImageOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format": {
+            "$ref": "#/components/schemas/ImageFormat",
+            "default": "jpeg"
+          },
+          "dpi": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 36,
+            "default": 150,
+            "maximum": 600
+          },
+          "quality": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1,
+            "default": 85,
+            "maximum": 100
+          },
+          "max_edge": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 64,
+            "maximum": 8192
+          }
+        }
+      },
+      "InputFormat": {
+        "type": "object",
+        "required": [
+          "format",
+          "family",
+          "extensions",
+          "media_types",
+          "engine"
+        ],
+        "properties": {
+          "format": {
+            "type": "string"
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "document",
+              "presentation",
+              "spreadsheet",
+              "pdf",
+              "image"
+            ]
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "media_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "engine": {
+            "type": "string",
+            "enum": [
+              "libreoffice",
+              "pdfium",
+              "image"
+            ]
+          }
+        }
+      },
+      "Limits": {
+        "type": "object",
+        "required": [
+          "max_upload_bytes",
+          "max_render_pages",
+          "max_dpi",
+          "max_edge_px",
+          "default_timeout_seconds",
+          "max_timeout_seconds"
+        ],
+        "properties": {
+          "max_upload_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "max_render_pages": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "max_dpi": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "max_edge_px": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "default_timeout_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "max_timeout_seconds": {
+            "type": [
+              "integer"
+            ],
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "OutputKind": {
+        "type": "string",
+        "enum": [
+          "pdf",
+          "images",
+          "bundle"
+        ]
+      },
+      "PageInfo": {
+        "type": "object",
+        "required": [
+          "number",
+          "path",
+          "width_px",
+          "height_px",
+          "width_pt",
+          "height_pt",
+          "size_bytes",
+          "blank"
+        ],
+        "properties": {
+          "number": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1
+          },
+          "path": {
+            "type": "string"
+          },
+          "width_px": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1
+          },
+          "height_px": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1
+          },
+          "width_pt": {
+            "type": "number",
+            "format": "float"
+          },
+          "height_pt": {
+            "type": "number",
+            "format": "float"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "blank": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PoolStatus": {
+        "type": "object",
+        "required": [
+          "target",
+          "idle",
+          "busy"
+        ],
+        "properties": {
+          "target": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "idle": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "busy": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "Readiness": {
+        "type": "object",
+        "required": [
+          "status",
+          "pools"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "starting",
+              "draining",
+              "degraded"
+            ]
+          },
+          "pools": {
+            "type": "object",
+            "required": [
+              "office",
+              "render"
+            ],
+            "properties": {
+              "office": {
+                "$ref": "#/components/schemas/PoolStatus"
+              },
+              "render": {
+                "$ref": "#/components/schemas/PoolStatus"
+              }
+            }
+          }
+        }
+      },
+      "ServiceInfo": {
+        "type": "object",
+        "required": [
+          "name",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string"
+          }
+        }
+      },
+      "SheetOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "one_page_per_sheet": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "SlideNotes": {
+        "type": "string",
+        "enum": [
+          "none",
+          "append",
+          "only"
+        ]
+      },
+      "SlideOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "include_hidden": {
+            "type": "boolean",
+            "default": false
+          },
+          "notes": {
+            "$ref": "#/components/schemas/SlideNotes",
+            "default": "none"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearer_auth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "security": [
+    {
+      "bearer_auth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "conversion"
+    },
+    {
+      "name": "discovery"
+    },
+    {
+      "name": "operations"
+    }
+  ]
+}
