@@ -282,10 +282,13 @@ pub mod ops {
             .len();
         let family = {
             let mut file = std::fs::File::open(&input).map_err(|err| err.to_string())?;
-            crate::detect::detect_file(&mut file, size)
-                .map_err(|err| format!("failed to detect the format: {err:?}"))?
-                .format
-                .family()
+            match crate::detect::detect_file(&mut file, size) {
+                Ok(detection) => detection.format.family(),
+                // Detection does not read every container yet (encrypted
+                // OOXML is OLE2): fall back to the extension here.
+                Err(err) => family_by_extension(&input)
+                    .ok_or_else(|| format!("failed to detect the format: {err:?}"))?,
+            }
         };
         let notes = match args.notes.as_str() {
             "none" => SlideNotes::None,
@@ -335,6 +338,16 @@ pub mod ops {
         pool.shutdown(Duration::from_secs(2)).await;
         let _ = std::fs::remove_dir_all(&base);
         result
+    }
+
+    fn family_by_extension(path: &Path) -> Option<crate::domain::document::Family> {
+        use crate::domain::document::Family;
+        match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+            "docx" | "docm" | "dotx" | "doc" | "odt" | "rtf" => Some(Family::Document),
+            "xlsx" | "xlsm" | "xls" | "ods" => Some(Family::Spreadsheet),
+            "pptx" | "pptm" | "ppsx" | "potx" | "ppt" | "odp" => Some(Family::Presentation),
+            _ => None,
+        }
     }
 
     fn inspect_job(pdf: &Path, password: Option<Password>, probe_dpi: Option<u16>) -> InspectJob {
