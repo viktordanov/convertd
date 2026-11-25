@@ -167,3 +167,41 @@ RUN case "${TARGETARCH}" in amd64) tri=x86_64-linux-gnu ;; arm64) tri=aarch64-li
     if [[ -n "${missing}" ]]; then echo "unresolved libraries:" >&2; printf '%s' "${missing}" >&2; exit 1; fi; \
     echo "lib-check (${TARGETARCH}): ${n} objects, every DT_NEEDED resolved except ${allowed}" \
          "allow-listed pairs (docker/libreoffice/ldd-allow.txt)" | tee /lib-check.ok
+
+# ---- Dev/test image for lane 002's engine tests (replaces 002's dev.Dockerfile.txt) -------
+# Toolchain + the same engines, installed by the same script. Build for the host only:
+#   docker buildx build -f docker/Dockerfile --target dev --load -t rs-convert-dev .
+# Run with the source mounted and a job-local target dir (AGENT-RULES.md rule 5):
+#   docker run --rm -v "$PWD":/src -v <scratch>/target:/target \
+#     -e CARGO_TARGET_DIR=/target rs-convert-dev cargo test -- --include-ignored
+FROM ${RUST_IMAGE} AS dev
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+ARG LO_VERSION
+ARG LO_BUILD
+ARG PDFIUM_BUILD
+ARG RUST_VERSION
+ARG FONTS_CJK=0
+# Only the font excludes: the docs/locale excludes would fight locale-gen here.
+COPY docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
+COPY docker/fonts/fonts.json /etc/convertd/fonts.json
+COPY docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
+COPY docker/fonts/35-rs-convert-aliases.conf /etc/fonts/conf.d/35-rs-convert-aliases.conf
+RUN --mount=type=bind,from=engines,source=/out/debs,target=/debs \
+    --mount=type=bind,source=docker/libreoffice,target=/lo-config \
+    --mount=type=bind,source=docker/install-engines.sh,target=/install-engines.sh \
+    LO_VERSION="${LO_VERSION}" FONTS_CJK="${FONTS_CJK}" bash /install-engines.sh dev; \
+    rustup component add --toolchain "${RUST_VERSION}" rustfmt clippy
+COPY --from=engines /out/pdfium /opt/pdfium
+COPY docker/write-build-info.sh /opt/convertd/write-build-info.sh
+COPY docker/fonts/probe-families.txt /opt/convertd/probe-families.txt
+RUN LO_VERSION="${LO_BUILD:-${LO_VERSION}}" PDFIUM_BUILD="${PDFIUM_BUILD}" \
+    bash /opt/convertd/write-build-info.sh
+ENV HOME=/home/convertd \
+    LANG=C.UTF-8 \
+    SAL_USE_VCLPLUGIN=svp \
+    LO_PROGRAM_DIR=/opt/libreoffice/program \
+    PDFIUM_LIB_DIR=/opt/pdfium/lib \
+    PDFIUM_BUILD=${PDFIUM_BUILD} \
+    CARGO_HOME=/home/convertd/.cargo
+USER 10001:10001
+WORKDIR /src
