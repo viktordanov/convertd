@@ -168,6 +168,36 @@ pub fn scan<R: Read + Seek>(
     names: &[&[u8]],
     found: &mut [Option<Entry>],
 ) -> Result<(), ScanError> {
+    walk(file, file_size, |name, entry| {
+        if let Some(i) = names.iter().position(|wanted| *wanted == name)
+            && found[i].is_none()
+        {
+            found[i] = Some(entry);
+        }
+    })
+}
+
+/// Every entry whose name is UTF-8, in central-directory order, with the
+/// same caps as [`scan`]. At most [`MAX_ENTRIES`] names are kept.
+pub fn list<R: Read + Seek>(
+    file: &mut R,
+    file_size: u64,
+) -> Result<Vec<(String, Entry)>, ScanError> {
+    let mut entries = Vec::new();
+    walk(file, file_size, |name, entry| {
+        if let Ok(name) = std::str::from_utf8(name) {
+            entries.push((name.to_owned(), entry));
+        }
+    })?;
+    Ok(entries)
+}
+
+/// Calls `visit` with each central-directory record, checking the caps.
+fn walk<R: Read + Seek>(
+    file: &mut R,
+    file_size: u64,
+    mut visit: impl FnMut(&[u8], Entry),
+) -> Result<(), ScanError> {
     let directory = read_directory(file, file_size)?;
     file.seek(SeekFrom::Start(directory.offset))?;
     let mut reader = BufReader::with_capacity(64 * 1024, file.take(directory.size));
@@ -231,16 +261,15 @@ pub fn scan<R: Read + Seek>(
         {
             return Err(ScanError::Limit("compression ratio"));
         }
-        if let Some(i) = names.iter().position(|wanted| *wanted == name.as_slice())
-            && found[i].is_none()
-        {
-            found[i] = Some(Entry {
+        visit(
+            &name,
+            Entry {
                 method,
                 compressed,
                 uncompressed,
                 local_offset,
-            });
-        }
+            },
+        );
     }
     Ok(())
 }
@@ -281,4 +310,41 @@ pub fn read_entry<R: Read + Seek>(
         _ => return Ok(None),
     };
     Ok((out.len() <= cap).then_some(out))
+}
+
+/// One entry's content as a stream, inflated when deflated. `None` for
+/// another method.
+pub fn open_entry<'a, R: Read + Seek>(
+    file: &'a mut R,
+    entry: &Entry,
+) -> Result<Option<EntryReader<'a, R>>, ScanError> {
+    file.seek(SeekFrom::Start(entry.local_offset))?;
+    let mut local = [0; 30];
+    file.read_exact(&mut local)?;
+    if u32_at(&local, 0) != LOCAL_SIG {
+        return Err(ScanError::Malformed);
+    }
+    let skip = i64::from(u16_at(&local, 26)) + i64::from(u16_at(&local, 28));
+    file.seek(SeekFrom::Current(skip))?;
+    let data = file.take(entry.compressed);
+    Ok(match entry.method {
+        METHOD_STORED => Some(EntryReader::Stored(data)),
+        METHOD_DEFLATED => Some(EntryReader::Deflated(DeflateDecoder::new(data))),
+        _ => None,
+    })
+}
+
+/// The content of one entry, from [`open_entry`].
+pub enum EntryReader<'a, R> {
+    Stored(io::Take<&'a mut R>),
+    Deflated(DeflateDecoder<io::Take<&'a mut R>>),
+}
+
+impl<R: Read> Read for EntryReader<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            EntryReader::Stored(reader) => reader.read(buf),
+            EntryReader::Deflated(reader) => reader.read(buf),
+        }
+    }
 }
