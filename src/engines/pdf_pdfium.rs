@@ -290,16 +290,28 @@ impl PdfEngine for PdfPdfium {
             return Err(err);
         }
         pages.sort_by_key(|p| p.number);
+        let timing = EngineTiming {
+            queue,
+            lease: lease_time,
+            spawn: spawned.map(|(spawn, _)| spawn),
+            bind: spawned.map(|(_, bind)| bind),
+            wall: started.elapsed(),
+            engine: longest,
+        };
+        metrics::histogram!(
+            "convert_engine_overhead_seconds",
+            "pool" => self.pool.name(),
+            "op" => "render"
+        )
+        .record(
+            timing
+                .wall
+                .saturating_sub(timing.engine + queue)
+                .as_secs_f64(),
+        );
         Ok(Rendered {
             pages,
-            timing: EngineTiming {
-                queue,
-                lease: lease_time,
-                spawn: spawned.map(|(spawn, _)| spawn),
-                bind: spawned.map(|(_, bind)| bind),
-                wall: started.elapsed(),
-                engine: longest,
-            },
+            timing,
             workers,
         })
     }
