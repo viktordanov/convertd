@@ -192,6 +192,8 @@ paths:
               example: 0
             Convert-Engine-Fingerprint:
               $ref: '#/components/headers/Convert-Engine-Fingerprint'
+            Server-Timing:
+              $ref: '#/components/headers/Server-Timing'
           content:
             application/pdf:
               schema:
@@ -336,6 +338,35 @@ components:
       schema:
         type: string
       example: sha256:5b0f6e1c9a2d
+    Server-Timing:
+      description: |
+        Where the time of this request went, in the W3C Server-Timing form
+        `name;dur=<milliseconds>`, comma-separated, with 3 decimals. It is
+        sent on every response produced after the file type was detected,
+        including the error responses that follow detection. It is meant for
+        diagnosis and benchmarks.
+
+        | Name | Stage |
+        | --- | --- |
+        | `recv` | Receiving the upload. Outside `total`. |
+        | `detect` | Detecting the file type. |
+        | `preflight` | Scanning the source before conversion. Runs alongside `convert`. |
+        | `queue` | Waiting for a free worker. |
+        | `lease` | Taking the worker from its pool. |
+        | `spawn` | Starting a worker on this request's path. 0 when a warm worker was used. |
+        | `bind` | Loading the engine library in that worker. 0 when a warm worker was used. |
+        | `convert`, `convert_engine` | Producing the PDF: wall time, then time inside the engine. |
+        | `inspect`, `inspect_engine` | Reading the PDF's facts: wall time, then engine time. |
+        | `probe`, `probe_engine` | The blank-page probe: wall time, then engine time. |
+        | `render`, `render_engine` | Rendering page images: wall time, then engine time (the longest chunk). |
+        | `verify` | The quality checks that raise warnings. |
+        | `package` | Building the manifest and the ZIP plan before the headers are sent. |
+        | `total` | From the end of the upload to the start of the response. |
+
+        Stages that did not run are left out, except `spawn` and `bind`.
+      schema:
+        type: string
+      example: recv;dur=4.210, detect;dur=0.031, queue;dur=0.004, lease;dur=0.012, spawn;dur=0.000, bind;dur=0.000, convert;dur=812.442, convert_engine;dur=809.118, verify;dur=1.305, package;dur=0.088, total;dur=815.901
     Retry-After:
       description: Seconds to wait before retrying.
       schema:
@@ -793,7 +824,7 @@ components:
             How the PDF came to be.
 
             - `converted`: produced by LibreOffice from an office file.
-            - `passthrough`: the upload was already a PDF and is returned unchanged.
+            - `passthrough`: the upload was already a PDF and is returned unchanged, or decrypted when it was encrypted.
             - `assembled`: built from an uploaded image.
 
     ImageSettings:
