@@ -177,7 +177,7 @@ Both result types carry `Info` from the response headers. `Info` holds the reque
 The client ignores manifest fields that it does not know, and it keeps every enum value as a plain string. Thus a newer server with the same API version does not break an older client.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="contributing" files="oapi-codegen.yaml convert/api_surface_test.go contract/go.mod contract/harness_test.go contract/contract_test.go contract/cmd/speccheck/main.go" -->
+<!-- memoria:section id="contributing" files="oapi-codegen.yaml convert/api_surface_test.go contract/go.mod contract/harness_test.go contract/contract_test.go contract/levelb_test.go contract/cmd/speccheck/main.go" -->
 ## For contributors
 
 `convert` wraps the generated client in `internal/api/client.go`. oapi-codegen generates that file from `../api/openapi.json` with the settings in `oapi-codegen.yaml`. `convertd openapi` emits `openapi.json` from the server code, and the hand-written `../api/openapi.yaml` stays as the reference that it is compared with. Go's internal rule lets only code under `client/` import the generated package. No exported identifier in `convert` uses a generated type, and `convert/api_surface_test.go` fails when one does.
@@ -191,9 +191,9 @@ When you change the API in the server code:
 
 `contract/` is a nested module that is never published or tagged. It holds `speccheck`, the validating transport that checks each response against the spec, the test harness, the live contract cases and the self-tests. `speccheck validate` checks one spec, and `speccheck compare` checks the emitted spec against the reference.
 
-`../scripts/contract_test.sh` builds convertd with the `test-hooks` feature and runs the contract tests against the level A fake. CI runs it in the `test` job. `../scripts/contract_test.sh --image REF` runs them against an image. `cd contract && go test ./...` runs only the spec tools and the self-tests, and it needs no server.
+`../scripts/contract_test.sh` builds convertd with the `test-hooks` feature and runs the contract tests against the level A fake. The timeout and queue cases start their own level B servers (`TEST_ENGINE=worker`), so their 504 and 429 come from the real pool. CI runs it in the `test` job. `../scripts/contract_test.sh --image REF` runs them against an image. `cd contract && go test ./...` runs only the spec tools and the self-tests, and it needs no server.
 
 The script prints the skipped cases with their reasons, the findings and the declared `(operationId, status)` pairs that no case observed. The early-answer case skips with a finding when the write error from [Errors and retries](#errors-and-retries) occurs.
 
-The live cases prove that the service, the spec and this client agree on the responses that the cases exercise. They do not prove the quality of a conversion, because the level A fake replaces the engines.
+The live cases prove that the service, the spec and this client agree on the responses that the cases exercise. They do not prove the quality of a conversion, because both test levels replace the engines.
 <!-- /memoria:section -->
