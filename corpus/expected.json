@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "generator": {
-    "python": "3.13.5",
-    "zlib": "1.3.1",
-    "platform": "Linux-aarch64"
+    "python": "3.13.18",
+    "zlib": "1.2.12",
+    "platform": "Darwin-arm64"
   },
   "listener": "127.0.0.1:47123",
   "files": [
@@ -17,7 +17,7 @@
         "bench",
         "fonts"
       ],
-      "notes": "The spike's small.docx. Normal is Calibri, docDefaults resolve to the template's minor font Cambria: both are metric-compatible, so FONT negative.",
+      "notes": "The spike's small.docx. Normal is Calibri, docDefaults resolve to the template's minor font Cambria: both are metric-compatible, so FONT negative. LibreOffice 26.8.3.1 renders it as 2 pages (wave two, round B), not the 1 page that docs/m0-spikes.md first said. docx-one-page is the one-page file of the overhead gate.",
       "preflight": {
         "format": "docx",
         "encrypted": false,
@@ -45,7 +45,7 @@
             "family": "document",
             "encrypted": false,
             "pdf_origin": "converted",
-            "page_count": 1,
+            "page_count": 2,
             "warnings": []
           }
         },
@@ -57,7 +57,61 @@
           "expect": {
             "status": 200,
             "format": "docx",
-            "page_count": 1,
+            "page_count": 2,
+            "warning_count": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "docx-one-page",
+      "path": "out/docx/one-page.docx",
+      "origin": "generated",
+      "sha256": "b6d9656906b885b1baf9a443362a1268c073fc294d00a3a1cf1a64f1630712c2",
+      "tags": [
+        "bench"
+      ],
+      "notes": "The spike's document with two paragraphs instead of four, built to fit one page: the warm one-page DOCX of the overhead gate (INTERFACES.md section 11). On LibreOffice 26.8.3.1 on macOS, with the host's fonts, it renders 1 page. Record the count from the image's engines.",
+      "preflight": {
+        "format": "docx",
+        "encrypted": false,
+        "declared_pages": null,
+        "requested_fonts": [
+          "Calibri",
+          "Cambria"
+        ],
+        "macros": []
+      },
+      "cases": [
+        {
+          "name": "bundle",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "docx",
+            "family": "document",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": "unrecorded",
+            "warnings": []
+          }
+        },
+        {
+          "name": "pdf",
+          "options": {
+            "output": "pdf"
+          },
+          "expect": {
+            "status": 200,
+            "format": "docx",
+            "page_count": "unrecorded",
             "warning_count": 0
           }
         }
@@ -372,7 +426,7 @@
             "family": "document",
             "encrypted": true,
             "pdf_origin": "converted",
-            "page_count": 1,
+            "page_count": 2,
             "warnings": []
           }
         }

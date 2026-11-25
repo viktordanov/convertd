@@ -106,7 +106,8 @@ UNHASHED = {"docx-encrypted": _RANDOM_SALT, "pptx-encrypted": _RANDOM_SALT,
 ENCRYPTED = {"docx-encrypted": "docx-small", "pptx-encrypted": "pptx-deck20",
              "xlsx-encrypted": "xlsx-sheet3"}
 # Size bounds that keep the corpus close to the plan (the spike's small.docx is 36 KB).
-SIZE_BOUNDS = {"docx-small": (20_000, 100_000), "pptx-photos60": (25 << 20, 45 << 20)}
+SIZE_BOUNDS = {"docx-small": (20_000, 100_000), "docx-one-page": (20_000, 100_000),
+               "pptx-photos60": (25 << 20, 45 << 20)}
 
 
 # --- zip helpers ----------------------------------------------------------------
@@ -205,6 +206,12 @@ def set_literal_font(style, family):
 
 def docx_small(_ctx):
     return docx_bytes(spike_document(4))
+
+
+def docx_one_page(_ctx):
+    """The spike's document cut to two paragraphs, so that it fits one page: the
+    file of the overhead gate (docx-small renders two pages in LibreOffice)."""
+    return docx_bytes(spike_document(2))
 
 
 def docx_long(_ctx):
@@ -803,6 +810,7 @@ def pptm_vba(_ctx):
 # (id, path under out/, builder, hostile). A builder may read an earlier entry's bytes.
 ENTRIES = [
     ("docx-small", "docx/small.docx", docx_small, False),
+    ("docx-one-page", "docx/one-page.docx", docx_one_page, False),
     ("docx-long", "docx/long.docx", docx_long, False),
     ("docx-breaks12", "docx/breaks12.docx", docx_breaks12, False),
     ("docx-empty-page", "docx/empty-page.docx", docx_empty_page, False),
