@@ -98,7 +98,7 @@ curl -sS -H "Authorization: Bearer $CONVERT_API_KEY" \
 Today the request path has these limits:
 
 - Only `output=pdf` works. The service answers `images` and `bundle` with `422 VALIDATION_ERROR`.
-- Legacy binary Office files (`.doc`, `.xls`, `.ppt`) and encrypted OOXML files get `415`.
+- Legacy binary Office files (`.doc`, `.xls`, `.ppt`, `.pps`) and encrypted OOXML files get `415`.
 
 Every `/v1` route needs the API key as a bearer token. The probes (`/healthz`, `/readyz`) and `/metrics` take no key. `GET /v1/capabilities` lists the formats, the limits and the engine versions of a deployment.
 
@@ -127,6 +127,7 @@ Each folder in this list has a README for its own readers.
 - [corpus/README.md](corpus/README.md) covers the generated test corpus and the expected result for each file.
 - [tools/corpus/README.md](tools/corpus/README.md) covers `corpus-bench`, the tool that checks the corpus and its expectations.
 - `generate.sh` regenerates the Go client from the spec and tests it. `scripts/contract_test.sh` runs the contract tests against a real `convertd`.
+- Every push and pull request runs `memoria check` (`.github/workflows/memoria.yml`). The check fails while a README waits for review after a change to its sources. [Memoria in this repository](docs/documentation/memoria.md) gives the review steps.
 <!-- /memoria:section -->
 
 ## Documentation
