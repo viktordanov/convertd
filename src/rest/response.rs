@@ -22,6 +22,8 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use super::serialization::errors::{ErrorBody, ErrorCode};
+use super::serialization::options::OptionsError;
+use super::upload::UploadError;
 use crate::domain::conversion_service::ConversionError;
 use crate::domain::detection::DetectError;
 use crate::domain::engine::EngineError;
@@ -216,6 +218,32 @@ impl ApiError {
     }
 }
 
+impl ApiError {
+    pub fn from_upload(err: &UploadError, queue_wait: u32) -> Self {
+        match err {
+            UploadError::NotMultipart
+            | UploadError::Malformed(_)
+            | UploadError::UnknownPart(_)
+            | UploadError::DuplicatePart(_)
+            | UploadError::MissingFile
+            | UploadError::EmptyFile
+            | UploadError::OptionsTooLarge
+            | UploadError::Stalled
+            | UploadError::Incomplete(_)
+            | UploadError::Options(OptionsError::Syntax(_)) => Self::bad_request(err.to_string()),
+            UploadError::Options(OptionsError::Invalid(message)) => {
+                Self::validation(message.clone())
+            }
+            UploadError::OutputNotYet(_) => Self::validation(err.to_string()),
+            UploadError::TooLarge { limit } => Self::too_large(*limit),
+            UploadError::Request(conversion) => Self::from_conversion(conversion, queue_wait),
+            UploadError::Detect(detect) => Self::from_detect(detect),
+            UploadError::DiskFull => Self::disk_full(),
+            UploadError::Io(_) | UploadError::Sink(_) => Self::internal(err.to_string()),
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = ErrorBody {
@@ -361,6 +389,105 @@ mod tests {
         check(ApiError::from_detect(&limit), 422, "LIMIT_EXCEEDED", None);
         let io = DetectError::Io(std::io::Error::other("x"));
         check(ApiError::from_detect(&io), 500, "INTERNAL_ERROR", None);
+    }
+
+    #[test]
+    fn every_upload_error() {
+        let cases = [
+            (UploadError::NotMultipart, 400, "BAD_REQUEST", None),
+            (UploadError::Malformed("m".into()), 400, "BAD_REQUEST", None),
+            (
+                UploadError::UnknownPart("x".into()),
+                400,
+                "BAD_REQUEST",
+                None,
+            ),
+            (UploadError::DuplicatePart("file"), 400, "BAD_REQUEST", None),
+            (UploadError::MissingFile, 400, "BAD_REQUEST", None),
+            (UploadError::EmptyFile, 400, "BAD_REQUEST", None),
+            (UploadError::OptionsTooLarge, 400, "BAD_REQUEST", None),
+            (UploadError::Stalled, 400, "BAD_REQUEST", None),
+            (
+                UploadError::Incomplete("eof".into()),
+                400,
+                "BAD_REQUEST",
+                None,
+            ),
+            (
+                UploadError::Options(OptionsError::Syntax("s".into())),
+                400,
+                "BAD_REQUEST",
+                None,
+            ),
+            (
+                UploadError::Options(OptionsError::Invalid("i".into())),
+                422,
+                "VALIDATION_ERROR",
+                None,
+            ),
+            (
+                UploadError::OutputNotYet(crate::domain::conversion::Output::Bundle),
+                422,
+                "VALIDATION_ERROR",
+                None,
+            ),
+            (
+                UploadError::TooLarge { limit: 5 },
+                413,
+                "FILE_TOO_LARGE",
+                None,
+            ),
+            (
+                UploadError::Request(ConversionError::Validation("v".into())),
+                422,
+                "VALIDATION_ERROR",
+                None,
+            ),
+            (
+                UploadError::Detect(DetectError::Unsupported { label: "html" }),
+                415,
+                "UNSUPPORTED_FORMAT",
+                None,
+            ),
+            (
+                UploadError::Detect(DetectError::LimitExceeded {
+                    limit: "entry count",
+                }),
+                422,
+                "LIMIT_EXCEEDED",
+                None,
+            ),
+            (UploadError::DiskFull, 503, "SERVICE_UNAVAILABLE", Some(5)),
+            (
+                UploadError::Io(std::io::Error::other("x")),
+                500,
+                "INTERNAL_ERROR",
+                None,
+            ),
+            (
+                UploadError::Sink("panicked".into()),
+                500,
+                "INTERNAL_ERROR",
+                None,
+            ),
+        ];
+        for (err, status, code, retry) in cases {
+            check(ApiError::from_upload(&err, 10), status, code, retry);
+        }
+        assert_eq!(
+            ApiError::from_upload(&UploadError::MissingFile, 10).message,
+            "missing multipart part \"file\""
+        );
+        assert_eq!(
+            ApiError::from_upload(&UploadError::Stalled, 10).message,
+            "upload stalled"
+        );
+        assert_eq!(
+            ApiError::from_upload(&UploadError::DiskFull, 10)
+                .detail
+                .as_deref(),
+            Some("disk_full")
+        );
     }
 
     #[test]
