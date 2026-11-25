@@ -767,3 +767,74 @@ async fn default_paper_sets_the_page_size_of_a_docx_without_one() {
     )
     .await;
 }
+
+/// An encrypted OOXML upload is detected only as encrypted, so the
+/// supervisor names it `source.docx` and asks for a document. LibreOffice
+/// finds the real type from the content, and the worker picks the export
+/// keys from that type. Needs `CONVERTD_CORPUS_DIR/encrypted/` with
+/// `deck20.pptx` and `sheet3.xlsx`, encrypted with the password `secret`
+/// (made with `msoffcrypto-tool -e -p secret`; `corpus/generate.py` does not
+/// make them yet).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn encrypted_decks_and_sheets_named_docx_keep_their_export_keys() {
+    let (Some(lo), Some(pdfium), Some(corpus)) = (lo(), pdfium(), corpus()) else {
+        return;
+    };
+    let encrypted = corpus.join("encrypted");
+    if !encrypted.join("deck20.pptx").exists() || !encrypted.join("sheet3.xlsx").exists() {
+        eprintln!("skipped: no corpus (no encrypted/deck20.pptx or encrypted/sheet3.xlsx)");
+        return;
+    }
+    within(
+        TEST,
+        "encrypted_decks_and_sheets_named_docx_keep_their_export_keys",
+        async {
+            let dir = Scratch::new("office-encrypted-ooxml");
+            let office_pool = ready(office_spec(dir.path(), &lo, true)).await;
+            let render_pool = ready(render_spec(dir.path(), &pdfium)).await;
+            let office = OfficeLok::new(office_pool.clone());
+            let pdf = PdfPdfium::new(render_pool.clone());
+            let cases = [
+                (
+                    "deck20.pptx",
+                    ExportOptions {
+                        notes: SlideNotes::Append,
+                        ..ExportOptions::default()
+                    },
+                    40,
+                ),
+                (
+                    "sheet3.xlsx",
+                    ExportOptions {
+                        one_page_per_sheet: true,
+                        ..ExportOptions::default()
+                    },
+                    3,
+                ),
+            ];
+            for (i, (file, export, expected)) in cases.into_iter().enumerate() {
+                let case = dir.join(&format!("case-{i}"));
+                std::fs::create_dir_all(&case).unwrap();
+                let source = case.join("source.docx");
+                std::fs::copy(encrypted.join(file), &source).unwrap();
+                let output = case.join("document.pdf");
+                let mut job = job(source, output.clone(), Family::Document);
+                job.password = Some(Password::new("secret"));
+                job.export = export;
+                let converted = office
+                    .convert(job, DomainAdmission::Queue, deadline())
+                    .await
+                    .unwrap_or_else(|err| panic!("{file}: {err:?}"));
+                let pages = pages_of(&pdf, &output).await;
+                eprintln!(
+                    "encrypted {file} as source.docx: {:?}, {pages} pages",
+                    converted.doc_type
+                );
+                assert_eq!(pages, expected, "{file}: the export keys of its real type");
+            }
+            office_pool.shutdown(Duration::from_secs(5)).await;
+            render_pool.shutdown(Duration::from_secs(5)).await;
+        },
+    )
+    .await;
+}

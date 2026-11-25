@@ -219,7 +219,10 @@ impl OfficeWorker {
             Ok(DocumentType::Drawing) => "drawing",
             Ok(DocumentType::Other(_)) | Err(_) => "other",
         };
-        let filter = filter_options(args.family, &args.export);
+        // The loaded type decides the export keys, not the requested family:
+        // an encrypted OOXML upload arrives as a document of unknown type
+        // (named source.docx, family document) and may be a deck or a sheet.
+        let filter = filter_options(export_family(doc_type, args.family), &args.export);
         // The cap covers the export only: the load writes LibreOffice's own
         // temp files, which are no part of this job's output.
         sys::take_file_size_hit();
@@ -326,6 +329,17 @@ fn export_error(output: &Path, max_output_bytes: u64) -> WorkerError {
     WorkerError::new(WorkerErrorKind::ExportFailed, "failed to export document")
 }
 
+/// The family whose export keys apply: LibreOffice's document type when it
+/// names an office family, else the requested family.
+pub fn export_family(doc_type: &str, requested: Family) -> Family {
+    match doc_type {
+        "text" => Family::Document,
+        "spreadsheet" => Family::Spreadsheet,
+        "presentation" => Family::Presentation,
+        _ => requested,
+    }
+}
+
 /// The PDF export options, always explicit, so no setting comes from the
 /// profile. The keys are those of LibreOffice's `writer_pdf_Export` family.
 pub fn filter_options(family: Family, export: &ExportOptions) -> String {
@@ -360,6 +374,30 @@ mod tests {
         );
         assert_eq!(load_error(true, 1, "x").kind, WorkerErrorKind::LoadFailed);
         assert_eq!(load_error(false, 0, "x").kind, WorkerErrorKind::LoadFailed);
+    }
+
+    #[test]
+    fn the_loaded_type_decides_the_export_keys() {
+        assert_eq!(
+            export_family("presentation", Family::Document),
+            Family::Presentation
+        );
+        assert_eq!(
+            export_family("spreadsheet", Family::Document),
+            Family::Spreadsheet
+        );
+        assert_eq!(
+            export_family("text", Family::Presentation),
+            Family::Document
+        );
+        assert_eq!(
+            export_family("drawing", Family::Presentation),
+            Family::Presentation
+        );
+        assert_eq!(
+            export_family("other", Family::Spreadsheet),
+            Family::Spreadsheet
+        );
     }
 
     #[test]
