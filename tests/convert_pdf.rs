@@ -845,47 +845,69 @@ async fn a_client_that_stops_reading_releases_the_permit_after_the_idle_timeout(
 
 /// Streams `total` bytes of body after `head`, in 64 KiB writes, until the
 /// server closes; returns how many bytes went out.
-fn stream_body(mut stream: TcpStream, total: usize) -> usize {
+/// Writes `total` bytes, counting them in `sent`; returns the write error
+/// that stopped it, if any.
+fn stream_body(
+    mut stream: TcpStream,
+    total: usize,
+    sent: &std::sync::atomic::AtomicUsize,
+) -> Option<std::io::ErrorKind> {
+    use std::sync::atomic::Ordering;
     let chunk = vec![b'x'; 64 * 1024];
-    let mut sent = 0;
-    while sent < total {
-        match stream.write(&chunk[..chunk.len().min(total - sent)]) {
-            Ok(n) => sent += n,
-            Err(_) => break,
+    while sent.load(Ordering::Relaxed) < total {
+        let left = total - sent.load(Ordering::Relaxed);
+        match stream.write(&chunk[..chunk.len().min(left)]) {
+            Ok(n) => {
+                sent.fetch_add(n, Ordering::Relaxed);
+            }
+            Err(err) => return Some(err.kind()),
         }
     }
-    sent
+    None
 }
 
+/// The answer comes while the upload is still arriving, and the server
+/// then keeps reading (lingering close), so the client's write never
+/// fails with a broken pipe or a reset (contract case 19).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn early_401_and_413_arrive_while_the_client_still_uploads() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     let app = App::new("early", &[("MAX_UPLOAD_BYTES", "1048576")]);
     let addr = app.serve().await;
     let total = 64 * 1024 * 1024;
-    for (authorization, max_ok, want) in [
-        ("Bearer wrong", total, 401),
-        (&*format!("Bearer {KEY}"), total, 413),
-    ] {
+    for (authorization, want) in [("Bearer wrong", 401), (&*format!("Bearer {KEY}"), 413)] {
         let authorization = authorization.to_owned();
-        let (status, sent) = tokio::task::spawn_blocking(move || {
+        let (status, answered_at, write_error, sent) = tokio::task::spawn_blocking(move || {
             let mut stream = TcpStream::connect(addr).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
             stream.write_all(&head(total, &authorization)).unwrap();
             let writer = stream.try_clone().unwrap();
-            let upload = std::thread::spawn(move || stream_body(writer, total));
+            let sent = Arc::new(AtomicUsize::new(0));
+            let upload = std::thread::spawn({
+                let sent = sent.clone();
+                move || stream_body(writer, total, &sent)
+            });
             let status = read_status(&mut stream);
-            drop(stream);
-            (status, upload.join().unwrap())
+            let answered_at = sent.load(Ordering::Relaxed);
+            let write_error = upload.join().unwrap();
+            (
+                status,
+                answered_at,
+                write_error,
+                sent.load(Ordering::Relaxed),
+            )
         })
         .await
         .unwrap();
         assert_eq!(status, want);
         assert!(
-            sent < max_ok,
-            "the answer came before the upload ended ({sent} of {total} bytes)"
+            answered_at < total,
+            "the answer came before the upload ended ({answered_at} of {total} bytes)"
         );
+        assert_eq!(write_error, None, "{want}: the upload was cut");
+        assert_eq!(sent, total);
     }
     app.assert_no_jobs().await;
 }

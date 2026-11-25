@@ -7,7 +7,7 @@ use std::net::IpAddr;
 use std::any::Any;
 
 use axum::Router;
-use axum::middleware::{from_fn, from_fn_with_state};
+use axum::middleware::{from_fn, from_fn_with_state, map_request};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::serve::ListenerExt;
@@ -18,7 +18,7 @@ use tower_http::timeout::RequestBodyTimeoutLayer;
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-use super::middleware::{access_log, auth, request_id};
+use super::middleware::{access_log, auth, linger, request_id};
 use super::response::ApiError;
 use super::state::AppState;
 use super::{capabilities_handlers, convert_handlers, openapi, ops_handlers};
@@ -67,10 +67,12 @@ pub fn router_with(state: AppState, extra: Router<AppState>) -> Router {
         .merge(extra)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
-        // Outermost last: request_id, access_log, then the panic layer.
+        // Outermost last: linger, request_id, access_log, then the panic
+        // layer. linger wraps the body before anything can drop it early.
         .layer(CatchPanicLayer::custom(panic_response))
         .layer(from_fn(access_log::access_log))
         .layer(from_fn(request_id::request_id))
+        .layer(map_request(linger::linger))
         .with_state(state)
 }
 
