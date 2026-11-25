@@ -903,7 +903,7 @@
       "tags": [
         "pages"
       ],
-      "notes": "sldIdLst lists 4 slides; the 4th part's root is p:notASlide. Unverified that LibreOffice drops it; if it does not, the V1 positive moves to a 001 unit test.",
+      "notes": "sldIdLst lists 4 slides. The 4th part's root is p:notASlide. LibreOffice 26.8.3.1 does not drop that slide: it renders a blank 4th page, so there is no page-count mismatch, and the V1 positive is a lane 001 unit test (lead ruling, wave two round B). LibreOffice paints a white background on every slide, so the empty page has objects, renders flat and raises BLANK_PAGE.",
       "preflight": {
         "format": "pptx",
         "encrypted": false,
@@ -931,14 +931,13 @@
             "family": "presentation",
             "encrypted": false,
             "pdf_origin": "converted",
-            "page_count": 3,
+            "page_count": 4,
             "warnings": [
               {
-                "code": "PAGE_COUNT_MISMATCH",
+                "code": "BLANK_PAGE",
+                "page": 4,
                 "detail": {
-                  "expected": 4,
-                  "actual": 3,
-                  "source": "ppt/presentation.xml"
+                  "colour": "#ffffff"
                 }
               }
             ]
@@ -1115,7 +1114,7 @@
       "tags": [
         "pages"
       ],
-      "notes": "A template with no sldIdLst: V1 skips a declared count of 0. No slide reaches a layout, so no font is requested. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
+      "notes": "A template with no sldIdLst: V1 skips a declared count of 0. No slide reaches a layout, so no font is requested. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26. LibreOffice paints a white background on the one page, so it has objects, renders flat and raises BLANK_PAGE (lead ruling: keep V3).",
       "preflight": {
         "format": "potx",
         "encrypted": false,
@@ -1142,7 +1141,15 @@
             "encrypted": false,
             "pdf_origin": "converted",
             "page_count": 1,
-            "warnings": []
+            "warnings": [
+              {
+                "code": "BLANK_PAGE",
+                "page": 1,
+                "detail": {
+                  "colour": "#ffffff"
+                }
+              }
+            ]
           }
         }
       ]
