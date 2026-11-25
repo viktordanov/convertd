@@ -169,3 +169,44 @@ fn page_size() -> u64 {
     let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     u64::try_from(size).unwrap_or(4096)
 }
+
+/// Free bytes for unprivileged users on the file system that holds `path`,
+/// or `None` when `statvfs` fails.
+pub fn free_bytes(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
+    // SAFETY: `c_path` is a valid NUL-terminated string and `stat` points to
+    // a `statvfs` that the call fills; it is read only on success.
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+    // SAFETY: `statvfs` returned 0, so it filled the struct.
+    let stat = unsafe { stat.assume_init() };
+    #[allow(clippy::unnecessary_cast)] // the field types differ by platform
+    Some((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
+}
+
+/// Caps the size of any file this process writes (`RLIMIT_FSIZE`), or lifts
+/// the cap with `None`. With SIGXFSZ ignored, a write past the cap fails
+/// with `EFBIG`.
+pub fn set_file_size_limit(limit: Option<u64>) -> io::Result<()> {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+
+    let hard = getrlimit(Resource::Fsize).maximum;
+    let current = match (limit, hard) {
+        (Some(limit), Some(hard)) => Some(limit.min(hard)),
+        (Some(limit), None) => Some(limit),
+        (None, hard) => hard,
+    };
+    setrlimit(
+        Resource::Fsize,
+        Rlimit {
+            current,
+            maximum: hard,
+        },
+    )
+    .map_err(io::Error::from)
+}
