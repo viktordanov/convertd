@@ -90,7 +90,7 @@ Where each proposal stands. Open work and decisions are tracked in
 | --- | --- | --- |
 | Office workers | Single-use workers | Rejected: workers are recycled by job count, memory and age |
 | Office engines | Drop the `cli` engine once the warm workers pass | Open |
-| Render workers | No pool: a PDFium process per request, capped by a semaphore | Planned in ledger item 002; PDFium starts in about 1 ms |
+| Render workers | No pool: a PDFium process per request, capped by a semaphore | Planned in ledger item 002; process start time not yet measured |
 | Response | Always return the bundle | Open |
 | v1 scope | Leave out slide and sheet options, image inputs, the second key, poison memory | Open |
 | Sandbox | seccomp and Landlock | Deferred to ledger item 006; off by default |

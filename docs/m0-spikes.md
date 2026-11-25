@@ -111,9 +111,10 @@ Profile it before tuning anything else.
 Spike: `spikes/pdfium/`. `pdfium-render` 0.9.6 with bblanchon
 `chromium/8179`, one process, one thread, one CPU.
 
-- Binding the library takes about 1 ms and opening a PDF is close to 0. A
-  process per request costs little, which supports the "no render pool"
-  proposal.
+- Binding the library takes about 1 ms and opening a PDF is close to 0,
+  measured inside a process that was already running. The cost of starting
+  a process (spawn and exec) was not measured, so these numbers alone do
+  not show that a process per request is cheap.
 - Rendering takes 1 to 8 ms per page. **Encoding dominates.**
 
 Per page, ms (KB). Timed in microseconds, averaged per page. `photos` is
