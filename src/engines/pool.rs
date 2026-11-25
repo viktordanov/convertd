@@ -200,6 +200,51 @@ const FATE_NORMAL: u8 = 0;
 const FATE_REPLACING: u8 = 1;
 const FATE_RETIRE: u8 = 2;
 
+/// A worker's future, shared by the worker and the manager's entry for it:
+/// normal, being replaced (still leasable), or retired (killed when next
+/// seen idle). `aged` tells an age recycle from a job-count one.
+#[derive(Default)]
+struct Fate {
+    state: AtomicU8,
+    aged: AtomicBool,
+}
+
+impl Fate {
+    fn state(&self) -> u8 {
+        self.state.load(Ordering::Acquire)
+    }
+
+    /// Normal to being replaced, for `reason`. True if this call did it.
+    fn replace(&self, reason: Reason) -> bool {
+        let changed = self
+            .state
+            .compare_exchange(
+                FATE_NORMAL,
+                FATE_REPLACING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok();
+        if changed {
+            self.aged.store(reason == Reason::Age, Ordering::Release);
+        }
+        changed
+    }
+
+    fn retire(&self) {
+        self.state.store(FATE_RETIRE, Ordering::Release);
+    }
+
+    /// Why the worker is being replaced.
+    fn reason(&self) -> Reason {
+        if self.aged.load(Ordering::Acquire) {
+            Reason::Age
+        } else {
+            Reason::Jobs
+        }
+    }
+}
+
 enum Event {
     Started {
         slot: u16,
@@ -234,7 +279,7 @@ struct Worker {
     jobs: u32,
     rss: u64,
     next_id: u64,
-    fate: Arc<AtomicU8>,
+    fate: Arc<Fate>,
     /// Why it is being discarded, for the manager and the log.
     reason: Reason,
     events: mpsc::UnboundedSender<Event>,
@@ -247,7 +292,7 @@ impl Worker {
     }
 
     fn retiring(&self) -> bool {
-        self.fate.load(Ordering::Acquire) == FATE_RETIRE
+        self.fate.state() == FATE_RETIRE
     }
 }
 
@@ -412,7 +457,7 @@ impl Pool {
             };
             if worker.child.has_exited() || worker.retiring() {
                 let reason = if worker.retiring() {
-                    Reason::Jobs
+                    worker.fate.reason()
                 } else {
                     Reason::Crash
                 };
@@ -495,7 +540,7 @@ impl Pool {
             }?;
             if worker.child.has_exited() || worker.retiring() {
                 let reason = if worker.retiring() {
-                    Reason::Jobs
+                    worker.fate.reason()
                 } else {
                     Reason::Crash
                 };
@@ -641,7 +686,7 @@ impl PoolInner {
         };
         match retire {
             Some(mut worker) => {
-                worker.reason = Reason::Jobs;
+                worker.reason = worker.fate.reason();
                 drop(worker);
             }
             None => self.permits.add_permits(1),
@@ -832,17 +877,8 @@ impl Drop for Lease {
         ) {
             Recycle::Keep => pool.give_back(worker),
             Recycle::KillNow(reason) => pool.discard(worker, reason),
-            Recycle::ReplaceFirst(_) => {
-                if worker
-                    .fate
-                    .compare_exchange(
-                        FATE_NORMAL,
-                        FATE_REPLACING,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    )
-                    .is_ok()
-                {
+            Recycle::ReplaceFirst(reason) => {
+                if worker.fate.replace(reason) {
                     let _ = pool.events.send(Event::Replace);
                 }
                 pool.give_back(worker);
@@ -877,7 +913,7 @@ enum MemberState {
 struct Member {
     generation: u32,
     state: MemberState,
-    fate: Arc<AtomicU8>,
+    fate: Arc<Fate>,
 }
 
 struct Manager {
@@ -960,7 +996,7 @@ impl Manager {
     fn standing(&self) -> usize {
         self.members
             .values()
-            .filter(|m| m.fate.load(Ordering::Acquire) == FATE_NORMAL)
+            .filter(|m| m.fate.state() == FATE_NORMAL)
             .count()
     }
 
@@ -977,7 +1013,7 @@ impl Manager {
                 .unwrap_or(u16::MAX);
             let generation = self.next_generation;
             self.next_generation += 1;
-            let fate = Arc::new(AtomicU8::new(FATE_NORMAL));
+            let fate = Arc::new(Fate::default());
             self.members.insert(
                 slot,
                 Member {
@@ -1084,15 +1120,16 @@ impl Manager {
         let Some((&slot, member)) = self
             .members
             .iter()
-            .filter(|(_, m)| m.fate.load(Ordering::Acquire) == FATE_REPLACING)
+            .filter(|(_, m)| m.fate.state() == FATE_REPLACING)
             .min_by_key(|(_, m)| m.generation)
         else {
             return;
         };
-        member.fate.store(FATE_RETIRE, Ordering::Release);
+        member.fate.retire();
         let generation = member.generation;
+        let reason = member.fate.reason();
         if let Some(mut worker) = pool.take_idle(|w| w.slot == slot && w.generation == generation) {
-            worker.reason = Reason::Jobs;
+            worker.reason = reason;
             drop(worker);
         }
     }
@@ -1131,15 +1168,7 @@ impl Manager {
             let idle = lock(&pool.idle);
             for worker in &idle.workers {
                 if worker.ready_at.elapsed() >= self.spec.max_age
-                    && worker
-                        .fate
-                        .compare_exchange(
-                            FATE_NORMAL,
-                            FATE_REPLACING,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        )
-                        .is_ok()
+                    && worker.fate.replace(Reason::Age)
                 {
                     aged = true;
                 }
@@ -1179,7 +1208,7 @@ pub async fn start_once(
         handles: Arc::default(),
         slot,
         generation: 0,
-        fate: Arc::new(AtomicU8::new(FATE_NORMAL)),
+        fate: Arc::new(Fate::default()),
     };
     let mut worker = start.start().await?;
     let times = StartTimes {
@@ -1203,7 +1232,7 @@ struct Start {
     handles: Handles,
     slot: u16,
     generation: u32,
-    fate: Arc<AtomicU8>,
+    fate: Arc<Fate>,
 }
 
 impl Start {

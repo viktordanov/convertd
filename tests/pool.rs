@@ -372,7 +372,9 @@ async fn recycle_after_replaces_the_worker() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idle_workers_are_replaced_when_they_age() {
+    let logs = captured_logs();
     let mut spec = spec("age", 1);
+    spec.name = "age";
     spec.max_age = Duration::from_millis(300);
     spec.age_check = Duration::from_millis(50);
     let pool = ready(spec).await;
@@ -387,6 +389,18 @@ async fn idle_workers_are_replaced_when_they_age() {
     let lease = pool.lease(after(10_000), Admission::Queue).await.unwrap();
     assert_ne!(lease.pid().unwrap(), first);
     drop(lease);
+    // The recycle is reported as an age recycle, not a job-count one.
+    let text = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    let reasons: Vec<String> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["message"] == "worker recycled" && v["pool"] == "age")
+        .map(|v| v["reason"].as_str().unwrap_or("").to_owned())
+        .collect();
+    assert!(
+        !reasons.is_empty() && reasons.iter().all(|r| r == "age"),
+        "{reasons:?}"
+    );
     finish(pool, "age").await;
 }
 
