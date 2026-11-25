@@ -77,7 +77,8 @@ pub struct PoolSpec {
     pub size: u16,
     pub max_jobs: u32,
     pub max_rss: u64,
-    /// Kill during a job above this RSS (plan step 10, not yet enforced).
+    /// Kill the worker during a call when its RSS reaches this many bytes
+    /// (`WORKER_KILL_RSS_MB`); `u64::MAX` turns the watchdog off.
     pub kill_rss: u64,
     pub max_age: Duration,
     /// How often idle workers are checked for `max_age`.
