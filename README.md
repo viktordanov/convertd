@@ -18,7 +18,7 @@ at `1.0.0-draft.1`.
 | `client/` | The Go client module: hand-written wrapper in `client/convert/`, generated code added by `generate.sh`. See `client/README.md` |
 | `generate.sh` | Validates the spec, generates the Go client, then builds and tests it |
 | `docs/architecture.png` | The architecture diagram used in the plan |
-| `scripts/check_spec.py` | Validates the spec, its examples and the `pages` pattern |
+| `client/contract/cmd/speccheck` | `validate`: checks the spec, its examples and the `pages` pattern; `compare`: emitted spec against the reference |
 | `research/` | The research study behind the engine choices |
 
 ## The design in one minute
@@ -45,8 +45,8 @@ at `1.0.0-draft.1`.
 ## Checking the spec
 
 ```bash
-pip install openapi-spec-validator pyyaml jsonschema
-python3 scripts/check_spec.py api/openapi.yaml
+cd client/contract && go run ./cmd/speccheck validate ../../api/openapi.yaml
+# or simply: ./generate.sh
 ```
 
 The script exits non-zero if the structure, an embedded example or the `pages`
