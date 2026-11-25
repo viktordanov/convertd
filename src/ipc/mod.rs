@@ -4,6 +4,7 @@
 //! [`frame::MAX_FRAME_BYTES`] (INTERFACES.md §7). Only paths and options
 //! cross the pipe; document bytes and page images stay in the job directory.
 
+pub mod facts;
 pub mod frame;
 pub mod protocol;
 

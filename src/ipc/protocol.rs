@@ -102,14 +102,13 @@ impl Op {
     }
 }
 
-/// The document family, from detection.
+/// The office family of a `Convert` source, from detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Family {
-    Text,
+    Document,
     Spreadsheet,
     Presentation,
-    Drawing,
 }
 
 /// What to do with presentation notes.
@@ -294,9 +293,60 @@ pub enum Output {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConvertedOut {
     pub pdf_bytes: u64,
-    /// LibreOffice's document type, so the supervisor can log a mismatch
-    /// with detection.
+    /// LibreOffice's document type (`text`, `spreadsheet`, `presentation`,
+    /// `drawing` or `other`), so the supervisor can log a mismatch with
+    /// detection.
     pub doc_type: String,
+    /// The pre-flight scan of the source; `None` when it did not run.
+    #[serde(default)]
+    pub facts: Option<SourceFactsWire>,
+}
+
+/// The wire form of `domain::verification::SourceFacts`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceFactsWire {
+    pub declared_pages: Option<DeclaredPagesWire>,
+    pub requested_fonts: Vec<String>,
+    pub macros: Option<MacroFactWire>,
+    pub skipped: Vec<(CheckWire, SkipReasonWire)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclaredPagesWire {
+    pub count: u32,
+    /// The part the count came from, for example `ppt/presentation.xml`.
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacroFactWire {
+    pub kind: MacroKindWire,
+    pub part: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MacroKindWire {
+    Vba,
+    Xlm,
+    Basic,
+    Script,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckWire {
+    PageCount,
+    Fonts,
+    Macros,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipReasonWire {
+    CapReached,
+    MissingPart,
+    MalformedXml,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -349,6 +399,9 @@ pub struct RenderedPage {
     pub flat: bool,
     pub colour: [u8; 3],
     pub effective_dpi: f32,
+    /// CRC-32 of the file, computed from the bytes that were written.
+    #[serde(default)]
+    pub crc32: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

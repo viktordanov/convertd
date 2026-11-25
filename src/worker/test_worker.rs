@@ -166,10 +166,9 @@ pub fn fake_image(format: ImageFormat) -> Result<Vec<u8>, String> {
 
 fn family_name(family: Family) -> &'static str {
     match family {
-        Family::Text => "text",
+        Family::Document => "text",
         Family::Spreadsheet => "spreadsheet",
         Family::Presentation => "presentation",
-        Family::Drawing => "drawing",
     }
 }
 
@@ -281,6 +280,7 @@ impl TestEngine {
             Ok(Output::Converted(ConvertedOut {
                 pdf_bytes,
                 doc_type: family_name(args.family).into(),
+                facts: None,
             }))
         })
     }
@@ -344,6 +344,7 @@ impl TestEngine {
                     flat: false,
                     colour: [255, 255, 255],
                     effective_dpi: scale * 72.0,
+                    crc32: Some(crc32fast::hash(&image)),
                 });
             }
             Ok(Output::Rendered(RenderedOut { pages: out }))

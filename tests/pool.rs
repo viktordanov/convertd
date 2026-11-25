@@ -629,7 +629,7 @@ async fn the_page_count_marker_flows_from_convert_to_inspect() {
                     Op::Convert(ConvertArgs {
                         input: source,
                         output: pdf.clone(),
-                        family: Family::Text,
+                        family: Family::Document,
                         password: None,
                         export: ExportOptions::default(),
                         max_output_bytes: 1 << 20,

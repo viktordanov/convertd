@@ -367,7 +367,7 @@ fn fake_operations_write_valid_outputs() {
     let reply = w.call(Op::Convert(ConvertArgs {
         input: source.clone(),
         output: pdf.clone(),
-        family: Family::Text,
+        family: Family::Document,
         password: None,
         export: ExportOptions::default(),
         max_output_bytes: 1 << 20,
