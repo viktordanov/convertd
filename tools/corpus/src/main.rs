@@ -1,13 +1,15 @@
-//! `corpus-bench`: checks the rs-convert corpus and, in later steps, the
-//! service against it (ledger item 005). This step has `validate` only.
+//! `corpus-bench`: checks the rs-convert corpus and runs it against the
+//! service (ledger item 005). It has `validate` and `check`; the bench,
+//! soak and compare subcommands come in later steps.
 
+mod check;
 mod expected;
 mod validate;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "corpus-bench", version, about)]
@@ -16,55 +18,100 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Args)]
+struct CorpusArgs {
+    /// The directory the `path` fields are relative to.
+    #[arg(long, default_value = "corpus")]
+    corpus: PathBuf,
+    /// Defaults to <corpus>/expected.json.
+    #[arg(long)]
+    expected: Option<PathBuf>,
+    /// Defaults to <corpus>/expected.schema.json.
+    #[arg(long)]
+    schema: Option<PathBuf>,
+}
+
+impl CorpusArgs {
+    fn paths(self) -> validate::Paths {
+        let mut paths = validate::Paths::in_corpus(&self.corpus);
+        if let Some(expected) = self.expected {
+            paths.expected = expected;
+        }
+        if let Some(schema) = self.schema {
+            paths.schema = schema;
+        }
+        paths
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Check expected.json against its schema and the files on disk. Needs no server.
     Validate {
-        /// The directory the `path` fields are relative to.
-        #[arg(long, default_value = "corpus")]
-        corpus: PathBuf,
-        /// Defaults to <corpus>/expected.json.
+        #[command(flatten)]
+        corpus: CorpusArgs,
+    },
+    /// Run every case against a service, with the canary listener up.
+    Check {
+        #[command(flatten)]
+        corpus: CorpusArgs,
+        /// The service's base URL.
+        #[arg(long, env = "CONVERT_HOST", default_value = "http://127.0.0.1:8080")]
+        target: String,
+        /// The bearer key.
+        #[arg(long, env = "CONVERT_API_KEY", hide_env_values = true)]
+        api_key: String,
+        /// Run only the files with one of these tags (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        tags: Vec<String>,
+        /// Run only these file ids (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        ids: Vec<String>,
+        /// Write every case's result to this JSON file.
         #[arg(long)]
-        expected: Option<PathBuf>,
-        /// Defaults to <corpus>/expected.schema.json.
-        #[arg(long)]
-        schema: Option<PathBuf>,
+        report: Option<PathBuf>,
     },
 }
 
 fn main() -> ExitCode {
     match Cli::parse().command {
-        Command::Validate {
+        Command::Validate { corpus } => validate_command(&corpus.paths()),
+        Command::Check {
             corpus,
-            expected,
-            schema,
-        } => {
-            let mut paths = validate::Paths::in_corpus(&corpus);
-            if let Some(expected) = expected {
-                paths.expected = expected;
-            }
-            if let Some(schema) = schema {
-                paths.schema = schema;
-            }
-            let outcome = validate::run(&paths);
-            for note in &outcome.notes {
-                eprintln!("validate: note: {note}");
-            }
-            for problem in &outcome.problems {
-                eprintln!("validate: {problem}");
-            }
-            if outcome.passed() {
-                println!(
-                    "validate: {} files and {} cases in {} pass",
-                    outcome.files,
-                    outcome.cases,
-                    paths.expected.display()
-                );
-                ExitCode::SUCCESS
-            } else {
-                eprintln!("validate: {} problems", outcome.problems.len());
-                ExitCode::FAILURE
-            }
-        }
+            target,
+            api_key,
+            tags,
+            ids,
+            report,
+        } => check::run(check::Args {
+            paths: corpus.paths(),
+            target,
+            api_key,
+            tags,
+            ids,
+            report,
+        }),
+    }
+}
+
+fn validate_command(paths: &validate::Paths) -> ExitCode {
+    let outcome = validate::run(paths);
+    for note in &outcome.notes {
+        eprintln!("validate: note: {note}");
+    }
+    for problem in &outcome.problems {
+        eprintln!("validate: {problem}");
+    }
+    if outcome.passed() {
+        println!(
+            "validate: {} files and {} cases in {} pass",
+            outcome.files,
+            outcome.cases,
+            paths.expected.display()
+        );
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("validate: {} problems", outcome.problems.len());
+        ExitCode::FAILURE
     }
 }
