@@ -1,105 +1,138 @@
-# Convert service: plan package
+# rs-convert
 
-Design plan and draft API contract for `convert`, a small stateless Rust service
-that turns office files, PDFs and images into a standard PDF and per-page images.
+rs-convert is an HTTP service that converts office documents, PDFs and images into a PDF and per-page images.
 
-**Status:** design and M0 spikes, 25 November 2026. The service itself is not
-built yet. Open decisions are listed in `docs/ledger/LEDGER.md`. The API contract is
-at `1.0.0-draft.1`.
+**Status: the service does not convert documents yet.** The HTTP path works from upload to response with a test fake in place of the engines. The real LibreOffice and PDFium engines are wired in the next wave of work. Until then, `convertd serve` answers every conversion with `503`, and `/readyz` reports `starting`. This is also true for the image. The API is a draft (`1.0.0-draft.1`) and can change.
 
-## What is in here
+## Contents
 
-| Path | What it is |
-| --- | --- |
-| `PLAN.md` | The design plan |
-| `docs/m0-spikes.md` | Results of the M0 spikes |
-| `spikes/` | The spike code: code-first spec, LibreOfficeKit, PDFium, synthetic corpus |
-| `api/openapi.yaml` | The draft contract (OpenAPI 3.0.3) |
-| `client/` | The Go client module: hand-written wrapper in `client/convert/`, generated code added by `generate.sh`. See `client/README.md` |
-| `generate.sh` | Validates the spec, generates the Go client, then builds and tests it |
-| `docs/architecture.png` | The architecture diagram used in the plan |
-| `client/contract/cmd/speccheck` | `validate`: checks the spec, its examples and the `pages` pattern; `compare`: emitted spec against the reference |
-| `research/` | The research study behind the engine choices |
+1. [The problem](#the-problem)
+2. [What it does not do](#what-it-does-not-do)
+3. [Quick start](#quick-start)
+4. [The API](#the-api)
+5. [Boundaries](#boundaries)
+6. [Documentation](#documentation)
+7. [License](#license)
 
-## The design in one minute
+## The problem
 
-- **One work endpoint.** `POST /v1/convert` takes a file plus JSON options. It
-  returns a PDF, or a ZIP bundle with the PDF, page images and a `manifest.json`.
-- **Stateless and synchronous.** No database and no job store. The caller's
-  queue owns retries.
-- **LibreOffice for office files, PDFium for rendering.** LibreOffice is loaded
-  in-process through LibreOfficeKit, with no `soffice` start per document.
-- **Every parser is isolated.** LibreOffice and PDFium run only in worker
-  processes that a supervisor can kill on a deadline and replace.
-- **One bearer API key.**
-- **One binary, one image.** `convertd` plays every role through subcommands,
-  in a Debian slim image with pinned LibreOffice, PDFium and fonts.
+A service that converts office files with `soffice --convert-to` starts a new LibreOffice process for each file. In the M0 spikes, a warm LibreOfficeKit instance converted small files 3 to 6 times faster than a cold `soffice` process. That measurement used an Apple-silicon laptop and a synthetic corpus ([docs/m0-spikes.md](docs/m0-spikes.md)).
 
-## Suggested reading order
+LibreOffice and PDFium also parse files from callers that the service does not control. A file that hangs or crashes a parser must not stop the service.
 
-1. `PLAN.md`: Summary, then "Decisions to settle together".
-2. `api/openapi.yaml`: the contract those decisions shape.
-3. The rest of `PLAN.md` as needed: architecture, engines, Docker image,
-   security, reliability, testing, deployment, milestones, risks.
+rs-convert keeps LibreOffice loaded in long-lived worker processes through LibreOfficeKit, and it renders pages with PDFium. Each engine runs in a worker process that the supervisor can kill at a deadline and replace. The service is one Rust binary, `convertd`, in one image. It has no database and no job store.
 
-## Checking the spec
+## What it does not do
 
-```bash
-cd client/contract && go run ./cmd/speccheck validate ../../api/openapi.yaml
-# or simply: ./generate.sh
+The service has a narrow scope:
+
+- It does no OCR, text extraction or layout analysis.
+- It does not convert HTML, web pages or email (`.eml`, `.msg`).
+- It does not guarantee that its output matches Microsoft Office. LibreOffice lays out each document, and the layout can differ from Word or PowerPoint.
+- It has no asynchronous jobs, webhooks or result storage. Each call is synchronous, and the caller owns retries.
+- It does not edit PDFs: no merge, split, signature or PDF/A.
+
+<!-- memoria:section id="setup" files="Cargo.toml rust-toolchain.toml" -->
+## Quick start
+
+You need a Linux or macOS host with rustup. `rust-toolchain.toml` pins Rust 1.99.0, and rustup installs it on the first build. The test command uses [cargo-nextest](https://nexte.st).
+
+1. Build `convertd` with the test hooks:
+
+   ```bash
+   cargo build --features test-hooks
+   ```
+
+2. Run the tests:
+
+   ```bash
+   cargo nextest run --features test-hooks
+   ```
+
+3. Start the server with the fake engine. `HOST=127.0.0.1` keeps it on the loopback interface, and it listens on port 8080:
+
+   ```bash
+   API_KEY=dev-key HOST=127.0.0.1 TEST_ENGINE=fake target/debug/convertd serve
+   ```
+
+4. In a second terminal, send a PDF of your own:
+
+   ```bash
+   curl -sS -D - -o out.pdf -H "Authorization: Bearer dev-key" -F file=@report.pdf http://127.0.0.1:8080/v1/convert
+   ```
+
+The fake engine returns a PDF unchanged and turns an office file into a one-page placeholder PDF. Detection, validation and the response headers come from the real request path:
+
+```text
+HTTP/1.1 200 OK
+content-type: application/pdf
+content-disposition: attachment; filename="report.pdf"; filename*=UTF-8''report.pdf
+convert-source-format: pdf
+convert-page-count: 1
+convert-warning-count: 0
+convert-engine-fingerprint: sha256:62666a78c776
+server-timing: recv;dur=0.978, detect;dur=0.006, queue;dur=0.000, lease;dur=0.000, spawn;dur=0.000, bind;dur=0.000, inspect;dur=0.134, inspect_engine;dur=0.000, probe_engine;dur=0.000, verify;dur=0.000, package;dur=0.012, total;dur=0.165
+x-request-id: df997c7b55784260b1bbdf216c48ba0d
 ```
 
-`speccheck` exits non-zero if the structure, an embedded example or the `pages`
-pattern is wrong.
+`TEST_ENGINE` works only in a build with the `test-hooks` feature, and the image never has it. Next: read [tests/README.md](tests/README.md) for the other test commands.
+<!-- /memoria:section -->
 
-## The Go client
+<!-- memoria:section id="usage" files="api/openapi.yaml" -->
+## The API
 
-`client/` is a separate Go module (`github.com/viktordanov/rs-convert/client`).
-The public package is `client/convert/`, a hand-written facade. The code
-generated by oapi-codegen lives in `client/internal/api/`, where other modules
-cannot import it. `./generate.sh` regenerates it, then builds and tests the
-facade. See `client/README.md`.
+One endpoint does the work. `POST /v1/convert` takes a multipart upload with a `file` part and an optional `options` part in JSON. The service detects the format from the bytes, never from the file name.
 
-## Where things stand
+The `output` option selects the response: the PDF (`pdf`, the default), a ZIP of page images (`images`), or a ZIP with the PDF and the page images (`bundle`). Each ZIP holds a `manifest.json` that describes the pages and the warnings.
 
-The M0 spikes have run. See `docs/m0-spikes.md`. In short:
+**Target behavior.** This call returns the PDF and JPEG page images at 150 DPI in one ZIP:
 
-- The Go facade builds and passes its tests against the real generated client.
-- The spec can be emitted from the Rust server (utoipa 6, OpenAPI 3.1) and fed
-  to oapi-codegen v2.9.0, if three rules are followed.
-- LibreOfficeKit from Rust works on LibreOffice 26.8.3, including passwords,
-  export options, per-worker profiles and SIGKILL. Its memory trim call
-  crashes the worker, so recycling is the only way to reclaim memory. Warm is 3 to 6 times faster
-  than cold `soffice` on small files.
-- PDFium rendering is cheap. Image encoding dominates, and lossy WebP is the
-  slow format.
+```bash
+curl -sS -H "Authorization: Bearer $CONVERT_API_KEY" \
+  -F file=@deck.pptx \
+  -F 'options={"output":"bundle","images":{"format":"jpeg","dpi":150}};type=application/json' \
+  -o deck.zip \
+  "$CONVERT_HOST/v1/convert"
+```
 
-**Still unknown:** x86_64 and behaviour on real documents. The kernel
-sandbox is deferred and off by default.
+Today the request path has these limits:
 
-**Next:** settle the decisions, starting with the four that change the API:
-how several files come back, one endpoint or several, sync or async, and
-files by value or by reference. Then freeze the spec.
+- Only `output=pdf` works. The service answers `images` and `bundle` with `422 VALIDATION_ERROR`.
+- Legacy binary Office files (`.doc`, `.xls`, `.ppt`) and encrypted OOXML files get `415`.
 
-## Simplifications proposed after the plan was written
+Every `/v1` route needs the API key as a bearer token. The probes (`/healthz`, `/readyz`) and `/metrics` take no key. `GET /v1/capabilities` lists the formats, the limits and the engine versions of a deployment.
 
-Where each proposal stands. Open work and decisions are tracked in
-`docs/ledger/LEDGER.md`.
+The reference contract is [api/openapi.yaml](api/openapi.yaml), in OpenAPI 3.0.3. The server emits its own OpenAPI 3.1 spec with `convertd openapi` and serves the same bytes at `/swagger/doc.json`. `speccheck compare`, in `client/contract/`, compares the two.
+<!-- /memoria:section -->
 
-| Area | Proposal | Status |
-| --- | --- | --- |
-| Office workers | Single-use workers | Rejected: workers are recycled by job count, memory and age |
-| Office engines | Drop the `cli` engine once the warm workers pass | Open |
-| Render workers | No pool: a PDFium process per request, capped by a semaphore | Planned in ledger item 002; process start time not yet measured |
-| Response | Always return the bundle | Open |
-| v1 scope | Leave out slide and sheet options, image inputs, the second key, poison memory | Open |
-| Sandbox | seccomp and Landlock | Deferred to ledger item 006; off by default |
+## Boundaries
 
-Not candidates for cutting: separate worker processes with hard deadlines, the
-bounded queue, the output warnings, the baseline and corpus, and the contract
-tests.
+Each folder in this list has a README for its own readers.
 
-## Licence
+### Using the service
 
-Apache-2.0. See `LICENSE`. The Docker image also bundles LibreOffice
-(MPL-2.0), PDFium (BSD-style) and fonts under their own licences.
+- [client/README.md](client/README.md) covers the Go client: a hand-written facade over a client generated from the spec.
+
+### Deploying it
+
+- [docker/README.md](docker/README.md) covers the image: the pinned LibreOffice, PDFium and fonts, and the build targets.
+- [deploy/README.md](deploy/README.md) covers the manifests for Kubernetes and Azure Container Apps.
+- `build_docker.sh` builds the image for linux/amd64 and linux/arm64 and pushes it to a repository that you name.
+
+<!-- memoria:section id="contributing" files="generate.sh scripts/contract_test.sh" -->
+### Contributing to it
+
+- [src/README.md](src/README.md) covers the `convertd` crate: its process model and its layers.
+- [tests/README.md](tests/README.md) covers the test levels, the two fakes, the nextest profiles and the commands that CI runs.
+- [corpus/README.md](corpus/README.md) covers the generated test corpus and the expected result for each file.
+- [tools/corpus/README.md](tools/corpus/README.md) covers `corpus-bench`, the tool that checks the corpus and its expectations.
+- `generate.sh` regenerates the Go client from the spec and tests it. `scripts/contract_test.sh` runs the contract tests against a real `convertd`.
+<!-- /memoria:section -->
+
+## Documentation
+
+[docs/README.md](docs/README.md) maps the other documents: the measured spike results, the design plan, the writing guidance and the ledger of work.
+
+## License
+
+rs-convert uses the Apache-2.0 license (`LICENSE`). The image also bundles LibreOffice (MPL-2.0), PDFium (BSD-style) and fonts under their own licenses.
