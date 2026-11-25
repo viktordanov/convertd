@@ -5,7 +5,7 @@ The corpus is the set of test files for rs-convert, and `expected.json` records 
 Know these facts before you change anything here:
 
 - The repository commits the generator, the expectations and three small fixtures, not the test files. `corpus/generate.py` writes the files into `corpus/out/`, which git ignores.
-- `expected.json` pins a SHA-256 for 36 of the 37 files that `generate.py` writes. The hashes hold only in the environment that recorded them. Linux parity is unverified.
+- `expected.json` pins a SHA-256 for 36 of the 39 files that `generate.py` writes. The hashes hold for Linux arm64 and macOS arm64. Parity on amd64 is unverified.
 - Private documents never enter the repository. Git ignores `corpus/private/`.
 
 ## Contents
@@ -20,7 +20,7 @@ Know these facts before you change anything here:
 <!-- memoria:section id="overview" files="generate.py expected.json" -->
 ## What the corpus proves
 
-Each file in the corpus exercises one path through the service. The public corpus has one file for each engine path and container, except the legacy `doc`, `xls` and `ppt` formats that step 7 adds. It also has a positive and a negative case for each warning, an encrypted DOCX, three macro files with a VBA project, five hostile files and three network canaries.
+Each file in the corpus exercises one path through the service. The public corpus has one file for each engine path and container, except the legacy `doc`, `xls` and `ppt` formats that step 7 adds. It also has a positive and a negative case for each warning, an encrypted DOCX, deck and sheet, three macro files with a VBA project, five hostile files and three network canaries.
 
 `corpus-bench check` runs every case against the service. A pass of every case will prove these facts:
 
@@ -29,7 +29,7 @@ Each file in the corpus exercises one path through the service. The public corpu
 - The service rejects each hostile file within its limits.
 - LibreOffice makes no network connection.
 
-So far, `check` ran only against the level-A fake engine, which returns a one-page PDF for every office file and raises no warning. No real engine read these files yet. The expectations come from the rules in the 005 plan, not from observed output.
+On 2026-11-26, `check` ran against the real engines (LibreOffice 26.8.3.1 and PDFium 8179 in the image `rs-convert-lead-runtime:wave2a`), and 47 of 55 cases passed. The expectations come from the rules in the 005 plan. Only the page counts that depend on layout were copied from that run. The eight failures are open questions for the lanes, not accepted behavior.
 
 A pass does not prove that LibreOffice output matches Microsoft Office. The files are synthetic: Python libraries and hand-written XML make them, not Office. The private corpus carries the evidence from real documents.
 
@@ -69,7 +69,7 @@ The private corpus lives in `CORPUS_PRIVATE_DIR`, by default `corpus/private/`, 
 - **`cases`** gives one request each: the `options` part, as the API takes it, and an `expect` block. Most cases set `output` to `bundle`, because only a bundle carries both the manifest and the PDF. `images` and `bundle` answers are a tar stream in one zstd frame (`.tar.zst`). The options go to the service as they are, so a case without `output` gets the API default, `pdf`.
 - **`expect`** gives the status, and the error `code` when the status is not 200. It can also give the format, family, PDF origin, page count, warnings, blank pages and the allowed canary connections (always 0).
 - **`warnings`** match as a multiset on code and page. `detail` matches as a subset, and `"*"` matches any value. `unless_installed` drops a font warning when `/v1/capabilities` lists the family.
-- **`page_count`** is a number, a `{min, max}` range or `"unrecorded"`. Seven cases are `"unrecorded"`: their count depends on layout, and a person must copy it from a reviewed `check` run.
+- **`page_count`** is a number, a `{min, max}` range or `"unrecorded"`. An `"unrecorded"` count depends on layout: a person copies it from a reviewed `check` run. The eight counts of this kind (`docx-long`, `potx`, the sheets) came from the run on 2026-11-26.
 
 The requested fonts follow the real template parts. The python-docx template has Calibri as its major font and Cambria as its minor font. Its default text uses the minor font, so a generated DOCX requests Cambria unless its theme changes the minor font, as in `docx-aptos-theme`. The warning rules are in [the 005 plan, section 5](../docs/ledger/005-corpus-bench/plan.md).
 <!-- /memoria:section -->
@@ -81,7 +81,7 @@ Two generator runs on one machine give the same bytes for every file except `doc
 
 The generator gets repeatable bytes in three ways. It rewrites every zip with a fixed time stamp, fixed attributes and deflate level 6, and it keeps the entry order and the part bytes. It replaces the save time that openpyxl writes into `docProps/core.xml`. It makes image noise from a seeded `random.Random`, not from Pillow's `effect_noise`, which uses C `rand()`.
 
-Deflate output depends on the zlib build. Thus the hashes hold only for the environment in the `generator` block of `expected.json`: Python 3.13.18, zlib 1.2.12, Darwin-arm64. No Linux run of the generator exists yet, so Linux parity is unverified. Before CI runs `generate.py --check`, record the hashes once with `--write-hashes` in the pinned Linux container.
+Deflate output can depend on the zlib build. The `generator` block of `expected.json` records the environment of the last `--write-hashes`: Python 3.13.5, zlib 1.3.1, Linux-aarch64, in the dev image `rs-convert-003-dev:arm64`. macOS arm64 with Python 3.13.18 and zlib 1.2.12 gives the same bytes for every file, so `--check` passes on both. It prints the difference in environment first. No amd64 run exists yet.
 
 `requirements.txt` pins every package, with a SHA-256 for every wheel. A change to a pin can change the bytes, so record the hashes again after it.
 

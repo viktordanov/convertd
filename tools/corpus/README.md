@@ -87,7 +87,9 @@ Then `check` compares the fields that the expectation gives. For each `FONT_SUBS
 
 `check` prints `PASS` or `FAIL` for each case, with each failure and the observed value. It prints the observed page count of an `"unrecorded"` case as a note. Then it prints the passed and run cases for each tag. It exits 0 only if every selected case passed.
 
-On 2026-11-26, `check` ran against `TEST_ENGINE=fake convertd serve` from `main` at `1eaf591`, before lane 001 merged. 8 of 49 cases passed, after the expectation for `truncated` became 415. The others needed the `images` and `bundle` outputs, the encrypted-file detection or real engines. Lane 001 then merged the two outputs and the detection, and no `check` run after that merge is recorded. A pass against the fake proves the HTTP-level answers only. The listener and the `/BaseFont` arbiter are not proven until LibreOffice opens the files.
+The canary listener must share the network namespace of the service, because LibreOffice connects to the loopback address of its own container. The run of record used a harness container started with `--network container:<service>`. A harness on the host behind `-p` does not see such a connection.
+
+On 2026-11-26, `check` ran that way against the image `rs-convert-lead-runtime:wave2a`, with real engines, and 47 of 55 cases passed. The listener saw no connection, and the `/BaseFont` arbiter agreed with each `FONT_SUBSTITUTED` warning. No positive control has run yet, so zero connections does not yet prove that the canaries can connect. The eight failures are open questions about the expectations and the warning rules.
 <!-- /memoria:section -->
 
 ## Later subcommands
