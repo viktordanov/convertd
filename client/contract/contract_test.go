@@ -387,18 +387,7 @@ func TestFakeUnprocessableCodes(t *testing.T) {
 	}
 }
 
-// Case 14.
-func TestFakeTimeout(t *testing.T) {
-	requireFake(t)
-	t.Parallel()
-	start := time.Now()
-	_, err := newFacade(t).ConvertToPDF(testContext(t), "doc.docx", bytes.NewReader(docxWithMarker("FAKE:DELAY_MS=6000")),
-		convert.Options{Timeout: 5 * time.Second})
-	wantErr(t, err, convert.ErrTimeout)
-	if elapsed := time.Since(start); elapsed < 4500*time.Millisecond || elapsed > 6*time.Second {
-		t.Errorf("timeout answered after %s, want about 5 s", elapsed)
-	}
-}
+// Case 14 runs at level B: see levelb_test.go.
 
 // Case 15, level A: the 429 from the concurrency cap and from the marker.
 func TestFakeBusy(t *testing.T) {
