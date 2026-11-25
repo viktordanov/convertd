@@ -1,0 +1,85 @@
+[package]
+name = "convertd"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.0"
+license = "Apache-2.0"
+description = "Document conversion service: office files and PDFs to PDF and images"
+publish = false
+
+[lib]
+name = "convertd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "convertd"
+path = "src/main.rs"
+
+[features]
+default = []
+# The one gate for every test hook (INTERFACES.md §10): TEST_ENGINE,
+# `convertd worker test` and the FAKE: marker parser. Never in the image.
+test-hooks = []
+# mimalloc as #[global_allocator], for the allocator A/B (plan 001 step 13).
+mimalloc = ["dep:mimalloc"]
+
+[dependencies]
+# HTTP server (001). No http2, no multipart: multer is used directly.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "time", "sync", "fs", "io-util"] }
+tokio-util = { version = "0.7.20", features = ["io"] }
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.6.11", features = ["catch-panic", "timeout"] }
+http = "1.5.0"
+http-body = "1.1.0"
+bytes = "1.12.2"
+futures-util = "0.3.34"
+multer = "3.1.0"
+
+# OpenAPI emission (001).
+utoipa = { version = "6.0.0", features = ["axum_extras"] }
+utoipa-axum = "0.3.0"
+
+# Serialisation, errors, command line, logging.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+clap = { version = "4.6.7", features = ["derive"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "json", "std"] }
+
+# Request path (001): auth, request IDs, digests, detection, pre-flight.
+sha2 = "0.11.0"
+subtle = "2.6.1"
+uuid = { version = "1.28.0", features = ["v4"] }
+crc32fast = "1.5.6"
+flate2 = "1.1.11"
+memchr = "2.8.3"
+quick-xml = "0.41.0"
+cfb = "0.16.0"
+async-trait = "0.1.92"
+
+# Metrics (001), rendered by our own handler: no HTTP listener.
+metrics = "0.24.6"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+
+# Allocator A/B (001 step 13), off by default.
+mimalloc = { version = "0.1.52", optional = true }
+
+# Engine workers and process control (002).
+rustix = { version = "1.1.5", features = ["process", "stdio", "pipe"] }
+libc = "0.2.191"
+libreofficekit = "0.5.0"
+pdfium-render = { version = "0.9.6", default-features = false, features = ["pdfium_latest", "image_latest"] }
+jpeg-encoder = "0.7.1"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "tiff", "gif", "bmp", "webp"] }
+webp = "0.3.1"
+
+[dev-dependencies]
+# Reader only, to check the stored ZIP bundles (001 step 8).
+zip = { version = "9.8.2", default-features = false }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
