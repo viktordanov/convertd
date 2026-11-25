@@ -5,7 +5,7 @@ The corpus is the set of test files for rs-convert, and `expected.json` records 
 Know these facts before you change anything here:
 
 - The repository commits the generator and the expectations, not the files. `corpus/generate.py` writes the files into `corpus/out/`, which git ignores.
-- `expected.json` pins a SHA-256 for 33 of the 34 files that `generate.py` writes. The hashes hold only in the environment that recorded them. Linux parity is unverified.
+- `expected.json` pins a SHA-256 for 36 of the 37 files that `generate.py` writes. The hashes hold only in the environment that recorded them. Linux parity is unverified.
 - Private documents never enter the repository. Git ignores `corpus/private/`.
 
 ## Contents
@@ -20,16 +20,16 @@ Know these facts before you change anything here:
 <!-- memoria:section id="overview" files="generate.py expected.json" -->
 ## What the corpus proves
 
-Each file in the corpus exercises one path through the service. The public corpus has one file for each engine path and container, except the legacy `doc`, `xls` and `ppt` formats that step 7 adds. It also has a positive and a negative case for each warning, an encrypted DOCX, five hostile files and three network canaries.
+Each file in the corpus exercises one path through the service. The public corpus has one file for each engine path and container, except the legacy `doc`, `xls` and `ppt` formats that step 7 adds. It also has a positive and a negative case for each warning, an encrypted DOCX, three macro files with a VBA project, five hostile files and three network canaries.
 
-`corpus-bench check` will run every case against the service. A pass will prove these facts:
+`corpus-bench check` runs every case against the service. A pass of every case will prove these facts:
 
 - The service routes each format to the correct engine.
 - Each case gets the expected status, error code, page count and warnings.
 - The service rejects each hostile file within its limits.
 - LibreOffice makes no network connection.
 
-`check` is step 5 of item 005, and it does not exist yet. So far, no engine read these files. The expectations come from the rules in the 005 plan, not from observed output.
+So far, `check` ran only against the level-A fake engine, which returns a one-page PDF for every office file and raises no warning. No real engine read these files yet. The expectations come from the rules in the 005 plan, not from observed output.
 
 A pass does not prove that LibreOffice output matches Microsoft Office. The files are synthetic: Python libraries and hand-written XML make them, not Office. The private corpus carries the evidence from real documents.
 
@@ -53,7 +53,9 @@ The three network canaries are `generated` files that `--hostile` also writes, i
 
 The hostile files stay small on disk. `zip-ratio.docx` is about 2 MB and declares a 2 GiB entry. `png-bomb.png` is about 1.2 MB and declares 100,000 x 100,000 pixels. The generator never decompresses or parses them.
 
-The corpus has no fixture and no derived file at this time. Step 4 of item 005 adds `fixtures/vbaProject.bin` for `docm-vba`, and step 7 adds `doc`, `xls` and `ppt`. Their entries enter `expected.json` with their files.
+The corpus has three fixtures: `fixtures/vbaProject-word.bin`, `vbaProject-xl.bin` and `vbaProject-ppt.bin`. They are the VBA projects of the Apache POI macro test files, under Apache-2.0. [`fixtures/SOURCES.md`](fixtures/SOURCES.md) records their upstream commits, both SHA-256 values, the NOTICE text and what each macro does. `generate.py` puts each project into its host file: `docm-vba`, `xlsm-vba` and `pptm-vba`. It refuses a fixture whose SHA-256 differs from `expected.json`.
+
+The corpus has no derived file at this time. Step 7 of item 005 adds `doc`, `xls` and `ppt`, and their entries enter `expected.json` with their files.
 
 The private corpus lives in `CORPUS_PRIVATE_DIR`, by default `corpus/private/`, with its own `expected.json` in the same schema. No private URL, file name, render or result goes into the repository. The tooling that fills it and checks it is step 12 of item 005, and it is not built yet.
 <!-- /memoria:section -->
@@ -122,7 +124,7 @@ These two modes generate the files into a temporary directory. `validate` reads 
 
 If a file cannot have stable bytes, add its id and the reason to `UNHASHED`. If the generator must never parse the file, add its id to `NEVER_PARSED`. The self-check then gives it only to `check_hostile`, which checks its size and headers.
 
-A committed fixture needs `sha256` and a `licence` record (`spdx`, `source`, and an optional `url` and `notice`) in its entry. `validate` fails on a fixture file that `expected.json` does not list.
+A committed fixture needs `sha256` and a `licence` record (`spdx`, `source`, and an optional `url` and `notice`) in its entry, and no `cases`: the generator reads it, and the service never gets it. Record its source in `fixtures/SOURCES.md`. `validate` fails on a fixture file that `expected.json` does not list, and when `fixtures/` holds more than 2 MiB.
 
 Next: run `generate.py --check` before you commit a change to the corpus.
 <!-- /memoria:section -->
