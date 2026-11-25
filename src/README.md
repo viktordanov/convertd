@@ -10,8 +10,9 @@ The engines are not wired into `convertd serve` yet. Without the level-A fakes, 
 2. [Layers](#layers)
 3. [Request path](#request-path)
 4. [Warnings](#warnings)
-5. [Not wired yet](#not-wired-yet)
-6. [Configuration](#configuration)
+5. [Lifecycle and metrics](#lifecycle-and-metrics)
+6. [Not wired yet](#not-wired-yet)
+7. [Configuration](#configuration)
 
 <!-- memoria:section id="overview" files="main.rs runtime.rs" -->
 ## Process model
@@ -57,7 +58,7 @@ The rest of the crate supports both sides:
 - **`main.rs`**: the command line and all the wiring. Only `main.rs` picks the engines and builds the application state.
 - **`config.rs`**, **`logging.rs`** and **`runtime.rs`**: the configuration, the log output and the Tokio runtime.
 - **`preflight/`**: the pure scanners that the office worker calls before LibreOffice loads a file.
-- **`observability/`**: the metric names. It is empty at this time.
+- **`observability/`**: the metric names and the Prometheus recorder.
 
 The dependency rule keeps the domain at the center. `domain/` uses no other module of the crate, and no HTTP, async runtime, serde, IPC or FFI crate. The test `domain_has_no_forbidden_imports` in `domain/engine.rs` fails when a domain file imports one of them.
 
@@ -123,13 +124,25 @@ Warnings compare what an office source declares with what the engines produced. 
 The scanners stream each part through quick-xml under fixed caps: 4 MiB per part, 32 MiB per font scan and 64 MiB per request. A part that is missing, malformed or over a cap skips its check, and the skip is logged. A scanner must not panic, because a panic ends the office worker.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="contract" files="main.rs rest/ops_handlers.rs rest/server.rs observability/mod.rs" -->
+<!-- memoria:section id="lifecycle" files="main.rs rest/server.rs rest/ops_handlers.rs observability/metrics.rs" -->
+## Lifecycle and metrics
+
+`convertd serve` creates `TMP_DIR` and removes the `job-*` directories that a crash left. On SIGTERM or SIGINT it stops in four steps:
+
+1. It sets the draining flag: `/readyz` answers 503 with `draining`, and new conversions answer 503 `SERVICE_UNAVAILABLE` with `Retry-After: 5`.
+2. It calls the engines' `drain`, and waits until no request holds a permit, at most `SHUTDOWN_GRACE_SECONDS`. The listener stays open during this time.
+3. It stops axum, which stops accepting and gives open connections 2 s more.
+4. It calls the engines' `shutdown` with `SHUTDOWN_GRACE_SECONDS`, then exits 0.
+
+`/metrics` renders one process-wide Prometheus recorder in the text format. 001 records `convert_requests_total`, `convert_stage_duration_seconds`, `convert_input_bytes`, `convert_warnings_total`, `convert_verify_skipped_total`, `convert_pages_rendered_total`, `convert_responses_cut_total` and `convert_disk_budget_bytes`. On Linux it adds the supervisor's RSS, peak RSS, open descriptors and threads from `/proc/self` at each scrape. A 200 whose body stalls or aborts counts once in `convert_requests_total` with code `OK` and once in `convert_responses_cut_total`. `METRICS_ENABLED=false` makes `/metrics` answer 404.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="contract" files="main.rs" -->
 ## Not wired yet
 
-These parts of the design do not work yet:
+This part of the design does not work yet:
 
 - **Engines**: `convertd serve` uses the `Unwired` engines. Every conversion answers 503 `SERVICE_UNAVAILABLE`, and `/readyz` answers 503 with `starting`. In a build with the `test-hooks` feature, `TEST_ENGINE=fake` selects the level-A fakes instead. `TEST_ENGINE=worker` is not wired either, and the office and render worker roles stop with "not built yet".
-- **Metrics and drain**: `/metrics` answers an empty body. On SIGTERM or SIGINT, the server stops accepting and finishes its open connections, with no drain step before that.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="setup" files="config.rs" -->

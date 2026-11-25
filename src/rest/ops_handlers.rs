@@ -9,7 +9,10 @@ use axum::response::{IntoResponse, Response};
 use super::response::ApiError;
 use super::serialization::probes::{Health, Readiness};
 use super::state::AppState;
+use std::sync::atomic::Ordering;
+
 use crate::domain::readiness::ReadinessStatus;
+use crate::observability::metrics;
 
 /// The `Health` body of `getLiveness`.
 const HEALTHY: &str = r#"{"status":"ok"}"#;
@@ -46,7 +49,11 @@ pub async fn healthz() -> impl IntoResponse {
     ),
 )]
 pub async fn readyz(State(state): State<AppState>) -> Response {
-    let snapshot = state.readiness.readiness();
+    let mut snapshot = state.readiness.readiness();
+    // The supervisor's own drain wins over what the engines report.
+    if state.draining.load(Ordering::Acquire) {
+        snapshot.status = ReadinessStatus::Draining;
+    }
     let status = if snapshot.status == ReadinessStatus::Ready {
         StatusCode::OK
     } else {
@@ -66,9 +73,15 @@ pub async fn readyz(State(state): State<AppState>) -> Response {
     security(()),
     responses((status = 200, description = "Current metric values.", body = String, content_type = "text/plain")),
 )]
-pub async fn metrics() -> impl IntoResponse {
-    // The metric set arrives in plan step 9.
-    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], "")
+pub async fn metrics(State(state): State<AppState>) -> Response {
+    if !state.metrics_enabled {
+        return ApiError::not_found().into_response();
+    }
+    let text = metrics::render(metrics::Snapshot {
+        disk_used: state.disk_budget.used(),
+        disk_max: state.disk_budget.max(),
+    });
+    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], text).into_response()
 }
 
 /// `GET /swagger/doc.json`: the same bytes as `convertd openapi`. Not in

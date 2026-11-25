@@ -2,6 +2,7 @@
 
 use std::fs::File;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
@@ -11,6 +12,7 @@ use axum::response::{IntoResponse, Response};
 use super::body::{Pump, file_body, zip_body};
 use super::middleware::request_id::RequestId;
 use super::response::{ApiError, content_disposition};
+use super::serialization::errors::ErrorCode;
 use super::serialization::manifest::{Manifest, ManifestParts, Timings, page_path};
 use super::timing::{RequestTimings, micros};
 use super::upload::{self, Received, UploadError};
@@ -18,6 +20,7 @@ use crate::bundle::{PlanError, ZipPlan};
 use crate::domain::conversion::{ConversionResult, Output};
 use crate::domain::conversion_service::{ConversionError, ConversionJob};
 use crate::jobs::JobDir;
+use crate::observability::metrics;
 
 use super::openapi::{
     BadRequest, ConversionTimeout, FileTooLarge, InternalError, RequestIdParam, ServiceUnavailable,
@@ -97,8 +100,13 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
         .get::<RequestId>()
         .map(|id| id.as_str().to_owned())
         .unwrap_or_default();
-    // Admission before the body is read: a 429 never reads the upload.
+    // Admission before the body is read: a 503 or 429 never reads it.
+    if state.draining.load(Ordering::Acquire) {
+        metrics::request("unknown", "unknown", ErrorCode::ServiceUnavailable.as_str());
+        return ApiError::unavailable("the service is shutting down").into_response();
+    }
     let Ok(permit) = Arc::clone(&state.inflight).try_acquire_owned() else {
+        metrics::request("unknown", "unknown", ErrorCode::TooManyRequests.as_str());
         return ApiError::busy().into_response();
     };
     let job = match JobDir::create(&state.tmp_dir, &state.disk_budget) {
@@ -113,8 +121,9 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
     {
         Ok(received) => received,
         Err(err) => {
-            let mut response =
-                ApiError::from_upload(&err, state.queue_wait_seconds).into_response();
+            let api = ApiError::from_upload(&err, state.queue_wait_seconds);
+            metrics::request("unknown", "unknown", api.code.as_str());
+            let mut response = api.into_response();
             // Every response after detection carries Server-Timing: a
             // detection error, and any error that follows it (an options
             // part after the file, a spent budget at the true-up).
@@ -416,7 +425,7 @@ fn log_finished(
     received: &Received,
     result: Option<(&ConversionResult, u64)>,
     timings: &RequestTimings,
-    error_code: Option<&str>,
+    error_code: Option<&'static str>,
 ) {
     let s = &timings.stages;
     // Encrypted OOXML has no known format until the engine reports it.
@@ -450,6 +459,61 @@ fn log_finished(
         error_code,
         "conversion finished"
     );
+    record_metrics(
+        received,
+        result.map(|(r, _)| r),
+        timings,
+        error_code,
+        family,
+    );
+}
+
+/// The request's metrics: its outcome, its stages, its input size, its
+/// warnings and skipped checks, and its rendered pages.
+fn record_metrics(
+    received: &Received,
+    result: Option<&ConversionResult>,
+    timings: &RequestTimings,
+    error_code: Option<&'static str>,
+    family: &'static str,
+) {
+    metrics::request(
+        received.request.output.as_str(),
+        family,
+        error_code.unwrap_or("OK"),
+    );
+    metrics::input_bytes(family, received.upload.size_bytes);
+    let s = &timings.stages;
+    let stages = [
+        ("receive", timings.recv),
+        ("detect", timings.detect),
+        ("queue", Some(s.queue)),
+        ("convert", s.convert),
+        ("inspect", s.inspect),
+        ("render", s.render),
+        ("respond", timings.package),
+        ("engine", Some(s.engine_total())),
+        ("total", timings.total),
+        ("overhead", timings.total.map(|_| timings.overhead())),
+    ];
+    for (stage, duration) in stages {
+        if let Some(duration) = duration {
+            metrics::stage(stage, family, duration);
+        }
+    }
+    let Some(result) = result else { return };
+    for warning in &result.warnings {
+        metrics::warning(warning.code.as_str());
+    }
+    for (check, reason) in &result.skipped {
+        metrics::verify_skipped(check.as_str(), reason);
+    }
+    if !result.pages.is_empty() {
+        metrics::pages_rendered(
+            received.request.images.format.extension(),
+            result.pages.len() as u64,
+        );
+    }
 }
 
 // A binary response body, for the spec only.

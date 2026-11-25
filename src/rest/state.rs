@@ -4,6 +4,7 @@ use std::io;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use axum::http::HeaderValue;
@@ -50,6 +51,10 @@ pub struct Shared {
     /// `MAX_CONCURRENT_REQUESTS`: taken before the body is read, released
     /// by the response pump.
     pub inflight: Arc<Semaphore>,
+    /// `MAX_CONCURRENT_REQUESTS`: the permits `inflight` holds when idle.
+    pub max_inflight: usize,
+    /// Set on SIGTERM: readyz answers `draining` and conversions 503.
+    pub draining: AtomicBool,
     /// `TMP_MAX_BYTES`.
     pub disk_budget: DiskBudget,
     pub tmp_dir: PathBuf,
@@ -72,6 +77,9 @@ pub struct Shared {
 
 impl AppState {
     pub fn new(config: &Config, engines: Engines) -> Self {
+        // Install the metrics recorder before anything records: metrics
+        // recorded earlier go to the no-op recorder and are lost.
+        crate::observability::metrics::handle();
         let build_info = load_build_info(&config.server.build_info_path);
         let service = ServiceInfo {
             name: "convert".to_owned(),
@@ -118,6 +126,8 @@ impl AppState {
             )
             .with_fonts(catalog),
             inflight: Arc::new(Semaphore::new(config.server.max_concurrent_requests)),
+            max_inflight: config.server.max_concurrent_requests,
+            draining: AtomicBool::new(false),
             disk_budget: DiskBudget::new(config.server.tmp_max_bytes),
             tmp_dir: config.server.tmp_dir.clone(),
             io_idle_timeout: config.server.io_idle_timeout,

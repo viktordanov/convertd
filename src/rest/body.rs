@@ -24,6 +24,7 @@ use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
 use crate::bundle::ZipPlan;
 use crate::jobs::JobDir;
+use crate::observability::metrics;
 
 /// Bytes per chunk.
 pub const READ_CHUNK: usize = 64 * 1024;
@@ -104,9 +105,11 @@ fn spawn_pump(
             PumpEnd::Complete | PumpEnd::Disconnected => {}
             PumpEnd::Stalled => {
                 tracing::warn!(request_id = %pump.request_id, code = "RESPONSE_STALLED", "response stalled");
+                metrics::response_cut("RESPONSE_STALLED");
             }
             PumpEnd::Aborted => {
                 tracing::warn!(request_id = %pump.request_id, code = "RESPONSE_ABORTED", "response aborted");
+                metrics::response_cut("RESPONSE_ABORTED");
             }
         }
     });
