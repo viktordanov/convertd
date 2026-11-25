@@ -1,0 +1,10 @@
+# Build output
+target/
+
+# The original plan package; its contents are unpacked in the repo
+*.zip
+
+# Local environment
+.env
+
+.claude/settings.local.json

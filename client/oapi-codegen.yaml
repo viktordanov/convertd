@@ -1,0 +1,10 @@
+# Configuration for oapi-codegen. Run through ../generate.sh, never by hand.
+# The generated package is internal: only the convert/ facade is public.
+package: api
+output: internal/api/client.go
+generate:
+  models: true
+  client: true
+output-options:
+  # Keep schemas that no path references, such as Manifest (it lives inside the ZIP).
+  skip-prune: true
