@@ -76,10 +76,12 @@ The base leaves out a HorizontalPodAutoscaler, because the useful scale signal i
 `aca/main.bicep` creates one internal container app in a Container Apps environment that already exists. It does not create the environment, the VNet or Log Analytics. Deploy it like this:
 
 1. Make a copy of `aca/main.example.bicepparam` outside the repository, with your `environmentId` and `image`.
-2. Put the key in the environment: `export CONVERT_API_KEY='<key>'`. The parameter file reads it, so the key never enters a file.
-3. Show the change: `az deployment group what-if -g <rg> -f deploy/aca/main.bicep -p <your>.bicepparam`.
-4. Apply it: `az deployment group create -g <rg> -f deploy/aca/main.bicep -p <your>.bicepparam`.
-5. Read the `fqdn` output. Callers use `https://<fqdn>`.
+2. In the copy, change the `using` path to the path from the copy to `deploy/aca/main.bicep`. Bicep reads this path relative to the parameter file.
+3. Put the key in the environment: `export CONVERT_API_KEY='<key>'`. The parameter file reads it, so the key never enters a file.
+4. Show the change: `az deployment group what-if -g <rg> -f <repo>/deploy/aca/main.bicep -p <your>.bicepparam`.
+5. Apply it: `az deployment group create -g <rg> -f <repo>/deploy/aca/main.bicep -p <your>.bicepparam`.
+
+Pass to `-f` the same `main.bicep` that the `using` line names. Read the `fqdn` output of the deployment. Callers use `https://<fqdn>`.
 
 For a private registry, set `registryServer` and `registryIdentityId`. The identity is a user-assigned identity with pull rights on that registry. A public image needs neither. `apiKeyPrevious` holds the old key during a rotation.
 <!-- /memoria:section -->
