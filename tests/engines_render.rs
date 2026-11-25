@@ -265,11 +265,16 @@ async fn a_corpus_pdf_inspects_and_renders_in_every_format() {
                 "text3.pdf: page 1 {} x {} pt, probe {:?}, inspect engine {:?}",
                 page.width_pt, page.height_pt, inspection.probe_engine, inspection.timing.engine
             );
-            for format in [ImageFormat::Jpeg, ImageFormat::Png, ImageFormat::Webp] {
+            // JPEG at 150 DPI; PNG and WebP at 72 DPI, so a debug build stays fast.
+            for (format, dpi) in [
+                (ImageFormat::Jpeg, 150u16),
+                (ImageFormat::Png, 72),
+                (ImageFormat::Webp, 72),
+            ] {
                 let out = dir.join(format.extension());
                 let rendered = pdf
                     .render(
-                        render_job(&source, vec![1, 2, 3], format, 150, &out),
+                        render_job(&source, vec![1, 2, 3], format, dpi, &out),
                         Admission::Continue,
                         deadline(),
                     )
@@ -280,14 +285,11 @@ async fn a_corpus_pdf_inspects_and_renders_in_every_format() {
                     let bytes = std::fs::read(out.join(&p.file_name)).unwrap();
                     assert_eq!(bytes.len() as u64, p.size_bytes);
                     assert_eq!(Some(crc32fast::hash(&bytes)), p.crc32);
-                    assert_eq!(
-                        p.width_px,
-                        (p.width_pt * 150.0 / 72.0).round() as u32,
-                        "{p:?}"
-                    );
+                    let expected = (p.width_pt * f32::from(dpi) / 72.0).round() as u32;
+                    assert_eq!(p.width_px, expected, "{p:?}");
                 }
                 eprintln!(
-                    "{format:?} at 150 DPI, 3 pages: engine {:?}, wall {:?}",
+                    "{format:?} at {dpi} DPI, 3 pages: engine {:?}, wall {:?}",
                     rendered.timing.engine, rendered.timing.wall
                 );
             }
