@@ -56,8 +56,12 @@ speccheck() {
 
 if [[ "$SPEC_SOURCE" == "emitted" ]]; then
   echo "Emitting the spec from convertd..."
-  cargo run --locked --quiet --bin convertd -- openapi > "$tmp/a.json"
-  cargo run --locked --quiet --bin convertd -- openapi > "$tmp/b.json"
+  # Built with test-hooks, like the tests and scripts/contract_test.sh, so that
+  # one binary serves all three and none of them rebuilds convertd with other
+  # features. The spec code has no feature gates; contract case 16 checks that
+  # the served spec equals the committed one.
+  cargo run --locked --quiet --features test-hooks --bin convertd -- openapi > "$tmp/a.json"
+  cargo run --locked --quiet --features test-hooks --bin convertd -- openapi > "$tmp/b.json"
   if ! cmp -s "$tmp/a.json" "$tmp/b.json"; then
     echo "convertd openapi is not deterministic: two runs differ" >&2
     diff "$tmp/a.json" "$tmp/b.json" | head -40 >&2
