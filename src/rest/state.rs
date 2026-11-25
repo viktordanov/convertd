@@ -4,6 +4,7 @@ use std::io;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use axum::http::HeaderValue;
@@ -13,13 +14,14 @@ use tokio::sync::Semaphore;
 
 use super::middleware::auth::ApiKeys;
 use super::openapi;
-use super::serialization::build_info::BuildInfo;
+use super::serialization::build_info::{BuildInfo, FontsFile};
 use super::serialization::capabilities::{Capabilities, ServiceInfo};
 use super::serialization::manifest::EngineInfo;
 use crate::config::Config;
 use crate::domain::conversion_service::ConversionService;
 use crate::domain::engine::{OfficeEngine, PdfEngine};
 use crate::domain::readiness::Readiness;
+use crate::domain::verification::FontCatalog;
 use crate::jobs::DiskBudget;
 
 /// The service version in capabilities, manifests and the fingerprint.
@@ -49,6 +51,10 @@ pub struct Shared {
     /// `MAX_CONCURRENT_REQUESTS`: taken before the body is read, released
     /// by the response pump.
     pub inflight: Arc<Semaphore>,
+    /// `MAX_CONCURRENT_REQUESTS`: the permits `inflight` holds when idle.
+    pub max_inflight: usize,
+    /// Set on SIGTERM: readyz answers `draining` and conversions 503.
+    pub draining: AtomicBool,
     /// `TMP_MAX_BYTES`.
     pub disk_budget: DiskBudget,
     pub tmp_dir: PathBuf,
@@ -71,6 +77,9 @@ pub struct Shared {
 
 impl AppState {
     pub fn new(config: &Config, engines: Engines) -> Self {
+        // Install the metrics recorder before anything records: metrics
+        // recorded earlier go to the no-op recorder and are lost.
+        crate::observability::metrics::handle();
         let build_info = load_build_info(&config.server.build_info_path);
         let service = ServiceInfo {
             name: "convert".to_owned(),
@@ -78,7 +87,15 @@ impl AppState {
             commit: option_env!("CONVERTD_COMMIT").map(str::to_owned),
         };
         let unknown = || "unknown".to_owned();
-        let mut fonts = build_info.fonts.clone();
+        // fc-list prints a face's names comma-separated; capabilities and
+        // the fingerprint list each face's first name.
+        let mut fonts: Vec<String> = build_info
+            .fonts
+            .iter()
+            .filter_map(|entry| entry.split(',').next())
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .collect();
         fonts.sort();
         fonts.dedup();
         let libreoffice = build_info.libreoffice.clone().unwrap_or_else(unknown);
@@ -96,6 +113,12 @@ impl AppState {
             pdfium,
             fingerprint: fingerprint.clone(),
         };
+        let catalog = FontCatalog::new(
+            build_info.fonts.iter().cloned(),
+            build_info.font_substitutes.clone(),
+            build_info.default_substitute.clone(),
+            load_fonts_file(&config.server.fonts_path).0,
+        );
         let capabilities = Capabilities::new(service, engine_info.clone(), &config.limits, fonts);
         // Serialising plain structs of strings and integers cannot fail.
         let capabilities_json = serde_json::to_vec(&capabilities).unwrap_or_default();
@@ -108,8 +131,11 @@ impl AppState {
                 engines.pdf,
                 config.limits.clone(),
                 config.server.verify_probe_render,
-            ),
+            )
+            .with_fonts(catalog),
             inflight: Arc::new(Semaphore::new(config.server.max_concurrent_requests)),
+            max_inflight: config.server.max_concurrent_requests,
+            draining: AtomicBool::new(false),
             disk_budget: DiskBudget::new(config.server.tmp_max_bytes),
             tmp_dir: config.server.tmp_dir.clone(),
             io_idle_timeout: config.server.io_idle_timeout,
@@ -146,6 +172,21 @@ pub fn load_build_info(path: &Path) -> BuildInfo {
         Err(err) => {
             tracing::warn!(path = %path.display(), error = %err, "failed to read build info");
             BuildInfo::default()
+        }
+    }
+}
+
+/// Reads `fonts.json`. Missing or unreadable: no family counts as
+/// metric-compatible, with one warning.
+pub fn load_fonts_file(path: &Path) -> FontsFile {
+    match std::fs::read(path) {
+        Ok(bytes) => FontsFile::parse(&bytes).unwrap_or_else(|err| {
+            tracing::warn!(path = %path.display(), error = %err, "failed to parse the fonts file");
+            FontsFile::default()
+        }),
+        Err(err) => {
+            tracing::warn!(path = %path.display(), error = %err, "fonts file missing; no family counts as metric-compatible");
+            FontsFile::default()
         }
     }
 }

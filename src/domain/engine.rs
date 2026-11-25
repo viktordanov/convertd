@@ -260,7 +260,7 @@ pub struct RenderedPage {
     pub height_px: u32,
     pub width_pt: f32,
     pub height_pt: f32,
-    /// Informational: the ZIP plan takes sizes from its own `fstat`.
+    /// Informational: the bundle plan takes sizes from its own `fstat`.
     pub size_bytes: u64,
     pub objects: u32,
     pub flat: bool,

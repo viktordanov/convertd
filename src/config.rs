@@ -267,6 +267,8 @@ pub struct ServerConfig {
     /// Serves `/swagger/doc.json` only.
     pub swagger_enabled: bool,
     pub build_info_path: PathBuf,
+    /// `FONTS_PATH`: the `{family: metric_compatible}` table for V2.
+    pub fonts_path: PathBuf,
     /// `TOKIO_WORKER_THREADS`; `None` means 2.
     pub tokio_worker_threads: Option<usize>,
 }
@@ -324,6 +326,7 @@ impl ServerConfig {
             metrics_enabled: env.parse("METRICS_ENABLED", true)?,
             swagger_enabled: env.parse("SWAGGER_ENABLED", true)?,
             build_info_path: env.path("BUILD_INFO_PATH", "/opt/convertd/build-info.json")?,
+            fonts_path: env.path("FONTS_PATH", "/etc/convertd/fonts.json")?,
             tokio_worker_threads: match env.parse_opt::<usize>("TOKIO_WORKER_THREADS")? {
                 Some(0) => {
                     return Err(ConfigError::new(
@@ -413,6 +416,7 @@ mod tests {
             s.build_info_path,
             PathBuf::from("/opt/convertd/build-info.json")
         );
+        assert_eq!(s.fonts_path, PathBuf::from("/etc/convertd/fonts.json"));
         assert_eq!(s.tokio_worker_threads, None);
 
         let l = &config.limits;

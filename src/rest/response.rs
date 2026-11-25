@@ -234,7 +234,6 @@ impl ApiError {
             UploadError::Options(OptionsError::Invalid(message)) => {
                 Self::validation(message.clone())
             }
-            UploadError::OutputNotYet(_) => Self::validation(err.to_string()),
             UploadError::TooLarge { limit } => Self::too_large(*limit),
             UploadError::Request(conversion) => Self::from_conversion(conversion, queue_wait),
             UploadError::Detect(detect) => Self::from_detect(detect),
@@ -452,12 +451,6 @@ mod tests {
             ),
             (
                 UploadError::Options(OptionsError::Invalid("i".into())),
-                422,
-                "VALIDATION_ERROR",
-                None,
-            ),
-            (
-                UploadError::OutputNotYet(crate::domain::conversion::Output::Bundle),
                 422,
                 "VALIDATION_ERROR",
                 None,

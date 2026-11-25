@@ -31,11 +31,10 @@ use tokio::sync::mpsc;
 
 use super::serialization::options::{ConvertOptions, OptionsError};
 use crate::detect;
-use crate::domain::conversion::{ConversionRequest, Output, RawOptions};
+use crate::domain::conversion::{ConversionRequest, RawOptions};
 use crate::domain::conversion_service::{ConversionError, UploadFacts};
 use crate::domain::detection::{DetectError, Detection};
 use crate::domain::limits::Limits;
-use crate::domain::verification::Warning;
 use crate::jobs::JobDir;
 
 /// Chunks queued between the handler and the sink.
@@ -55,8 +54,6 @@ pub struct Received {
     pub upload: UploadFacts,
     pub detection: Detection,
     pub request: ConversionRequest,
-    /// Raised by validation, such as `RENDER_CLAMPED`.
-    pub warnings: Vec<Warning>,
     /// The deadline and `total` start here.
     pub upload_done: Instant,
     /// Detection time inside the sink.
@@ -92,9 +89,6 @@ pub enum UploadError {
     Options(OptionsError),
     #[error(transparent)]
     Request(ConversionError),
-    /// `output` values that later steps of plan 001 serve (step 8).
-    #[error("output {} is not available yet", .0.as_str())]
-    OutputNotYet(Output),
     #[error(transparent)]
     Detect(DetectError),
     /// ENOSPC or EDQUOT, or the disk budget is spent.
@@ -125,10 +119,14 @@ pub fn is_disk_full(err: &io::Error) -> bool {
 /// Reads the multipart body into `job`. Called after auth and the
 /// concurrency permit; rejects an oversized `Content-Length` before a byte
 /// is read.
+/// `detected` is set as soon as detection has run, so the caller knows
+/// that an error after it (such as an options part after the file) still
+/// gets `Server-Timing`.
 pub async fn receive(
     request: Request,
     job: &Arc<JobDir>,
     limits: &Limits,
+    detected: &mut Option<Duration>,
 ) -> Result<Received, UploadError> {
     let max_upload = limits.max_upload_bytes;
     let whole_stream = max_upload + OPTIONS_PART_MAX + FRAMING_MAX;
@@ -162,7 +160,7 @@ pub async fn receive(
     let body = request.into_body().into_data_stream();
     let mut multipart = Multipart::with_constraints(body, boundary, constraints);
 
-    let mut options: Option<(ConversionRequest, Vec<Warning>)> = None;
+    let mut options: Option<ConversionRequest> = None;
     let mut stored: Option<(SinkResult, Option<String>)> = None;
     while let Some(mut field) = multipart
         .next_field()
@@ -198,7 +196,9 @@ pub async fn receive(
                     .map_err(|err| UploadError::Sink(err.to_string()))?;
                 // A multer error explains a sink that stopped early.
                 forwarded?;
-                stored = Some((result?, file_name));
+                let result = result?;
+                *detected = Some(result.detect);
+                stored = Some((result, file_name));
             }
             other => {
                 return Err(UploadError::UnknownPart(
@@ -208,7 +208,7 @@ pub async fn receive(
         }
     }
     let (result, file_name) = stored.ok_or(UploadError::MissingFile)?;
-    let (request, warnings) = match options {
+    let request = match options {
         Some(options) => options,
         None => validate_options(b"{}", limits)?,
     };
@@ -223,7 +223,6 @@ pub async fn receive(
         },
         detection: result.detection,
         request,
-        warnings,
         upload_done: Instant::now(),
         detect: result.detect,
     })
@@ -252,17 +251,11 @@ async fn forward(
     }
 }
 
-fn validate_options(
-    bytes: &[u8],
-    limits: &Limits,
-) -> Result<(ConversionRequest, Vec<Warning>), UploadError> {
+fn validate_options(bytes: &[u8], limits: &Limits) -> Result<ConversionRequest, UploadError> {
     let dto = ConvertOptions::parse(bytes).map_err(UploadError::Options)?;
-    let (request, warnings) =
+    let request =
         ConversionRequest::new(RawOptions::from(dto), limits).map_err(UploadError::Request)?;
-    if request.output != Output::Pdf {
-        return Err(UploadError::OutputNotYet(request.output));
-    }
-    Ok((request, warnings))
+    Ok(request)
 }
 
 fn map_multer(err: multer::Error, max_upload: u64) -> UploadError {

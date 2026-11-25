@@ -91,6 +91,27 @@ fn panic_response(panic: Box<dyn Any + Send + 'static>) -> Response {
     ApiError::internal(format!("handler panicked: {message}")).into_response()
 }
 
+/// The first step of a graceful stop: readyz answers `draining` and new
+/// conversions answer 503, while requests in flight go on.
+pub fn begin_drain(state: &AppState) {
+    state
+        .draining
+        .store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Waits until no conversion holds a permit (the response pumps included),
+/// or `grace` has passed. Returns whether the service went idle.
+pub async fn wait_idle(state: &AppState, grace: std::time::Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + grace;
+    while state.inflight.available_permits() < state.max_inflight {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    true
+}
+
 /// Binds `host:port`.
 pub async fn bind(host: IpAddr, port: u16) -> io::Result<TcpListener> {
     TcpListener::bind((host, port)).await

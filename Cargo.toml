@@ -57,6 +57,8 @@ flate2 = "1.1.11"
 memchr = "2.8.3"
 quick-xml = "0.41.0"
 cfb = "0.16.0"
+# tar.zst bundles (001 step 8, owner 2026-11-26): one zstd frame at level 1.
+zstd = "0.14.5"
 async-trait = "0.1.92"
 
 # Metrics (001), rendered by our own handler: no HTTP listener.

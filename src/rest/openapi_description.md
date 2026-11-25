@@ -2,7 +2,7 @@ Converts office documents, PDFs and images into a standard PDF and per-page
 images.
 
 One call does the whole job. Upload a file, say what you want back, and
-receive either the PDF itself or a ZIP bundle holding the PDF, the page
+receive either the PDF itself or a tar.zst bundle holding the PDF, the page
 images and a `manifest.json` that describes them.
 
 ## Authentication
@@ -24,18 +24,18 @@ curl -sS -H "Authorization: Bearer $CONVERT_API_KEY" \
   -o deck.pdf \
   "$CONVERT_HOST/v1/convert"
 
-# PDF plus page images at 150 DPI, as one ZIP bundle
+# PDF plus page images at 150 DPI, as one tar.zst bundle
 curl -sS -H "Authorization: Bearer $CONVERT_API_KEY" \
   -F file=@deck.pptx \
   -F 'options={"output":"bundle","images":{"format":"jpeg","dpi":150}};type=application/json' \
-  -o deck.zip \
+  -o deck.tar.zst \
   "$CONVERT_HOST/v1/convert"
 
 # First page of an existing PDF as a small thumbnail
 curl -sS -H "Authorization: Bearer $CONVERT_API_KEY" \
   -F file=@report.pdf \
   -F 'options={"output":"images","pages":"1","images":{"format":"webp","dpi":72,"max_edge":320}};type=application/json' \
-  -o thumb.zip \
+  -o thumb.tar.zst \
   "$CONVERT_HOST/v1/convert"
 ```
 
@@ -47,8 +47,8 @@ content type:
 | `output` | Response | Contents |
 | --- | --- | --- |
 | `pdf` (default) | `application/pdf` | The PDF. Metadata travels in `Convert-*` headers. |
-| `images` | `application/zip` | `manifest.json` and `pages/NNNN.<ext>` |
-| `bundle` | `application/zip` | `manifest.json`, `document.pdf` and `pages/NNNN.<ext>` |
+| `images` | `application/zstd` | `manifest.json` and `pages/NNNN.<ext>`, as tar.zst |
+| `bundle` | `application/zstd` | `manifest.json`, `document.pdf` and `pages/NNNN.<ext>`, as tar.zst |
 
 The response is only sent once the whole job has succeeded, so a `200`
 always carries a complete result and every failure has a proper status

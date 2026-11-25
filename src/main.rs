@@ -159,6 +159,9 @@ fn serve() -> Result<(), String> {
             .local_addr()
             .map_err(|err| format!("failed to read the bound address: {err}"))?;
         tracing::info!(addr = %addr, "server listening");
+        // Before the engines start, so that what their pools record while
+        // they start is not lost to the no-op recorder.
+        convertd::observability::metrics::handle();
         let selected = convertd::engines::select::start(&config).await?;
         let engines = Engines {
             office: selected.office,
@@ -166,15 +169,57 @@ fn serve() -> Result<(), String> {
             readiness: selected.readiness,
         };
         let state = AppState::new(&config, engines);
-        let served = server::serve(listener, server::router(state), shutdown)
-            .await
-            .map_err(|err| format!("failed to serve: {err}"));
+        convertd::observability::metrics::spawn_upkeep(METRICS_UPKEEP);
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        // In its own task, so that it keeps accepting (and answering 503)
+        // while the drain below waits.
+        let mut serving = tokio::spawn(server::serve(
+            listener,
+            server::router(state.clone()),
+            async move {
+                let _ = stopped.await;
+            },
+        ));
+        let joined = |result: Result<std::io::Result<()>, tokio::task::JoinError>| match result {
+            Ok(served) => served.map_err(|err| format!("failed to serve: {err}")),
+            Err(err) => Err(format!("failed to serve: {err}")),
+        };
+        let served = tokio::select! {
+            result = &mut serving => joined(result),
+            () = shutdown => {
+                // Drain: readyz says draining and new conversions get 503
+                // while the platform removes the endpoint; requests in
+                // flight finish within SHUTDOWN_GRACE_SECONDS.
+                let grace = config.server.shutdown_grace;
+                server::begin_drain(&state);
+                selected.handle.drain().await;
+                if !server::wait_idle(&state, grace).await {
+                    tracing::warn!(grace_seconds = grace.as_secs(), "requests still in flight after the grace period");
+                }
+                let _ = stop.send(());
+                // axum now stops accepting and finishes open connections.
+                match tokio::time::timeout(CLOSE_GRACE, &mut serving).await {
+                    Ok(result) => joined(result),
+                    Err(_) => {
+                        tracing::warn!("open connections did not close in time");
+                        serving.abort();
+                        Ok(())
+                    }
+                }
+            }
+        };
         selected.handle.shutdown(config.server.shutdown_grace).await;
         served?;
         tracing::info!("server stopped");
         Ok(())
     })
 }
+
+/// How often histogram samples are folded into their buckets.
+const METRICS_UPKEEP: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long open connections get after the listener closes.
+const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Creates `TMP_DIR` and removes the job directories a crash left.
 fn prepare_tmp_dir(config: &Config) -> Result<(), String> {

@@ -9,7 +9,7 @@ use super::engine::{EngineTiming, RenderedPage};
 use super::limits::Limits;
 use super::pages::PageSelection;
 use super::secret::Password;
-use super::verification::{DetailValue, Warning, WarningCode};
+use super::verification::{Check, Warning};
 
 /// What the response contains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -40,6 +40,15 @@ pub enum ImageFormat {
 }
 
 impl ImageFormat {
+    /// The API name: `jpeg`, `png` or `webp`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ImageFormat::Jpeg => "jpeg",
+            ImageFormat::Png => "png",
+            ImageFormat::Webp => "webp",
+        }
+    }
+
     /// The file extension of `pages/NNNN.<ext>`.
     pub fn extension(self) -> &'static str {
         match self {
@@ -116,15 +125,17 @@ pub struct ConversionRequest {
     pub images: ImageSettings,
     /// The DPI the caller asked for, before `MAX_DPI`.
     pub requested_dpi: u16,
+    /// The `max_edge` the caller asked for, before `MAX_EDGE_PX`.
+    pub requested_max_edge: Option<u32>,
     pub export: ExportOptions,
 }
 
 impl ConversionRequest {
     /// Checks the spec's ranges, then applies the server caps: the timeout
     /// is lowered to `TIMEOUT_MAX_SECONDS` silently, the DPI is clamped to
-    /// `MAX_DPI` with a `RENDER_CLAMPED` warning (image outputs only), and
-    /// `max_edge` is capped at `MAX_EDGE_PX`.
-    pub fn new(raw: RawOptions, limits: &Limits) -> Result<(Self, Vec<Warning>), ConversionError> {
+    /// `MAX_DPI` and `max_edge` is capped at `MAX_EDGE_PX`. Verification
+    /// raises `RENDER_CLAMPED` once it knows each page's effective DPI.
+    pub fn new(raw: RawOptions, limits: &Limits) -> Result<Self, ConversionError> {
         let output = raw.output.unwrap_or_default();
         let pages = match raw.pages.as_deref() {
             None => PageSelection::All,
@@ -154,6 +165,7 @@ impl ConversionRequest {
             None => DEFAULT_QUALITY,
             Some(q) => to_u8(in_range("images.quality", q, QUALITY_RANGE)?),
         };
+        let requested_max_edge = raw.max_edge;
         let max_edge = match raw.max_edge {
             None => None,
             Some(edge) => {
@@ -161,12 +173,7 @@ impl ConversionRequest {
             }
         };
         let dpi = requested_dpi.min(limits.max_dpi);
-
-        let mut warnings = Vec::new();
-        if dpi < requested_dpi && output != Output::Pdf {
-            warnings.push(render_clamped(requested_dpi, f32::from(dpi)));
-        }
-        let request = ConversionRequest {
+        Ok(ConversionRequest {
             output,
             pages,
             password,
@@ -178,31 +185,13 @@ impl ConversionRequest {
                 max_edge,
             },
             requested_dpi,
+            requested_max_edge,
             export: ExportOptions {
                 notes: raw.notes.unwrap_or_default(),
                 include_hidden_slides: raw.include_hidden_slides.unwrap_or(false),
                 one_page_per_sheet: raw.one_page_per_sheet.unwrap_or(false),
             },
-        };
-        Ok((request, warnings))
-    }
-}
-
-/// `RENDER_CLAMPED`: a server limit reduced the requested resolution.
-pub fn render_clamped(requested_dpi: u16, effective_dpi: f32) -> Warning {
-    Warning {
-        code: WarningCode::RenderClamped,
-        message: format!(
-            "the requested {requested_dpi} DPI was reduced to {effective_dpi} DPI by a server limit"
-        ),
-        page: None,
-        detail: vec![
-            ("requested_dpi", DetailValue::Int(i64::from(requested_dpi))),
-            (
-                "effective_dpi",
-                DetailValue::Float(f64::from(effective_dpi)),
-            ),
-        ],
+        })
     }
 }
 
@@ -288,7 +277,7 @@ impl StageTimings {
 }
 
 /// A finished conversion, ready to be sent.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConversionResult {
     /// `source.pdf` for a passthrough, `document.pdf` otherwise.
     pub pdf: PathBuf,
@@ -300,6 +289,8 @@ pub struct ConversionResult {
     /// Empty for `output=pdf`.
     pub pages: Vec<RenderedPage>,
     pub warnings: Vec<Warning>,
+    /// The checks that could not run, for the metrics.
+    pub skipped: Vec<(Check, &'static str)>,
 }
 
 #[cfg(test)]
@@ -307,7 +298,7 @@ mod tests {
     use super::*;
     use crate::domain::limits::test_limits;
 
-    fn new(raw: RawOptions) -> Result<(ConversionRequest, Vec<Warning>), ConversionError> {
+    fn new(raw: RawOptions) -> Result<ConversionRequest, ConversionError> {
         ConversionRequest::new(raw, &test_limits())
     }
 
@@ -320,8 +311,7 @@ mod tests {
 
     #[test]
     fn defaults() {
-        let (request, warnings) = new(RawOptions::default()).unwrap();
-        assert!(warnings.is_empty());
+        let request = new(RawOptions::default()).unwrap();
         assert_eq!(request.output, Output::Pdf);
         assert_eq!(request.pages, PageSelection::All);
         assert!(request.password.is_none());
@@ -398,36 +388,23 @@ mod tests {
             timeout_seconds: Some(200),
             ..Default::default()
         };
-        let (request, warnings) = ConversionRequest::new(raw, &limits).unwrap();
+        let request = ConversionRequest::new(raw, &limits).unwrap();
         assert_eq!(request.timeout, Duration::from_secs(60));
-        assert!(warnings.is_empty());
     }
 
     #[test]
-    fn dpi_clamp_raises_render_clamped() {
+    fn dpi_and_edge_are_clamped() {
         let raw = RawOptions {
             output: Some(Output::Images),
             dpi: Some(600),
+            max_edge: Some(8000),
             ..Default::default()
         };
-        let (request, warnings) = new(raw).unwrap();
+        let request = new(raw).unwrap();
         assert_eq!(request.images.dpi, 300);
         assert_eq!(request.requested_dpi, 600);
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].code, WarningCode::RenderClamped);
-        assert_eq!(
-            warnings[0].detail,
-            [
-                ("requested_dpi", DetailValue::Int(600)),
-                ("effective_dpi", DetailValue::Float(300.0))
-            ]
-        );
-        // output=pdf renders nothing, so nothing was clamped.
-        let raw = RawOptions {
-            dpi: Some(600),
-            ..Default::default()
-        };
-        assert!(new(raw).unwrap().1.is_empty());
+        assert_eq!(request.images.max_edge, Some(4096));
+        assert_eq!(request.requested_max_edge, Some(8000));
     }
 
     #[test]
@@ -436,7 +413,7 @@ mod tests {
             max_edge: Some(8192),
             ..Default::default()
         };
-        assert_eq!(new(raw).unwrap().0.images.max_edge, Some(4096));
+        assert_eq!(new(raw).unwrap().images.max_edge, Some(4096));
     }
 
     #[test]
@@ -450,12 +427,12 @@ mod tests {
             password: Some("é".repeat(256)),
             ..Default::default()
         };
-        assert!(new(raw).unwrap().0.password.is_some());
+        assert!(new(raw).unwrap().password.is_some());
         let raw = RawOptions {
             password: Some(String::new()),
             ..Default::default()
         };
-        assert!(new(raw).unwrap().0.password.is_none());
+        assert!(new(raw).unwrap().password.is_none());
     }
 
     #[test]

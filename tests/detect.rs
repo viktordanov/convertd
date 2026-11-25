@@ -367,3 +367,81 @@ fn oversized_content_types_is_refused() {
     let bytes = zip(&[entry("[Content_Types].xml", &types)]);
     assert_eq!(limit(&bytes), "content types size");
 }
+
+/// An OLE2 file whose root storage holds these streams (and storages for
+/// names ending in `/`).
+fn ole2(names: &[&str]) -> Vec<u8> {
+    let mut compound = cfb::CompoundFile::create(Cursor::new(Vec::new())).unwrap();
+    for name in names {
+        match name.strip_suffix('/') {
+            Some(storage) => compound.create_storage(format!("/{storage}")).unwrap(),
+            None => {
+                let mut stream = compound.create_stream(format!("/{name}")).unwrap();
+                stream.write_all(b"\x00stream bytes").unwrap();
+            }
+        }
+    }
+    compound.flush().unwrap();
+    compound.into_inner().into_inner()
+}
+
+#[test]
+fn legacy_office_from_its_streams() {
+    for (names, want) in [
+        (
+            &["WordDocument", "1Table", "\u{5}SummaryInformation"][..],
+            Format::Doc,
+        ),
+        (&["WordDocument", "Macros/"][..], Format::Doc),
+        (&["Workbook"][..], Format::Xls),
+        (&["Book"][..], Format::Xls),
+        (&["PowerPoint Document", "Current User"][..], Format::Ppt),
+    ] {
+        let detection = detect_file(&mut Cursor::new(ole2(names)), 0).unwrap();
+        assert_eq!(detection.format, want, "{names:?}");
+        assert!(!detection.encrypted);
+    }
+}
+
+#[test]
+fn encrypted_ooxml_is_found_without_its_type() {
+    let bytes = ole2(&["EncryptionInfo", "EncryptedPackage", "\u{6}DataSpaces/"]);
+    let detection = detect_file(&mut Cursor::new(&bytes), bytes.len() as u64).unwrap();
+    assert!(detection.encrypted);
+    // Provisional: the engine's document type decides the real one.
+    assert_eq!(detection.format, Format::Docx);
+    // One of the two streams alone is not encrypted OOXML.
+    assert_eq!(unsupported(&ole2(&["EncryptedPackage"])), "ole2");
+}
+
+#[test]
+fn refused_ole2_files() {
+    assert_eq!(
+        unsupported(&ole2(&["__substg1.0_0037001F", "__properties_version1.0"])),
+        "msg"
+    );
+    assert_eq!(unsupported(&ole2(&["Contents", "Equation Native"])), "ole2");
+    assert_eq!(unsupported(&ole2(&[])), "ole2");
+}
+
+#[test]
+fn broken_ole2_is_refused_not_a_panic() {
+    let good = ole2(&["WordDocument"]);
+    // The signature alone, a truncated file, and noise after the header.
+    let mut noise = good[..512].to_vec();
+    noise.extend((0..8192u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8));
+    for bytes in [
+        &good[..8],
+        &good[..600],
+        &noise[..],
+        &good[..good.len() / 2],
+    ] {
+        assert_eq!(unsupported(bytes), "ole2", "{} bytes", bytes.len());
+    }
+    // Flipped bytes across the whole header and directory.
+    for at in (8..good.len().min(4096)).step_by(7) {
+        let mut flipped = good.clone();
+        flipped[at] ^= 0xFF;
+        let _ = detect(&flipped);
+    }
+}

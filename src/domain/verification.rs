@@ -1,8 +1,14 @@
 //! Warnings: quality signals that never fail a request.
 //!
-//! The rules V1 to V4 (005 §5) compare `SourceFacts` from the office
-//! worker's pre-flight with the inspection; they land in step 11
-//! (INTERFACES §13). This file holds the types the seam needs now.
+//! The rules compare what the source declares (`SourceFacts`, from the
+//! office worker's pre-flight, INTERFACES §13) with what the engines
+//! produced. The algorithms are 005 §5.
+
+use std::collections::{HashMap, HashSet};
+
+use super::conversion::{ConversionRequest, Output, SlideNotes};
+use super::document::Format;
+use super::engine::{ProbedPage, RenderedPage};
 
 /// A warning code, as in the spec's `WarningCode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -95,4 +101,689 @@ pub struct SourceFacts {
     pub requested_fonts: Vec<String>,
     pub macros: Option<MacroFact>,
     pub skipped: Vec<(Check, SkipReason)>,
+}
+
+/// What [`verify`] compares.
+#[derive(Debug, Clone, Copy)]
+pub struct VerifyInput<'a> {
+    pub format: Format,
+    pub request: &'a ConversionRequest,
+    /// The office worker's pre-flight; `None` for PDF and image inputs.
+    pub facts: Option<&'a SourceFacts>,
+    /// Pages in the PDF.
+    pub page_count: u32,
+    /// The probe render of the inspection, if any.
+    pub probe: &'a [ProbedPage],
+    /// The rendered pages, for `images` and `bundle`.
+    pub rendered: &'a [RenderedPage],
+    /// `MAX_EDGE_PX`.
+    pub max_edge_px: u32,
+    /// The installed families and their substitutes.
+    pub fonts: &'a FontCatalog,
+}
+
+/// The warnings, and the checks that could not run with the reason.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Verdict {
+    pub warnings: Vec<Warning>,
+    /// For `convert_verify_skipped_total{check,reason}`.
+    pub skipped: Vec<(Check, &'static str)>,
+}
+
+/// At most this many `FONT_SUBSTITUTED` warnings per request.
+pub const MAX_FONT_WARNINGS: usize = 32;
+
+/// Applies the warning rules. Pure: no I/O, never fails. The order is
+/// `RENDER_CLAMPED`, `PAGE_COUNT_MISMATCH`, `FONT_SUBSTITUTED` (sorted by
+/// family), `BLANK_PAGE` (by page), `MACROS_IGNORED`.
+pub fn verify(input: &VerifyInput<'_>) -> Verdict {
+    let mut verdict = Verdict::default();
+    if let Some(warning) = render_clamped(input) {
+        verdict.warnings.push(warning);
+    }
+    match input.facts {
+        Some(facts) => {
+            for (check, reason) in &facts.skipped {
+                verdict.skipped.push((*check, reason.as_str()));
+            }
+            page_count(input, facts, &mut verdict);
+            fonts(input, facts, &mut verdict);
+        }
+        None if input.format.family().is_office() => {
+            // The office engine ran no pre-flight.
+            for check in [Check::PageCount, Check::Fonts, Check::Macros] {
+                verdict.skipped.push((check, "no_facts"));
+            }
+        }
+        None => {}
+    }
+    blank_pages(input, &mut verdict);
+    if let Some(fact) = input.facts.and_then(|f| f.macros.as_ref()) {
+        verdict.warnings.push(Warning {
+            code: WarningCode::MacrosIgnored,
+            message: "the document contains macros; they were not run".to_owned(),
+            page: None,
+            detail: vec![
+                ("kind", DetailValue::Str(fact.kind.as_str().to_owned())),
+                ("part", DetailValue::Str(fact.part.clone())),
+            ],
+        });
+    }
+    verdict
+}
+
+/// V1 · `PAGE_COUNT_MISMATCH`, PPTX family only. The declared count is
+/// the visible slides, so the check is skipped when hidden slides or notes
+/// pages are included, and for a declared count of 0 (a template).
+fn page_count(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdict) {
+    if !matches!(
+        input.format,
+        Format::Pptx | Format::Pptm | Format::Ppsx | Format::Potx
+    ) {
+        return;
+    }
+    let Some(declared) = &facts.declared_pages else {
+        return;
+    };
+    let export = input.request.export;
+    let skip = if declared.count == 0 {
+        Some("no_declared_count")
+    } else if export.include_hidden_slides {
+        Some("include_hidden")
+    } else if export.notes != SlideNotes::None {
+        Some("notes")
+    } else {
+        None
+    };
+    if let Some(reason) = skip {
+        verdict.skipped.push((Check::PageCount, reason));
+        return;
+    }
+    if declared.count != input.page_count {
+        verdict.warnings.push(Warning {
+            code: WarningCode::PageCountMismatch,
+            message: format!(
+                "the source declares {} pages and the PDF has {}",
+                declared.count, input.page_count
+            ),
+            page: None,
+            detail: vec![
+                ("expected", DetailValue::Int(i64::from(declared.count))),
+                ("actual", DetailValue::Int(i64::from(input.page_count))),
+                ("source", DetailValue::Str(declared.source.to_owned())),
+            ],
+        });
+    }
+}
+
+/// V2 · `FONT_SUBSTITUTED`. A requested family that is not installed
+/// warns, unless it is metric-compatible and its substitute is installed.
+/// Without a font catalog (no `build-info.json`) the check is skipped.
+fn fonts(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdict) {
+    if facts.requested_fonts.is_empty() {
+        return;
+    }
+    let catalog = input.fonts;
+    if catalog.is_empty() {
+        verdict.skipped.push((Check::Fonts, "no_font_catalog"));
+        return;
+    }
+    let mut requested: Vec<&String> = facts.requested_fonts.iter().collect();
+    requested.sort();
+    requested.dedup();
+    let mut raised = 0;
+    for family in requested {
+        if catalog.is_installed(family) {
+            continue;
+        }
+        let (substitute, source) = catalog.substitute(family);
+        if catalog.is_metric_compatible(family) && catalog.is_installed(&substitute) {
+            continue;
+        }
+        if raised == MAX_FONT_WARNINGS {
+            break;
+        }
+        raised += 1;
+        verdict.warnings.push(Warning {
+            code: WarningCode::FontSubstituted,
+            message: format!("{family} is not installed and was replaced by {substitute}"),
+            page: None,
+            detail: vec![
+                ("requested", DetailValue::Str(family.clone())),
+                ("substitute", DetailValue::Str(substitute)),
+                ("substitute_source", DetailValue::Str(source.to_owned())),
+            ],
+        });
+    }
+}
+
+/// V3 · `BLANK_PAGE`: a page with content (`objects > 0`) that rendered as
+/// one flat colour. The rendered pages decide where they exist; the probe
+/// render covers the rest.
+fn blank_pages(input: &VerifyInput<'_>, verdict: &mut Verdict) {
+    let rendered: HashSet<u32> = input.rendered.iter().map(|p| p.number).collect();
+    let mut blank: Vec<(u32, [u8; 3])> = input
+        .rendered
+        .iter()
+        .filter(|p| p.objects > 0 && p.flat)
+        .map(|p| (p.number, p.colour))
+        .chain(
+            input
+                .probe
+                .iter()
+                .filter(|p| !rendered.contains(&p.number) && p.objects > 0 && p.flat)
+                .map(|p| (p.number, p.colour)),
+        )
+        .collect();
+    blank.sort_by_key(|(number, _)| *number);
+    for (number, [r, g, b]) in blank {
+        verdict.warnings.push(Warning {
+            code: WarningCode::BlankPage,
+            message: format!("page {number} has content but rendered as one flat colour"),
+            page: Some(number),
+            detail: vec![(
+                "colour",
+                DetailValue::Str(format!("#{r:02x}{g:02x}{b:02x}")),
+            )],
+        });
+    }
+}
+
+/// The families the deployment has, from `build-info.json` (`fonts`,
+/// `font_substitutes`, `default_substitute`) and `fonts.json`
+/// (`{family: metric_compatible}`). Names compare trimmed, case-folded and
+/// with runs of spaces collapsed.
+#[derive(Debug, Clone, Default)]
+pub struct FontCatalog {
+    installed: HashSet<String>,
+    substitutes: HashMap<String, String>,
+    default_substitute: Option<String>,
+    metric_compatible: HashMap<String, bool>,
+}
+
+impl FontCatalog {
+    /// `installed` entries may list localized names separated by `,`, as
+    /// `fc-list` prints them.
+    pub fn new(
+        installed: impl IntoIterator<Item = String>,
+        substitutes: impl IntoIterator<Item = (String, String)>,
+        default_substitute: Option<String>,
+        metric_compatible: impl IntoIterator<Item = (String, bool)>,
+    ) -> Self {
+        Self {
+            installed: installed
+                .into_iter()
+                .flat_map(|entry| entry.split(',').map(fold).collect::<Vec<_>>())
+                .filter(|name| !name.is_empty())
+                .collect(),
+            substitutes: substitutes
+                .into_iter()
+                .map(|(requested, substitute)| (fold(&requested), substitute))
+                .collect(),
+            default_substitute: default_substitute.filter(|s| !s.trim().is_empty()),
+            metric_compatible: metric_compatible
+                .into_iter()
+                .map(|(family, compatible)| (fold(&family), compatible))
+                .collect(),
+        }
+    }
+
+    /// No installed families known: V2 cannot run.
+    pub fn is_empty(&self) -> bool {
+        self.installed.is_empty()
+    }
+
+    pub fn is_installed(&self, family: &str) -> bool {
+        self.installed.contains(&fold(family))
+    }
+
+    /// The substitute fontconfig picks, and where the answer comes from:
+    /// `fc-match` for a probed family, `default` otherwise.
+    pub fn substitute(&self, family: &str) -> (String, &'static str) {
+        match self.substitutes.get(&fold(family)) {
+            Some(substitute) => (substitute.clone(), "fc-match"),
+            None => (
+                self.default_substitute
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_owned()),
+                "default",
+            ),
+        }
+    }
+
+    pub fn is_metric_compatible(&self, family: &str) -> bool {
+        self.metric_compatible
+            .get(&fold(family))
+            .copied()
+            .unwrap_or(false)
+    }
+}
+
+/// Trimmed, case-folded, runs of whitespace collapsed to one space.
+fn fold(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+impl MacroKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MacroKind::Vba => "vba",
+            MacroKind::Xlm => "xlm",
+            MacroKind::Basic => "basic",
+            MacroKind::Script => "script",
+        }
+    }
+}
+
+impl SkipReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SkipReason::CapReached => "cap_reached",
+            SkipReason::MissingPart => "missing_part",
+            SkipReason::MalformedXml => "malformed_xml",
+        }
+    }
+}
+
+impl Check {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Check::PageCount => "page_count",
+            Check::Fonts => "fonts",
+            Check::Macros => "macros",
+        }
+    }
+}
+
+/// `RENDER_CLAMPED`: a server limit reduced the requested resolution.
+/// `MAX_DPI` lowers the DPI of every page; `MAX_EDGE_PX` lowers the DPI of
+/// a page that would be larger. A `max_edge` the caller chose is not a
+/// server limit, so the caller's own clamp raises nothing. One warning per
+/// request, with the lowest effective DPI.
+fn render_clamped(input: &VerifyInput<'_>) -> Option<Warning> {
+    let request = input.request;
+    if request.output == Output::Pdf || input.rendered.is_empty() {
+        return None;
+    }
+    let dpi = f32::from(request.images.dpi);
+    let requested = request.requested_dpi;
+    let lowest = input
+        .rendered
+        .iter()
+        .map(|page| page.effective_dpi)
+        .fold(dpi, f32::min);
+    let server_edge = request
+        .requested_max_edge
+        .is_none_or(|edge| edge > input.max_edge_px);
+    let effective = if server_edge { lowest } else { dpi };
+    if effective >= f32::from(requested) {
+        return None;
+    }
+    Some(Warning {
+        code: WarningCode::RenderClamped,
+        message: format!(
+            "the requested {requested} DPI was reduced to {} DPI by a server limit",
+            round(effective)
+        ),
+        page: None,
+        detail: vec![
+            ("requested_dpi", DetailValue::Int(i64::from(requested))),
+            ("effective_dpi", number(effective)),
+        ],
+    })
+}
+
+/// A DPI as an integer when it is one, else rounded to two decimals.
+fn number(value: f32) -> DetailValue {
+    let value = f64::from(value);
+    if value.fract() == 0.0 {
+        DetailValue::Int(value as i64)
+    } else {
+        DetailValue::Float((value * 100.0).round() / 100.0)
+    }
+}
+
+fn round(value: f32) -> String {
+    match number(value) {
+        DetailValue::Int(n) => n.to_string(),
+        DetailValue::Float(f) => f.to_string(),
+        DetailValue::Str(s) => s,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::conversion::RawOptions;
+    use crate::domain::limits::test_limits;
+
+    fn request(dpi: u32, max_edge: Option<u32>) -> ConversionRequest {
+        let raw = RawOptions {
+            output: Some(Output::Images),
+            dpi: Some(dpi),
+            max_edge,
+            ..Default::default()
+        };
+        ConversionRequest::new(raw, &test_limits()).unwrap()
+    }
+
+    fn page(number: u32, effective_dpi: f32) -> RenderedPage {
+        RenderedPage {
+            number,
+            file_name: format!("{number:04}.jpg"),
+            width_px: 10,
+            height_px: 10,
+            width_pt: 595.0,
+            height_pt: 842.0,
+            size_bytes: 1,
+            objects: 1,
+            flat: false,
+            colour: [0, 0, 0],
+            effective_dpi,
+            crc32: None,
+        }
+    }
+
+    fn warnings(request: &ConversionRequest, rendered: &[RenderedPage]) -> Vec<Warning> {
+        verify(&VerifyInput {
+            format: Format::Pdf,
+            request,
+            facts: None,
+            page_count: rendered.len() as u32,
+            probe: &[],
+            rendered,
+            max_edge_px: 4096,
+            fonts: &FontCatalog::default(),
+        })
+        .warnings
+    }
+
+    fn pdf_request() -> ConversionRequest {
+        ConversionRequest::new(RawOptions::default(), &test_limits()).unwrap()
+    }
+
+    struct Case<'a> {
+        format: Format,
+        request: ConversionRequest,
+        facts: Option<SourceFacts>,
+        page_count: u32,
+        probe: Vec<ProbedPage>,
+        rendered: Vec<RenderedPage>,
+        fonts: &'a FontCatalog,
+    }
+
+    impl Case<'_> {
+        fn verdict(&self) -> Verdict {
+            verify(&VerifyInput {
+                format: self.format,
+                request: &self.request,
+                facts: self.facts.as_ref(),
+                page_count: self.page_count,
+                probe: &self.probe,
+                rendered: &self.rendered,
+                max_edge_px: 4096,
+                fonts: self.fonts,
+            })
+        }
+    }
+
+    fn case(format: Format, facts: SourceFacts, page_count: u32, fonts: &FontCatalog) -> Case<'_> {
+        Case {
+            format,
+            request: pdf_request(),
+            facts: Some(facts),
+            page_count,
+            probe: Vec::new(),
+            rendered: Vec::new(),
+            fonts,
+        }
+    }
+
+    fn declared(count: u32) -> SourceFacts {
+        SourceFacts {
+            declared_pages: Some(DeclaredPages {
+                count,
+                source: "ppt/presentation.xml",
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn catalog() -> FontCatalog {
+        FontCatalog::new(
+            [
+                "Carlito".into(),
+                "Caladea".into(),
+                "DejaVu Sans,DejaVu Sans Condensed".into(),
+            ],
+            [
+                ("Calibri".into(), "Carlito".into()),
+                ("Aptos".into(), "DejaVu Sans".into()),
+            ],
+            Some("DejaVu Sans".into()),
+            [("Calibri".into(), true), ("Aptos".into(), false)],
+        )
+    }
+
+    #[test]
+    fn v1_page_count_mismatch_for_pptx() {
+        let fonts = FontCatalog::default();
+        let verdict = case(Format::Pptx, declared(4), 3, &fonts).verdict();
+        assert_eq!(verdict.warnings.len(), 1);
+        let warning = &verdict.warnings[0];
+        assert_eq!(warning.code, WarningCode::PageCountMismatch);
+        assert_eq!(
+            warning.detail,
+            [
+                ("expected", DetailValue::Int(4)),
+                ("actual", DetailValue::Int(3)),
+                ("source", DetailValue::Str("ppt/presentation.xml".into()))
+            ]
+        );
+        assert!(
+            case(Format::Pptx, declared(3), 3, &fonts)
+                .verdict()
+                .warnings
+                .is_empty()
+        );
+        // DOCX is off even with a declared count.
+        assert!(
+            case(Format::Docx, declared(4), 3, &fonts)
+                .verdict()
+                .warnings
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn v1_skips() {
+        let fonts = FontCatalog::default();
+        let template = case(Format::Potx, declared(0), 1, &fonts).verdict();
+        assert!(template.warnings.is_empty());
+        assert!(
+            template
+                .skipped
+                .contains(&(Check::PageCount, "no_declared_count"))
+        );
+
+        let mut hidden = case(Format::Pptx, declared(3), 5, &fonts);
+        hidden.request.export.include_hidden_slides = true;
+        let verdict = hidden.verdict();
+        assert!(verdict.warnings.is_empty());
+        assert!(
+            verdict
+                .skipped
+                .contains(&(Check::PageCount, "include_hidden"))
+        );
+
+        let mut notes = case(Format::Pptx, declared(3), 6, &fonts);
+        notes.request.export.notes = SlideNotes::Append;
+        assert!(
+            notes
+                .verdict()
+                .skipped
+                .contains(&(Check::PageCount, "notes"))
+        );
+    }
+
+    #[test]
+    fn v2_font_substituted() {
+        let fonts = catalog();
+        let facts = SourceFacts {
+            requested_fonts: vec![
+                "Zzyzx".into(),
+                "Aptos".into(),
+                "Calibri".into(),
+                "carlito".into(),
+                "DejaVu  Sans Condensed".into(),
+            ],
+            ..Default::default()
+        };
+        let verdict = case(Format::Docx, facts, 1, &fonts).verdict();
+        let got: Vec<(String, &Vec<(&str, DetailValue)>)> = verdict
+            .warnings
+            .iter()
+            .map(|w| (w.message.clone(), &w.detail))
+            .collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(
+            got[0].0,
+            "Aptos is not installed and was replaced by DejaVu Sans"
+        );
+        assert_eq!(
+            *got[0].1,
+            [
+                ("requested", DetailValue::Str("Aptos".into())),
+                ("substitute", DetailValue::Str("DejaVu Sans".into())),
+                ("substitute_source", DetailValue::Str("fc-match".into()))
+            ]
+        );
+        assert_eq!(
+            got[1].1[2],
+            ("substitute_source", DetailValue::Str("default".into()))
+        );
+        assert_eq!(got[1].1[0], ("requested", DetailValue::Str("Zzyzx".into())));
+    }
+
+    #[test]
+    fn v2_without_a_catalog_is_skipped() {
+        let fonts = FontCatalog::default();
+        let facts = SourceFacts {
+            requested_fonts: vec!["Aptos".into()],
+            ..Default::default()
+        };
+        let verdict = case(Format::Docx, facts, 1, &fonts).verdict();
+        assert!(verdict.warnings.is_empty());
+        assert_eq!(verdict.skipped, [(Check::Fonts, "no_font_catalog")]);
+    }
+
+    #[test]
+    fn v2_caps_the_warnings() {
+        let fonts = catalog();
+        let facts = SourceFacts {
+            requested_fonts: (0..40).map(|i| format!("Missing {i:02}")).collect(),
+            ..Default::default()
+        };
+        assert_eq!(
+            case(Format::Docx, facts, 1, &fonts)
+                .verdict()
+                .warnings
+                .len(),
+            MAX_FONT_WARNINGS
+        );
+    }
+
+    #[test]
+    fn v3_blank_page_needs_content() {
+        let fonts = FontCatalog::default();
+        let probe = |number, objects, flat| ProbedPage {
+            number,
+            objects,
+            flat,
+            colour: [255, 255, 255],
+        };
+        let mut pdf = case(Format::Pdf, SourceFacts::default(), 3, &fonts);
+        pdf.facts = None;
+        pdf.probe = vec![probe(1, 1, true), probe(2, 0, true), probe(3, 4, false)];
+        let verdict = pdf.verdict();
+        assert_eq!(verdict.warnings.len(), 1);
+        assert_eq!(verdict.warnings[0].code, WarningCode::BlankPage);
+        assert_eq!(verdict.warnings[0].page, Some(1));
+        assert_eq!(
+            verdict.warnings[0].detail,
+            [("colour", DetailValue::Str("#ffffff".into()))]
+        );
+        // A rendered page decides over its probe.
+        let mut page1 = page(1, 150.0);
+        page1.flat = false;
+        pdf.rendered = vec![page1];
+        assert!(pdf.verdict().warnings.is_empty());
+    }
+
+    #[test]
+    fn v4_macros_ignored_and_missing_facts() {
+        let fonts = FontCatalog::default();
+        let facts = SourceFacts {
+            macros: Some(MacroFact {
+                kind: MacroKind::Basic,
+                part: "Basic/Standard/Module1.xml".into(),
+            }),
+            skipped: vec![(Check::Fonts, SkipReason::CapReached)],
+            ..Default::default()
+        };
+        let verdict = case(Format::Odt, facts, 1, &fonts).verdict();
+        assert_eq!(verdict.warnings[0].code, WarningCode::MacrosIgnored);
+        assert_eq!(
+            verdict.warnings[0].detail,
+            [
+                ("kind", DetailValue::Str("basic".into())),
+                (
+                    "part",
+                    DetailValue::Str("Basic/Standard/Module1.xml".into())
+                )
+            ]
+        );
+        assert_eq!(verdict.skipped, [(Check::Fonts, "cap_reached")]);
+
+        let mut none = case(Format::Docx, SourceFacts::default(), 1, &fonts);
+        none.facts = None;
+        assert_eq!(none.verdict().skipped.len(), 3);
+    }
+
+    #[test]
+    fn max_dpi_raises_render_clamped_once() {
+        let request = request(600, None);
+        let got = warnings(&request, &[page(1, 300.0), page(2, 300.0)]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].code, WarningCode::RenderClamped);
+        assert_eq!(
+            got[0].detail,
+            [
+                ("requested_dpi", DetailValue::Int(600)),
+                ("effective_dpi", DetailValue::Int(300))
+            ]
+        );
+    }
+
+    #[test]
+    fn max_edge_px_raises_it_with_the_lowest_page() {
+        let request = request(300, None);
+        let got = warnings(&request, &[page(1, 300.0), page(2, 212.5)]);
+        assert_eq!(
+            got[0].detail[1],
+            ("effective_dpi", DetailValue::Float(212.5))
+        );
+    }
+
+    #[test]
+    fn a_callers_own_clamp_and_no_clamp_raise_nothing() {
+        assert!(warnings(&request(150, Some(320)), &[page(1, 40.0)]).is_empty());
+        assert!(warnings(&request(150, None), &[page(1, 150.0)]).is_empty());
+        let mut pdf = request(600, None);
+        pdf.output = Output::Pdf;
+        assert!(warnings(&pdf, &[]).is_empty());
+    }
 }

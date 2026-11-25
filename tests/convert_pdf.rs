@@ -535,6 +535,40 @@ async fn encrypted_pdf_needs_the_password_and_is_decrypted() {
     app.assert_no_jobs().await;
 }
 
+/// An encrypted OOXML package: an OLE2 file with the two streams.
+fn encrypted_ooxml() -> Vec<u8> {
+    let mut compound = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).unwrap();
+    for name in ["/EncryptionInfo", "/EncryptedPackage"] {
+        let mut stream = compound.create_stream(name).unwrap();
+        stream.write_all(b"not really encrypted").unwrap();
+    }
+    compound.flush().unwrap();
+    compound.into_inner().into_inner()
+}
+
+#[tokio::test]
+async fn encrypted_ooxml_needs_a_password_before_any_engine_runs() {
+    let app = App::new("encrypted-ooxml", &[]);
+    // An engine call would fail with 500: the 422 proves there was none.
+    app.office
+        .set_behavior(FakeBehavior::Fail(EngineError::Internal("called".into())));
+    let (response, body) = send(&app, file("locked.docx", &encrypted_ooxml())).await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(error_code(&body), "PASSWORD_REQUIRED");
+
+    app.office.set_behavior(FakeBehavior::Succeed);
+    let options = r#"{"password":"secret"}"#;
+    let (response, _) = send(
+        &app,
+        with_options("locked.xlsx", &encrypted_ooxml(), options),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    // The fake reports a text document for the provisional Document family.
+    assert_eq!(header_str(&response, "convert-source-format"), "docx");
+    app.assert_no_jobs().await;
+}
+
 #[tokio::test]
 async fn refused_inputs() {
     let app = App::new("refused", &[]);
@@ -544,14 +578,40 @@ async fn refused_inputs() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["error"], "unsupported format: html");
     assert!(response.headers().contains_key("server-timing"));
+    app.assert_no_jobs().await;
+}
 
-    let (response, body) = send(
-        &app,
-        with_options("a.docx", &docx("x"), r#"{"output":"bundle"}"#),
-    )
-    .await;
+#[tokio::test]
+async fn server_timing_follows_detection() {
+    let app = App::new("timing-errors", &[]);
+    let bad = r#"{"images":{"dpi":10}}"#;
+    // Options after the file: refused after detection, so it is timed.
+    let parts = multipart(&[
+        Part {
+            name: "file",
+            file_name: Some("a.pdf"),
+            content_type: "application/octet-stream",
+            data: &pdf("x"),
+        },
+        Part {
+            name: "options",
+            file_name: None,
+            content_type: "application/json",
+            data: bad.as_bytes(),
+        },
+    ]);
+    let (response, body) = send(&app, parts).await;
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(error_code(&body), "VALIDATION_ERROR");
+    let timing = header_str(&response, "server-timing");
+    assert!(
+        timing.contains("recv;dur=") && timing.contains("detect;dur="),
+        "{timing}"
+    );
+    // Options first: refused before detection, so no Server-Timing.
+    let (response, _) = send(&app, with_options("a.pdf", &pdf("x"), bad)).await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(!response.headers().contains_key("server-timing"));
     app.assert_no_jobs().await;
 }
 

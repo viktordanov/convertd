@@ -1,5 +1,6 @@
-//! The response pump: one blocking task per response reads the file in
-//! 64 KiB chunks and sends them over `mpsc(4)` to the body hyper polls.
+//! The response pump: one blocking task per response reads the PDF, or
+//! writes the tar.zst, in 64 KiB chunks and sends them over `mpsc(4)` to
+//! the body hyper polls.
 //!
 //! The pump owns the `Arc<JobDir>` and the concurrency permit, not the
 //! body: hyper may stop polling a body whose client stopped reading and
@@ -13,7 +14,7 @@
 //! Peak memory per response is about five chunks.
 
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,7 +23,9 @@ use bytes::{Bytes, BytesMut};
 use tokio::runtime::Handle;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
+use crate::bundle::TarPlan;
 use crate::jobs::JobDir;
+use crate::observability::metrics;
 
 /// Bytes per chunk.
 pub const READ_CHUNK: usize = 64 * 1024;
@@ -53,10 +56,57 @@ pub enum PumpEnd {
 
 /// Streams exactly `size` bytes of `file`.
 pub fn file_body(file: File, size: u64, pump: Pump) -> Body {
+    spawn_pump(pump, move |tx, handle, idle| {
+        run(file, size, tx, handle, idle)
+    })
+}
+
+/// Streams the tar.zst of `plan`: one zstd frame, chunked, with no
+/// length known in advance.
+pub fn tar_body(plan: TarPlan, pump: Pump) -> Body {
+    spawn_pump(pump, move |tx, handle, idle| {
+        let writer = ChannelWriter {
+            buf: BytesMut::with_capacity(READ_CHUNK),
+            tx,
+            handle,
+            idle,
+            end: None,
+        };
+        match plan
+            .write_to(writer)
+            .and_then(|mut writer| writer.flush().map(|()| writer))
+        {
+            Ok(_) => PumpEnd::Complete,
+            Err(err) => {
+                // A file shorter than planned or a read error, unless the
+                // client stalled or left (the writer recorded that). The
+                // writer moved into the encoder, so the reason comes back
+                // through the error kind.
+                match err.kind() {
+                    io::ErrorKind::TimedOut => PumpEnd::Stalled,
+                    io::ErrorKind::BrokenPipe => PumpEnd::Disconnected,
+                    _ => {
+                        let _ = handle.block_on(tokio::time::timeout(idle, tx.send(Err(err))));
+                        PumpEnd::Aborted
+                    }
+                }
+            }
+        }
+    })
+}
+
+type Sender = mpsc::Sender<io::Result<Bytes>>;
+
+/// Runs `work` on one blocking thread that owns the job directory and the
+/// permit, and returns the body that receives its chunks.
+fn spawn_pump(
+    pump: Pump,
+    work: impl FnOnce(&Sender, &Handle, Duration) -> PumpEnd + Send + 'static,
+) -> Body {
     let (tx, rx) = mpsc::channel::<io::Result<Bytes>>(BODY_QUEUE_CHUNKS);
     let handle = Handle::current();
     tokio::task::spawn_blocking(move || {
-        let end = run(file, size, &tx, &handle, pump.idle);
+        let end = work(&tx, &handle, pump.idle);
         // Nothing reads the job directory any more: remove it here, on a
         // blocking thread, with no extra hop.
         pump.job.remove_now();
@@ -65,9 +115,11 @@ pub fn file_body(file: File, size: u64, pump: Pump) -> Body {
             PumpEnd::Complete | PumpEnd::Disconnected => {}
             PumpEnd::Stalled => {
                 tracing::warn!(request_id = %pump.request_id, code = "RESPONSE_STALLED", "response stalled");
+                metrics::response_cut("RESPONSE_STALLED");
             }
             PumpEnd::Aborted => {
                 tracing::warn!(request_id = %pump.request_id, code = "RESPONSE_ABORTED", "response aborted");
+                metrics::response_cut("RESPONSE_ABORTED");
             }
         }
     });
@@ -75,6 +127,59 @@ pub fn file_body(file: File, size: u64, pump: Pump) -> Body {
         rx.recv().await.map(|item| (item, rx))
     });
     Body::from_stream(stream)
+}
+
+/// A `Write` that sends 64 KiB chunks to the body, each under the idle
+/// timeout. A stalled or vanished client makes `write` fail and records
+/// why in `end`.
+struct ChannelWriter<'a> {
+    buf: BytesMut,
+    tx: &'a Sender,
+    handle: &'a Handle,
+    idle: Duration,
+    end: Option<PumpEnd>,
+}
+
+impl ChannelWriter<'_> {
+    fn send(&mut self, len: usize) -> io::Result<()> {
+        let chunk = self.buf.split_to(len).freeze();
+        // The sent chunk keeps its allocation alive while it is queued.
+        self.buf.reserve(READ_CHUNK);
+        match self
+            .handle
+            .block_on(tokio::time::timeout(self.idle, self.tx.send(Ok(chunk))))
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => {
+                self.end = Some(PumpEnd::Disconnected);
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            Err(_) => {
+                self.end = Some(PumpEnd::Stalled);
+                Err(io::ErrorKind::TimedOut.into())
+            }
+        }
+    }
+}
+
+impl Write for ChannelWriter<'_> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if self.end.is_some() {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        self.buf.extend_from_slice(data);
+        while self.buf.len() >= READ_CHUNK {
+            self.send(READ_CHUNK)?;
+        }
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if !self.buf.is_empty() {
+            self.send(self.buf.len())?;
+        }
+        Ok(())
+    }
 }
 
 fn run(
@@ -113,6 +218,7 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use super::*;
+    use crate::bundle::TarPlan;
     use crate::jobs::DiskBudget;
 
     fn job(name: &str) -> (Arc<JobDir>, std::path::PathBuf) {
@@ -205,6 +311,68 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert_eq!(semaphore.available_permits(), 1);
         assert!(!root.exists());
+        drop(body);
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    /// Bytes zstd cannot shrink, so the compressed stream stays large.
+    fn noise(len: usize) -> Vec<u8> {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn streams_a_tar_zst_then_cleans_up() {
+        let (job, tmp) = job("tar");
+        let data = noise(300_000);
+        std::fs::write(job.pdf_path(), &data).unwrap();
+        let mut plan = TarPlan::new();
+        plan.add_bytes("manifest.json", Bytes::from_static(b"{}"))
+            .unwrap();
+        plan.add_file("document.pdf", job.pdf_path()).unwrap();
+        let root = job.root().to_path_buf();
+        let semaphore = Arc::new(Semaphore::new(1));
+        let pump = Pump {
+            job,
+            permit: semaphore.clone().try_acquire_owned().unwrap(),
+            idle: Duration::from_secs(5),
+            request_id: "t".into(),
+        };
+        let body = tar_body(plan, pump);
+        let bytes = axum::body::to_bytes(body, 8 << 20).await.unwrap();
+        let tar = zstd::stream::decode_all(&bytes[..]).unwrap();
+        // manifest.json: header, 2 bytes, padding; then document.pdf.
+        assert_eq!(&tar[512..514], b"{}");
+        assert_eq!(&tar[1024 + 512..1024 + 512 + data.len()], &data[..]);
+        wait_for_cleanup(&root, &semaphore).await;
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stalled_tar_zst_releases_the_permit_after_idle() {
+        let (job, tmp) = job("tar-stall");
+        std::fs::write(job.pdf_path(), noise(2 * 1024 * 1024)).unwrap();
+        let mut plan = TarPlan::new();
+        plan.add_file("document.pdf", job.pdf_path()).unwrap();
+        let root = job.root().to_path_buf();
+        let semaphore = Arc::new(Semaphore::new(1));
+        let pump = Pump {
+            job,
+            permit: semaphore.clone().try_acquire_owned().unwrap(),
+            idle: Duration::from_millis(200),
+            request_id: "t".into(),
+        };
+        let body = tar_body(plan, pump);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(semaphore.available_permits(), 0, "still within idle");
+        wait_for_cleanup(&root, &semaphore).await;
         drop(body);
         std::fs::remove_dir_all(tmp).unwrap();
     }

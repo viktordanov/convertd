@@ -192,7 +192,11 @@ async fn digests_of_a_five_mib_file_match() {
     let limits = Config::from_env(&Env::from_pairs([("API_KEY", "k")], 2))
         .unwrap()
         .limits;
-    let received = receive(request, &job, &limits).await.unwrap();
+    let mut detected = None;
+    let received = receive(request, &job, &limits, &mut detected)
+        .await
+        .unwrap();
+    assert!(detected.is_some());
     assert_eq!(received.upload.size_bytes, data.len() as u64);
     assert_eq!(
         received.upload.sha256,
