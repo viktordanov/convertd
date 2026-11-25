@@ -115,9 +115,10 @@ def zip_info(name, deflate=True, level=ZIP_LEVEL):
     return info
 
 
-def normalize_zip(data, edits=None):
+def normalize_zip(data, edits=None, additions=None):
     """Rewrites a zip with fixed metadata, deflating every entry. `edits` maps a part name to a
-    function from its bytes to new bytes; every edit must find its part."""
+    function from its bytes to new bytes; every edit must find its part. `additions` maps new
+    part names to their bytes, written after the existing parts."""
     edits = dict(edits or {})
     src = zipfile.ZipFile(io.BytesIO(data))
     out = io.BytesIO()
@@ -128,6 +129,10 @@ def normalize_zip(data, edits=None):
             if edit is not None:
                 body = edit(body)
             dst.writestr(zip_info(info.filename), body)
+        for name, body in (additions or {}).items():
+            if name in src.namelist():
+                raise KeyError(f"failed to add {name}: the part exists")
+            dst.writestr(zip_info(name), body)
     if edits:
         raise KeyError(f"failed to edit missing parts {sorted(edits)}")
     return out.getvalue()
@@ -705,6 +710,78 @@ def html_as_doc(_ctx):
             b"</head><body><p>This is HTML saved under a .doc name.</p></body></html>\n")
 
 
+# --- VBA projects from the committed fixtures --------------------------------------
+
+FIXTURES_DIR = CORPUS_DIR / "fixtures"
+VBA_CONTENT_TYPE = "application/vnd.ms-office.vbaProject"
+VBA_RELATIONSHIP = "http://schemas.microsoft.com/office/2006/relationships/vbaProject"
+# host: (fixture file, part, the main part's rels, plain main content type, macro-enabled one)
+VBA_HOSTS = {
+    "word": ("vbaProject-word.bin", "word/vbaProject.bin", "word/_rels/document.xml.rels",
+             "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+             "application/vnd.ms-word.document.macroEnabled.main+xml"),
+    "xl": ("vbaProject-xl.bin", "xl/vbaProject.bin", "xl/_rels/workbook.xml.rels",
+           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+           "application/vnd.ms-excel.sheet.macroEnabled.main+xml"),
+    "ppt": ("vbaProject-ppt.bin", "ppt/vbaProject.bin", "ppt/_rels/presentation.xml.rels",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
+            "application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml"),
+}
+
+
+def fixture(name):
+    """A committed fixture, refused unless its SHA-256 matches its expected.json entry."""
+    path = FIXTURES_DIR / name
+    entries = {f["path"]: f for f in json.loads(EXPECTED.read_text(encoding="utf-8"))["files"]}
+    entry = entries.get(f"fixtures/{name}")
+    if entry is None or entry.get("origin") != "fixture":
+        raise SystemExit(f"failed to use fixture {name}: expected.json does not list it")
+    data = path.read_bytes()
+    if sha256(data) != entry.get("sha256"):
+        raise SystemExit(f"failed to use fixture {name}: sha256 {sha256(data)}, "
+                         f"expected.json says {entry.get('sha256')}")
+    return data
+
+
+def with_vba(package, host):
+    """Makes an OOXML package macro-enabled and adds the host's VBA project from the fixtures.
+    The part gets an Override, because the pptx template already maps .bin to printer settings."""
+    name, part, rels, plain_type, macro_type = VBA_HOSTS[host]
+    content_types = chain(
+        sub_once(re.escape(plain_type), macro_type),
+        sub_once(r"</Types>", f'<Override PartName="/{part}" ContentType="{VBA_CONTENT_TYPE}"/></Types>'))
+    relationship = sub_once(
+        r"</Relationships>",
+        f'<Relationship Id="rIdVbaProject" Type="{VBA_RELATIONSHIP}" Target="vbaProject.bin"/>'
+        "</Relationships>")
+    return normalize_zip(package, {"[Content_Types].xml": content_types, rels: relationship},
+                         additions={part: fixture(name)})
+
+
+def saved(document):
+    buf = io.BytesIO()
+    document.save(buf)
+    return buf.getvalue()
+
+
+def docm_vba(_ctx):
+    d = docx.Document()
+    d.add_paragraph("A macro-enabled document with a VBA project. The macro must not run.")
+    return with_vba(saved(d), "word")
+
+
+def xlsm_vba(_ctx):
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = "A macro-enabled workbook with a VBA project. The macro must not run."
+    return with_vba(workbook_bytes(wb), "xl")
+
+
+def pptm_vba(_ctx):
+    p = Presentation()
+    text_slide(p, "A macro-enabled deck with a VBA project")
+    return with_vba(saved(p), "ppt")
+
+
 # --- registry -------------------------------------------------------------------
 
 # (id, path under out/, builder, hostile). A builder may read an earlier entry's bytes.
@@ -717,6 +794,9 @@ ENTRIES = [
     ("docx-headings", "docx/headings.docx", docx_headings, False),
     ("docx-encrypted", "docx/encrypted.docx", docx_encrypted, False),
     ("docm-novba", "docx/novba.docm", docm_novba, False),
+    ("docm-vba", "docx/vba.docm", docm_vba, False),
+    ("xlsm-vba", "xlsx/vba.xlsm", xlsm_vba, False),
+    ("pptm-vba", "pptx/vba.pptm", pptm_vba, False),
     ("rtf", "rtf/two-pages.rtf", rtf, False),
     ("odt", "odf/two-pages.odt", odt, False),
     ("pptx-deck20", "pptx/deck20.pptx", pptx_deck20, False),
@@ -795,7 +875,15 @@ def members(data):
     return zipfile.ZipFile(io.BytesIO(data))
 
 
-ZIP_SUFFIXES = (".docx", ".docm", ".pptx", ".potx", ".xlsx", ".odt", ".odp", ".ods")
+ZIP_SUFFIXES = (".docx", ".docm", ".pptx", ".pptm", ".potx", ".xlsx", ".xlsm", ".odt", ".odp",
+                ".ods")
+MAIN_TYPES = {
+    ".docm": "application/vnd.ms-word.document.macroEnabled.main+xml",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.main+xml",
+    ".pptm": "application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml",
+    ".potx": "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml",
+}
+VBA_ENTRIES = {"docm-vba": "word", "xlsm-vba": "xl", "pptm-vba": "ppt"}
 
 
 def check_file(entry_id, path, data):
@@ -819,12 +907,10 @@ def check_file(entry_id, path, data):
         docx.Document(plain)
     elif suffix == ".docx":
         docx.Document(str(path))
-    elif suffix in (".docm", ".potx"):
-        # python-docx and python-pptx refuse these main content types, so check the type itself.
+    elif suffix in MAIN_TYPES:
+        # The Python libraries refuse these main content types, so check the type itself.
         types = members(data).read("[Content_Types].xml").decode()
-        want = {".docm": "application/vnd.ms-word.document.macroEnabled.main+xml",
-                ".potx": "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml"}
-        require(want[suffix] in types, "main content type not set")
+        require(MAIN_TYPES[suffix] in types, "main content type not set")
     elif suffix == ".pptx":
         pres = Presentation(str(path))
         if entry_id != "pptx-pages-mismatch":  # slide 4 is not a slide by design
@@ -862,7 +948,15 @@ def check_hostile(entry_id, data):
 
 
 def check_facts(entry_id, data):
-    if entry_id == "docx-breaks12":
+    if entry_id in VBA_ENTRIES:
+        # The VBA project is never parsed: only its bytes, type and relationship are checked.
+        name, part, rels, _plain, _macro = VBA_HOSTS[VBA_ENTRIES[entry_id]]
+        z = members(data)
+        require(z.read(part) == (FIXTURES_DIR / name).read_bytes(), f"{part} is not {name}")
+        types = z.read("[Content_Types].xml").decode()
+        require(f'PartName="/{part}" ContentType="{VBA_CONTENT_TYPE}"' in types, "no VBA type")
+        require(VBA_RELATIONSHIP.encode() in z.read(rels), f"{rels} has no vbaProject link")
+    elif entry_id == "docx-breaks12":
         z = members(data)
         app = z.read("docProps/app.xml").decode()
         require("<Pages>1</Pages>" in app, "app.xml no longer says Pages=1")

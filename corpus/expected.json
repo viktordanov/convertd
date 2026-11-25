@@ -420,6 +420,169 @@
       ]
     },
     {
+      "id": "docm-vba",
+      "path": "out/docx/vba.docm",
+      "origin": "generated",
+      "sha256": "41d616488b8ececffeb73b6879c1d3bd45cb66ebe603ba51c1954729542be109",
+      "tags": [
+        "macros"
+      ],
+      "notes": "One paragraph, macro-enabled content type, VBA part linked from document.xml.rels: MACROS positive (OOXML). The VBA project is the committed fixture fixtures/vbaProject-word.bin: an Apache POI test macro, TestMacro, which no event runs.",
+      "preflight": {
+        "format": "docm",
+        "encrypted": false,
+        "declared_pages": null,
+        "requested_fonts": [
+          "Cambria"
+        ],
+        "macros": [
+          {
+            "kind": "vba",
+            "part": "word/vbaProject.bin"
+          }
+        ]
+      },
+      "cases": [
+        {
+          "name": "bundle",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "docm",
+            "family": "document",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": 1,
+            "warnings": [
+              {
+                "code": "MACROS_IGNORED",
+                "detail": {
+                  "kind": "vba",
+                  "part": "word/vbaProject.bin"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "xlsm-vba",
+      "path": "out/xlsx/vba.xlsm",
+      "origin": "generated",
+      "sha256": "90c97d1cd4289dabd695c6ef67781c424e274944b8dd590b44b20cdc2e42fd69",
+      "tags": [
+        "macros"
+      ],
+      "notes": "One cell, macro-enabled content type, VBA part linked from workbook.xml.rels. The VBA project is the committed fixture fixtures/vbaProject-xl.bin: an Apache POI test macro, TestMacro, which no event runs.",
+      "preflight": {
+        "format": "xlsm",
+        "encrypted": false,
+        "declared_pages": null,
+        "requested_fonts": [
+          "Calibri"
+        ],
+        "macros": [
+          {
+            "kind": "vba",
+            "part": "xl/vbaProject.bin"
+          }
+        ]
+      },
+      "cases": [
+        {
+          "name": "bundle",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "xlsm",
+            "family": "spreadsheet",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": 1,
+            "warnings": [
+              {
+                "code": "MACROS_IGNORED",
+                "detail": {
+                  "kind": "vba",
+                  "part": "xl/vbaProject.bin"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "pptm-vba",
+      "path": "out/pptx/vba.pptm",
+      "origin": "generated",
+      "sha256": "1e5a94d51baac75b52c14e5e9a50c5cc8dcda82cd73e8bd5a1ae1bd423a1fd0c",
+      "tags": [
+        "macros"
+      ],
+      "notes": "One slide, macro-enabled content type, VBA part linked from presentation.xml.rels. The VBA project is the committed fixture fixtures/vbaProject-ppt.bin: an Apache POI test macro, TestMacro, which no event runs.",
+      "preflight": {
+        "format": "pptm",
+        "encrypted": false,
+        "declared_pages": 1,
+        "hidden_slides": 0,
+        "requested_fonts": [
+          "Calibri"
+        ],
+        "macros": [
+          {
+            "kind": "vba",
+            "part": "ppt/vbaProject.bin"
+          }
+        ]
+      },
+      "cases": [
+        {
+          "name": "bundle",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "pptm",
+            "family": "presentation",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": 1,
+            "warnings": [
+              {
+                "code": "MACROS_IGNORED",
+                "detail": {
+                  "kind": "vba",
+                  "part": "ppt/vbaProject.bin"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
       "id": "rtf",
       "path": "out/rtf/two-pages.rtf",
       "origin": "generated",
@@ -1525,6 +1688,54 @@
           }
         }
       ]
+    },
+    {
+      "id": "vba-project-word",
+      "path": "fixtures/vbaProject-word.bin",
+      "origin": "fixture",
+      "sha256": "921bbf317d6bf7c46d4c425977ed22a0c18a364427c387327bc1792f3f43b837",
+      "licence": {
+        "spdx": "Apache-2.0",
+        "source": "Apache POI test-data/document/SimpleMacro.docm at commit e3ad497b79b0135659c6b6d1c011e3fbabb91a14, part word/vbaProject.bin",
+        "url": "https://github.com/apache/poi/blob/e3ad497b79b0135659c6b6d1c011e3fbabb91a14/test-data/document/SimpleMacro.docm",
+        "notice": "Apache POI\nCopyright 2003-2026 The Apache Software Foundation\n\nThis product includes software developed at\nThe Apache Software Foundation (https://www.apache.org/)."
+      },
+      "tags": [
+        "macros"
+      ],
+      "notes": "The VBA project that generate.py injects into the word macro file. See fixtures/SOURCES.md."
+    },
+    {
+      "id": "vba-project-xl",
+      "path": "fixtures/vbaProject-xl.bin",
+      "origin": "fixture",
+      "sha256": "f9becb822f01de291b0ec95ea4061235e1f98ea31f80d840009a6caab829ce90",
+      "licence": {
+        "spdx": "Apache-2.0",
+        "source": "Apache POI test-data/spreadsheet/SimpleMacro.xlsm at commit f5091846ffac98632ea67aa9cab7d94c4c2bf2a6, part xl/vbaProject.bin",
+        "url": "https://github.com/apache/poi/blob/f5091846ffac98632ea67aa9cab7d94c4c2bf2a6/test-data/spreadsheet/SimpleMacro.xlsm",
+        "notice": "Apache POI\nCopyright 2003-2026 The Apache Software Foundation\n\nThis product includes software developed at\nThe Apache Software Foundation (https://www.apache.org/)."
+      },
+      "tags": [
+        "macros"
+      ],
+      "notes": "The VBA project that generate.py injects into the xl macro file. See fixtures/SOURCES.md."
+    },
+    {
+      "id": "vba-project-ppt",
+      "path": "fixtures/vbaProject-ppt.bin",
+      "origin": "fixture",
+      "sha256": "dcd9ead35ba39db10b32d95550e1ae67c747e10e22fb8f53b48d6b222820584f",
+      "licence": {
+        "spdx": "Apache-2.0",
+        "source": "Apache POI test-data/slideshow/SimpleMacro.pptm at commit e3ad497b79b0135659c6b6d1c011e3fbabb91a14, part ppt/vbaProject.bin",
+        "url": "https://github.com/apache/poi/blob/e3ad497b79b0135659c6b6d1c011e3fbabb91a14/test-data/slideshow/SimpleMacro.pptm",
+        "notice": "Apache POI\nCopyright 2003-2026 The Apache Software Foundation\n\nThis product includes software developed at\nThe Apache Software Foundation (https://www.apache.org/)."
+      },
+      "tags": [
+        "macros"
+      ],
+      "notes": "The VBA project that generate.py injects into the ppt macro file. See fixtures/SOURCES.md."
     }
   ]
 }
