@@ -26,7 +26,7 @@ order and the part bytes, sets a fixed time stamp and fixed attributes,
 and deflates every entry at level 6, as Office does (the ODF mimetype
 stays stored). Noise comes from a seeded `random.Random`, not from
 `Image.effect_noise`, which uses C `rand()`. JPEG files come from
-Pillow's bundled libjpeg-turbo. Only `docx-encrypted` has no hash
+Pillow's bundled libjpeg-turbo. Only the three encrypted files have no hash
 (`UNHASHED`). Deflate output depends on the zlib build, so the hashes
 hold for the environment recorded under "generator" in expected.json;
 --check prints any difference in that environment before it compares.
@@ -99,7 +99,12 @@ ZIP_BOMB_BYTES = 2 << 30
 HOSTILE_MAX_FILE = 5 << 20
 
 ZIP_LEVEL = 6
-UNHASHED = {"docx-encrypted": "msoffcrypto draws a random salt and key on every run"}
+_RANDOM_SALT = "msoffcrypto draws a random salt and key on every run"
+UNHASHED = {"docx-encrypted": _RANDOM_SALT, "pptx-encrypted": _RANDOM_SALT,
+            "xlsx-encrypted": _RANDOM_SALT}
+# Encrypted entries: the entry whose bytes are encrypted, and the library that opens the result.
+ENCRYPTED = {"docx-encrypted": "docx-small", "pptx-encrypted": "pptx-deck20",
+             "xlsx-encrypted": "xlsx-sheet3"}
 # Size bounds that keep the corpus close to the plan (the spike's small.docx is 36 KB).
 SIZE_BOUNDS = {"docx-small": (20_000, 100_000), "pptx-photos60": (25 << 20, 45 << 20)}
 
@@ -253,6 +258,14 @@ def encrypt(plain, password="secret"):
 
 def docx_encrypted(ctx):
     return encrypt(ctx["docx-small"])
+
+
+def pptx_encrypted(ctx):
+    return encrypt(ctx["pptx-deck20"])
+
+
+def xlsx_encrypted(ctx):
+    return encrypt(ctx["xlsx-sheet3"])
 
 
 def docm_novba(_ctx):
@@ -800,6 +813,7 @@ ENTRIES = [
     ("rtf", "rtf/two-pages.rtf", rtf, False),
     ("odt", "odf/two-pages.odt", odt, False),
     ("pptx-deck20", "pptx/deck20.pptx", pptx_deck20, False),
+    ("pptx-encrypted", "pptx/encrypted.pptx", pptx_encrypted, False),
     ("pptx-hidden", "pptx/hidden.pptx", pptx_hidden, False),
     ("pptx-pages-mismatch", "pptx/pages-mismatch.pptx", pptx_pages_mismatch, False),
     ("pptx-aptos-theme", "pptx/aptos-theme.pptx", pptx_aptos_theme, False),
@@ -808,6 +822,7 @@ ENTRIES = [
     ("potx", "pptx/empty.potx", potx, False),
     ("odp", "odf/three-slides.odp", odp, False),
     ("xlsx-sheet3", "xlsx/sheet3.xlsx", xlsx_sheet3, False),
+    ("xlsx-encrypted", "xlsx/encrypted.xlsx", xlsx_encrypted, False),
     ("xlsx-100k", "xlsx/100k.xlsx", xlsx_100k, False),
     ("ods", "odf/one-sheet.ods", ods, False),
     ("pdf-text3", "pdf/text3.pdf", pdf_text3, False),
@@ -899,12 +914,14 @@ def check_file(entry_id, path, data):
             method = zipfile.ZIP_STORED if info.filename == "mimetype" else zipfile.ZIP_DEFLATED
             require(info.date_time == ZIP_TIME and info.compress_type == method,
                     f"{info.filename} is not normalized")
-    if entry_id == "docx-encrypted":
+    if entry_id in ENCRYPTED:
         office = msoffcrypto.OfficeFile(io.BytesIO(data))
         office.load_key(password="secret")
         plain = io.BytesIO()
         office.decrypt(plain)
-        docx.Document(plain)
+        opener = {".docx": docx.Document, ".pptx": Presentation,
+                  ".xlsx": lambda f: openpyxl.load_workbook(f, read_only=True).close()}[suffix]
+        opener(plain)
     elif suffix == ".docx":
         docx.Document(str(path))
     elif suffix in MAIN_TYPES:

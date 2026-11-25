@@ -719,6 +719,64 @@
       ]
     },
     {
+      "id": "pptx-encrypted",
+      "path": "out/pptx/encrypted.pptx",
+      "origin": "generated",
+      "unhashed": "msoffcrypto draws a random salt and key on every run",
+      "tags": [
+        "passwords"
+      ],
+      "notes": "pptx-deck20 encrypted with OOXML agile encryption, password secret. Detection reports docx until the office engine reports the type, so only the password case can show pptx.",
+      "preflight": {
+        "format": "pptx",
+        "encrypted": true,
+        "declared_pages": null,
+        "requested_fonts": null,
+        "macros": null
+      },
+      "cases": [
+        {
+          "name": "no-password",
+          "options": {},
+          "expect": {
+            "status": 422,
+            "code": "PASSWORD_REQUIRED"
+          }
+        },
+        {
+          "name": "wrong-password",
+          "options": {
+            "password": "wrong"
+          },
+          "expect": {
+            "status": 422,
+            "code": "INVALID_PASSWORD"
+          }
+        },
+        {
+          "name": "password",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            },
+            "password": "secret"
+          },
+          "expect": {
+            "status": 200,
+            "format": "pptx",
+            "family": "presentation",
+            "encrypted": true,
+            "pdf_origin": "converted",
+            "page_count": 20,
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
       "id": "pptx-hidden",
       "path": "out/pptx/hidden.pptx",
       "origin": "generated",
@@ -1148,6 +1206,64 @@
             "format": "xlsx",
             "page_count": "unrecorded",
             "warning_count": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "xlsx-encrypted",
+      "path": "out/xlsx/encrypted.xlsx",
+      "origin": "generated",
+      "unhashed": "msoffcrypto draws a random salt and key on every run",
+      "tags": [
+        "passwords"
+      ],
+      "notes": "xlsx-sheet3 encrypted with OOXML agile encryption, password secret. Detection reports docx until the office engine reports the type, so only the password case can show xlsx.",
+      "preflight": {
+        "format": "xlsx",
+        "encrypted": true,
+        "declared_pages": null,
+        "requested_fonts": null,
+        "macros": null
+      },
+      "cases": [
+        {
+          "name": "no-password",
+          "options": {},
+          "expect": {
+            "status": 422,
+            "code": "PASSWORD_REQUIRED"
+          }
+        },
+        {
+          "name": "wrong-password",
+          "options": {
+            "password": "wrong"
+          },
+          "expect": {
+            "status": 422,
+            "code": "INVALID_PASSWORD"
+          }
+        },
+        {
+          "name": "password",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            },
+            "password": "secret"
+          },
+          "expect": {
+            "status": 200,
+            "format": "xlsx",
+            "family": "spreadsheet",
+            "encrypted": true,
+            "pdf_origin": "converted",
+            "page_count": "unrecorded",
+            "warnings": []
           }
         }
       ]
