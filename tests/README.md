@@ -16,7 +16,7 @@ Build the tests with the cargo feature `test-hooks`. Without it, `pool.rs`, `pro
 ## Running the tests
 
 1. Install [cargo-nextest](https://nexte.st). CI uses version 0.9.152.
-2. Run the tests that CI runs on every push:
+2. Run the tests that CI runs on every push to `main` and on every pull request:
 
    ```bash
    cargo nextest run --features test-hooks --profile ci
@@ -108,14 +108,14 @@ A fixture that must get to the office queue is a DOCX with the marker in a store
 | Profile | Used by | Tests | Killed after |
 | --- | --- | --- | --- |
 | `default` | Local runs | All | 2 min |
-| `ci` | Every push and pull request | All except `slow_*` | 60 s |
+| `ci` | Every push to `main` and every pull request | All except `slow_*` | 60 s |
 | `full` | The manual and monthly CI run | All | 2 min |
 
 A test that does more than about 2 s of work, or sleeps past 5 s, has a name that starts with `slow_`. A test that waits on a real deadline, such as the 5 s minimum timeout, can stay in the push run. Today all `slow_` tests are in `process.rs`.
 
 The `ci` profile leaves out these tests with the filter `not test(/^slow_/)`. The filter matches the start of the full test name. An integration test has its function name as its name. A unit test has its module path first, such as `config::tests::`, so the filter does not leave out a unit test named `slow_…`.
 
-Every wait in a test has a deadline. A child wait, a pipe read or an await that passes its deadline fails the test with a message.
+In `pool.rs`, `process.rs` and `worker_test_role.rs`, every child wait, pipe read and await has a deadline. A wait that passes its deadline fails the test with a message. In the other tests, the nextest time limit bounds an await that has no deadline of its own.
 
 ## What CI runs
 
