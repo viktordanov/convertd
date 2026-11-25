@@ -7,15 +7,23 @@
 name: image
 
 on:
+  # Docs-only changes (ledger, guidance, READMEs) skip this workflow; memoria.yml checks them.
   pull_request:
+    paths-ignore: ["**.md", "docs/**"]
   push:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
   schedule:
     - cron: "0 4 1 * *"      # monthly rebuild and scan: Debian security updates, broken pins
   workflow_dispatch: {}
 
 permissions:
   contents: read
+
+# A newer push to the same branch or pull request cancels the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 # For the Rust jobs; the image job ignores them.
 env:
