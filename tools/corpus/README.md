@@ -16,7 +16,7 @@ The crate is not part of the `convertd` workspace. It has its own `[workspace]` 
 <!-- memoria:section id="overview" files="Cargo.toml clippy.toml" -->
 ## Why a separate crate
 
-The harness is an independent client of the service. `check` reads the API with its own lenient types, not with the server's types. Thus a server change cannot also change what the harness expects. Its dependencies, such as the HTTP client `reqwest` and the PDF reader `lopdf`, stay out of the lock file of `convertd`.
+The harness is an independent client of the service. `check` reads the API with its own lenient types, not with the server's types. Thus a server change cannot also change what the harness expects. Its dependencies, such as the HTTP client `reqwest`, the PDF reader `lopdf` and the bundle readers `tar` and `zstd`, stay out of the lock file of `convertd`.
 
 `clippy.toml` in this folder replaces the root one. Clippy reads the nearest `clippy.toml` up the tree, and the root file forbids blocking waits on child processes for the reaper of `convertd`. This harness has no reaper, and `validate` waits on `git`.
 <!-- /memoria:section -->
@@ -79,14 +79,15 @@ Each answer must meet these invariants:
 
 - An error answer has a JSON body with a `code`.
 - The `Content-Type` matches `output`, and the PDF starts with `%PDF-` and holds `%%EOF`.
-- For a ZIP, `Convert-Page-Count` and `Convert-Warning-Count` agree with `manifest.json`, and `pages` lists the requested pages.
+- For `images` and `bundle`, the body is a tar stream in one zstd frame (`application/zstd`). Its entries are `manifest.json`, then `document.pdf` for a bundle, then the page images in the order of the manifest.
+- In such an answer, `Convert-Page-Count` and `Convert-Warning-Count` agree with `manifest.json`, and `pages` lists the requested pages.
 - No page image has an edge longer than `max_edge_px` from `/v1/capabilities`.
 
 Then `check` compares the fields that the expectation gives. For each `FONT_SUBSTITUTED` warning, it also reads the `/BaseFont` names of the PDF: the requested family must be absent, and the claimed substitute must be present. A disagreement points to the `font_substitutes` entry in `build-info.json`.
 
 `check` prints `PASS` or `FAIL` for each case, with each failure and the observed value. It prints the observed page count of an `"unrecorded"` case as a note. Then it prints the passed and run cases for each tag. It exits 0 only if every selected case passed.
 
-On 2026-11-26, `check` ran against `TEST_ENGINE=fake convertd serve` from `main` at `1eaf591`. 7 of 49 cases passed. The others need the ZIP outputs, the encrypted-file detection or real engines. A pass against the fake proves the HTTP-level answers only. The listener and the `/BaseFont` arbiter are not proven until LibreOffice opens the files.
+On 2026-11-26, `check` ran against `TEST_ENGINE=fake convertd serve` from `main` at `1eaf591`. 7 of 49 cases passed. The others need the `images` and `bundle` outputs, the encrypted-file detection or real engines. A pass against the fake proves the HTTP-level answers only. The listener and the `/BaseFont` arbiter are not proven until LibreOffice opens the files.
 <!-- /memoria:section -->
 
 ## Later subcommands
