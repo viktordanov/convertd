@@ -555,7 +555,7 @@ type PdfInfo struct {
 	// Origin How the PDF came to be.
 	//
 	// - `converted`: produced by LibreOffice from an office file.
-	// - `passthrough`: the upload was already a PDF and is returned unchanged.
+	// - `passthrough`: the upload was already a PDF and is returned unchanged, or decrypted when it was encrypted.
 	// - `assembled`: built from an uploaded image.
 	Origin PdfInfoOrigin `json:"origin"`
 
@@ -569,7 +569,7 @@ type PdfInfo struct {
 // PdfInfoOrigin How the PDF came to be.
 //
 // - `converted`: produced by LibreOffice from an office file.
-// - `passthrough`: the upload was already a PDF and is returned unchanged.
+// - `passthrough`: the upload was already a PDF and is returned unchanged, or decrypted when it was encrypted.
 // - `assembled`: built from an uploaded image.
 type PdfInfoOrigin string
 
