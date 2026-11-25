@@ -61,7 +61,7 @@ You need a Linux or macOS host with rustup. `rust-toolchain.toml` pins Rust 1.99
    curl -sS -D - -o out.pdf -H "Authorization: Bearer dev-key" -F file=@report.pdf http://127.0.0.1:8080/v1/convert
    ```
 
-The fake engine returns a PDF unchanged and turns an office file into a one-page placeholder PDF. Detection, validation and the response headers come from the real request path:
+The fake engine returns a PDF unchanged and turns an office file into a one-page placeholder PDF. Detection, validation and the response headers come from the real request path. This response leaves out the `content-length` and `date` lines:
 
 ```text
 HTTP/1.1 200 OK
