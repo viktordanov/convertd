@@ -125,6 +125,19 @@ mod tests {
         )
     }
 
+    /// Waits up to 2 s for the pump to remove the job directory and give
+    /// back the permit. The pump does both on its own blocking thread.
+    async fn wait_for_cleanup(root: &std::path::Path, semaphore: &Semaphore) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while root.exists() || semaphore.available_permits() != 1 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the pump kept the job directory or the permit"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     #[tokio::test]
     async fn streams_the_file_then_cleans_up() {
         let (job, tmp) = job("stream");
@@ -146,14 +159,7 @@ mod tests {
         let body = file_body(File::open(&path).unwrap(), data.len() as u64, pump);
         let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap();
         assert_eq!(&bytes[..], &data[..]);
-        for _ in 0..100 {
-            if !root.exists() && semaphore.available_permits() == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert!(!root.exists());
-        assert_eq!(semaphore.available_permits(), 1);
+        wait_for_cleanup(&root, &semaphore).await;
         std::fs::remove_dir_all(tmp).unwrap();
     }
 
@@ -162,6 +168,7 @@ mod tests {
         let (job, tmp) = job("short");
         let path = job.pdf_path();
         std::fs::write(&path, b"only ten b").unwrap();
+        let root = job.root().to_path_buf();
         let semaphore = Arc::new(Semaphore::new(1));
         let pump = Pump {
             job,
@@ -171,6 +178,9 @@ mod tests {
         };
         let body = file_body(File::open(&path).unwrap(), 100, pump);
         assert!(axum::body::to_bytes(body, 1 << 20).await.is_err());
+        // The body ends before the pump has removed the job directory:
+        // removing `tmp` now would race it and fail with NotFound.
+        wait_for_cleanup(&root, &semaphore).await;
         std::fs::remove_dir_all(tmp).unwrap();
     }
 

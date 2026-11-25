@@ -422,7 +422,9 @@ fn round_trip(addr: SocketAddr, body: &[u8]) -> u16 {
     request.truncate(request.len() - 2);
     request.extend_from_slice(b"Connection: close\r\n\r\n");
     stream.write_all(&request).unwrap();
-    stream.write_all(body).unwrap();
+    // An early answer (429, 413) closes the connection before the body is
+    // written; the status still says what happened.
+    let _ = stream.write_all(body);
     read_response(&mut stream).0
 }
 
@@ -506,17 +508,31 @@ async fn a_client_that_closes_mid_upload_releases_everything_at_once() {
     upload.extend(noise(4 * 1024 * 1024));
     let body = multipart(&[("file", Some("a.pdf"), &upload)]);
     let half = body.len() / 2;
-    tokio::task::spawn_blocking({
+    let stream = tokio::task::spawn_blocking({
         let body = body.clone();
         move || {
             let mut stream = TcpStream::connect(addr).unwrap();
             stream.write_all(&head(body.len())).unwrap();
             stream.write_all(&body[..half]).unwrap();
-            let _ = stream.shutdown(Shutdown::Both);
+            stream
         }
     })
     .await
     .unwrap();
+    // Close only once the server is mid-upload: it holds the permit and the
+    // job directory, and waits for the rest of the body. Closing earlier
+    // races the request against the follow-up for the one permit.
+    let started = Instant::now();
+    while app.jobs().is_empty() || app.state.inflight.available_permits() != 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the upload never started: jobs {:?}",
+            app.jobs()
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let _ = stream.shutdown(Shutdown::Both);
+    drop(stream);
     // Well inside the 30 s idle timeout.
     let started = Instant::now();
     loop {
