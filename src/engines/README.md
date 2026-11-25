@@ -9,7 +9,7 @@ Three duties apply to every change in this folder:
 - **Every worker starts through `Spawner::spawn`.** The spawn runs on the long-lived `convertd-spawner` thread, because on Linux the parent-death signal of a worker follows the thread that started it.
 - **The supervisor ends a worker only by SIGKILL of its process group.** The supervisor never asks a worker to shut down, so no LibreOffice teardown runs. The [worker README](../worker/README.md) gives the reason.
 
-The pool runs today with the `test` role only. The office and render engines, the adapters for the engine traits and the start of the pools in `convertd serve` are not built yet. [Not built yet](#not-built-yet) lists them.
+`convertd serve` runs two pools: the office pool runs LibreOffice and the render pool runs PDFium. `select.rs` starts them, and `OfficeLok` and `PdfPdfium` implement the engine traits over them. The RSS kill during a job, image assembly, poison memory and the soak run are not built yet. [Not built yet](#not-built-yet) lists them.
 
 The worker side is in [`src/worker/`](../worker/README.md), and the frames between the two sides are in [`src/ipc/`](../ipc/README.md). `fake.rs` and `fake_markers.rs` hold lane 001's level-A fakes and the `FAKE:` marker parser. This README does not cover them.
 
@@ -21,10 +21,12 @@ The worker side is in [`src/worker/`](../worker/README.md), and the frames betwe
 4. [Admission queue](#admission-queue)
 5. [Recycling](#recycling)
 6. [Slot directory](#slot-directory)
-7. [Errors](#errors)
-8. [Configuration](#configuration)
-9. [Measurement](#measurement)
-10. [Not built yet](#not-built-yet)
+7. [Engine adapters](#engine-adapters)
+8. [Selection](#selection)
+9. [Errors](#errors)
+10. [Configuration](#configuration)
+11. [Measurement](#measurement)
+12. [Not built yet](#not-built-yet)
 
 ## Concepts
 
@@ -143,13 +145,52 @@ Each worker process gets `<workers_dir>/<pool>-<slot>/` with the subdirectories 
 | `LC_*` other than `LC_ALL` and `LC_PAPER` | from the supervisor, if set |
 | `CONVERTD_SUPERVISOR_PID`, `CONVERTD_WORKER_ID` | the supervisor's PID, and `<pool>-<slot>` |
 
-A worker never gets `LC_ALL`, because it overrides `LC_PAPER`. `WorkerEnv::lc_all_dropped` records that the supervisor had it. That LibreOffice reads `LC_PAPER` is not verified.
+A worker never gets `LC_ALL`, because it overrides `LC_PAPER`. `WorkerEnv::lc_all_dropped` records that the supervisor had it. LibreOfficeKit 26.8.3 does not take the paper size from `LC_PAPER` or `LANG`: in the dev image, a DOCX with no page size comes out Letter with every setting (measured 2026-11-26). Thus `DEFAULT_PAPER` has no effect yet.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="adapters" files="call.rs office_lok.rs pdf_pdfium.rs" -->
+## Engine adapters
+
+`OfficeLok` implements `OfficeEngine` over the office pool, and `PdfPdfium` implements `PdfEngine` over the render pool. Each call runs these steps through `call::call`:
+
+1. It leases a worker with the request's admission mode and sends one operation, with the request's deadline.
+2. It fills `EngineTiming` with the queue, lease, wall and engine times. When the worker started on the request's path, it adds the spawn and bind times.
+3. It records `convert_engine_overhead_seconds{pool,op}`, the wall time less the engine and queue times.
+4. If the worker crashed and at least 1 s is left, it retries once on a new lease with `Continue`. It never retries after a timeout or an error that the engine reported.
+5. It maps the error through `EngineFailure` to the domain's `EngineError`, and logs the worker's message at debug only.
+
+After a load, export, limit or internal error, `OfficeLok` recycles the office worker, because LibreOffice's state is suspect. The password errors leave the worker in the pool. `PdfPdfium` recycles a render worker only after an internal error.
+
+`PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`. The chunks run together. A crashed chunk is retried once. The pages come back in order. `engine` is the longest chunk, and the most severe chunk error wins: a timeout, then a crash, then a password error.
+
+`PdfPdfium::assemble` returns `Failed("image inputs are not supported yet")`, which gives 422 `CONVERSION_FAILED`. A 500 would tell callers to retry. Image assembly is plan step 11.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="selection" files="select.rs" -->
+## Selection
+
+`select::start` reads `TEST_ENGINE` and starts the engines that `convertd serve` uses:
+
+- **Unset**: the office pool runs `convertd worker office` and the render pool runs `convertd worker render`. Both warm up before `Ready`. `PDFIUM_BUILD` must be set, or `serve` does not start.
+- **`worker`** (level B, feature `test-hooks`): both pools run `convertd worker test`, behind the same pools, queue and kills.
+- **`fake`** (level A): lane 001's in-process fakes, with no pool.
+
+`select::start` removes `$TMP_DIR/workers` once at start. It makes one `ReaperMode::ProcessWide` spawner for both pools, so on Linux the supervisor becomes a child subreaper. The office pool has `OFFICE_WORKERS` workers and a queue of `QUEUE_CAPACITY`. The render pool has `RENDER_WORKERS` workers and a queue of 2 × `RENDER_WORKERS`. A worker has 60 s from spawn to `Ready`.
+
+`PoolReadiness` gives `/readyz` its state from both pools:
+
+- `draining` after `drain`.
+- `ready` when each pool has a `Ready` worker, idle or busy.
+- `starting` while a pool has never had a `Ready` worker.
+- `degraded` when a pool had a `Ready` worker and has none now.
+
+`EngineHandle::drain` stops new leases. `EngineHandle::shutdown(grace)` waits up to `grace` for the calls in flight, kills every worker and removes `$TMP_DIR/workers`.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="failure" files="error.rs" -->
 ## Errors
 
-`EngineFailure` has the variants of the domain's `EngineError` (`src/domain/engine.rs`), so the adapters will only convert one into the other. Its texts are fixed, because worker messages can hold paths. The worker message goes to the log only. The conversions are as follows:
+`EngineFailure` has the variants of the domain's `EngineError` (`src/domain/engine.rs`), and the adapters convert one into the other with `From`. Its texts are fixed, because worker messages can hold paths. The worker message goes to the log only. The conversions are as follows:
 
 - **Lease errors**: `QueueFull`, `QueueTimeout` and `Unavailable` keep their names. `DeadlineExpired` becomes `Timeout`.
 - **Call errors**: `Timeout` stays. `Crashed` and `Protocol` become `Crashed`, because the pool killed the worker in both cases.
@@ -161,7 +202,7 @@ A worker never gets `LC_ALL`, because it overrides `LC_PAPER`. `WorkerEnv::lc_al
 <!-- memoria:section id="setup" files="config.rs" -->
 ## Configuration
 
-`EngineConfig::from_env` parses the engine variables. No code builds a `PoolSpec` from it yet. The defaults are these:
+`EngineConfig::from_env` parses the engine variables, and `select.rs` builds the two `PoolSpec`s from them. The defaults are these:
 
 | Variable | Default |
 | --- | --- |
@@ -180,13 +221,15 @@ A worker never gets `LC_ALL`, because it overrides `LC_PAPER`. `WorkerEnv::lc_al
 | `POISON_TTL_SECONDS` | 600 (0 turns poison memory off) |
 | `DEFAULT_PAPER` | `A4` (or `Letter`) |
 
-The worker counts, the job, RSS and age limits, and `WORKER_KILL_RSS_MB` must be at least 1.
+The worker counts, the job, RSS and age limits, and `WORKER_KILL_RSS_MB` must be at least 1. The defaults give a 14-CPU machine 7 office and 14 render workers. An office worker holds about 250 MB at `Ready`, so a container with little memory needs explicit values.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="measurement" files="cli.rs" -->
 ## Measurement
 
-`convertd engine bench --role test` measures the cost of the pool with no engine time. It needs a build with `--features test-hooks`. It times lease, `Ping` and return through a real pool, and spawn to `Ready` through the pool's own start path. It prints a table on stderr and one JSON summary line on stdout. The flags are `--n` (10000), `--concurrency` (1), `--spawns` (50) and `--warmup` (500). The roles `office` and `render` exit with status 2 until the engines exist. The other `engine` subcommands also exit with status 2.
+`convertd engine bench --role test|office|render` measures the cost of the pool. It times lease, `Ping` and return through a real pool, and spawn to `Ready` through the pool's own start path, warm-up included. With `--file`, it also times three real jobs on that file, so the first job shows against the third. It prints a table on stderr and one JSON summary line on stdout. The flags are `--n` (10000), `--concurrency` (1), `--spawns` (50) and `--warmup` (500). The `test` role needs a build with `--features test-hooks`.
+
+`convertd engine convert`, `inspect`, `render` and `decrypt` run one engine call through a pool and the adapter, with no HTTP. Each call prints one JSON line with the wall, engine, overhead and queue times, the workers and their job numbers. A password comes from the variable that `--password-env` names, never from the command line. `engine soak` is not built yet.
 
 One measurement, made on 2026-11-25 at commit `1eaf917`, on macOS (Darwin 27.3.0), Apple M4 Max with 14 cores. It used a release build with `--features test-hooks`, `--n 10000` and `--spawns 50`. Other jobs kept the load average at 6 to 10, so the tails are noisy:
 
@@ -195,14 +238,24 @@ One measurement, made on 2026-11-25 at commit `1eaf917`, on macOS (Darwin 27.3.0
 | lease + `Ping` + return | 7.0 / 11.2 / 9.9 | 15.3 / 114.1 / 17.9 | 23.2 / 592.6 / 26.8 |
 | spawn to `Ready` | 1951 / 2146 / 2248 | 2185 / 5844 / 5469 | 2484 / 8984 / 5689 |
 
-The lease alone took 0.1 µs at p50. Spawn to `Ready` is the floor for a process with no engine, because the `test` role binds nothing. These numbers are not measured in the Linux dev image or under gVisor.
+The lease alone took 0.1 µs at p50. Spawn to `Ready` is the floor for a process with no engine, because the `test` role binds nothing.
+
+A second measurement, made on 2026-11-26 at commit `1eaf546`, in the dev image `rs-convert-003-dev:arm64`. The image ran in the Docker VM of the same machine, with 14 CPUs and about 4 GB of memory. It used a release build with `--features test-hooks`, `--n 2000`, and corpus files from `corpus/generate.py`:
+
+| Role | Spawn to `Ready`, p50 / max | RSS at `Ready` | One job, runs 1 / 2 / 3 |
+| --- | --- | --- | --- |
+| `office`, warm-up included | 183 ms / 268 ms | 250 MB | `docx/small.docx` to PDF: 37.3 / 30.9 / 28.3 ms |
+| `render`, warm-up included | 2.9 ms / 5.4 ms | 8 MB | `pdf/text3.pdf` page 1 as JPEG at 150 DPI: 9.2 / 8.1 / 8.0 ms |
+| `test` | 0.25 ms / 0.37 ms | 4 MB | — |
+
+Lease, `Ping` and return took 3.6 to 3.8 µs at p50 for every role. Over HTTP, the overhead of one DOCX conversion was about 1.3 ms beside 31.7 ms of engine time, with inspect and the probe included. These numbers are not measured under gVisor.
 <!-- /memoria:section -->
 
 ## Not built yet
 
 These parts of plan 002 do not exist yet:
 
-- The render worker with PDFium and the office worker with LibreOfficeKit (steps 7 and 8).
-- The implementations of `OfficeEngine` and `PdfEngine`, and the `Engines` facade that `convertd serve` starts (step 9). Until then, `serve` uses lane 001's `Unwired` engines, without `TEST_ENGINE` and with `TEST_ENGINE=worker`. Every conversion then gets 503.
 - The RSS kill during a job. `PoolSpec::kill_rss` exists, but the pool does not enforce it (step 10).
-- Image assembly in a real engine, and the poison memory for documents that hang or crash (steps 11 and 12).
+- Image assembly (step 11). `PdfPdfium::assemble` returns `Failed`.
+- The poison memory for documents that hang or crash (step 12).
+- `engine soak` and the fault and soak run (step 13).

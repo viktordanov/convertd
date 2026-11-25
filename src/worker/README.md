@@ -10,7 +10,7 @@ Four duties apply to every change in this folder:
 - **Call PDFium from one thread only.** PDFium is not thread safe. A worker has no tokio runtime and no thread of its own besides the main thread.
 - **Keep every `unsafe` block and every engine call in this folder.** No other folder of the crate holds them.
 
-Only the `test` role works today. `convertd worker office` and `convertd worker render` answer `Init` with `Fatal` ("not built yet") and exit with status 1. The `test` role exists only in builds with the cargo feature `test-hooks`. [Not built yet](#not-built-yet) lists what is missing.
+`convertd worker office` runs LibreOffice through LibreOfficeKit, `convertd worker render` runs PDFium, and `convertd worker test` answers with fake results. The `test` role exists only in builds with the cargo feature `test-hooks`. Image assembly is not built yet. [Not built yet](#not-built-yet) lists what is missing.
 
 The supervisor side is in [`src/engines/`](../engines/README.md), and the frames are in [`src/ipc/`](../ipc/README.md).
 
@@ -20,8 +20,10 @@ The supervisor side is in [`src/engines/`](../engines/README.md), and the frames
 2. [Calls](#calls)
 3. [Leaving](#leaving)
 4. [Output files](#output-files)
-5. [Test role](#test-role)
-6. [Not built yet](#not-built-yet)
+5. [Office worker](#office-worker)
+6. [Render worker](#render-worker)
+7. [Test role](#test-role)
+8. [Not built yet](#not-built-yet)
 <!-- /memoria:section -->
 
 <!-- memoria:section id="lifecycle" files="mod.rs sys.rs" -->
@@ -77,10 +79,46 @@ The files that a worker writes itself go through `OutputBudget`. The budget hold
 For `DiskFull` and `LimitExceeded`, `io_error` writes a fixed message with no path in it.
 <!-- /memoria:section -->
 
+<!-- memoria:section id="office" files="office.rs warmup.rs" -->
+## Office worker
+
+`OfficeWorker::start` creates the one `Office` of the process and keeps it in a `ManuallyDrop` from the next line on, so no error path drops it. Then it does these steps:
+
+1. It installs its own SIGXFSZ handler. LibreOffice's start-up installs a handler that turns a write past `RLIMIT_FSIZE` into a crash ("Fatal exception: Signal 25").
+2. It turns on the password callback and registers it once.
+3. With `Init.warmup`, it converts a tiny DOCX, XLSX and PPTX to PDF before `Ready`. `warmup.rs` builds them in memory as stored ZIP archives, so no binary fixture is in the repository.
+
+A `Convert` runs `preflight::scan` on the source first, timed apart as `preflight_us`, and returns the facts in the reply. Then it loads the file and exports PDF with explicit JSON filter options, so no setting comes from the profile. The type that LibreOffice loaded picks the options, not the requested family. An encrypted upload arrives as `source.docx` with the document family, whatever it holds, and LibreOffice finds the real type from the content:
+
+- **Presentations**: `ExportNotesPages`, `ExportOnlyNotesPages` and `ExportHiddenSlides`.
+- **Spreadsheets**: `SinglePageSheets`.
+- **Text documents**: `ExportNotes` off.
+
+The callback counts the password prompts of one load. A failed load is `PasswordRequired` after one prompt without a password, `InvalidPassword` after a second prompt with a password, and `LoadFailed` otherwise.
+
+The export runs with `RLIMIT_FSIZE` at `max_output_bytes`. The load runs under a looser cap, `max(4 × max_output_bytes, 1 GiB)`, because it writes LibreOffice's own temp files. The SIGXFSZ handler records a write past either cap, and the job is then `LimitExceeded`. A failed save with no such write is `DiskFull` when `statvfs` shows less than 1 MiB free, and `ExportFailed` otherwise.
+
+A password with a NUL byte is `InvalidPassword` before any engine call, in both workers, because the bindings cannot pass it on. The office worker always answers a password prompt, since LibreOffice waits for the answer.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="render" files="render.rs encode.rs" -->
+## Render worker
+
+`RenderWorker::start` binds `libpdfium.so` from the `Init` directory. With `Init.warmup`, it renders a one-page document with a text object at 72 DPI and encodes it as JPEG, all in memory. The worker opens one document for each operation and closes it before it answers. Thus it holds one document at a time, as PDFium requires.
+
+The operations do this:
+
+- **Inspect** reads the page count and the page sizes without loading the pages. `encrypted` comes from the security handler revision. `needs_password` comes from a second open without the password. With `probe_dpi`, it renders each page in grayscale and reports the object count and the flat check, timed apart as `probe_us`.
+- **Render** scales each page by `min(dpi / 72, max_edge / longer edge)` into a BGRA bitmap. JPEG takes the BGRA bytes directly. PNG (fast, adaptive filter) and lossy WebP take one pass to RGB. Each file gets its CRC-32. The output budget covers all pages, and an error removes every file of the job.
+- **Decrypt** calls `FPDF_SaveAsCopy` with `FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY` through the raw bindings, into a buffer under the output cap. The crate's own save cannot remove security. On PDFium 8179 the copy opens without a password and has no security handler (tested in the dev image).
+
+A missing password is `PasswordRequired`, and a wrong one is `InvalidPassword`. The flat check (`encode::flat`) is true when every pixel is within 4 levels per channel of pixel (0,0).
+<!-- /memoria:section -->
+
 <!-- memoria:section id="test-role" files="test_worker.rs" -->
 ## Test role
 
-`convertd worker test` has no engine. It serves the pool tests and the `engine bench` command. Level B will use it when `TEST_ENGINE=worker` is wired. `Init.test` can make its start fail (`fatal`) or slow (`ready_delay_ms`, which counts as `bind_us`).
+`convertd worker test` has no engine. It serves the pool tests, the `engine bench` command and level B (`TEST_ENGINE=worker`). `Init.test` can make its start fail (`fatal`) or slow (`ready_delay_ms`, which counts as `bind_us`).
 
 It answers `Convert`, `Inspect`, `Render`, `Assemble` and `Decrypt` with small valid files. The `FAKE:` markers in the first 1 MiB of the input file control the answer, and the first marker wins:
 
@@ -89,7 +127,7 @@ It answers `Convert`, `Inspect`, `Render`, `Assemble` and `Decrypt` with small v
 - `FAKE:PASSWORD_REQUIRED`, `FAKE:INVALID_PASSWORD`, `FAKE:LIMIT_EXCEEDED` and `FAKE:INTERNAL_ERROR` give those errors. `FAKE:CONVERSION_FAILED` gives `LoadFailed`.
 - `FAKE:TOO_MANY_REQUESTS` and `FAKE:SERVICE_UNAVAILABLE` give `FakeQueueFull` and `FakeUnavailable`. Only the test role sends these two kinds.
 
-The test role parses the markers with its own interim copy of lane 001's rules. Lane 001's parser, `engines::fake_markers::parse`, is on `main`, but the test role does not call it yet. A `TODO(001 fake_markers)` in `test_worker.rs` marks the switch.
+The test role parses the markers with lane 001's `engines::fake_markers::parse`, which level A uses too.
 
 A fake PDF has `n` empty A4 pages. When `n` is not 1, it carries a `FAKE:PAGES=<n>` comment, so an `Inspect` of a converted file sees the page count of the upload. `Render` writes a white 8 × 8 image per page as `out_dir/NNNN.<ext>` and reports those pixel sizes. A page number outside the document gives `LoadFailed`. `Decrypt` writes a fake PDF and does not copy the input, so the error markers of the input do not reach the copy.
 
@@ -111,6 +149,5 @@ A fake PDF has `n` empty A4 pages. When `n` is not 1, it carries a `FAKE:PAGES=<
 
 These parts of plan 002 do not exist yet:
 
-- The office worker (step 8). It must keep `Office` alive until `_exit`, register the password callback once, convert the warm-up files before `Ready`, and set `RLIMIT_FSIZE` for each job.
-- The render worker with PDFium (step 7): inspect, render, decrypt and the image encoders, and image assembly (step 11).
-- The pre-flight (step 8). The office worker must run lane 001's scanners in `src/preflight/` on the source file before LibreOffice loads it, and return the facts in the reply.
+- Image assembly (step 11). The render worker answers `Assemble` with `Unsupported`.
+- The font list of `Inspect` with `collect_fonts`. It is always empty.

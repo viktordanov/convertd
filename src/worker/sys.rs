@@ -63,7 +63,9 @@ fn die_with_supervisor() -> io::Result<()> {
     Ok(())
 }
 
-fn ignore_sigxfsz() {
+/// Sets SIGXFSZ to ignored. LibreOffice installs its own handler for it
+/// at start-up, so the office worker calls this again after `Office::new`.
+pub fn ignore_sigxfsz() {
     // SAFETY: SIG_IGN is a valid disposition and SIGXFSZ a valid signal; no
     // handler code runs.
     unsafe {
@@ -168,4 +170,78 @@ fn page_size() -> u64 {
     // SAFETY: sysconf has no preconditions.
     let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     u64::try_from(size).unwrap_or(4096)
+}
+
+/// Free bytes for unprivileged users on the file system that holds `path`,
+/// or `None` when `statvfs` fails.
+pub fn free_bytes(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
+    // SAFETY: `c_path` is a valid NUL-terminated string and `stat` points to
+    // a `statvfs` that the call fills; it is read only on success.
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+    // SAFETY: `statvfs` returned 0, so it filled the struct.
+    let stat = unsafe { stat.assume_init() };
+    #[allow(clippy::unnecessary_cast)] // the field types differ by platform
+    Some((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
+}
+
+/// Caps the size of any file this process writes (`RLIMIT_FSIZE`), or lifts
+/// the cap with `None`. With SIGXFSZ ignored, a write past the cap fails
+/// with `EFBIG`.
+pub fn set_file_size_limit(limit: Option<u64>) -> io::Result<()> {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+
+    let hard = getrlimit(Resource::Fsize).maximum;
+    let current = match (limit, hard) {
+        (Some(limit), Some(hard)) => Some(limit.min(hard)),
+        (Some(limit), None) => Some(limit),
+        (None, hard) => hard,
+    };
+    setrlimit(
+        Resource::Fsize,
+        Rlimit {
+            current,
+            maximum: hard,
+        },
+    )
+    .map_err(io::Error::from)
+}
+
+/// Set by the SIGXFSZ handler: a write passed `RLIMIT_FSIZE`.
+static FILE_SIZE_HIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_sigxfsz(_: libc::c_int) {
+    // Async-signal-safe: one atomic store.
+    FILE_SIZE_HIT.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Catches SIGXFSZ with a handler that records the hit, so the write that
+/// passed `RLIMIT_FSIZE` fails with `EFBIG` and [`take_file_size_hit`]
+/// tells the cap apart from other export errors. The office worker calls
+/// it after `Office::new`, which installs a SIGXFSZ handler of its own that
+/// crashes the process.
+pub fn catch_sigxfsz() -> io::Result<()> {
+    // SAFETY: `action` is zeroed and then filled; the handler only stores
+    // to an atomic, which is async-signal-safe.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = on_sigxfsz as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        libc::sigemptyset(&mut action.sa_mask);
+        action.sa_flags = 0;
+        if libc::sigaction(libc::SIGXFSZ, &action, std::ptr::null_mut()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Whether a write passed `RLIMIT_FSIZE` since the last call.
+pub fn take_file_size_hit() -> bool {
+    FILE_SIZE_HIT.swap(false, std::sync::atomic::Ordering::SeqCst)
 }

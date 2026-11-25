@@ -771,7 +771,7 @@ impl Lease {
                 // A reply that arrived before the exit still counts.
                 biased;
                 frame = worker.conn.recv() => match frame {
-                    Ok(Some(Response::Reply(reply))) if reply.id == id => Exchange::Reply(reply),
+                    Ok(Some(Response::Reply(reply))) if reply.id == id => Exchange::Reply(Box::new(reply)),
                     Ok(Some(other)) => Exchange::Unexpected(format!("{other:?}")),
                     Ok(None) => Exchange::Eof,
                     Err(err) => Exchange::Frame(err),
@@ -785,7 +785,7 @@ impl Lease {
             Ok(Exchange::Reply(reply)) => {
                 worker.jobs = reply.job;
                 worker.rss = reply.rss_bytes;
-                Ok(reply)
+                Ok(*reply)
             }
             Err(_) => {
                 worker.child.kill_group();
@@ -879,7 +879,7 @@ impl std::fmt::Debug for Lease {
 }
 
 enum Exchange {
-    Reply(Reply),
+    Reply(Box<Reply>),
     Unexpected(String),
     Eof,
     Frame(FrameError),
@@ -1331,6 +1331,9 @@ impl Start {
         // under the same lock: either it saw this child or this sees it.
         if self.shutting_down() {
             child.kill_group();
+            // Shutdown waits for this start, so it must also see the child
+            // reaped, not only killed.
+            let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
             lock(&self.handles).remove(&(self.slot, self.generation));
             return Err("failed to start the worker: the pool is shutting down".into());
         }

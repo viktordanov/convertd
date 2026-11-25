@@ -252,6 +252,7 @@ mod tests {
             flat: false,
             colour: [255, 255, 255],
             effective_dpi: 150.0,
+            crc32: Some(7),
         };
         let mut out = vec![
             Response::Ready(Ready {
@@ -268,6 +269,18 @@ mod tests {
             reply(Ok(Output::Converted(ConvertedOut {
                 pdf_bytes: 1234,
                 doc_type: "text".into(),
+                facts: Some(SourceFactsWire {
+                    declared_pages: Some(DeclaredPagesWire {
+                        count: 3,
+                        source: "ppt/presentation.xml".into(),
+                    }),
+                    requested_fonts: vec!["Calibri".into()],
+                    macros: Some(MacroFactWire {
+                        kind: MacroKindWire::Vba,
+                        part: "word/vbaProject.bin".into(),
+                    }),
+                    skipped: vec![(CheckWire::Fonts, SkipReasonWire::CapReached)],
+                }),
             }))),
             reply(Ok(Output::Inspected(InspectedOut {
                 page_count: 1,

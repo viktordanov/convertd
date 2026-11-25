@@ -347,6 +347,12 @@ async fn the_worker_environment_is_exactly_the_allow_list() {
                 .into_iter()
                 .map(|(k, v)| (k.into_string().unwrap(), v.into_string().unwrap()))
                 .collect();
+            // macOS CoreFoundation sets __CF_USER_TEXT_ENCODING inside every
+            // process that links it; it does not come from the supervisor.
+            let vars: Vec<(String, String)> = vars
+                .into_iter()
+                .filter(|(k, _)| !(cfg!(target_os = "macos") && k == "__CF_USER_TEXT_ENCODING"))
+                .collect();
             assert_eq!(vars, expected);
             assert!(vars.iter().all(|(k, _)| !k.starts_with("API_KEY")));
             w.child.kill_group();

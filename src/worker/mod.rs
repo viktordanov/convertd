@@ -5,14 +5,19 @@
 //! `Init`, starts its engine, answers `Ready` (or `Fatal`), then serves one
 //! call at a time until its input pipe closes.
 
+pub mod encode;
+pub mod office;
 pub mod output;
+pub mod render;
 pub mod sys;
 #[cfg(feature = "test-hooks")]
 pub mod test_worker;
+pub mod warmup;
 
 use std::fs::File;
 use std::time::{Duration, Instant};
 
+use crate::ipc::FrameError;
 use crate::ipc::frame::{read_frame, write_frame};
 use crate::ipc::{
     EngineTimes, Fatal, Init, Op, Output, PROTOCOL_VERSION, Ready, Reply, Request, Response,
@@ -120,12 +125,8 @@ pub fn run(role: Role) -> ! {
 
 fn start_engine(role: Role, init: &Init) -> Result<Box<dyn Engine>, String> {
     match role {
-        // Wave two (plan steps 7 and 8) adds the real engines.
-        Role::Office => {
-            let _ = init;
-            Err("failed to start the office engine: not built yet".into())
-        }
-        Role::Render => Err("failed to start the render engine: not built yet".into()),
+        Role::Office => office::OfficeWorker::start(init).map(|e| Box::new(e) as Box<dyn Engine>),
+        Role::Render => render::RenderWorker::start(init).map(|e| Box::new(e) as Box<dyn Engine>),
         #[cfg(feature = "test-hooks")]
         Role::Test => test_worker::TestEngine::start(init).map(|e| Box::new(e) as Box<dyn Engine>),
     }
@@ -153,15 +154,39 @@ fn serve(
             Op::Ping => Handled::ok(Output::Pong),
             op => engine.handle(op),
         };
+        let rss_bytes = rss.read();
         let reply = Response::Reply(Reply {
             id: call.id,
             job: jobs,
             engine: handled.engine,
-            rss_bytes: rss.read(),
+            rss_bytes,
             result: handled.result,
         });
-        send(&mut output, &reply, &mut out);
+        match write_frame(&mut output, &reply, &mut out) {
+            Ok(()) => {}
+            // Refused before any byte was written: answer with an error that
+            // fits, instead of leaving without a reply.
+            Err(FrameError::TooLarge { .. }) => {
+                let small = Response::Reply(Reply {
+                    id: call.id,
+                    job: jobs,
+                    engine: handled.engine,
+                    rss_bytes,
+                    result: Err(oversize_reply()),
+                });
+                send(&mut output, &small, &mut out);
+            }
+            Err(err) => die(0, &format!("failed to send a frame: {err}")),
+        }
     }
+}
+
+/// The error for a reply that does not fit in one frame.
+pub fn oversize_reply() -> WorkerError {
+    WorkerError::new(
+        crate::ipc::WorkerErrorKind::LimitExceeded,
+        "failed to answer: the reply exceeds the 16 MiB frame limit",
+    )
 }
 
 fn send(output: &mut File, msg: &Response, buf: &mut Vec<u8>) {
