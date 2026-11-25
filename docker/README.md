@@ -207,7 +207,7 @@ docker/smoke.sh rs-convert:ci docker/smoke/small.docx 770
 
 `smoke.sh` runs the image with the production limits and checks five things:
 
-- The image size against the budget. The job uses 770 MB, the measured 729 MB plus 5 %, or the `IMAGE_MAX_MB` variable.
+- The image size against the budget. The job uses 770 MB, the measured 733 MB of the arm64 `runtime` image plus 5 %, or the `IMAGE_MAX_MB` variable.
 - The time to ready.
 - One DOCX to PDF over HTTP, with the conversion time and the `Server-Timing` header.
 - That no job directory is left after the response.

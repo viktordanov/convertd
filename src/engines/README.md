@@ -91,7 +91,7 @@ A lease also reports where its time went. `queued()` is the wait for a permit, a
 The pool logs these events:
 
 - `worker ready`, with `role`, `pool`, `worker_id`, `pid`, `generation`, `spawn_us`, `bind_us` and `rss_bytes`. `spawn_us` runs from the spawn request to `Ready` and includes `bind_us`. The slot preparation is outside it.
-- `worker recycled`, with the reason `jobs`, `rss`, `age` or `error`, and `worker killed`, with the reason `timeout` or `cancelled`.
+- `worker recycled`, with the reason `jobs`, `rss`, `age` or `error`, and `worker killed`, with the reason `timeout`, `cancelled` or `rss`. A kill over `kill_rss` also logs `worker over its memory limit` with `rss_bytes` and `kill_rss`.
 - `worker start failed`, with `error` and `backoff_ms`. `worker started` is a debug event.
 
 The pool sets three metrics: `convert_workers{pool,state}` for `idle`, `busy` and `starting`, `convert_worker_restarts_total{pool,reason}`, and `convert_queue_depth{pool}`.
@@ -113,7 +113,7 @@ While the pool has no live worker and its last start failed, a lease is `Unavail
 <!-- memoria:section id="lifecycle" files="pool.rs" -->
 ## Recycling
 
-When a lease ends, `recycle_decision` uses the numbers in the worker's last reply, so the supervisor reads no `/proc` file. It applies the first rule that matches:
+When a lease ends, `recycle_decision` uses the numbers in the worker's last reply, not a `/proc` file. It applies the first rule that matches:
 
 1. `Lease::recycle_after()` was called: kill now, reason `error`.
 2. The RSS is at least `max_rss`: kill now, reason `rss`.
@@ -168,8 +168,8 @@ After a load, export, empty-document, limit or internal error, `OfficeLok` recyc
 
 Poison memory (`poison.rs`) protects the workers from documents that hang or crash them. It is keyed by the upload's SHA-256 and shared by both pools, and it works like this:
 
-- A timeout adds one strike. A crash that survived its retry adds two.
-- At two strikes, `convert` and `render` return `Poisoned` (422) before they lease a worker.
+- A call that times out adds one strike. A crash that survived its retry adds two. In `convert`, a crash with no time left for the retry adds one.
+- At two strikes, `convert` and `render` return `Poisoned` before they lease a worker. `Poisoned` gives 422 `CONVERSION_FAILED`.
 - Each strike sets the expiry to now + `POISON_TTL_SECONDS`. An expired entry starts again from zero.
 - The list keeps at most 1024 documents. When it is full, the entry that expires first goes. `POISON_TTL_SECONDS=0` turns poison memory off.
 <!-- /memoria:section -->
@@ -201,7 +201,7 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 `EngineFailure` has the variants of the domain's `EngineError` (`src/domain/engine.rs`), and the adapters convert one into the other with `From`. Its texts are fixed, because worker messages can hold paths. The worker message goes to the log only. The conversions are as follows:
 
 - **Lease errors**: `QueueFull`, `QueueTimeout` and `Unavailable` keep their names. `DeadlineExpired` becomes `Timeout`.
-- **Call errors**: `Timeout` stays. `Crashed` and `Protocol` become `Crashed`, because the pool killed the worker in both cases.
+- **Call errors**: `Timeout` stays. `Crashed` and `Protocol` become `Crashed`, because the pool killed the worker in both cases. `TooBig` becomes `LimitExceeded`.
 - **Worker errors**: the password errors keep their names. `LoadFailed`, `ExportFailed` and `EmptyDocument` become `Failed`. `Io`, `Unsupported` and `Internal` become `Internal`.
 - **Disk errors**: `DiskFull` stays apart from `LimitExceeded`. A full disk comes from other jobs and is worth a retry. `LimitExceeded` is this job's own cap and is final.
 - **Test role errors**: `FakeQueueFull` and `FakeUnavailable` become `QueueFull` and `Unavailable`, so level-B fixtures give the same statuses as level A.
@@ -237,7 +237,7 @@ The worker counts, the job, RSS and age limits, and `WORKER_KILL_RSS_MB` must be
 
 `convertd engine bench --role test|office|render` measures the cost of the pool. It times lease, `Ping` and return through a real pool, and spawn to `Ready` through the pool's own start path, warm-up included. With `--file`, it also times three real jobs on that file, so the first job shows against the third. It prints a table on stderr and one JSON summary line on stdout. The flags are `--n` (10000), `--concurrency` (1), `--spawns` (50) and `--warmup` (500). The `test` role needs a build with `--features test-hooks`.
 
-`convertd engine convert`, `inspect`, `render` and `decrypt` run one engine call through a pool and the adapter, with no HTTP. Each call prints one JSON line with the wall, engine, overhead and queue times, the workers and their job numbers. A password comes from the variable that `--password-env` names, never from the command line. `engine assemble` and `engine soak` are not built yet.
+`convertd engine convert`, `inspect`, `render` and `decrypt` run one engine call through a pool and the adapter, with no HTTP. Each call prints one JSON line with the wall, engine, overhead and queue times, the workers and their job numbers. A password comes from the variable that `--password-env` names, never from the command line. These pools have no job or RSS limit and no poison memory. `engine assemble` and `engine soak` are not built yet.
 
 One measurement, made on 2026-11-25 at commit `1eaf917`, on macOS (Darwin 27.3.0), Apple M4 Max with 14 cores. It used a release build with `--features test-hooks`, `--n 10000` and `--spawns 50`. Other jobs kept the load average at 6 to 10, so the tails are noisy:
 
