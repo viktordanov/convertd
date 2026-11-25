@@ -107,7 +107,7 @@ For `images` and `bundle`, the response is a ustar archive in one zstd frame at 
 
 The response pump is one blocking task. It reads the PDF, or writes the tar.zst, in 64 KiB chunks and sends them to the response body through a queue of four. The pump, not the body, owns the job directory and the permit. If the client stops reading for `IO_IDLE_TIMEOUT_SECONDS`, the pump stops, logs `RESPONSE_STALLED` and releases both.
 
-Every 200 carries `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers and `Server-Timing`, and a PDF also `Content-Length`. Every error after detection also carries `Server-Timing`. `rest/timing.rs` builds the header and computes the overhead and the strict overhead for the `conversion finished` log line.
+Every 200 carries `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers and `Server-Timing`, and a PDF also `Content-Length`. Every error after detection also carries `Server-Timing`. `rest/timing.rs` builds the header and computes the overhead and the strict overhead for the `conversion finished` log line. The `preflight` stage is the office worker's scan, which the worker times inside `convert`. It is not engine time, so it counts as overhead.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="warnings" files="domain/verification.rs preflight/mod.rs preflight/package.rs preflight/docx.rs preflight/pptx.rs preflight/xlsx.rs preflight/odf.rs" -->

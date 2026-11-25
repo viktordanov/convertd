@@ -184,6 +184,7 @@ impl ConversionService {
                 }
                 timings.convert = Some(converted.timing.wall);
                 timings.convert_engine = Some(converted.timing.engine);
+                timings.preflight = Some(converted.timing.preflight);
                 check_deadline()?;
                 let inspection = self
                     .inspect(

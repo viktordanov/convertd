@@ -328,6 +328,7 @@ async fn docx_to_pdf_with_every_header() {
         [
             "recv",
             "detect",
+            "preflight",
             "queue",
             "lease",
             "spawn",
@@ -885,5 +886,18 @@ async fn early_401_and_413_arrive_while_the_client_still_uploads() {
             "the answer came before the upload ended ({sent} of {total} bytes)"
         );
     }
+    app.assert_no_jobs().await;
+}
+
+/// `preflight` is the office worker's scan: sent for office inputs (see
+/// above), never for a PDF, which has none.
+#[tokio::test]
+async fn a_pdf_has_no_preflight_stage() {
+    let app = App::new("timing-pdf", &[]);
+    let (response, _) = send(&app, with_options("a.pdf", &pdf("x"), "{}")).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let timing = header_str(&response, "server-timing");
+    assert!(timing.contains("inspect;dur="), "{timing}");
+    assert!(!timing.contains("preflight"), "{timing}");
     app.assert_no_jobs().await;
 }

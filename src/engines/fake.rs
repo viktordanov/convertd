@@ -306,11 +306,15 @@ impl OfficeEngine for FakeOffice {
         let started = Instant::now();
         let behavior = self.settings.behavior_for(&job.input).await?;
         let played = self.settings.play(behavior, deadline).await?;
-        // The real pre-flight, as the office worker runs it (INTERFACES §13).
+        // The real pre-flight, as the office worker runs it (INTERFACES §13),
+        // timed the same way.
         let (input, family) = (job.input.clone(), job.family);
-        let facts = tokio::task::spawn_blocking(move || crate::preflight::scan(&input, family))
-            .await
-            .map_err(|err| EngineError::Internal(format!("fake pre-flight: {err}")))?;
+        let (facts, preflight) = tokio::task::spawn_blocking(move || {
+            let scanned = Instant::now();
+            (crate::preflight::scan(&input, family), scanned.elapsed())
+        })
+        .await
+        .map_err(|err| EngineError::Internal(format!("fake pre-flight: {err}")))?;
         let pdf_bytes = write_capped(
             &job.output,
             &pdf_with_pages(played.pages),
@@ -325,7 +329,10 @@ impl OfficeEngine for FakeOffice {
                 _ => DocType::Text,
             },
             facts: Some(facts),
-            timing: self.settings.timing(started, played.engine),
+            timing: EngineTiming {
+                preflight,
+                ..self.settings.timing(started, played.engine)
+            },
             worker: self.settings.worker("fake-office"),
         })
     }
