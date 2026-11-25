@@ -501,3 +501,57 @@ async fn the_page_count_marker_flows_from_convert_to_inspect() {
     drop(lease);
     finish(pool, "markers").await;
 }
+
+/// Captures every log line of this test binary as JSON.
+fn captured_logs() -> Arc<Mutex<Vec<u8>>> {
+    use std::sync::OnceLock;
+
+    #[derive(Clone)]
+    struct Sink(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Sink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    static LOGS: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
+    LOGS.get_or_init(|| {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = Sink(Arc::clone(&buf));
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_writer(move || sink.clone())
+            .finish();
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+        buf
+    })
+    .clone()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_ready_is_logged_with_spawn_and_bind_times() {
+    let logs = captured_logs();
+    let mut spec = spec("ready-log", 1);
+    // Other tests of this binary log too; this pool has its own name.
+    spec.name = "ready-log";
+    spec.init.test.ready_delay_ms = 20;
+    let pool = ready(spec).await;
+    let text = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    let line: serde_json::Value = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["message"] == "worker ready" && v["pool"] == "ready-log")
+        .expect("a worker ready line");
+    assert_eq!(line["role"], "test");
+    let spawn_us = line["spawn_us"].as_u64().unwrap();
+    let bind_us = line["bind_us"].as_u64().unwrap();
+    assert!(bind_us >= 20_000, "bind_us {bind_us}");
+    assert!(spawn_us >= bind_us, "spawn {spawn_us} < bind {bind_us}");
+    assert!(line["rss_bytes"].as_u64().is_some());
+    finish(pool, "ready-log").await;
+}
