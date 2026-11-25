@@ -39,6 +39,32 @@ struct PasswordState {
     password: Option<String>,
     /// Prompts during the current load.
     calls: u32,
+    /// The URL of the current load, to answer a prompt whose payload does
+    /// not parse as a URL.
+    url: Option<DocUrl>,
+}
+
+/// A soft `RLIMIT_FSIZE` for the load, which writes LibreOffice's own temp
+/// files: generous, so real documents never hit it, but finite, so a
+/// hostile one cannot fill the disk while it loads.
+pub fn load_cap(max_output_bytes: u64) -> u64 {
+    max_output_bytes.saturating_mul(4).max(LOAD_CAP_MIN)
+}
+
+/// The smallest load cap.
+pub const LOAD_CAP_MIN: u64 = 1 << 30;
+
+/// A password that cannot reach LibreOffice: the crate builds a C string
+/// from it, and a NUL byte would make that fail and leave the prompt
+/// unanswered, so LibreOffice would wait for ever.
+pub fn usable_password(password: &str) -> Result<(), WorkerError> {
+    if password.contains('\0') {
+        return Err(WorkerError::new(
+            WorkerErrorKind::InvalidPassword,
+            "the password is wrong",
+        ));
+    }
+    Ok(())
 }
 
 /// The office engine of one worker process.
@@ -72,24 +98,38 @@ impl OfficeWorker {
                     return;
                 }
                 // The borrow ends before the call back into LibreOffice.
-                let answer = {
+                let (answer, current) = {
                     let mut state = shared.borrow_mut();
                     state.calls += 1;
-                    if state.calls == 1 {
+                    let answer = if state.calls == 1 {
                         state.password.clone()
                     } else {
                         None
-                    }
+                    };
+                    (answer, state.url.clone())
                 };
                 // SAFETY: for DocumentPassword, LibreOfficeKit passes the
                 // document URL as a NUL-terminated string that lives for the
                 // duration of the callback.
-                let url = unsafe { std::ffi::CStr::from_ptr(payload) }.to_string_lossy();
-                if let Ok(url) = DocUrl::from_remote_uri(&*url) {
-                    let _ = callback.set_document_password(&url, answer.as_deref());
+                let payload = unsafe { std::ffi::CStr::from_ptr(payload) }.to_string_lossy();
+                // LibreOffice waits until the prompt is answered, so it is
+                // always answered: with the load's own URL when the payload
+                // does not parse, and with no password when the answer fails.
+                let Some(url) = DocUrl::from_remote_uri(&*payload).ok().or(current) else {
+                    return;
+                };
+                if callback
+                    .set_document_password(&url, answer.as_deref())
+                    .is_err()
+                {
+                    let _ = callback.set_document_password(&url, None);
                 }
             })
             .map_err(|err| format!("failed to register the password callback: {err}"))?;
+        // The crate frees the version string that LibreOffice allocated with
+        // CString::from_raw, which is wrong under another global allocator;
+        // with mimalloc the version comes from build-info.json only.
+        #[cfg(not(feature = "mimalloc"))]
         let version = office
             .get_version_info()
             .map(|v| {
@@ -99,6 +139,8 @@ impl OfficeWorker {
                 )
             })
             .unwrap_or_default();
+        #[cfg(feature = "mimalloc")]
+        let version = String::new();
         let mut worker = Self {
             office,
             state,
@@ -165,17 +207,25 @@ impl OfficeWorker {
             .as_ref()
             .map(|p| p.expose().to_owned())
             .filter(|p| !p.is_empty());
+        if let Some(password) = &password {
+            usable_password(password)?;
+        }
         let has_password = password.is_some();
         {
             let mut state = self.state.borrow_mut();
             state.password = password;
             state.calls = 0;
+            state.url = Some(input.clone());
         }
         let started = Instant::now();
         let result = self.load_and_export(&input, &output, args, has_password);
         times.engine_us = micros(started.elapsed());
         times.convert_us = times.engine_us;
-        self.state.borrow_mut().password = None;
+        {
+            let mut state = self.state.borrow_mut();
+            state.password = None;
+            state.url = None;
+        }
 
         let doc_type = match result {
             Ok(doc_type) => doc_type,
@@ -205,8 +255,19 @@ impl OfficeWorker {
         args: &ConvertArgs,
         has_password: bool,
     ) -> Result<&'static str, WorkerError> {
-        let mut document = match self.office.document_load(input) {
+        // LibreOffice may reinstall its SIGXFSZ handler; ours goes back
+        // before every capped section.
+        sys::catch_sigxfsz().map_err(|err| io_error("catch SIGXFSZ", &err))?;
+        sys::take_file_size_hit();
+        sys::set_file_size_limit(Some(load_cap(args.max_output_bytes)))
+            .map_err(|err| io_error("cap the load", &err))?;
+        let loaded = self.office.document_load(input);
+        let load_capped = sys::take_file_size_hit();
+        let _ = sys::set_file_size_limit(None);
+        let mut document = match loaded {
+            Ok(_) if load_capped => return Err(limit_exceeded()),
             Ok(document) => document,
+            Err(_) if load_capped => return Err(limit_exceeded()),
             Err(err) => {
                 let calls = self.state.borrow().calls;
                 return Err(load_error(has_password, calls, &err.to_string()));
@@ -223,8 +284,10 @@ impl OfficeWorker {
         // an encrypted OOXML upload arrives as a document of unknown type
         // (named source.docx, family document) and may be a deck or a sheet.
         let filter = filter_options(export_family(doc_type, args.family), &args.export);
-        // The cap covers the export only: the load writes LibreOffice's own
-        // temp files, which are no part of this job's output.
+        // The export cap is the job's own: max_output_bytes. The load above
+        // ran under the more generous load cap, because it writes
+        // LibreOffice's own temp files, which are no part of the output.
+        sys::catch_sigxfsz().map_err(|err| io_error("catch SIGXFSZ", &err))?;
         sys::take_file_size_hit();
         sys::set_file_size_limit(Some(args.max_output_bytes))
             .map_err(|err| io_error("cap the output size", &err))?;
@@ -374,6 +437,22 @@ mod tests {
         );
         assert_eq!(load_error(true, 1, "x").kind, WorkerErrorKind::LoadFailed);
         assert_eq!(load_error(false, 0, "x").kind, WorkerErrorKind::LoadFailed);
+    }
+
+    #[test]
+    fn a_password_with_a_nul_byte_is_refused_before_the_engine() {
+        assert_eq!(
+            usable_password("se\0cret").unwrap_err().kind,
+            WorkerErrorKind::InvalidPassword
+        );
+        assert!(usable_password("secret").is_ok());
+    }
+
+    #[test]
+    fn the_load_cap_is_generous_but_finite() {
+        assert_eq!(load_cap(4096), LOAD_CAP_MIN);
+        assert_eq!(load_cap(768 << 20), 3 * (1 << 30));
+        assert_eq!(load_cap(u64::MAX), u64::MAX);
     }
 
     #[test]
