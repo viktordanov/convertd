@@ -13,13 +13,14 @@ use tokio::sync::Semaphore;
 
 use super::middleware::auth::ApiKeys;
 use super::openapi;
-use super::serialization::build_info::BuildInfo;
+use super::serialization::build_info::{BuildInfo, FontsFile};
 use super::serialization::capabilities::{Capabilities, ServiceInfo};
 use super::serialization::manifest::EngineInfo;
 use crate::config::Config;
 use crate::domain::conversion_service::ConversionService;
 use crate::domain::engine::{OfficeEngine, PdfEngine};
 use crate::domain::readiness::Readiness;
+use crate::domain::verification::FontCatalog;
 use crate::jobs::DiskBudget;
 
 /// The service version in capabilities, manifests and the fingerprint.
@@ -96,6 +97,12 @@ impl AppState {
             pdfium,
             fingerprint: fingerprint.clone(),
         };
+        let catalog = FontCatalog::new(
+            build_info.fonts.iter().cloned(),
+            build_info.font_substitutes.clone(),
+            build_info.default_substitute.clone(),
+            load_fonts_file(&config.server.fonts_path).0,
+        );
         let capabilities = Capabilities::new(service, engine_info.clone(), &config.limits, fonts);
         // Serialising plain structs of strings and integers cannot fail.
         let capabilities_json = serde_json::to_vec(&capabilities).unwrap_or_default();
@@ -108,7 +115,8 @@ impl AppState {
                 engines.pdf,
                 config.limits.clone(),
                 config.server.verify_probe_render,
-            ),
+            )
+            .with_fonts(catalog),
             inflight: Arc::new(Semaphore::new(config.server.max_concurrent_requests)),
             disk_budget: DiskBudget::new(config.server.tmp_max_bytes),
             tmp_dir: config.server.tmp_dir.clone(),
@@ -146,6 +154,21 @@ pub fn load_build_info(path: &Path) -> BuildInfo {
         Err(err) => {
             tracing::warn!(path = %path.display(), error = %err, "failed to read build info");
             BuildInfo::default()
+        }
+    }
+}
+
+/// Reads `fonts.json`. Missing or unreadable: no family counts as
+/// metric-compatible, with one warning.
+pub fn load_fonts_file(path: &Path) -> FontsFile {
+    match std::fs::read(path) {
+        Ok(bytes) => FontsFile::parse(&bytes).unwrap_or_else(|err| {
+            tracing::warn!(path = %path.display(), error = %err, "failed to parse the fonts file");
+            FontsFile::default()
+        }),
+        Err(err) => {
+            tracing::warn!(path = %path.display(), error = %err, "fonts file missing; no family counts as metric-compatible");
+            FontsFile::default()
         }
     }
 }

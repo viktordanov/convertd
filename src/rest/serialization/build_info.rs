@@ -26,6 +26,17 @@ impl BuildInfo {
     }
 }
 
+/// `fonts.json` (lane 003): `{family: metric_compatible}`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(transparent)]
+pub struct FontsFile(pub BTreeMap<String, bool>);
+
+impl FontsFile {
+    pub fn parse(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::BuildInfo;
@@ -43,5 +54,12 @@ mod tests {
         assert_eq!(info.fonts, ["Caladea", "Carlito"]);
         assert_eq!(info.font_substitutes["Calibri"], "Carlito");
         assert!(BuildInfo::parse(b"{}").unwrap().fonts.is_empty());
+    }
+
+    #[test]
+    fn parses_docker_fonts_json() {
+        let fonts = super::FontsFile::parse(br#"{"Calibri": true, "Aptos": false}"#).unwrap();
+        assert!(fonts.0["Calibri"]);
+        assert!(super::FontsFile::parse(b"[]").is_err());
     }
 }

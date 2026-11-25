@@ -372,3 +372,177 @@ async fn render_limits() {
     app.assert_no_jobs().await;
     assert_eq!(app.state.disk_budget.used(), 0);
 }
+
+/// A stored OOXML package from (name, content) pairs.
+fn package(entries: &[(&str, String)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(Cursor::new(&mut out));
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, data) in entries {
+            zip.start_file(*name, stored).unwrap();
+            std::io::Write::write_all(&mut zip, data.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    out
+}
+
+fn content_types(main: &str) -> String {
+    format!(
+        r#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/main.xml" ContentType="{main}"/></Types>"#
+    )
+}
+
+const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+
+fn rels(entries: &[(&str, &str, &str)]) -> String {
+    let mut out = String::from(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+    );
+    for (id, kind, target) in entries {
+        out.push_str(&format!(
+            r#"<Relationship Id="{id}" Type="{REL}/{kind}" Target="{target}"/>"#
+        ));
+    }
+    out + "</Relationships>"
+}
+
+/// A DOCX whose runs use the theme's minor font, Aptos; `vba` adds a VBA
+/// project, as a docm would carry.
+fn aptos_docx(vba: bool) -> Vec<u8> {
+    let main = if vba {
+        "application/vnd.ms-word.document.macroEnabled.main+xml"
+    } else {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+    };
+    let mut entries = vec![
+        ("[Content_Types].xml", content_types(main)),
+        ("_rels/.rels", rels(&[("rId1", "officeDocument", "word/document.xml")])),
+        ("word/_rels/document.xml.rels", rels(&[("rId1", "theme", "theme/theme1.xml")])),
+        (
+            "word/document.xml",
+            r#"<w:document xmlns:w="w"><w:body><w:p><w:r><w:rPr><w:rFonts w:asciiTheme="minorHAnsi"/></w:rPr></w:r></w:p></w:body></w:document>"#.to_owned(),
+        ),
+        (
+            "word/theme/theme1.xml",
+            r#"<a:theme xmlns:a="a"><a:majorFont><a:latin typeface="Aptos Display"/></a:majorFont><a:minorFont><a:latin typeface="Aptos"/></a:minorFont></a:theme>"#.to_owned(),
+        ),
+    ];
+    if vba {
+        entries.push(("word/vbaProject.bin", "vba".to_owned()));
+    }
+    package(&entries)
+}
+
+/// A deck that declares 3 visible slides; the fake PDF has 1 page.
+fn three_slide_pptx() -> Vec<u8> {
+    let main = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml";
+    let mut entries = vec![
+        ("[Content_Types].xml", content_types(main)),
+        ("_rels/.rels", rels(&[("rId1", "officeDocument", "ppt/presentation.xml")])),
+        (
+            "ppt/_rels/presentation.xml.rels",
+            rels(&[
+                ("rId2", "slide", "slides/slide1.xml"),
+                ("rId3", "slide", "slides/slide2.xml"),
+                ("rId4", "slide", "slides/slide3.xml"),
+            ]),
+        ),
+        (
+            "ppt/presentation.xml",
+            r#"<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId id="256" r:id="rId2"/><p:sldId id="257" r:id="rId3"/><p:sldId id="258" r:id="rId4"/></p:sldIdLst></p:presentation>"#.to_owned(),
+        ),
+    ];
+    let slide = r#"<p:sld xmlns:p="p"/>"#.to_owned();
+    entries.push(("ppt/slides/slide1.xml", slide.clone()));
+    entries.push(("ppt/slides/slide2.xml", slide.clone()));
+    entries.push(("ppt/slides/slide3.xml", slide));
+    package(&entries)
+}
+
+#[tokio::test]
+async fn warnings_reach_the_manifest_and_the_header() {
+    let files = Path::new(env!("CARGO_TARGET_TMPDIR")).join("convert_zip-warning-files");
+    std::fs::create_dir_all(&files).unwrap();
+    let build_info = files.join("build-info.json");
+    let fonts = files.join("fonts.json");
+    std::fs::write(
+        &build_info,
+        r#"{"libreoffice":"26.8.3.1","pdfium":"8179","fonts":["Carlito","DejaVu Sans"],
+            "font_substitutes":{"Aptos":"DejaVu Sans","Calibri":"Carlito"},"default_substitute":"DejaVu Sans"}"#,
+    )
+    .unwrap();
+    std::fs::write(&fonts, r#"{"Calibri": true, "Aptos": false}"#).unwrap();
+    let env = [
+        ("BUILD_INFO_PATH", build_info.to_str().unwrap()),
+        ("FONTS_PATH", fonts.to_str().unwrap()),
+    ];
+    let app = App::new("warnings", &env, FakeBehavior::Succeed);
+
+    let (response, body) = app
+        .send("a.docx", &aptos_docx(false), r#"{"output":"bundle"}"#)
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(header_str(&response, "convert-warning-count"), "1");
+    let manifest: Value = serde_json::from_slice(&read_zip(&body)[0].1).unwrap();
+    assert_eq!(
+        manifest["warnings"],
+        serde_json::json!([{
+            "code": "FONT_SUBSTITUTED",
+            "message": "Aptos is not installed and was replaced by DejaVu Sans",
+            "detail": {"requested": "Aptos", "substitute": "DejaVu Sans", "substitute_source": "fc-match"}
+        }])
+    );
+    assert_eq!(manifest["engine"]["libreoffice"], "26.8.3.1");
+
+    let (response, body) = app
+        .send("m.docm", &aptos_docx(true), r#"{"output":"bundle"}"#)
+        .await;
+    assert_eq!(header_str(&response, "convert-source-format"), "docm");
+    let manifest: Value = serde_json::from_slice(&read_zip(&body)[0].1).unwrap();
+    let codes: Vec<&str> = manifest["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["FONT_SUBSTITUTED", "MACROS_IGNORED"]);
+    assert_eq!(
+        manifest["warnings"][1]["detail"],
+        serde_json::json!({"kind": "vba", "part": "word/vbaProject.bin"})
+    );
+
+    // output=pdf carries the count in its header.
+    let (response, _) = app.send("deck.pptx", &three_slide_pptx(), r#"{}"#).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(header_str(&response, "convert-warning-count"), "1");
+    let (_, body) = app
+        .send("deck.pptx", &three_slide_pptx(), r#"{"output":"bundle"}"#)
+        .await;
+    let manifest: Value = serde_json::from_slice(&read_zip(&body)[0].1).unwrap();
+    assert_eq!(
+        manifest["warnings"][0]["detail"],
+        serde_json::json!({"expected": 3, "actual": 1, "source": "ppt/presentation.xml"})
+    );
+    let (_, body) = app
+        .send(
+            "deck.pptx",
+            &three_slide_pptx(),
+            r#"{"output":"bundle","slides":{"include_hidden":true}}"#,
+        )
+        .await;
+    let manifest: Value = serde_json::from_slice(&read_zip(&body)[0].1).unwrap();
+    assert_eq!(
+        manifest["warnings"],
+        serde_json::json!([]),
+        "V1 is skipped with hidden slides"
+    );
+    app.assert_no_jobs().await;
+}

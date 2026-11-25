@@ -9,8 +9,9 @@ The engines are not wired into `convertd serve` yet. Without the level-A fakes, 
 1. [Process model](#process-model)
 2. [Layers](#layers)
 3. [Request path](#request-path)
-4. [Not wired yet](#not-wired-yet)
-5. [Configuration](#configuration)
+4. [Warnings](#warnings)
+5. [Not wired yet](#not-wired-yet)
+6. [Configuration](#configuration)
 
 <!-- memoria:section id="overview" files="main.rs runtime.rs" -->
 ## Process model
@@ -55,7 +56,7 @@ The rest of the crate supports both sides:
 
 - **`main.rs`**: the command line and all the wiring. Only `main.rs` picks the engines and builds the application state.
 - **`config.rs`**, **`logging.rs`** and **`runtime.rs`**: the configuration, the log output and the Tokio runtime.
-- **`preflight/`**: the pure scanners that the office worker will call. It is empty at this time.
+- **`preflight/`**: the pure scanners that the office worker calls before LibreOffice loads a file.
 - **`observability/`**: the metric names. It is empty at this time.
 
 The dependency rule keeps the domain at the center. `domain/` uses no other module of the crate, and no HTTP, async runtime, serde, IPC or FFI crate. The test `domain_has_no_forbidden_imports` in `domain/engine.rs` fails when a domain file imports one of them.
@@ -108,13 +109,26 @@ The response pump is one blocking task. It reads the PDF, or writes the ZIP, in 
 Every 200 carries `Content-Length`, `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers and `Server-Timing`. A detection error and a conversion error also carry `Server-Timing`. `rest/timing.rs` builds the header and computes the overhead and the strict overhead for the `conversion finished` log line.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="contract" files="main.rs detect/mod.rs rest/ops_handlers.rs rest/server.rs preflight/mod.rs observability/mod.rs" -->
+<!-- memoria:section id="warnings" files="domain/verification.rs preflight/mod.rs preflight/package.rs preflight/docx.rs preflight/pptx.rs preflight/xlsx.rs preflight/odf.rs" -->
+## Warnings
+
+Warnings compare what an office source declares with what the engines produced. The algorithms are 005 §5. `preflight::scan` reads the source in the office worker, before LibreOffice loads it, and returns `SourceFacts`: the visible slide count of a deck, the requested Latin font families and where macros are stored. `domain/verification.rs` holds the rules:
+
+- **`PAGE_COUNT_MISMATCH`**: PPTX family only, when the declared count differs from the PDF. It is skipped when hidden slides or notes pages are included, and for a template with no slides.
+- **`FONT_SUBSTITUTED`**: a requested family that `build-info.json` does not list, unless `fonts.json` marks it metric-compatible and its substitute is installed. At most 32 per request. Without `build-info.json`, as outside the image, the check is skipped.
+- **`BLANK_PAGE`**: a page with content that rendered as one flat colour, from the rendered page or the probe render.
+- **`MACROS_IGNORED`**: a VBA project, an Excel 4 macro sheet, an ODF `Basic/` module or `Scripts/` entry, or an OLE2 macro storage.
+- **`RENDER_CLAMPED`**: `MAX_DPI` or `MAX_EDGE_PX` lowered the requested resolution.
+
+The scanners stream each part through quick-xml under fixed caps: 4 MiB per part, 32 MiB per font scan and 64 MiB per request. A part that is missing, malformed or over a cap skips its check, and the skip is logged. A scanner must not panic, because a panic ends the office worker.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="contract" files="main.rs rest/ops_handlers.rs rest/server.rs observability/mod.rs" -->
 ## Not wired yet
 
 These parts of the design do not work yet:
 
 - **Engines**: `convertd serve` uses the `Unwired` engines. Every conversion answers 503 `SERVICE_UNAVAILABLE`, and `/readyz` answers 503 with `starting`. In a build with the `test-hooks` feature, `TEST_ENGINE=fake` selects the level-A fakes instead. `TEST_ENGINE=worker` is not wired either, and the office and render worker roles stop with "not built yet".
-- **Warnings**: the pre-flight scanners and the warning rules that compare their facts with the PDF are not written yet. `RENDER_CLAMPED` needs image output, so the service raises no warning. `Convert-Warning-Count` is always 0.
 - **Metrics and drain**: `/metrics` answers an empty body. On SIGTERM or SIGINT, the server stops accepting and finishes its open connections, with no drain step before that.
 <!-- /memoria:section -->
 

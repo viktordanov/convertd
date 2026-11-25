@@ -13,7 +13,7 @@ use super::engine::{
 };
 use super::limits::Limits;
 use super::secret::Password;
-use super::verification::{self, VerifyInput};
+use super::verification::{self, FontCatalog, VerifyInput};
 
 /// Why a conversion failed. Statuses are mapped only in `rest/`.
 #[derive(Debug, thiserror::Error)]
@@ -72,6 +72,8 @@ pub struct ConversionService {
     pub(super) limits: Limits,
     /// `Some(18)` with `VERIFY_PROBE_RENDER`.
     pub(super) probe_dpi: Option<u16>,
+    /// For `FONT_SUBSTITUTED`; empty until [`ConversionService::with_fonts`].
+    pub(super) fonts: FontCatalog,
 }
 
 /// The DPI of the probe render for `BLANK_PAGE` (V3).
@@ -89,7 +91,14 @@ impl ConversionService {
             pdf,
             limits,
             probe_dpi: verify_probe_render.then_some(PROBE_DPI),
+            fonts: FontCatalog::default(),
         }
+    }
+
+    /// The installed families and their substitutes, for V2.
+    pub fn with_fonts(mut self, fonts: FontCatalog) -> Self {
+        self.fonts = fonts;
+        self
     }
 
     pub fn limits(&self) -> &Limits {
@@ -314,6 +323,7 @@ impl ConversionService {
             probe: &inspection.probe,
             rendered: &pages,
             max_edge_px: self.limits.max_edge_px,
+            fonts: &self.fonts,
         });
         timings.verify = Some(started.elapsed());
 
