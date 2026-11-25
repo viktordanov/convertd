@@ -19,9 +19,11 @@ ARG RUNTIME_BASE=debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e7
 ARG RUST_VERSION=1.99.0
 ARG CARGO_CHEF_VERSION=0.1.78
 
-# LibreOffice from TDF. The SHA-256 values equal the ones TDF's mirror page publishes, and
-# both tarballs carry a good signature from TDF's code signing key
-# C2839ECAD9408FBE9531C3E9F434A1EFAFEEAEA3 (checked when pinned).
+# LibreOffice from TDF. Each SHA-256 equals TDF's .sha256 file next to the tarball (HTTPS,
+# download.documentfoundation.org) and the hash of our own download. Both tarballs carry a
+# good signature from key C2839ECAD9408FBE9531C3E9F434A1EFAFEEAEA3, the only key that
+# keyserver.ubuntu.com lists for build@documentfoundation.org (checked when pinned). That
+# fingerprint is not confirmed against a TDF page: none that could be read shows it.
 ARG LO_VERSION=26.8.3
 # Four-part build number (the tarball's top directory): the archive URL and build-info.json.
 ARG LO_BUILD=26.8.3.1
@@ -122,7 +124,9 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
 # ---- Engine downloads: built on the build platform, never in the runtime ------------------
 # Each download lands in a cache mount under its SHA-256 and is checked before use. TDF removes
 # a point release from /stable/ when the next one ships; the archive keeps it under the
-# four-part build number, which is the fallback.
+# four-part build number, which is the fallback. The fallback URL is UNVERIFIED: 26.8.3 is
+# still the current stable release, so it is not archived yet, and the archive host refused
+# connections on 2026-11-25. Prove it once 26.8.3 leaves /stable/.
 FROM --platform=$BUILDPLATFORM ${RUNTIME_BASE} AS engines
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ARG TARGETARCH
