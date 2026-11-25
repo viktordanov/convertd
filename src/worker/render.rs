@@ -15,7 +15,7 @@ use crate::ipc::{
     PageGeometry, ProbedPage, RenderArgs, RenderedOut, RenderedPage, Secret, WorkerError,
     WorkerErrorKind,
 };
-use crate::worker::encode::{encode, flat};
+use crate::worker::encode::{EncodeError, encode, flat, max_edge};
 use crate::worker::output::OutputBudget;
 use crate::worker::{Engine, Handled, micros};
 
@@ -83,8 +83,17 @@ impl RenderWorker {
     }
 
     fn inspect(&self, args: &InspectArgs, times: &mut EngineTimes) -> Result<Output, WorkerError> {
-        let password = secret(args.password.as_ref());
+        let password = secret(args.password.as_ref())?;
         let started = Instant::now();
+        // Whether the file opens without the password, checked before the
+        // main open, so only one document is open at a time (rule 10).
+        let needs_password = password.is_some()
+            && matches!(
+                self.pdfium.load_pdf_from_file(&args.pdf, None),
+                Err(PdfiumError::PdfiumLibraryInternalError(
+                    PdfiumInternalError::PasswordError
+                ))
+            );
         let document = self.open(&args.pdf, password)?;
         let pages = document.pages();
         if pages.is_empty() {
@@ -103,13 +112,6 @@ impl RenderWorker {
             document.permissions().security_handler_revision(),
             Ok(PdfSecurityHandlerRevision::Unprotected)
         );
-        let needs_password = password.is_some()
-            && matches!(
-                self.pdfium.load_pdf_from_file(&args.pdf, None),
-                Err(PdfiumError::PdfiumLibraryInternalError(
-                    PdfiumInternalError::PasswordError
-                ))
-            );
         times.inspect_us = micros(started.elapsed());
 
         let mut probe = Vec::new();
@@ -145,7 +147,7 @@ impl RenderWorker {
     }
 
     fn render(&self, args: &RenderArgs, times: &mut EngineTimes) -> Result<Output, WorkerError> {
-        let password = secret(args.password.as_ref());
+        let password = secret(args.password.as_ref())?;
         let started = Instant::now();
         let document = self.open(&args.pdf, password)?;
         let pages = document.pages();
@@ -165,6 +167,16 @@ impl RenderWorker {
                     .map_err(|err| load_failed(&err))?;
                 let (w_pt, h_pt) = (page.width().value, page.height().value);
                 let scale = page_scale(args.dpi, args.max_edge, w_pt, h_pt);
+                // A page the format cannot hold is refused before PDFium
+                // allocates its bitmap (one pixel of slack for rounding).
+                let limit = max_edge(args.format);
+                let longest = (w_pt.max(h_pt) * scale).ceil();
+                if longest > limit as f32 + 1.0 {
+                    return Err(too_large(&format!(
+                        "page {number} would be {longest} px on its long side; {:?} allows {limit}",
+                        args.format
+                    )));
+                }
                 let rendering = Instant::now();
                 let bitmap = page
                     .render_with_config(
@@ -185,13 +197,15 @@ impl RenderWorker {
                 }
                 let (flat, colour) = flat(&bgra);
                 let encoding = Instant::now();
-                let bytes =
-                    encode(args.format, &bgra, width, height, args.quality).map_err(|err| {
-                        WorkerError::new(
+                let bytes = encode(args.format, &bgra, width, height, args.quality).map_err(
+                    |err| match err {
+                        EncodeError::TooLarge(message) => too_large(&message),
+                        EncodeError::Failed(message) => WorkerError::new(
                             WorkerErrorKind::Internal,
-                            format!("failed to encode page: {err}"),
-                        )
-                    })?;
+                            format!("failed to encode page: {message}"),
+                        ),
+                    },
+                )?;
                 times.encode_us += micros(encoding.elapsed());
                 let file_name = format!("{number:04}.{}", args.format.extension());
                 let size_bytes = budget.write_file(&args.out_dir.join(&file_name), &bytes)?;
@@ -232,7 +246,7 @@ impl RenderWorker {
                 "failed to name the file: not UTF-8",
             )
         })?;
-        let password = Some(args.password.expose()).filter(|p| !p.is_empty());
+        let password = secret(Some(&args.password))?;
         let bindings = self.pdfium.bindings();
         // SAFETY: a plain call into the bound library with a valid path.
         let document = unsafe { bindings.FPDF_LoadDocument(path, password) };
@@ -282,7 +296,33 @@ impl RenderWorker {
             ));
         }
         let mut budget = OutputBudget::new(args.max_output_bytes);
-        let pdf_bytes = budget.write_file(&args.output, &writer.bytes)?;
+        let pdf_bytes = match budget.write_file(&args.output, &writer.bytes) {
+            Ok(n) => n,
+            Err(err) => {
+                budget.remove_written();
+                return Err(err);
+            }
+        };
+        // The copy must open with no password and carry no security
+        // handler, so a PDFium whose flags mean something else cannot keep
+        // the encryption silently.
+        let clean = self
+            .pdfium
+            .load_pdf_from_file(&args.output, None)
+            .map(|copy| {
+                matches!(
+                    copy.permissions().security_handler_revision(),
+                    Ok(PdfSecurityHandlerRevision::Unprotected)
+                )
+            })
+            .unwrap_or(false);
+        if !clean {
+            budget.remove_written();
+            return Err(WorkerError::new(
+                WorkerErrorKind::ExportFailed,
+                "failed to decrypt the PDF: the copy is still protected",
+            ));
+        }
         Ok(Output::Decrypted(DecryptedOut { pdf_bytes }))
     }
 }
@@ -321,8 +361,10 @@ impl CopyWriter {
         }
     }
 
+    /// The whole struct as PDFium's writer: the pointer covers every field,
+    /// so the callback may reach past `base`.
     fn as_file_write(&mut self) -> *mut FPDF_FILEWRITE {
-        &mut self.base
+        std::ptr::from_mut(self).cast()
     }
 }
 
@@ -347,8 +389,18 @@ unsafe extern "C" fn write_block(
     1
 }
 
-fn secret(password: Option<&Secret>) -> Option<&str> {
-    password.map(Secret::expose).filter(|p| !p.is_empty())
+/// The password to open with, or `None`. A password with a NUL byte is
+/// refused as wrong before PDFium sees it: the bindings build a C string
+/// from it and would panic.
+fn secret(password: Option<&Secret>) -> Result<Option<&str>, WorkerError> {
+    let password = password.map(Secret::expose).filter(|p| !p.is_empty());
+    if password.is_some_and(|p| p.contains('\0')) {
+        return Err(WorkerError::new(
+            WorkerErrorKind::InvalidPassword,
+            "the password is wrong",
+        ));
+    }
+    Ok(password)
 }
 
 /// A failed open: the password errors as PDFium reports them, else
@@ -383,6 +435,13 @@ fn render_failed(err: &PdfiumError) -> WorkerError {
     )
 }
 
+fn too_large(message: &str) -> WorkerError {
+    WorkerError::new(
+        WorkerErrorKind::LimitExceeded,
+        format!("failed to render page: {message}"),
+    )
+}
+
 fn empty() -> WorkerError {
     WorkerError::new(WorkerErrorKind::EmptyDocument, "the document has no pages")
 }
@@ -413,6 +472,20 @@ impl Engine for RenderWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_password_with_a_nul_byte_never_reaches_pdfium() {
+        let bad = Secret::new("se\0cret");
+        assert_eq!(
+            secret(Some(&bad)).unwrap_err().kind,
+            WorkerErrorKind::InvalidPassword
+        );
+        let empty = Secret::new("");
+        assert_eq!(secret(Some(&empty)).unwrap(), None);
+        let good = Secret::new("secret");
+        assert_eq!(secret(Some(&good)).unwrap(), Some("secret"));
+        assert_eq!(secret(None).unwrap(), None);
+    }
 
     #[test]
     fn page_scale_honors_dpi_and_the_edge_cap() {

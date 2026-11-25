@@ -31,25 +31,53 @@ fn bgra_to_rgb(bgra: &[u8]) -> Vec<u8> {
     rgb
 }
 
+/// The longest edge, in pixels, that each format can encode: JPEG stores
+/// 16-bit sizes, libwebp refuses more than 16383.
+pub fn max_edge(format: ImageFormat) -> u32 {
+    match format {
+        ImageFormat::Jpeg => u32::from(u16::MAX),
+        ImageFormat::Webp => WEBP_MAX_EDGE,
+        ImageFormat::Png => u32::MAX,
+    }
+}
+
+/// libwebp's `WEBP_MAX_DIMENSION`.
+pub const WEBP_MAX_EDGE: u32 = 16_383;
+
+/// Why a page did not encode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EncodeError {
+    /// The page is larger than the format allows: the job's own limit.
+    TooLarge(String),
+    /// The encoder failed.
+    Failed(String),
+}
+
 /// Encodes a `width` × `height` BGRA bitmap. JPEG takes BGRA directly; PNG
-/// and WebP need one pass to RGB.
+/// and WebP need one pass to RGB. A page over [`max_edge`] is `TooLarge`,
+/// found before any encoder runs.
 pub fn encode(
     format: ImageFormat,
     bgra: &[u8],
     width: u32,
     height: u32,
     quality: u8,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, EncodeError> {
+    let limit = max_edge(format);
+    if width > limit || height > limit {
+        return Err(EncodeError::TooLarge(format!(
+            "the page is {width} x {height} px; {format:?} allows at most {limit} px a side"
+        )));
+    }
+    let failed = |err: String| EncodeError::Failed(err);
     let mut out = Vec::new();
     match format {
         ImageFormat::Jpeg => {
-            let w =
-                u16::try_from(width).map_err(|_| "the page is too wide for JPEG".to_string())?;
-            let h =
-                u16::try_from(height).map_err(|_| "the page is too tall for JPEG".to_string())?;
+            // Both fit: checked against max_edge above.
+            let (w, h) = (width as u16, height as u16);
             jpeg_encoder::Encoder::new(&mut out, quality.clamp(1, 100))
                 .encode(bgra, w, h, jpeg_encoder::ColorType::Bgra)
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| failed(err.to_string()))?;
         }
         ImageFormat::Png => {
             use image::ImageEncoder;
@@ -58,12 +86,14 @@ pub fn encode(
             let rgb = bgra_to_rgb(bgra);
             PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::Adaptive)
                 .write_image(&rgb, width, height, image::ExtendedColorType::Rgb8)
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| failed(err.to_string()))?;
         }
         ImageFormat::Webp => {
             let rgb = bgra_to_rgb(bgra);
+            // encode_simple returns the error that Encoder::encode unwraps.
             let memory = webp::Encoder::from_rgb(&rgb, width, height)
-                .encode(f32::from(quality.clamp(1, 100)));
+                .encode_simple(false, f32::from(quality.clamp(1, 100)))
+                .map_err(|err| failed(format!("{err:?}")))?;
             out.extend_from_slice(&memory);
         }
     }
@@ -88,6 +118,16 @@ mod tests {
         assert!(flat(&bgra).0);
         bgra[20] = 15;
         assert!(!flat(&bgra).0);
+    }
+
+    #[test]
+    fn a_page_over_the_format_limit_is_too_large_before_encoding() {
+        // No bitmap is needed: the size is checked first.
+        let err = encode(ImageFormat::Webp, &[], 16_384, 10, 85).unwrap_err();
+        assert!(matches!(err, EncodeError::TooLarge(_)), "{err:?}");
+        let err = encode(ImageFormat::Jpeg, &[], 10, 70_000, 85).unwrap_err();
+        assert!(matches!(err, EncodeError::TooLarge(_)), "{err:?}");
+        assert_eq!(max_edge(ImageFormat::Webp), 16_383);
     }
 
     #[test]
