@@ -143,7 +143,7 @@ The scanners stream each part through quick-xml under fixed caps: 4 MiB per part
 
 `main.rs` calls `engines::select::start` once, after it binds the listener and before it builds the application state. `TEST_ENGINE` picks the real pools, the level-B test worker or the level-A fakes. `config.rs` accepts `TEST_ENGINE` only in a build with the `test-hooks` feature. If `PDFIUM_BUILD` is not set, `convertd serve` stops with an error. [Selection](engines/README.md#selection) gives the three modes and the readiness states.
 
-Image inputs do not convert yet: the assembly answers 422 `CONVERSION_FAILED`. [Not built yet](engines/README.md#not-built-yet) lists the other parts that are missing.
+Image inputs are out of v1 (owner, 2026-11-26). Detection still names a PNG, JPEG, TIFF, GIF, BMP or WebP file by its signature, so that an image is never taken for a PDF inside it. Then it answers 415 `UNSUPPORTED_FORMAT`, and `/v1/capabilities` does not list image inputs. [Not built yet](engines/README.md#not-built-yet) lists the parts of the engines that are missing.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="setup" files="config.rs" -->

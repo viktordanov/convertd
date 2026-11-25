@@ -99,6 +99,7 @@ impl Capabilities {
             engine,
             inputs: FORMATS
                 .iter()
+                .filter(|row| row.format.accepted())
                 .map(|row| InputFormat {
                     format: row.id.to_owned(),
                     family: row.family.into(),

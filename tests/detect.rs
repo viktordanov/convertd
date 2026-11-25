@@ -167,19 +167,27 @@ fn plain_signatures() {
     let mut bmp = b"BM".to_vec();
     bmp.extend_from_slice(&[0; 12]);
     bmp.extend_from_slice(&124u32.to_le_bytes());
-    let cases: [(&[u8], Format); 9] = [
+    let cases: [(&[u8], Format); 2] = [
         (b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n1 0 obj", Format::Pdf),
         (b"{\\rtf1\\ansi\\deff0 hello}", Format::Rtf),
-        (b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR", Format::Png),
-        (b"\xFF\xD8\xFF\xDB\0C", Format::Jpeg),
-        (b"GIF87a\x01\0\x01\0", Format::Gif),
-        (b"II*\0\x08\0\0\0", Format::Tiff),
-        (b"RIFF\x1a\0\0\0WEBPVP8L", Format::Webp),
-        (&bmp, Format::Bmp),
-        (b"MM\0*\0\0\0\x08", Format::Tiff),
     ];
     for (bytes, want) in cases {
         assert_eq!(detect(bytes).unwrap(), want);
+    }
+    // Image inputs are out of v1: named by their signature, then refused.
+    // A PNG that holds `%PDF-` later is still a PNG, never a PDF.
+    let images: [(&[u8], &str); 8] = [
+        (b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR", "png"),
+        (b"\x89PNG\r\n\x1a\n%PDF-1.4", "png"),
+        (b"\xFF\xD8\xFF\xDB\0C", "jpeg"),
+        (b"GIF87a\x01\0\x01\0", "gif"),
+        (b"II*\0\x08\0\0\0", "tiff"),
+        (b"RIFF\x1a\0\0\0WEBPVP8L", "webp"),
+        (&bmp, "bmp"),
+        (b"MM\0*\0\0\0\x08", "tiff"),
+    ];
+    for (bytes, label) in images {
+        assert_eq!(unsupported(bytes), label);
     }
 }
 

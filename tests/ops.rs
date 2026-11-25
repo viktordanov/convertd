@@ -268,9 +268,20 @@ async fn capabilities_follow_the_schema_and_build_info() {
         .iter()
         .map(|i| i["format"].as_str().unwrap())
         .collect();
-    for format in ["docx", "doc", "xls", "ppt", "pdf", "png", "webp"] {
+    for format in ["docx", "doc", "xls", "ppt", "pdf"] {
         assert!(inputs.contains(&format), "{format}");
     }
+    // Image inputs are out of v1; images remain an output.
+    for format in ["png", "jpeg", "tiff", "gif", "bmp", "webp"] {
+        assert!(!inputs.contains(&format), "{format}");
+    }
+    assert!(
+        caps["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["family"] != "image" && i["engine"] != "image")
+    );
     for input in caps["inputs"].as_array().unwrap() {
         for key in ["format", "family", "extensions", "media_types", "engine"] {
             assert!(input.get(key).is_some(), "{input}");

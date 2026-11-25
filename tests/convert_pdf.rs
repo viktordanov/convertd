@@ -365,13 +365,14 @@ async fn pdf_comes_back_byte_identical() {
     app.assert_no_jobs().await;
 }
 
+/// Image inputs are out of v1 (owner, 2026-11-26): 415 before any engine.
 #[tokio::test]
-async fn image_is_assembled() {
+async fn an_image_is_unsupported() {
     let app = App::new("image", &[]);
     let (response, body) = send(&app, file("dot.png", PNG_1X1)).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(header_str(&response, "convert-source-format"), "png");
-    assert!(body.starts_with(b"%PDF-"));
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert_eq!(error_code(&body), "UNSUPPORTED_FORMAT");
+    assert!(String::from_utf8_lossy(&body).contains("png"));
     app.assert_no_jobs().await;
 }
 
