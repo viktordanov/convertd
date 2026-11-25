@@ -342,7 +342,10 @@ struct PoolInner {
     spec: Arc<PoolSpec>,
     idle: Mutex<Idle>,
     permits: Semaphore,
+    /// Every waiting lease, for status and metrics.
     waiting: AtomicUsize,
+    /// `Queue`-mode waiters only: the ones `queue_capacity` bounds.
+    queued: AtomicUsize,
     starting: AtomicUsize,
     /// `Ready` workers alive (idle or busy), as the manager counts them.
     live: AtomicUsize,
@@ -392,6 +395,7 @@ impl Pool {
             idle: Mutex::new(Idle::default()),
             permits: Semaphore::new(0),
             waiting: AtomicUsize::new(0),
+            queued: AtomicUsize::new(0),
             starting: AtomicUsize::new(0),
             live: AtomicUsize::new(0),
             ready_once: AtomicBool::new(false),
@@ -489,13 +493,20 @@ impl Pool {
             return Err(LeaseError::Unavailable);
         }
         let queue_limit = Instant::now() + inner.spec.queue_wait;
-        let limit = match adm {
+        // Take the place first, then check it, so concurrent leases cannot
+        // both pass the bound. Only `Queue` waiters count against it.
+        let _queued = match adm {
             Admission::Queue => {
-                if inner.waiting.load(Ordering::Acquire) >= inner.spec.queue_capacity {
+                let place = QueuePlace::take(inner);
+                if place.depth > inner.spec.queue_capacity {
                     return Err(LeaseError::QueueFull);
                 }
-                deadline.min(queue_limit)
+                Some(place)
             }
+            Admission::Continue => None,
+        };
+        let limit = match adm {
+            Admission::Queue => deadline.min(queue_limit),
             Admission::Continue => deadline,
         };
         let _waiting = WaitingGuard::new(inner);
@@ -639,6 +650,26 @@ impl Pool {
     /// The spawner this pool starts its workers with.
     pub fn spawner(&self) -> &Spawner {
         &self.spawner
+    }
+}
+
+/// A place in the bounded `Queue`-mode queue, given back on drop.
+struct QueuePlace<'a> {
+    inner: &'a PoolInner,
+    /// Queue-mode waiters, this one included.
+    depth: usize,
+}
+
+impl<'a> QueuePlace<'a> {
+    fn take(inner: &'a PoolInner) -> Self {
+        let depth = inner.queued.fetch_add(1, Ordering::AcqRel) + 1;
+        Self { inner, depth }
+    }
+}
+
+impl Drop for QueuePlace<'_> {
+    fn drop(&mut self) {
+        self.inner.queued.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

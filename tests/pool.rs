@@ -404,6 +404,42 @@ async fn idle_workers_are_replaced_when_they_age() {
     finish(pool, "age").await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_leases_cannot_overrun_the_queue_bound() {
+    let mut spec = spec("bound", 1);
+    spec.queue_capacity = 4;
+    let pool = ready(spec).await;
+    let busy = pool.lease(after(5000), Admission::Queue).await.unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(16));
+    let tasks: Vec<_> = (0..16)
+        .map(|_| {
+            let (pool, barrier) = (pool.clone(), Arc::clone(&barrier));
+            tokio::spawn(async move {
+                barrier.wait().await;
+                pool.lease(after(5000), Admission::Queue).await.map(drop)
+            })
+        })
+        .collect();
+    let until = Instant::now() + Duration::from_secs(5);
+    while pool.status().waiting < 4 && Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(pool.status().waiting, 4);
+    drop(busy);
+    let mut full = 0;
+    let mut served = 0;
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(()) => served += 1,
+            Err(LeaseError::QueueFull) => full += 1,
+            Err(other) => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!((served, full), (4, 12));
+    finish(pool, "bound").await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn try_lease_takes_only_an_idle_worker() {
     let pool = ready(spec("try", 1)).await;
