@@ -1657,14 +1657,14 @@
       "tags": [
         "hostile"
       ],
-      "notes": "The first half of docx-long's bytes.",
+      "notes": "The first half of docx-long's bytes. The cut removes the zip's central directory, so detection cannot identify the archive and answers 415 UNSUPPORTED_FORMAT before any engine runs (lead ruling, 2026-11-26; it replaces the plan's 422 CONVERSION_FAILED from Decision 13).",
       "cases": [
         {
           "name": "pdf",
           "options": {},
           "expect": {
-            "status": 422,
-            "code": "CONVERSION_FAILED"
+            "status": 415,
+            "code": "UNSUPPORTED_FORMAT"
           }
         }
       ]
