@@ -320,6 +320,12 @@ fn environment_is_what_the_spawner_set() {
     let Output::Test(TestOutput::Env { vars }) = w.ok(Op::Test(TestOp::Env)) else {
         panic!("expected env");
     };
+    // macOS CoreFoundation sets __CF_USER_TEXT_ENCODING inside every process
+    // that links it; it does not come from the spawner.
+    let vars: Vec<(String, String)> = vars
+        .into_iter()
+        .filter(|(k, _)| !(cfg!(target_os = "macos") && k == "__CF_USER_TEXT_ENCODING"))
+        .collect();
     assert_eq!(
         vars,
         vec![

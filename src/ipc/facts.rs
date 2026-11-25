@@ -160,9 +160,7 @@ mod tests {
             let _ = static_source(&format!("part-{i}.xml"));
         }
         assert_eq!(static_source("never-seen-before.xml"), "other");
-        assert!(std::ptr::eq(
-            static_source("docProps/app.xml"),
-            KNOWN_SOURCES[1]
-        ));
+        // Known sources never take an interner place.
+        assert_eq!(static_source("docProps/app.xml"), "docProps/app.xml");
     }
 }
