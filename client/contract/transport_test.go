@@ -24,10 +24,9 @@ import (
 	"github.com/getkin/kin-openapi/routers/legacy"
 )
 
-// committedSpec is the spec every response is checked against. It becomes
-// ../../api/openapi.json when generate.sh switches to the emitted spec
-// (ledger 004 plan, step 8).
-const committedSpec = "../../api/openapi.yaml"
+// committedSpec is the spec every response is checked against: the one
+// convertd emits, committed by generate.sh.
+const committedSpec = "../../api/openapi.json"
 
 func init() {
 	// kin-openapi has no decoder for these; the body is a string/binary.
