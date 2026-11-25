@@ -1,13 +1,10 @@
 //! Conversions between `domain::verification::SourceFacts` and its wire form.
 //!
 //! `DeclaredPages::source` is a `&'static str` in the frozen domain type, so
-//! the supervisor maps the wire string back to a static one: the known
-//! sources directly, others through a small interner that keeps at most
-//! [`MAX_INTERNED`] strings for the life of the process, and `"other"` after
-//! that. Each string is leaked once, so the memory stays bounded.
-
-use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
+//! the supervisor maps the wire string back to a static one: the two
+//! sources that the scanners name map to themselves, and any other source
+//! reads as `"other"` (the lead's ruling for Round A; the domain type
+//! becomes a `String` in Round B).
 
 use crate::domain::verification::{
     Check, DeclaredPages, MacroFact, MacroKind, SkipReason, SourceFacts,
@@ -19,28 +16,13 @@ use crate::ipc::protocol::{
 /// The page-count sources the pre-flight scanners name (005 §5).
 pub const KNOWN_SOURCES: [&str; 2] = ["ppt/presentation.xml", "docProps/app.xml"];
 
-/// The most distinct unknown sources kept; later ones read as `"other"`.
-pub const MAX_INTERNED: usize = 32;
-
-/// The static form of `source`.
+/// The static form of `source`: a known source, or `"other"`.
 pub fn static_source(source: &str) -> &'static str {
-    if let Some(known) = KNOWN_SOURCES.iter().find(|k| **k == source) {
-        return known;
-    }
-    static INTERNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    let mut set = INTERNED
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(found) = set.get(source) {
-        return found;
-    }
-    if set.len() >= MAX_INTERNED {
-        return "other";
-    }
-    let leaked: &'static str = Box::leak(source.to_owned().into_boxed_str());
-    set.insert(leaked);
-    leaked
+    KNOWN_SOURCES
+        .iter()
+        .find(|known| **known == source)
+        .copied()
+        .unwrap_or("other")
 }
 
 impl From<&SourceFacts> for SourceFactsWire {
@@ -151,16 +133,12 @@ mod tests {
     }
 
     #[test]
-    fn unknown_sources_are_interned_and_bounded() {
-        let a = static_source("word/settings.xml");
-        let b = static_source("word/settings.xml");
-        assert_eq!(a, "word/settings.xml");
-        assert!(std::ptr::eq(a, b), "interned once");
-        for i in 0..MAX_INTERNED + 4 {
-            let _ = static_source(&format!("part-{i}.xml"));
-        }
-        assert_eq!(static_source("never-seen-before.xml"), "other");
-        // Known sources never take an interner place.
+    fn known_sources_map_back_and_others_read_as_other() {
+        assert_eq!(
+            static_source("ppt/presentation.xml"),
+            "ppt/presentation.xml"
+        );
         assert_eq!(static_source("docProps/app.xml"), "docProps/app.xml");
+        assert_eq!(static_source("word/settings.xml"), "other");
     }
 }
