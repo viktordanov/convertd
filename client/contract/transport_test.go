@@ -1,14 +1,13 @@
 package contract
 
 import (
-	"archive/zip"
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"mime"
 	"net/http"
 	"slices"
@@ -22,17 +21,17 @@ import (
 	"github.com/getkin/kin-openapi/openapi3filter"
 	"github.com/getkin/kin-openapi/routers"
 	"github.com/getkin/kin-openapi/routers/legacy"
+	"github.com/klauspost/compress/zstd"
 )
 
-// committedSpec is the spec every response is checked against. It becomes
-// ../../api/openapi.json when generate.sh switches to the emitted spec
-// (ledger 004 plan, step 8).
-const committedSpec = "../../api/openapi.yaml"
+// committedSpec is the spec every response is checked against: the one
+// convertd emits, committed by generate.sh.
+const committedSpec = "../../api/openapi.json"
 
 func init() {
 	// kin-openapi has no decoder for these; the body is a string/binary.
 	openapi3filter.RegisterBodyDecoder("application/pdf", openapi3filter.FileBodyDecoder)
-	openapi3filter.RegisterBodyDecoder("application/zip", openapi3filter.FileBodyDecoder)
+	openapi3filter.RegisterBodyDecoder("application/zstd", openapi3filter.FileBodyDecoder)
 }
 
 // contractSpec is the loaded spec with a router that matches any host.
@@ -228,38 +227,83 @@ func (s *contractSpec) check(req *http.Request, resp *http.Response, body []byte
 		}
 	}
 
-	if mediaType(resp.Header.Get("Content-Type")) == "application/zip" && resp.StatusCode == http.StatusOK {
+	if mediaType(resp.Header.Get("Content-Type")) == "application/zstd" && resp.StatusCode == http.StatusOK {
+		if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, `.tar.zst"`) {
+			problems = append(problems, fmt.Sprintf("bundle: Content-Disposition %q does not name a .tar.zst file", cd))
+		}
 		problems = append(problems, s.checkBundle(body)...)
 	}
 	return op, problems
 }
 
+// archiveEntry is one file of a tar.zst bundle.
+type archiveEntry struct {
+	name    string
+	regular bool
+	data    []byte
+}
+
+// readArchive reads a whole tar.zst stream.
+func readArchive(body []byte) ([]archiveEntry, error) {
+	zr, err := zstd.NewReader(bytes.NewReader(body), zstd.WithDecoderConcurrency(1))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
+	var entries []archiveEntry
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return entries, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, archiveEntry{name: hdr.Name, regular: hdr.Typeflag == tar.TypeReg, data: data})
+	}
+}
+
 // checkBundle validates manifest.json against components.schemas.Manifest and
-// checks that the ZIP holds exactly the files the manifest names. A ZIP entry
-// is not an HTTP body, so ValidateResponse cannot see it.
+// checks the archive layout the spec describes: regular files only,
+// manifest.json first, then document.pdf when the manifest names it, then
+// each page in manifest order, and nothing else. An archive entry is not an
+// HTTP body, so ValidateResponse cannot see it.
 func (s *contractSpec) checkBundle(body []byte) []string {
-	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	entries, err := readArchive(body)
 	if err != nil {
-		return []string{"bundle: not a ZIP: " + err.Error()}
+		return []string{"bundle: not a valid tar.zst: " + err.Error()}
 	}
-	files := map[string]*zip.File{}
-	for _, f := range zr.File {
-		files[f.Name] = f
+	if len(entries) == 0 {
+		return []string{"bundle: the archive is empty"}
 	}
-	mf, ok := files["manifest.json"]
-	if !ok {
-		return []string{"bundle: manifest.json is missing"}
+	var problems []string
+	if entries[0].name != "manifest.json" {
+		problems = append(problems, fmt.Sprintf("bundle: the first entry is %s, not manifest.json", entries[0].name))
 	}
-	raw, err := readZipFile(mf)
-	if err != nil {
-		return []string{"bundle: failed to read manifest.json: " + err.Error()}
+	var raw []byte
+	got := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.regular {
+			problems = append(problems, fmt.Sprintf("bundle: %s is not a regular file", e.name))
+		}
+		if e.name == "manifest.json" && raw == nil {
+			raw = e.data
+		}
+		got = append(got, e.name)
+	}
+	if raw == nil {
+		return append(problems, "bundle: manifest.json is missing")
 	}
 	var manifest any
 	if err := json.Unmarshal(raw, &manifest); err != nil {
-		return []string{"bundle: manifest.json is not JSON: " + err.Error()}
+		return append(problems, "bundle: manifest.json is not JSON: "+err.Error())
 	}
 
-	var problems []string
 	opts := []openapi3.SchemaValidationOption{openapi3.MultiErrors()}
 	if s.doc.IsOpenAPI31OrLater() {
 		opts = append(opts, openapi3.EnableJSONSchema2020())
@@ -270,46 +314,41 @@ func (s *contractSpec) checkBundle(body []byte) []string {
 		}
 	}
 
-	expected := map[string]bool{"manifest.json": true}
+	want := []string{"manifest.json"}
 	m, _ := manifest.(map[string]any)
 	if pdf, ok := m["pdf"].(map[string]any); ok {
 		if p, ok := pdf["path"].(string); ok {
-			expected[p] = true
+			want = append(want, p)
 		}
 	}
 	pages, _ := m["pages"].([]any)
 	for _, page := range pages {
 		if pm, ok := page.(map[string]any); ok {
 			if p, ok := pm["path"].(string); ok {
-				expected[p] = true
+				want = append(want, p)
 			}
 		}
 	}
-	for _, name := range sortedSetKeys(expected) {
-		if _, ok := files[name]; !ok {
-			problems = append(problems, fmt.Sprintf("bundle: manifest names %s, which is not in the ZIP", name))
+	inArchive := map[string]bool{}
+	for _, name := range got {
+		inArchive[name] = true
+	}
+	named := map[string]bool{}
+	for _, name := range want {
+		named[name] = true
+		if !inArchive[name] {
+			problems = append(problems, fmt.Sprintf("bundle: manifest names %s, which is not in the archive", name))
 		}
 	}
-	names := make([]string, 0, len(files))
-	for name := range files {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		if !expected[name] {
-			problems = append(problems, fmt.Sprintf("bundle: %s is in the ZIP but not in the manifest", name))
+	for _, name := range got {
+		if !named[name] {
+			problems = append(problems, fmt.Sprintf("bundle: %s is in the archive but not in the manifest", name))
 		}
+	}
+	if len(problems) == 0 && !slices.Equal(got, want) {
+		problems = append(problems, fmt.Sprintf("bundle: entries are in the order %v, want %v", got, want))
 	}
 	return problems
-}
-
-func readZipFile(f *zip.File) ([]byte, error) {
-	r, err := f.Open()
-	if err != nil {
-		return nil, err
-	}
-	defer r.Close()
-	return io.ReadAll(r)
 }
 
 // describe turns a kin-openapi error into one line per problem, each naming
@@ -364,8 +403,4 @@ func mediaType(contentType string) string {
 		return contentType
 	}
 	return mt
-}
-
-func sortedSetKeys(m map[string]bool) []string {
-	return slices.Sorted(maps.Keys(m))
 }

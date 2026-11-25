@@ -34,8 +34,22 @@ while (($# > 0)); do
   esac
 done
 
+# Runs the tests verbosely into a log. On success it prints only the skipped
+# cases with their reasons, the coverage report and the package lines; on
+# failure it prints the whole log.
 run_tests() {
-  (cd client/contract && go test -tags contract -count=1 -race ${GO_ARGS[@]+"${GO_ARGS[@]}"} ./...)
+  local log status=0
+  log="$(mktemp)"
+  (cd client/contract && go test -tags contract -count=1 -race -v ${GO_ARGS[@]+"${GO_ARGS[@]}"} ./...) >"$log" 2>&1 || status=$?
+  if ((status != 0)); then
+    cat "$log"
+  else
+    grep -E -B1 -- '--- SKIP' "$log" | grep -v -E -- '^(--$|=== |\s+--- PASS)' || true
+    grep -E 'FINDING' "$log" | sort -u || true
+    grep -E '^(coverage:|  [A-Za-z]+ [0-9]{3}$|ok |FAIL)' "$log" || true
+  fi
+  rm -f "$log"
+  return "$status"
 }
 
 if [[ -z "$IMAGE" ]]; then

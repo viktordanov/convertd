@@ -227,7 +227,7 @@
                   "format": "binary"
                 }
               },
-              "application/zip": {
+              "application/zstd": {
                 "schema": {
                   "type": "string",
                   "format": "binary"

@@ -5,7 +5,7 @@
 Do these four things in every caller:
 
 - Close `PDF.Body` after `ConvertToPDF`.
-- Call `Bundle.Close` after `ConvertToBundle` or `ConvertToImages`. It deletes the temp file of the bundle.
+- Call `Bundle.Close` after `ConvertToBundle` or `ConvertToImages`. It deletes the temp directory of the bundle.
 - Set a deadline on the context. The default HTTP client has no timeout of its own.
 - Open the file again for a retry. The client reads the file once and never retries.
 
@@ -95,7 +95,7 @@ Next: read [Errors and retries](#errors-and-retries) before you call the client 
 | `Capabilities` | The accepted formats, the limits, the engine versions and the fonts. The answer is fixed for a deployment |
 | `Ready` | `true` when `/readyz` answers 200, `false` when it answers 503. Any other status is an error |
 
-`New` takes two options. `WithHTTPClient` sets the HTTP client. `WithTempDir` sets the directory for bundle downloads, and the default is the system temp directory.
+`New` takes two options. `WithHTTPClient` sets the HTTP client. `WithTempDir` sets the parent directory for unpacked bundles, and the default is the system temp directory.
 
 Each conversion takes a `convert.Options`. The zero value asks for the server defaults, because the client leaves every zero field out of the request:
 
@@ -106,7 +106,7 @@ Each conversion takes a `convert.Options`. The zero value asks for the server de
 - `Images`, `Slides` and `Sheets` hold the image settings and the options for presentations and spreadsheets. `go doc` lists their fields.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="failure" files="convert/errors.go" -->
+<!-- memoria:section id="failure" files="convert/errors.go convert/convert.go" -->
 ## Errors and retries
 
 Every error for a non-200 response wraps exactly one sentinel, so branch with `errors.Is`. The package has no error types. The message also carries the server's message, the status and the request ID, for example `failed to convert document: service busy: the conversion queue is full (status 429, request 7f3c2a9e)`.
@@ -132,6 +132,8 @@ The client picks the sentinel from the `code` in the error body. When the body h
 
 A network error or a canceled context wraps no sentinel. It comes back as `failed to send request: …`, and the caller decides whether to retry it.
 
+The service can answer before the upload ends, for example with 401 or 413. The call then sometimes fails with a write error such as `broken pipe`, not with the sentinel. The answer reaches the client socket every time, but Go's `http.Transport` returns the write error when it comes first. With a 64 MiB upload, the contract tests see this in about half the runs. The write error wraps no sentinel, so `Retryable` is false for it.
+
 The service sends `Retry-After` with 429 and 503, but the client does not expose that header. Use your own backoff for `ErrBusy` and `ErrUnavailable`.
 <!-- /memoria:section -->
 
@@ -142,7 +144,9 @@ The upload is streamed. The client writes the multipart body through a pipe, so 
 
 `ConvertToPDF` streams the PDF too. `PDF.Body` is the response body, so you can copy it straight to storage.
 
-A bundle needs a temp file. A ZIP needs random access, so `ConvertToBundle` and `ConvertToImages` download the whole response to a temp file before they return. `Bundle.Close` deletes that file. `Bundle.PDF()` and `Bundle.Page(n)` return `(reader, found, err)`. `found` is false when the bundle has no PDF or the page was not rendered, and that is not an error. Close each reader that you open.
+A bundle needs a temp directory. The service sends `images` and `bundle` as a tar archive in one zstd stream (`application/zstd`, named `<stem>.tar.zst`). The archive can only be read front to back, so `ConvertToBundle` and `ConvertToImages` unpack the whole response into a temp directory before they return. `Bundle.Close` deletes that directory. `Bundle.PDF()` and `Bundle.Page(n)` return `(reader, found, err)`. `found` is false when the bundle has no PDF or the page was not rendered, and that is not an error. Close each reader that you open.
+
+The client accepts only the layout that the service writes. `manifest.json` comes first, then `document.pdf` for a bundle, then `pages/NNNN.<ext>`. Each entry is a regular file that the manifest names, and each comes once. A path with `..`, a link, an extra or a missing file, or a manifest that is not first fails the call. A failed call leaves no temp directory.
 
 ```go
 bundle, err := c.ConvertToImages(ctx, name, file, convert.Options{
@@ -173,21 +177,23 @@ Both result types carry `Info` from the response headers. `Info` holds the reque
 The client ignores manifest fields that it does not know, and it keeps every enum value as a plain string. Thus a newer server with the same API version does not break an older client.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="contributing" files="oapi-codegen.yaml convert/api_surface_test.go contract/go.mod contract/harness_test.go contract/cmd/speccheck/main.go" -->
+<!-- memoria:section id="contributing" files="oapi-codegen.yaml convert/api_surface_test.go contract/go.mod contract/harness_test.go contract/contract_test.go contract/cmd/speccheck/main.go" -->
 ## For contributors
 
-`convert` wraps the generated client in `internal/api/client.go`. oapi-codegen generates that file from `../api/openapi.yaml` with the settings in `oapi-codegen.yaml`. Go's internal rule lets only code under `client/` import the generated package. No exported identifier in `convert` uses a generated type, and `convert/api_surface_test.go` fails when one does.
+`convert` wraps the generated client in `internal/api/client.go`. oapi-codegen generates that file from `../api/openapi.json` with the settings in `oapi-codegen.yaml`. `convertd openapi` emits `openapi.json` from the server code, and the hand-written `../api/openapi.yaml` stays as the reference that it is compared with. Go's internal rule lets only code under `client/` import the generated package. No exported identifier in `convert` uses a generated type, and `convert/api_surface_test.go` fails when one does.
 
-When you change the spec:
+When you change the API in the server code:
 
-1. Run `../generate.sh`. It validates the spec, regenerates the client and runs `go vet` and `go test -race`.
-2. Commit the spec and `internal/api/client.go` together.
+1. Run `../generate.sh`. It emits and validates `openapi.json`, compares it with the reference, regenerates the client and runs `go vet` and `go test -race`.
+2. Commit `api/openapi.json` and `internal/api/client.go` together.
 3. Commit a facade change in a separate commit.
-4. Run `../generate.sh --check`. It fails when a generated file differs from the spec or from `HEAD`, or when the repository has an untracked file under `api/` or `client/`. CI does not run it at this time.
+4. Run `../generate.sh --check`. It fails when a generated file differs from what generation produces or from `HEAD`. It also fails on an untracked file under `api/` or `client/`. CI runs it in the `test` job.
 
-`contract/` is a nested module that is never published or tagged. It holds `speccheck`, the validating transport that checks each response against the spec, the test harness and their self-tests. No live contract case exists yet. `speccheck validate` checks one spec, and `speccheck compare` checks the emitted spec against the reference.
+`contract/` is a nested module that is never published or tagged. It holds `speccheck`, the validating transport that checks each response against the spec, the test harness, the live contract cases and the self-tests. `speccheck validate` checks one spec, and `speccheck compare` checks the emitted spec against the reference.
 
-`../scripts/contract_test.sh` builds convertd with the `test-hooks` feature and runs the contract tests against the level A fake. `../scripts/contract_test.sh --image REF` runs them against an image. `cd contract && go test ./...` runs only the spec tools and the self-tests, and it needs no server.
+`../scripts/contract_test.sh` builds convertd with the `test-hooks` feature and runs the contract tests against the level A fake. CI runs it in the `test` job. `../scripts/contract_test.sh --image REF` runs them against an image. `cd contract && go test ./...` runs only the spec tools and the self-tests, and it needs no server.
 
-The live cases will prove that the service, the spec and this client agree on the responses that the cases exercise. They will not prove the quality of a conversion. Until they exist, a pass proves only that the harness and the validating transport work.
+The script prints the skipped cases with their reasons, the findings and the declared `(operationId, status)` pairs that no case observed. The bundle and images cases skip while the server answers that those outputs are not available yet. The early-answer case skips with a finding when the write error from [Errors and retries](#errors-and-retries) occurs.
+
+The live cases prove that the service, the spec and this client agree on the responses that the cases exercise. They do not prove the quality of a conversion, because the level A fake replaces the engines.
 <!-- /memoria:section -->

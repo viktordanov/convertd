@@ -1,0 +1,1407 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Convert API",
+    "description": "Converts office documents, PDFs and images into a standard PDF and per-page\nimages.\n\nOne call does the whole job. Upload a file, say what you want back, and\nreceive either the PDF itself or a ZIP bundle holding the PDF, the page\nimages and a `manifest.json` that describes them.\n\n## Authentication\n\nEvery `/v1` route needs the service API key as a bearer token:\n\n```\nAuthorization: Bearer <API_KEY>\n```\n\nThe probes (`/healthz`, `/readyz`) take no key.\n\n## Calling it\n\n```bash\n# Office document to PDF (the default output)\ncurl -sS -H \"Authorization: Bearer $CONVERT_API_KEY\" \\\n  -F file=@deck.pptx \\\n  -o deck.pdf \\\n  \"$CONVERT_HOST/v1/convert\"\n\n# PDF plus page images at 150 DPI, as one ZIP bundle\ncurl -sS -H \"Authorization: Bearer $CONVERT_API_KEY\" \\\n  -F file=@deck.pptx \\\n  -F 'options={\"output\":\"bundle\",\"images\":{\"format\":\"jpeg\",\"dpi\":150}};type=application/json' \\\n  -o deck.zip \\\n  \"$CONVERT_HOST/v1/convert\"\n\n# First page of an existing PDF as a small thumbnail\ncurl -sS -H \"Authorization: Bearer $CONVERT_API_KEY\" \\\n  -F file=@report.pdf \\\n  -F 'options={\"output\":\"images\",\"pages\":\"1\",\"images\":{\"format\":\"webp\",\"dpi\":72,\"max_edge\":320}};type=application/json' \\\n  -o thumb.zip \\\n  \"$CONVERT_HOST/v1/convert\"\n```\n\n## What comes back\n\nThe `output` option decides the response. Each value maps to exactly one\ncontent type:\n\n| `output` | Response | Contents |\n| --- | --- | --- |\n| `pdf` (default) | `application/pdf` | The PDF. Metadata travels in `Convert-*` headers. |\n| `images` | `application/zip` | `manifest.json` and `pages/NNNN.<ext>` |\n| `bundle` | `application/zip` | `manifest.json`, `document.pdf` and `pages/NNNN.<ext>` |\n\nThe response is only sent once the whole job has succeeded, so a `200`\nalways carries a complete result and every failure has a proper status\ncode and JSON error body.\n\n## Errors and retries\n\nEvery error body is `{\"error\": \"<message>\", \"code\": \"<CODE>\"}`.\n\n| Status | Codes | Retry? |\n| --- | --- | --- |\n| 400 | `BAD_REQUEST` | No. The request is malformed. |\n| 401 | `UNAUTHORIZED` | No. |\n| 413 | `FILE_TOO_LARGE` | No. |\n| 415 | `UNSUPPORTED_FORMAT` | No. |\n| 422 | `VALIDATION_ERROR`, `PASSWORD_REQUIRED`, `INVALID_PASSWORD`, `LIMIT_EXCEEDED`, `CONVERSION_FAILED` | No. The same input will fail the same way. |\n| 429 | `TOO_MANY_REQUESTS` | Yes, after `Retry-After` seconds. |\n| 500 | `INTERNAL_ERROR` | Yes, with backoff. |\n| 503 | `SERVICE_UNAVAILABLE` | Yes, after `Retry-After` seconds. |\n| 504 | `CONVERSION_TIMEOUT` | Once at most. A second timeout means the document is too heavy for the budget. |\n\nThe service already retries a crashed engine once on a fresh worker, so\n`CONVERSION_FAILED` is final.\n\n## Determinism and caching\n\nThe service keeps no state and stores nothing after the response is sent.\nThe same file, options and engine build produce the same output, so callers\ncan cache results under `sha256(file) + options + Convert-Engine-Fingerprint`.\nThe fingerprint changes whenever output could change: a new service\nversion, LibreOffice version, PDFium version or font set.\n",
+    "license": {
+      "name": "Apache-2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0"
+    },
+    "version": "1.0.0-draft.1"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8080",
+      "description": "Local development"
+    }
+  ],
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Liveness probe",
+        "description": "Returns 200 while the supervisor process is running. Checks nothing else.",
+        "operationId": "getLiveness",
+        "responses": {
+          "200": {
+            "description": "The process is alive.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Prometheus metrics",
+        "description": "Metrics in the Prometheus text exposition format.",
+        "operationId": "getMetrics",
+        "responses": {
+          "200": {
+            "description": "Current metric values.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/readyz": {
+      "get": {
+        "tags": [
+          "operations"
+        ],
+        "summary": "Readiness probe",
+        "description": "Returns 200 when every worker pool has at least one warm worker and\nthe service is not shutting down. Returns 503 while starting, while\ndraining, or when a pool has no healthy worker.",
+        "operationId": "getReadiness",
+        "responses": {
+          "200": {
+            "description": "Ready to take conversions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready. Do not route traffic here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "tags": [
+          "discovery"
+        ],
+        "summary": "List supported formats, limits and engine versions",
+        "description": "Describes what this deployment can do: which input formats it accepts,\nwhich outputs it produces, the limits it enforces, the engine versions\nit runs and the fonts it has installed.\n\nThe answer is fixed for the lifetime of a deployment, so clients can\nread it once at start-up.",
+        "operationId": "getCapabilities",
+        "parameters": [
+          {
+            "name": "X-Request-ID",
+            "in": "header",
+            "description": "Correlation ID. If present it is echoed in the response, the logs and\nthe manifest. If absent the service generates one.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "example": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The capabilities of this deployment.",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation ID of this request.",
+                "example": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Capabilities"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/v1/convert": {
+      "post": {
+        "tags": [
+          "conversion"
+        ],
+        "summary": "Convert one document to PDF, page images, or both",
+        "description": "Uploads one file and returns it as a PDF, as page images, or as a\nbundle of both.\n\n**Routing.** The file type is detected from the bytes, never from the\nfile name or the part's content type. Office and OpenDocument files go\nthrough LibreOffice. PDFs skip conversion and go straight to rendering.\nImages are wrapped into a PDF with one page per image frame.\n\n**Options.** Send them as a JSON object in the `options` part. Leave\nthe part out to get a PDF with default settings. Unknown properties\nare rejected with `VALIDATION_ERROR` so that typos never pass silently.\n\n**Timing.** The call is synchronous. `timeout_seconds` is the whole\nbudget for queueing, conversion, rendering and packaging. When it runs\nout the engine process is killed and the call returns\n`CONVERSION_TIMEOUT`.\n\n**Safety.** Macros never run, external links are never fetched and the\nengine has no network access. A document that relies on any of those\nstill converts, without that content.",
+        "operationId": "convertDocument",
+        "parameters": [
+          {
+            "name": "X-Request-ID",
+            "in": "header",
+            "description": "Correlation ID. If present it is echoed in the response, the logs and\nthe manifest. If absent the service generates one.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "example": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/ConvertRequest"
+              },
+              "encoding": {
+                "file": {
+                  "contentType": "application/octet-stream"
+                },
+                "options": {
+                  "contentType": "application/json"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The conversion succeeded. The content type follows the `output`\noption: `application/pdf` for `pdf`, `application/zip` for\n`images` and `bundle`.\n\nThe ZIP is laid out as:\n\n```\nmanifest.json        described by the Manifest schema\ndocument.pdf         only for output=bundle\npages/0001.jpg       one file per rendered page, 1-based, zero-padded\npages/0002.jpg\n```\n\nImages and the PDF are stored without further compression.\n",
+            "headers": {
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "`attachment` with a file name derived from the upload, for example `deck.pdf` or `deck.zip`.",
+                "example": "attachment; filename=\"deck.pdf\""
+              },
+              "Convert-Engine-Fingerprint": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Identifies the exact engine build: service version, LibreOffice\nversion, PDFium version and installed font set. Use it in cache keys.\n",
+                "example": "sha256:5b0f6e1c9a2d"
+              },
+              "Convert-Page-Count": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 1
+                },
+                "description": "Number of pages in the resulting PDF.",
+                "example": 12
+              },
+              "Convert-Source-Format": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The detected input format, as listed by `/v1/capabilities`.",
+                "example": "pptx"
+              },
+              "Convert-Warning-Count": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Number of warnings raised for this conversion. The warnings\nthemselves are in `manifest.json`; ask for `bundle` to read them.\n",
+                "example": 0
+              },
+              "Server-Timing": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Where the time of this request went, in the W3C Server-Timing form\n`name;dur=<milliseconds>`, comma-separated, with 3 decimals. It is\nsent on every response produced after the file type was detected,\nincluding the error responses that follow detection. It is meant for\ndiagnosis and benchmarks.\n\n| Name | Stage |\n| --- | --- |\n| `recv` | Receiving the upload. Outside `total`. |\n| `detect` | Detecting the file type. |\n| `preflight` | Scanning the source before conversion. Runs alongside `convert`. |\n| `queue` | Waiting for a free worker. |\n| `lease` | Taking the worker from its pool. |\n| `spawn` | Starting a worker on this request's path. 0 when a warm worker was used. |\n| `bind` | Loading the engine library in that worker. 0 when a warm worker was used. |\n| `convert`, `convert_engine` | Producing the PDF: wall time, then time inside the engine. |\n| `inspect`, `inspect_engine` | Reading the PDF's facts: wall time, then engine time. |\n| `probe`, `probe_engine` | The blank-page probe: wall time, then engine time. |\n| `render`, `render_engine` | Rendering page images: wall time, then engine time (the longest chunk). |\n| `verify` | The quality checks that raise warnings. |\n| `package` | Building the manifest and the ZIP plan before the headers are sent. |\n| `total` | From the end of the upload to the start of the response. |\n\nStages that did not run are left out, except `spawn` and `bind`.\n",
+                "example": "recv;dur=4.210, detect;dur=0.031, queue;dur=0.004, lease;dur=0.012, spawn;dur=0.000, bind;dur=0.000, convert;dur=812.442, convert_engine;dur=809.118, verify;dur=1.305, package;dur=0.088, total;dur=815.901"
+              },
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "The correlation ID of this request.",
+                "example": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14"
+              }
+            },
+            "content": {
+              "application/pdf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "413": {
+            "$ref": "#/components/responses/FileTooLarge"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedFormat"
+          },
+          "422": {
+            "$ref": "#/components/responses/Unprocessable"
+          },
+          "429": {
+            "$ref": "#/components/responses/TooManyRequests"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "504": {
+            "$ref": "#/components/responses/ConversionTimeout"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Capabilities": {
+        "type": "object",
+        "required": [
+          "service",
+          "engine",
+          "inputs",
+          "outputs",
+          "image_formats",
+          "limits",
+          "fonts"
+        ],
+        "properties": {
+          "engine": {
+            "$ref": "#/components/schemas/EngineInfo"
+          },
+          "fonts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Installed font families, sorted by name.",
+            "example": [
+              "Caladea",
+              "Carlito",
+              "DejaVu Sans",
+              "Liberation Sans",
+              "Noto Sans"
+            ]
+          },
+          "image_formats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImageFormat"
+            }
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InputFormat"
+            },
+            "description": "Every input format this deployment accepts."
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OutputKind"
+            }
+          },
+          "service": {
+            "$ref": "#/components/schemas/ServiceInfo"
+          }
+        }
+      },
+      "ConvertOptions": {
+        "type": "object",
+        "description": "What to produce and how. Every property is optional. An empty object,\nor no `options` part at all, returns a PDF with default settings.",
+        "properties": {
+          "images": {
+            "$ref": "#/components/schemas/ImageOptions"
+          },
+          "output": {
+            "$ref": "#/components/schemas/OutputKind",
+            "default": "pdf"
+          },
+          "pages": {
+            "type": "string",
+            "description": "Which pages to render as images, 1-based. A comma-separated list of\nsingle pages (`3`), closed ranges (`1-5`) and open ranges (`10-`).\nPages past the end of the document are ignored. If nothing is\nleft the call fails with `VALIDATION_ERROR`.\n\nApplies to `images` and `bundle`. The PDF always holds every page.\nDefault: all pages.",
+            "example": "1-5,8,10-",
+            "maxLength": 256,
+            "pattern": "^[0-9]+(-[0-9]*)?(,[0-9]+(-[0-9]*)?)*$"
+          },
+          "password": {
+            "type": "string",
+            "description": "Password for an encrypted input. It is used once to open the file,\nnever logged and never stored. The resulting PDF is not encrypted.",
+            "writeOnly": true,
+            "maxLength": 256
+          },
+          "sheets": {
+            "$ref": "#/components/schemas/SheetOptions"
+          },
+          "slides": {
+            "$ref": "#/components/schemas/SlideOptions"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Total time budget for this call, in seconds. Covers waiting for a\nworker, conversion, rendering and packaging. The server caps it at\n`limits.max_timeout_seconds`.",
+            "default": 120,
+            "maximum": 210,
+            "minimum": 5
+          }
+        },
+        "additionalProperties": false,
+        "example": {
+          "images": {
+            "dpi": 150,
+            "format": "jpeg",
+            "max_edge": 2576,
+            "quality": 85
+          },
+          "output": "bundle",
+          "pages": "1-20"
+        }
+      },
+      "ConvertRequest": {
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "The document to convert. The part's file name is used only to name\nthe response and is echoed in the manifest. The type is detected\nfrom the bytes."
+          },
+          "options": {
+            "$ref": "#/components/schemas/ConvertOptions"
+          }
+        }
+      },
+      "EngineInfo": {
+        "type": "object",
+        "description": "The software that produced the result.",
+        "required": [
+          "service_version",
+          "pdfium",
+          "fingerprint"
+        ],
+        "properties": {
+          "fingerprint": {
+            "type": "string",
+            "description": "Same value as the `Convert-Engine-Fingerprint` header.",
+            "example": "sha256:5b0f6e1c9a2d"
+          },
+          "libreoffice": {
+            "type": "string",
+            "description": "LibreOffice version. Absent from a manifest when LibreOffice was not used.",
+            "example": "26.8.3.2"
+          },
+          "pdfium": {
+            "type": "string",
+            "description": "PDFium build number.",
+            "example": "8125"
+          },
+          "service_version": {
+            "type": "string",
+            "example": "1.0.0"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "error",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "error": {
+            "type": "string",
+            "description": "A human-readable message. Safe to log; never contains document content.",
+            "example": "unsupported format: html"
+          }
+        }
+      },
+      "ErrorCode": {
+        "type": "string",
+        "description": "Stable machine-readable error code. Branch on this, not on the message.",
+        "enum": [
+          "BAD_REQUEST",
+          "UNAUTHORIZED",
+          "NOT_FOUND",
+          "FILE_TOO_LARGE",
+          "UNSUPPORTED_FORMAT",
+          "VALIDATION_ERROR",
+          "PASSWORD_REQUIRED",
+          "INVALID_PASSWORD",
+          "LIMIT_EXCEEDED",
+          "CONVERSION_FAILED",
+          "TOO_MANY_REQUESTS",
+          "INTERNAL_ERROR",
+          "SERVICE_UNAVAILABLE",
+          "CONVERSION_TIMEOUT"
+        ]
+      },
+      "FormatFamily": {
+        "type": "string",
+        "description": "The broad kind of input, which decides how it is routed.",
+        "enum": [
+          "document",
+          "presentation",
+          "spreadsheet",
+          "pdf",
+          "image"
+        ]
+      },
+      "Health": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok"
+            ]
+          }
+        }
+      },
+      "ImageFormat": {
+        "type": "string",
+        "description": "Image encoding.\n\n- `jpeg`: smallest and fastest. Best for photos, slides and model input.\n- `png`: lossless. Larger and slower to encode.\n- `webp`: smaller than JPEG at similar quality. Slower to encode.",
+        "enum": [
+          "jpeg",
+          "png",
+          "webp"
+        ]
+      },
+      "ImageOptions": {
+        "type": "object",
+        "description": "How pages are rendered to images. Used by `images` and `bundle`.",
+        "properties": {
+          "dpi": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Render resolution in dots per inch. A US Letter page is\n1275 x 1650 px at 150 DPI. The server caps it at `limits.max_dpi`.",
+            "default": 150,
+            "maximum": 600,
+            "minimum": 36
+          },
+          "format": {
+            "$ref": "#/components/schemas/ImageFormat",
+            "default": "jpeg"
+          },
+          "max_edge": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Longest allowed edge of an image, in pixels. A page that would be\nlarger is rendered at a lower resolution so that it fits, keeping\nits aspect ratio. Unset means no clamp beyond `limits.max_edge_px`.",
+            "maximum": 8192,
+            "minimum": 64
+          },
+          "quality": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Encoder quality for `jpeg` and `webp`. Ignored for `png`.",
+            "default": 85,
+            "maximum": 100,
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImageSettings": {
+        "type": "object",
+        "description": "The image settings that were actually applied, after defaults and server caps.",
+        "required": [
+          "format",
+          "dpi"
+        ],
+        "properties": {
+          "dpi": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "format": {
+            "$ref": "#/components/schemas/ImageFormat"
+          },
+          "max_edge": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "quality": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "InputFormat": {
+        "type": "object",
+        "required": [
+          "format",
+          "family",
+          "extensions",
+          "media_types",
+          "engine"
+        ],
+        "properties": {
+          "engine": {
+            "type": "string",
+            "description": "Which engine turns this format into a PDF. `pdfium` means the file already is one.",
+            "enum": [
+              "libreoffice",
+              "pdfium",
+              "image"
+            ]
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "docx"
+            ]
+          },
+          "family": {
+            "$ref": "#/components/schemas/FormatFamily"
+          },
+          "format": {
+            "type": "string",
+            "description": "Short identifier, used in `Convert-Source-Format` and the manifest.",
+            "example": "docx"
+          },
+          "media_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ]
+          }
+        }
+      },
+      "Limits": {
+        "type": "object",
+        "required": [
+          "max_upload_bytes",
+          "max_render_pages",
+          "max_dpi",
+          "max_edge_px",
+          "default_timeout_seconds",
+          "max_timeout_seconds"
+        ],
+        "properties": {
+          "default_timeout_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "example": 120,
+            "minimum": 0
+          },
+          "max_dpi": {
+            "type": "integer",
+            "format": "int32",
+            "example": 300,
+            "minimum": 0
+          },
+          "max_edge_px": {
+            "type": "integer",
+            "format": "int32",
+            "example": 4096,
+            "minimum": 0
+          },
+          "max_render_pages": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Most pages one call may render to images.",
+            "example": 500,
+            "minimum": 0
+          },
+          "max_timeout_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "example": 210,
+            "minimum": 0
+          },
+          "max_upload_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "example": 125829120,
+            "minimum": 0
+          }
+        }
+      },
+      "Manifest": {
+        "type": "object",
+        "description": "The `manifest.json` at the root of every ZIP response. It describes\nthe source, the PDF, each rendered page and anything the service\nnoticed during conversion.",
+        "required": [
+          "manifest_version",
+          "request_id",
+          "source",
+          "page_count",
+          "pages",
+          "warnings",
+          "engine",
+          "timings_ms"
+        ],
+        "properties": {
+          "engine": {
+            "$ref": "#/components/schemas/EngineInfo"
+          },
+          "images": {
+            "$ref": "#/components/schemas/ImageSettings"
+          },
+          "manifest_version": {
+            "type": "integer",
+            "description": "Version of this manifest layout.",
+            "enum": [
+              1
+            ]
+          },
+          "page_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of pages in the PDF, whether or not all were rendered.",
+            "minimum": 1
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PageInfo"
+            },
+            "description": "One entry per rendered page, in page order."
+          },
+          "pdf": {
+            "$ref": "#/components/schemas/PdfInfo"
+          },
+          "request_id": {
+            "type": "string",
+            "description": "The correlation ID of the request that produced this bundle."
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceInfo"
+          },
+          "timings_ms": {
+            "$ref": "#/components/schemas/Timings"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Warning"
+            },
+            "description": "Things the service noticed that may affect quality. Empty when all checks passed."
+          }
+        },
+        "example": {
+          "engine": {
+            "fingerprint": "sha256:5b0f6e1c9a2d",
+            "libreoffice": "26.8.3.2",
+            "pdfium": "8125",
+            "service_version": "1.0.0"
+          },
+          "images": {
+            "dpi": 150,
+            "format": "jpeg",
+            "quality": 85
+          },
+          "manifest_version": 1,
+          "page_count": 2,
+          "pages": [
+            {
+              "blank": false,
+              "height_pt": 540,
+              "height_px": 1125,
+              "number": 1,
+              "path": "pages/0001.jpg",
+              "size_bytes": 184220,
+              "width_pt": 960,
+              "width_px": 2000
+            },
+            {
+              "blank": false,
+              "height_pt": 540,
+              "height_px": 1125,
+              "number": 2,
+              "path": "pages/0002.jpg",
+              "size_bytes": 201877,
+              "width_pt": 960,
+              "width_px": 2000
+            }
+          ],
+          "pdf": {
+            "origin": "converted",
+            "path": "document.pdf",
+            "size_bytes": 1203344
+          },
+          "request_id": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14",
+          "source": {
+            "encrypted": false,
+            "family": "presentation",
+            "filename": "deck.pptx",
+            "format": "pptx",
+            "sha256": "9f2c6c1e0a4b7d3f5e8a1b2c3d4e5f60718293a4b5c6d7e8f901122334455667",
+            "size_bytes": 4821337
+          },
+          "timings_ms": {
+            "convert": 812,
+            "queue": 3,
+            "render": 240,
+            "total": 1071
+          },
+          "warnings": [
+            {
+              "code": "FONT_SUBSTITUTED",
+              "detail": {
+                "requested": "Aptos",
+                "substitute": "Carlito"
+              },
+              "message": "Aptos is not installed and was replaced by Carlito"
+            }
+          ]
+        }
+      },
+      "OutputKind": {
+        "type": "string",
+        "description": "What the response contains.\n\n- `pdf`: the PDF, as `application/pdf`.\n- `images`: page images and a manifest, as `application/zip`.\n- `bundle`: the PDF, page images and a manifest, as `application/zip`.",
+        "enum": [
+          "pdf",
+          "images",
+          "bundle"
+        ]
+      },
+      "PageInfo": {
+        "type": "object",
+        "description": "One rendered page.",
+        "required": [
+          "number",
+          "path",
+          "width_px",
+          "height_px",
+          "width_pt",
+          "height_pt",
+          "size_bytes",
+          "blank"
+        ],
+        "properties": {
+          "blank": {
+            "type": "boolean",
+            "description": "True when the rendered page is a single flat colour."
+          },
+          "height_pt": {
+            "type": "number",
+            "description": "Page height in PDF points (1/72 inch)."
+          },
+          "height_px": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1
+          },
+          "number": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1-based page number in the PDF.",
+            "minimum": 1
+          },
+          "path": {
+            "type": "string",
+            "description": "Path of the image inside the ZIP.",
+            "example": "pages/0001.jpg"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "width_pt": {
+            "type": "number",
+            "description": "Page width in PDF points (1/72 inch)."
+          },
+          "width_px": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1
+          }
+        }
+      },
+      "PdfInfo": {
+        "type": "object",
+        "description": "The PDF inside a `bundle`. Absent for `images`.",
+        "required": [
+          "path",
+          "size_bytes",
+          "origin"
+        ],
+        "properties": {
+          "origin": {
+            "type": "string",
+            "description": "How the PDF came to be.\n\n- `converted`: produced by LibreOffice from an office file.\n- `passthrough`: the upload was already a PDF and is returned unchanged, or decrypted when it was encrypted.\n- `assembled`: built from an uploaded image.",
+            "enum": [
+              "converted",
+              "passthrough",
+              "assembled"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "description": "Path of the PDF inside the ZIP.",
+            "example": "document.pdf"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "PoolStatus": {
+        "type": "object",
+        "required": [
+          "target",
+          "idle",
+          "busy"
+        ],
+        "properties": {
+          "busy": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Workers running a job.",
+            "minimum": 0
+          },
+          "idle": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Warm workers waiting for a job.",
+            "minimum": 0
+          },
+          "target": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Configured number of workers.",
+            "minimum": 0
+          }
+        }
+      },
+      "Readiness": {
+        "type": "object",
+        "required": [
+          "status",
+          "pools"
+        ],
+        "properties": {
+          "pools": {
+            "type": "object",
+            "required": [
+              "office",
+              "render"
+            ],
+            "properties": {
+              "office": {
+                "$ref": "#/components/schemas/PoolStatus"
+              },
+              "render": {
+                "$ref": "#/components/schemas/PoolStatus"
+              }
+            }
+          },
+          "status": {
+            "type": "string",
+            "description": "- `ready`: taking conversions.\n- `starting`: workers are still warming up.\n- `draining`: shutting down; in-flight jobs are finishing.\n- `degraded`: a pool has no healthy worker.",
+            "enum": [
+              "ready",
+              "starting",
+              "draining",
+              "degraded"
+            ]
+          }
+        }
+      },
+      "ServiceInfo": {
+        "type": "object",
+        "required": [
+          "name",
+          "version"
+        ],
+        "properties": {
+          "commit": {
+            "type": "string",
+            "description": "Git commit the binary was built from.",
+            "example": "3f9c2ab"
+          },
+          "name": {
+            "type": "string",
+            "example": "convert"
+          },
+          "version": {
+            "type": "string",
+            "example": "1.0.0"
+          }
+        }
+      },
+      "SheetOptions": {
+        "type": "object",
+        "description": "Options that only affect spreadsheets.",
+        "properties": {
+          "one_page_per_sheet": {
+            "type": "boolean",
+            "description": "Put each sheet on a single page sized to its content, instead of\nsplitting it across pages by its print layout.",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "SlideNotes": {
+        "type": "string",
+        "description": "What to do with speaker notes.\n\n- `none`: slides only.\n- `append`: all slides, followed by one notes page per slide.\n- `only`: notes pages only.",
+        "enum": [
+          "none",
+          "append",
+          "only"
+        ]
+      },
+      "SlideOptions": {
+        "type": "object",
+        "description": "Options that only affect presentations.",
+        "properties": {
+          "include_hidden": {
+            "type": "boolean",
+            "description": "Also export slides that are marked hidden.",
+            "default": false
+          },
+          "notes": {
+            "$ref": "#/components/schemas/SlideNotes",
+            "default": "none"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SourceInfo": {
+        "type": "object",
+        "description": "What was uploaded.",
+        "required": [
+          "format",
+          "family",
+          "size_bytes",
+          "sha256",
+          "encrypted"
+        ],
+        "properties": {
+          "encrypted": {
+            "type": "boolean",
+            "description": "Whether the upload was password-protected."
+          },
+          "family": {
+            "$ref": "#/components/schemas/FormatFamily"
+          },
+          "filename": {
+            "type": "string",
+            "description": "The file name sent with the upload, if any."
+          },
+          "format": {
+            "type": "string",
+            "description": "The detected format, as listed by `/v1/capabilities`.",
+            "example": "pptx"
+          },
+          "sha256": {
+            "type": "string",
+            "description": "SHA-256 of the uploaded bytes, in lowercase hex.",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Timings": {
+        "type": "object",
+        "description": "Where the time went, in milliseconds.",
+        "required": [
+          "queue",
+          "convert",
+          "render",
+          "total"
+        ],
+        "properties": {
+          "convert": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Producing the PDF. Zero for PDF uploads.",
+            "minimum": 0
+          },
+          "queue": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Waiting for a free worker.",
+            "minimum": 0
+          },
+          "render": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Rendering and encoding page images.",
+            "minimum": 0
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "From the end of the upload to the start of the response.",
+            "minimum": 0
+          }
+        }
+      },
+      "Warning": {
+        "type": "object",
+        "description": "A quality signal. Warnings never fail the request.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/WarningCode"
+          },
+          "detail": {
+            "type": "object",
+            "description": "Structured data for the warning. Its keys depend on `code`.",
+            "additionalProperties": true
+          },
+          "message": {
+            "type": "string",
+            "description": "A human-readable sentence."
+          },
+          "page": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The page the warning is about, when it concerns one page.",
+            "minimum": 1
+          }
+        }
+      },
+      "WarningCode": {
+        "type": "string",
+        "description": "- `FONT_SUBSTITUTED`: a font the document asks for is not installed.\n  Text may reflow. `detail` has `requested` and `substitute`.\n- `PAGE_COUNT_MISMATCH`: the PDF has a different number of pages than\n  the source declares. `detail` has `expected` and `actual`.\n- `BLANK_PAGE`: a page that contains content rendered as a flat colour.\n- `MACROS_IGNORED`: the document contains macros. They were not run.\n- `RENDER_CLAMPED`: a server limit reduced the requested resolution.\n  `detail` has `requested_dpi` and `effective_dpi`.",
+        "enum": [
+          "FONT_SUBSTITUTED",
+          "PAGE_COUNT_MISMATCH",
+          "BLANK_PAGE",
+          "MACROS_IGNORED",
+          "RENDER_CLAMPED"
+        ]
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "The request is malformed, for example no `file` part or `options` is not valid JSON.",
+        "headers": {
+          "X-Request-ID": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation ID of this request.",
+            "example": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "BAD_REQUEST",
+              "error": "missing multipart part \"file\""
+            }
+          }
+        }
+      },
+      "ConversionTimeout": {
+        "description": "The job did not finish within `timeout_seconds`. The engine process\nwas killed and replaced.",
+        "headers": {
+          "X-Request-ID": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation ID of this request.",
+            "example": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "CONVERSION_TIMEOUT",
+              "error": "the conversion did not finish within 120 seconds"
+            }
+          }
+        }
+      },
+      "FileTooLarge": {
+        "description": "The upload exceeds `limits.max_upload_bytes`.",
+        "headers": {
+          "X-Request-ID": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation ID of this request.",
+            "example": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "FILE_TOO_LARGE",
+              "error": "file exceeds the 125829120 byte limit"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "An unexpected failure inside the service. Details are logged under the request ID and not returned.",
+        "headers": {
+          "X-Request-ID": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation ID of this request.",
+            "example": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "INTERNAL_ERROR",
+              "error": "internal server error"
+            }
+          }
+        }
+      },
+      "ServiceUnavailable": {
+        "description": "The service is starting, draining for shutdown, or has no healthy worker.",
+        "headers": {
+          "Retry-After": {
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1
+            },
+            "description": "Seconds to wait before retrying.",
+            "example": 5
+          },
+          "X-Request-ID": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation ID of this request.",
+            "example": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "SERVICE_UNAVAILABLE",
+              "error": "the service is not ready"
+            }
+          }
+        }
+      },
+      "TooManyRequests": {
+        "description": "All workers are busy and the wait queue is full. Retry after the indicated delay.",
+        "headers": {
+          "Retry-After": {
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 1
+            },
+            "description": "Seconds to wait before retrying.",
+            "example": 5
+          },
+          "X-Request-ID": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation ID of this request.",
+            "example": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "TOO_MANY_REQUESTS",
+              "error": "the conversion queue is full"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "The API key is missing or wrong.",
+        "headers": {
+          "X-Request-ID": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation ID of this request.",
+            "example": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "UNAUTHORIZED",
+              "error": "missing or invalid API key"
+            }
+          }
+        }
+      },
+      "Unprocessable": {
+        "description": "The request was understood but cannot be carried out for this input.\nRetrying the same request will fail the same way.\n\n| Code | Meaning |\n| --- | --- |\n| `VALIDATION_ERROR` | An option is out of range, unknown, or `pages` selects nothing. |\n| `PASSWORD_REQUIRED` | The file is encrypted and no `password` was sent. |\n| `INVALID_PASSWORD` | The `password` does not open the file. |\n| `LIMIT_EXCEEDED` | The job would exceed a server limit, for example more pages to render than `limits.max_render_pages`. |\n| `CONVERSION_FAILED` | The engine could not convert the document. It is corrupt, or it crashed the engine twice. |",
+        "headers": {
+          "X-Request-ID": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation ID of this request.",
+            "example": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "examples": {
+              "conversionFailed": {
+                "summary": "The engine could not convert the file",
+                "value": {
+                  "code": "CONVERSION_FAILED",
+                  "error": "the document could not be converted"
+                }
+              },
+              "passwordRequired": {
+                "summary": "Encrypted file without a password",
+                "value": {
+                  "code": "PASSWORD_REQUIRED",
+                  "error": "the document is encrypted and no password was provided"
+                }
+              },
+              "validation": {
+                "summary": "Option out of range",
+                "value": {
+                  "code": "VALIDATION_ERROR",
+                  "error": "images.dpi must be between 36 and 600"
+                }
+              }
+            }
+          }
+        }
+      },
+      "UnsupportedFormat": {
+        "description": "The detected file type is not on the allow-list. The message names\nwhat was detected. `/v1/capabilities` lists what is accepted.",
+        "headers": {
+          "X-Request-ID": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "The correlation ID of this request.",
+            "example": "7f3c2a9e-4b1d-4f6a-9a51-0c2e8d7b6a14"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "UNSUPPORTED_FORMAT",
+              "error": "unsupported format: html"
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "ApiKeyBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The service API key, sent as `Authorization: Bearer <API_KEY>`."
+      }
+    }
+  },
+  "security": [
+    {
+      "ApiKeyBearer": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "conversion",
+      "description": "The one endpoint that does the work."
+    },
+    {
+      "name": "discovery",
+      "description": "What this deployment supports."
+    },
+    {
+      "name": "operations",
+      "description": "Probes and metrics for the platform. No API key."
+    }
+  ]
+}

@@ -1,19 +1,34 @@
 package convert
 
 import (
-	"archive/zip"
+	"archive/tar"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
+	"regexp"
+	"sort"
+	"strings"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/viktordanov/rs-convert/client/internal/api"
 )
 
-const manifestPath = "manifest.json"
+// The names an archive may hold. manifest.json comes first; document.pdf
+// only in a bundle; then one image per rendered page.
+const (
+	manifestPath = "manifest.json"
+	pdfPath      = "document.pdf"
+	pagesDir     = "pages"
+	// manifestLimit caps the size of manifest.json.
+	manifestLimit = 16 << 20
+)
+
+var pagePath = regexp.MustCompile(`^pages/[0-9]{4,}\.(jpg|jpeg|png|webp)$`)
 
 // Info is the metadata the service sends in response headers.
 type Info struct {
@@ -33,13 +48,13 @@ type PDF struct {
 }
 
 // Bundle is the result of ConvertToBundle and ConvertToImages. It holds the
-// downloaded ZIP in a temp file until Close.
+// unpacked archive in a temp directory until Close.
 type Bundle struct {
 	Manifest Manifest
 	Info     Info
 
-	file *os.File
-	zip  *zip.Reader
+	dir  string
+	root *os.Root
 }
 
 // Manifest describes a bundle: the source, the PDF, each rendered page and
@@ -134,21 +149,28 @@ func (b *Bundle) Page(number int) (io.ReadCloser, bool, error) {
 	return nil, false, nil
 }
 
-// Close releases the bundle and deletes its temp file.
+// Close releases the bundle and deletes its temp directory. It can be
+// called more than once.
 func (b *Bundle) Close() error {
-	name := b.file.Name()
-	closeErr := b.file.Close()
-	if err := os.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("failed to remove bundle file: %w", err)
+	var closeErr error
+	if b.root != nil {
+		closeErr = b.root.Close()
+		b.root = nil
 	}
-	if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-		return fmt.Errorf("failed to close bundle file: %w", closeErr)
+	if err := os.RemoveAll(b.dir); err != nil {
+		return fmt.Errorf("failed to remove bundle directory: %w", err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("failed to close bundle directory: %w", closeErr)
 	}
 	return nil
 }
 
 func (b *Bundle) open(path string) (io.ReadCloser, bool, error) {
-	entry, err := b.zip.Open(path)
+	if b.root == nil {
+		return nil, false, errors.New("failed to open bundle entry: the bundle is closed")
+	}
+	entry, err := b.root.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, false, nil
 	}
@@ -158,14 +180,20 @@ func (b *Bundle) open(path string) (io.ReadCloser, bool, error) {
 	return entry, true, nil
 }
 
-// readBundle downloads the ZIP into a temp file and reads its manifest. ZIP
-// needs random access, so the response cannot be read as a stream.
+// readBundle unpacks the tar.zst response into a temp directory and reads its
+// manifest. The archive is a stream, so it is read once, front to back; the
+// directory gives PDF and Page random access afterwards.
 func readBundle(body io.Reader, tempDir string) (*Bundle, error) {
-	file, err := os.CreateTemp(tempDir, "convert-bundle-*.zip")
+	dir, err := os.MkdirTemp(tempDir, "convert-bundle-*")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create temp file: %w", err)
+		return nil, fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	bundle := &Bundle{file: file}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, fmt.Errorf("failed to open temp directory: %w", err)
+	}
+	bundle := &Bundle{dir: dir, root: root}
 
 	if err := bundle.load(body); err != nil {
 		_ = bundle.Close()
@@ -174,27 +202,136 @@ func readBundle(body io.Reader, tempDir string) (*Bundle, error) {
 	return bundle, nil
 }
 
+// load reads the archive. It accepts only what the service writes: a
+// regular manifest.json first, then exactly the regular files the manifest
+// names, each under an expected name and each once.
 func (b *Bundle) load(body io.Reader) error {
-	size, err := io.Copy(b.file, body)
+	zr, err := zstd.NewReader(body, zstd.WithDecoderConcurrency(1))
 	if err != nil {
-		return fmt.Errorf("failed to download bundle: %w", err)
+		return fmt.Errorf("failed to start zstd decoder: %w", err)
 	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
 
-	b.zip, err = zip.NewReader(b.file, size)
+	hdr, err := tr.Next()
+	if errors.Is(err, io.EOF) {
+		return errors.New("failed to read archive: it is empty")
+	}
 	if err != nil {
-		return fmt.Errorf("failed to open bundle: %w", err)
+		return fmt.Errorf("failed to read archive: %w", err)
 	}
-
-	entry, err := b.zip.Open(manifestPath)
+	if hdr.Name != manifestPath || hdr.Typeflag != tar.TypeReg {
+		return fmt.Errorf("failed to read archive: the first entry is %q, want the file %s", hdr.Name, manifestPath)
+	}
+	raw, err := io.ReadAll(io.LimitReader(tr, manifestLimit+1))
 	if err != nil {
-		return fmt.Errorf("failed to open manifest: %w", err)
+		return fmt.Errorf("failed to read manifest: %w", err)
 	}
-	defer entry.Close()
-
+	if len(raw) > manifestLimit {
+		return fmt.Errorf("failed to read manifest: it is larger than %d bytes", manifestLimit)
+	}
 	var manifest api.Manifest
-	if err := json.NewDecoder(entry).Decode(&manifest); err != nil {
+	if err := json.Unmarshal(raw, &manifest); err != nil {
 		return fmt.Errorf("failed to decode manifest: %w", err)
 	}
 	b.Manifest = transformManifestToResult(manifest)
+
+	expected, err := expectedEntries(b.Manifest)
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read archive: %w", err)
+		}
+		name := hdr.Name
+		if err := checkEntryName(name); err != nil {
+			return err
+		}
+		switch {
+		case hdr.Typeflag != tar.TypeReg:
+			return fmt.Errorf("failed to read archive: entry %q is not a regular file", name)
+		case !expected[name]:
+			return fmt.Errorf("failed to read archive: entry %q is not in the manifest", name)
+		case seen[name]:
+			return fmt.Errorf("failed to read archive: entry %q appears twice", name)
+		}
+		seen[name] = true
+		if err := b.write(name, tr); err != nil {
+			return err
+		}
+	}
+	for _, name := range sortedKeys(expected) {
+		if !seen[name] {
+			return fmt.Errorf("failed to read archive: the manifest names %q, which is not in the archive", name)
+		}
+	}
 	return nil
+}
+
+func (b *Bundle) write(name string, r io.Reader) error {
+	if strings.HasPrefix(name, pagesDir+"/") {
+		if err := b.root.Mkdir(pagesDir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("failed to create pages directory: %w", err)
+		}
+	}
+	f, err := b.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to create bundle entry: %w", err)
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("failed to unpack bundle entry: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("failed to unpack bundle entry: %w", err)
+	}
+	return nil
+}
+
+// checkEntryName rejects a name that could leave the bundle directory or that
+// the service never writes.
+func checkEntryName(name string) error {
+	for _, part := range strings.Split(name, "/") {
+		if part == ".." {
+			return fmt.Errorf("failed to read archive: entry %q has a path with ..", name)
+		}
+	}
+	if name != pdfPath && !pagePath.MatchString(name) {
+		return fmt.Errorf("failed to read archive: unexpected entry %q", name)
+	}
+	return nil
+}
+
+// expectedEntries returns the files the manifest names. Each must have a
+// name the service writes, so a manifest cannot point outside the bundle.
+func expectedEntries(m Manifest) (map[string]bool, error) {
+	expected := map[string]bool{}
+	if m.PDF != nil {
+		if m.PDF.Path != pdfPath {
+			return nil, fmt.Errorf("failed to read manifest: the PDF path is %q, want %s", m.PDF.Path, pdfPath)
+		}
+		expected[pdfPath] = true
+	}
+	for _, p := range m.Pages {
+		if err := checkEntryName(p.Path); err != nil || p.Path == pdfPath {
+			return nil, fmt.Errorf("failed to read manifest: page %d has the path %q", p.Number, p.Path)
+		}
+		expected[p.Path] = true
+	}
+	return expected, nil
+}
+
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

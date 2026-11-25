@@ -8,7 +8,7 @@ info:
     images.
 
     One call does the whole job. Upload a file, say what you want back, and
-    receive either the PDF itself or a ZIP bundle holding the PDF, the page
+    receive either the PDF itself or a tar.zst bundle holding the PDF, the page
     images and a `manifest.json` that describes them.
 
     ## Authentication
@@ -30,18 +30,18 @@ info:
       -o deck.pdf \
       "$CONVERT_HOST/v1/convert"
 
-    # PDF plus page images at 150 DPI, as one ZIP bundle
+    # PDF plus page images at 150 DPI, as one tar.zst bundle
     curl -sS -H "Authorization: Bearer $CONVERT_API_KEY" \
       -F file=@deck.pptx \
       -F 'options={"output":"bundle","images":{"format":"jpeg","dpi":150}};type=application/json' \
-      -o deck.zip \
+      -o deck.tar.zst \
       "$CONVERT_HOST/v1/convert"
 
     # First page of an existing PDF as a small thumbnail
     curl -sS -H "Authorization: Bearer $CONVERT_API_KEY" \
       -F file=@report.pdf \
       -F 'options={"output":"images","pages":"1","images":{"format":"webp","dpi":72,"max_edge":320}};type=application/json' \
-      -o thumb.zip \
+      -o thumb.tar.zst \
       "$CONVERT_HOST/v1/convert"
     ```
 
@@ -53,8 +53,8 @@ info:
     | `output` | Response | Contents |
     | --- | --- | --- |
     | `pdf` (default) | `application/pdf` | The PDF. Metadata travels in `Convert-*` headers. |
-    | `images` | `application/zip` | `manifest.json` and `pages/NNNN.<ext>` |
-    | `bundle` | `application/zip` | `manifest.json`, `document.pdf` and `pages/NNNN.<ext>` |
+    | `images` | `application/zstd` | A tar archive of `manifest.json` and `pages/NNNN.<ext>` |
+    | `bundle` | `application/zstd` | A tar archive of `manifest.json`, `document.pdf` and `pages/NNNN.<ext>` |
 
     The response is only sent once the whole job has succeeded, so a `200`
     always carries a complete result and every failure has a proper status
@@ -150,24 +150,29 @@ paths:
         '200':
           description: |
             The conversion succeeded. The content type follows the `output`
-            option: `application/pdf` for `pdf`, `application/zip` for
+            option: `application/pdf` for `pdf`, `application/zstd` for
             `images` and `bundle`.
 
-            The ZIP is laid out as:
+            For `images` and `bundle` the body is a tar archive (ustar
+            headers) compressed as one zstd frame, named `<stem>.tar.zst`.
+            The entries come in this order:
 
             ```
-            manifest.json        described by the Manifest schema
+            manifest.json        always first; described by the Manifest schema
             document.pdf         only for output=bundle
             pages/0001.jpg       one file per rendered page, 1-based, zero-padded
             pages/0002.jpg
             ```
 
-            Images and the PDF are stored without further compression.
+            The archive is streamed with chunked transfer encoding, so the
+            response has no exact `Content-Length`. Read it to the end
+            before you trust it: a stream that ends early is not a valid
+            archive.
           headers:
             X-Request-ID:
               $ref: '#/components/headers/X-Request-ID'
             Content-Disposition:
-              description: '`attachment` with a file name derived from the upload, for example `deck.pdf` or `deck.zip`.'
+              description: '`attachment` with a file name derived from the upload, for example `deck.pdf` or `deck.tar.zst`.'
               schema:
                 type: string
               example: attachment; filename="deck.pdf"
@@ -199,7 +204,7 @@ paths:
               schema:
                 type: string
                 format: binary
-            application/zip:
+            application/zstd:
               schema:
                 type: string
                 format: binary
@@ -360,7 +365,7 @@ components:
         | `probe`, `probe_engine` | The blank-page probe: wall time, then engine time. |
         | `render`, `render_engine` | Rendering page images: wall time, then engine time (the longest chunk). |
         | `verify` | The quality checks that raise warnings. |
-        | `package` | Building the manifest and the ZIP plan before the headers are sent. |
+        | `package` | Building the manifest and the archive plan before the headers are sent. |
         | `total` | From the end of the upload to the start of the response. |
 
         Stages that did not run are left out, except `spawn` and `bind`.
@@ -592,8 +597,8 @@ components:
         What the response contains.
 
         - `pdf`: the PDF, as `application/pdf`.
-        - `images`: page images and a manifest, as `application/zip`.
-        - `bundle`: the PDF, page images and a manifest, as `application/zip`.
+        - `images`: page images and a manifest, as `application/zstd` (tar.zst).
+        - `bundle`: the PDF, page images and a manifest, as `application/zstd` (tar.zst).
 
     ImageOptions:
       type: object
@@ -676,7 +681,7 @@ components:
     Manifest:
       type: object
       description: |
-        The `manifest.json` at the root of every ZIP response. It describes
+        The `manifest.json` that comes first in every tar.zst response. It describes
         the source, the PDF, each rendered page and anything the service
         noticed during conversion.
       required:
@@ -811,7 +816,7 @@ components:
       properties:
         path:
           type: string
-          description: Path of the PDF inside the ZIP.
+          description: Path of the PDF inside the archive.
           example: document.pdf
         size_bytes:
           type: integer
@@ -852,7 +857,7 @@ components:
           description: 1-based page number in the PDF.
         path:
           type: string
-          description: Path of the image inside the ZIP.
+          description: Path of the image inside the archive.
           example: pages/0001.jpg
         width_px:
           type: integer

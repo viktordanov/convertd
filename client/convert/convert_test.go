@@ -1,7 +1,7 @@
 package convert_test
 
 import (
-	"archive/zip"
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/viktordanov/rs-convert/client/convert"
 )
@@ -92,11 +94,9 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message, "code": code})
 }
 
-// bundleZIP builds a bundle as the service would. withPDF false gives the
-// shape of output=images.
-func bundleZIP(t *testing.T, withPDF bool) []byte {
-	t.Helper()
-
+// testManifest is a manifest as the service writes it. withPDF false gives
+// the shape of output=images.
+func testManifest(withPDF bool) map[string]any {
 	manifest := map[string]any{
 		"manifest_version": 1,
 		"request_id":       "req-1",
@@ -124,38 +124,81 @@ func bundleZIP(t *testing.T, withPDF bool) []byte {
 	if withPDF {
 		manifest["pdf"] = map[string]any{"path": "document.pdf", "size_bytes": 8, "origin": "converted"}
 	}
+	return manifest
+}
 
+// entry is one file of a test archive. typ 0 means a regular file.
+type entry struct {
+	name string
+	data []byte
+	typ  byte
+}
+
+func manifestEntry(t *testing.T, manifest map[string]any) entry {
+	t.Helper()
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("encode manifest: %v", err)
+	}
+	return entry{name: "manifest.json", data: raw}
+}
+
+// tarZst builds a tar archive in one zstd frame, as the service streams it.
+func tarZst(t *testing.T, entries ...entry) []byte {
+	t.Helper()
 	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	add := func(name string, data []byte) {
-		w, err := zw.Create(name)
-		if err != nil {
-			t.Fatalf("zip create %s: %v", name, err)
+	zw, err := zstd.NewWriter(&buf, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	if err != nil {
+		t.Fatalf("zstd writer: %v", err)
+	}
+	tw := tar.NewWriter(zw)
+	for _, e := range entries {
+		hdr := &tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.data)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}
+		if e.typ != 0 {
+			hdr.Typeflag, hdr.Size, hdr.Linkname = e.typ, 0, "/etc/passwd"
 		}
-		if _, err := w.Write(data); err != nil {
-			t.Fatalf("zip write %s: %v", name, err)
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("tar header %s: %v", e.name, err)
+		}
+		if e.typ == 0 {
+			if _, err := tw.Write(e.data); err != nil {
+				t.Fatalf("tar write %s: %v", e.name, err)
+			}
 		}
 	}
-	manifestJSON, _ := json.Marshal(manifest)
-	add("manifest.json", manifestJSON)
-	if withPDF {
-		add("document.pdf", []byte("%PDF-1.7"))
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
 	}
-	add("pages/0001.jpg", []byte("page-1"))
 	if err := zw.Close(); err != nil {
-		t.Fatalf("zip close: %v", err)
+		t.Fatalf("zstd close: %v", err)
 	}
 	return buf.Bytes()
 }
 
-func respondWithBundle(t *testing.T, withPDF bool) http.HandlerFunc {
+// bundleArchive builds a valid bundle (or images output when withPDF is
+// false) as the service would.
+func bundleArchive(t *testing.T, withPDF bool) []byte {
+	t.Helper()
+	entries := []entry{manifestEntry(t, testManifest(withPDF))}
+	if withPDF {
+		entries = append(entries, entry{name: "document.pdf", data: []byte("%PDF-1.7")})
+	}
+	entries = append(entries, entry{name: "pages/0001.jpg", data: []byte("page-1")})
+	return tarZst(t, entries...)
+}
+
+func respondWith(body []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Type", "application/zstd")
 		w.Header().Set("X-Request-ID", "req-1")
 		w.Header().Set("Convert-Page-Count", "2")
 		w.Header().Set("Convert-Warning-Count", "2")
-		_, _ = w.Write(bundleZIP(t, withPDF))
+		_, _ = w.Write(body)
 	}
+}
+
+func respondWithBundle(t *testing.T, withPDF bool) http.HandlerFunc {
+	return respondWith(bundleArchive(t, withPDF))
 }
 
 func readAll(t *testing.T, r io.ReadCloser) string {
@@ -290,9 +333,9 @@ func TestConvertToBundle(t *testing.T) {
 		}
 	})
 
-	t.Run("Close deletes the temp file and can be called twice", func(t *testing.T) {
-		if files, _ := filepath.Glob(filepath.Join(tempDir, "convert-bundle-*.zip")); len(files) != 1 {
-			t.Fatalf("temp files before Close = %v", files)
+	t.Run("Close deletes the temp directory and can be called twice", func(t *testing.T) {
+		if dirs, _ := filepath.Glob(filepath.Join(tempDir, "convert-bundle-*")); len(dirs) != 1 {
+			t.Fatalf("temp directories before Close = %v", dirs)
 		}
 		if err := bundle.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
@@ -300,8 +343,11 @@ func TestConvertToBundle(t *testing.T) {
 		if err := bundle.Close(); err != nil {
 			t.Fatalf("second Close: %v", err)
 		}
-		if files, _ := filepath.Glob(filepath.Join(tempDir, "convert-bundle-*.zip")); len(files) != 0 {
-			t.Errorf("temp files after Close = %v", files)
+		if dirs, _ := filepath.Glob(filepath.Join(tempDir, "convert-bundle-*")); len(dirs) != 0 {
+			t.Errorf("temp directories after Close = %v", dirs)
+		}
+		if _, _, err := bundle.PDF(); err == nil {
+			t.Error("PDF after Close succeeded")
 		}
 	})
 }
@@ -330,19 +376,49 @@ func TestConvertToImages(t *testing.T) {
 }
 
 func TestBundleFailures(t *testing.T) {
-	t.Run("a response that is not a ZIP fails and leaves no temp file", func(t *testing.T) {
-		c, _, tempDir := newFakeService(t, func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte("not a zip"))
-		})
+	page := entry{name: "pages/0001.jpg", data: []byte("page-1")}
+	pdf := entry{name: "document.pdf", data: []byte("%PDF-1.7")}
+	badPDFPath := testManifest(true)
+	badPDFPath["pdf"] = map[string]any{"path": "../document.pdf", "size_bytes": 8, "origin": "converted"}
+	badPagePath := testManifest(false)
+	badPagePath["pages"] = []map[string]any{{"number": 1, "path": "pages/../../x.jpg", "width_px": 1,
+		"height_px": 1, "width_pt": 1, "height_pt": 1, "size_bytes": 1, "blank": false}}
+	valid := bundleArchive(t, true)
 
-		_, err := c.ConvertToBundle(context.Background(), "a.docx", strings.NewReader("x"), convert.Options{})
-		if err == nil {
-			t.Fatal("expected an error")
-		}
-		if files, _ := os.ReadDir(tempDir); len(files) != 0 {
-			t.Errorf("temp files left behind: %v", files)
-		}
-	})
+	cases := []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{"not zstd", []byte("not a tar.zst"), "failed to read archive"},
+		{"cut short", valid[:len(valid)/2], "failed to read archive"},
+		{"empty archive", tarZst(t), "it is empty"},
+		{"manifest not first", tarZst(t, pdf, manifestEntry(t, testManifest(true)), page), `the first entry is "document.pdf"`},
+		{"a path with ..", tarZst(t, manifestEntry(t, testManifest(true)), entry{name: "pages/../document.pdf", data: []byte("x")}), "has a path with .."},
+		{"an unexpected name", tarZst(t, manifestEntry(t, testManifest(true)), pdf, page, entry{name: "notes.txt", data: []byte("x")}), `unexpected entry "notes.txt"`},
+		{"a symlink", tarZst(t, manifestEntry(t, testManifest(true)), pdf, entry{name: "pages/0001.jpg", typ: tar.TypeSymlink}), "is not a regular file"},
+		{"an entry the manifest does not name", tarZst(t, manifestEntry(t, testManifest(true)), pdf, page, entry{name: "pages/0002.jpg", data: []byte("x")}), "is not in the manifest"},
+		{"an entry twice", tarZst(t, manifestEntry(t, testManifest(true)), pdf, page, page), "appears twice"},
+		{"a named file missing", tarZst(t, manifestEntry(t, testManifest(true)), page), `names "document.pdf", which is not in the archive`},
+		{"a manifest PDF path outside the bundle", tarZst(t, manifestEntry(t, badPDFPath), pdf, page), "the PDF path is"},
+		{"a manifest page path outside the bundle", tarZst(t, manifestEntry(t, badPagePath)), "page 1 has the path"},
+		{"a manifest that is not JSON", tarZst(t, entry{name: "manifest.json", data: []byte("{")}), "failed to decode manifest"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" fails and leaves no temp directory", func(t *testing.T) {
+			c, _, tempDir := newFakeService(t, respondWith(tc.body))
+			_, err := c.ConvertToBundle(context.Background(), "a.docx", strings.NewReader("x"), convert.Options{})
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.want)
+			}
+			if files, _ := os.ReadDir(tempDir); len(files) != 0 {
+				t.Errorf("temp files left behind: %v", files)
+			}
+		})
+	}
 }
 
 func TestOptions(t *testing.T) {

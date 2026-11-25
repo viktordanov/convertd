@@ -306,7 +306,13 @@ type Capabilities struct {
 type ConvertOptions struct {
 	// Images How pages are rendered to images. Used by `images` and `bundle`.
 	Images *ImageOptions `json:"images,omitempty"`
-	Output *OutputKind   `json:"output,omitempty"`
+
+	// Output What the response contains.
+	//
+	// - `pdf`: the PDF, as `application/pdf`.
+	// - `images`: page images and a manifest, as `application/zip`.
+	// - `bundle`: the PDF, page images and a manifest, as `application/zip`.
+	Output *OutputKind `json:"output,omitempty"`
 
 	// Pages Which pages to render as images, 1-based. A comma-separated list of
 	// single pages (`3`), closed ranges (`1-5`) and open ranges (`10-`).
@@ -315,7 +321,6 @@ type ConvertOptions struct {
 	//
 	// Applies to `images` and `bundle`. The PDF always holds every page.
 	// Default: all pages.
-	//
 	//
 	// Example: 1-5,8,10-
 	Pages *string `json:"pages,omitempty"`
@@ -333,7 +338,7 @@ type ConvertOptions struct {
 	// TimeoutSeconds Total time budget for this call, in seconds. Covers waiting for a
 	// worker, conversion, rendering and packaging. The server caps it at
 	// `limits.max_timeout_seconds`.
-	TimeoutSeconds *int `json:"timeout_seconds,omitempty"`
+	TimeoutSeconds *int32 `json:"timeout_seconds,omitempty"`
 }
 
 // ConvertRequest defines model for ConvertRequest.
@@ -345,7 +350,6 @@ type ConvertRequest struct {
 
 	// Options What to produce and how. Every property is optional. An empty object,
 	// or no `options` part at all, returns a PDF with default settings.
-	//
 	//
 	// Example: {"images":{"dpi":150,"format":"jpeg","max_edge":2576,"quality":85},"output":"bundle","pages":"1-20"}
 	Options *ConvertOptions `json:"options,omitempty"`
@@ -408,21 +412,27 @@ type ImageFormat string
 type ImageOptions struct {
 	// Dpi Render resolution in dots per inch. A US Letter page is
 	// 1275 x 1650 px at 150 DPI. The server caps it at `limits.max_dpi`.
-	Dpi    *int         `json:"dpi,omitempty"`
+	Dpi *int32 `json:"dpi,omitempty"`
+
+	// Format Image encoding.
+	//
+	// - `jpeg`: smallest and fastest. Best for photos, slides and model input.
+	// - `png`: lossless. Larger and slower to encode.
+	// - `webp`: smaller than JPEG at similar quality. Slower to encode.
 	Format *ImageFormat `json:"format,omitempty"`
 
 	// MaxEdge Longest allowed edge of an image, in pixels. A page that would be
 	// larger is rendered at a lower resolution so that it fits, keeping
 	// its aspect ratio. Unset means no clamp beyond `limits.max_edge_px`.
-	MaxEdge *int `json:"max_edge,omitempty"`
+	MaxEdge *int32 `json:"max_edge,omitempty"`
 
 	// Quality Encoder quality for `jpeg` and `webp`. Ignored for `png`.
-	Quality *int `json:"quality,omitempty"`
+	Quality *int32 `json:"quality,omitempty"`
 }
 
 // ImageSettings The image settings that were actually applied, after defaults and server caps.
 type ImageSettings struct {
-	Dpi int `json:"dpi"`
+	Dpi int32 `json:"dpi"`
 
 	// Format Image encoding.
 	//
@@ -430,8 +440,8 @@ type ImageSettings struct {
 	// - `png`: lossless. Larger and slower to encode.
 	// - `webp`: smaller than JPEG at similar quality. Slower to encode.
 	Format  ImageFormat `json:"format"`
-	MaxEdge *int        `json:"max_edge,omitempty"`
-	Quality *int        `json:"quality,omitempty"`
+	MaxEdge *int32      `json:"max_edge,omitempty"`
+	Quality *int32      `json:"quality,omitempty"`
 }
 
 // InputFormat defines model for InputFormat.
@@ -460,21 +470,21 @@ type InputFormatEngine string
 // Limits defines model for Limits.
 type Limits struct {
 	// DefaultTimeoutSeconds Example: 120
-	DefaultTimeoutSeconds int `json:"default_timeout_seconds"`
+	DefaultTimeoutSeconds int64 `json:"default_timeout_seconds"`
 
 	// MaxDpi Example: 300
-	MaxDpi int `json:"max_dpi"`
+	MaxDpi int32 `json:"max_dpi"`
 
 	// MaxEdgePx Example: 4096
-	MaxEdgePx int `json:"max_edge_px"`
+	MaxEdgePx int32 `json:"max_edge_px"`
 
 	// MaxRenderPages Most pages one call may render to images.
 	//
 	// Example: 500
-	MaxRenderPages int `json:"max_render_pages"`
+	MaxRenderPages int32 `json:"max_render_pages"`
 
 	// MaxTimeoutSeconds Example: 210
-	MaxTimeoutSeconds int `json:"max_timeout_seconds"`
+	MaxTimeoutSeconds int64 `json:"max_timeout_seconds"`
 
 	// MaxUploadBytes Example: 125829120
 	MaxUploadBytes int64 `json:"max_upload_bytes"`
@@ -496,7 +506,7 @@ type Manifest struct {
 	ManifestVersion ManifestManifestVersion `json:"manifest_version"`
 
 	// PageCount Number of pages in the PDF, whether or not all were rendered.
-	PageCount int `json:"page_count"`
+	PageCount int32 `json:"page_count"`
 
 	// Pages One entry per rendered page, in page order.
 	Pages []PageInfo `json:"pages"`
@@ -534,10 +544,10 @@ type PageInfo struct {
 
 	// HeightPt Page height in PDF points (1/72 inch).
 	HeightPt float32 `json:"height_pt"`
-	HeightPx int     `json:"height_px"`
+	HeightPx int32   `json:"height_px"`
 
 	// Number 1-based page number in the PDF.
-	Number int `json:"number"`
+	Number int32 `json:"number"`
 
 	// Path Path of the image inside the ZIP.
 	//
@@ -547,7 +557,7 @@ type PageInfo struct {
 
 	// WidthPt Page width in PDF points (1/72 inch).
 	WidthPt float32 `json:"width_pt"`
-	WidthPx int     `json:"width_px"`
+	WidthPx int32   `json:"width_px"`
 }
 
 // PdfInfo The PDF inside a `bundle`. Absent for `images`.
@@ -576,13 +586,13 @@ type PdfInfoOrigin string
 // PoolStatus defines model for PoolStatus.
 type PoolStatus struct {
 	// Busy Workers running a job.
-	Busy int `json:"busy"`
+	Busy int32 `json:"busy"`
 
 	// Idle Warm workers waiting for a job.
-	Idle int `json:"idle"`
+	Idle int32 `json:"idle"`
 
 	// Target Configured number of workers.
-	Target int `json:"target"`
+	Target int32 `json:"target"`
 }
 
 // Readiness defines model for Readiness.
@@ -636,8 +646,14 @@ type SlideNotes string
 // SlideOptions Options that only affect presentations.
 type SlideOptions struct {
 	// IncludeHidden Also export slides that are marked hidden.
-	IncludeHidden *bool       `json:"include_hidden,omitempty"`
-	Notes         *SlideNotes `json:"notes,omitempty"`
+	IncludeHidden *bool `json:"include_hidden,omitempty"`
+
+	// Notes What to do with speaker notes.
+	//
+	// - `none`: slides only.
+	// - `append`: all slides, followed by one notes page per slide.
+	// - `only`: notes pages only.
+	Notes *SlideNotes `json:"notes,omitempty"`
 }
 
 // SourceInfo What was uploaded.
@@ -664,16 +680,16 @@ type SourceInfo struct {
 // Timings Where the time went, in milliseconds.
 type Timings struct {
 	// Convert Producing the PDF. Zero for PDF uploads.
-	Convert int `json:"convert"`
+	Convert int64 `json:"convert"`
 
 	// Queue Waiting for a free worker.
-	Queue int `json:"queue"`
+	Queue int64 `json:"queue"`
 
 	// Render Rendering and encoding page images.
-	Render int `json:"render"`
+	Render int64 `json:"render"`
 
 	// Total From the end of the upload to the start of the response.
-	Total int `json:"total"`
+	Total int64 `json:"total"`
 }
 
 // Warning A quality signal. Warnings never fail the request.
@@ -695,7 +711,7 @@ type Warning struct {
 	Message string `json:"message"`
 
 	// Page The page the warning is about, when it concerns one page.
-	Page *int `json:"page,omitempty"`
+	Page *int32 `json:"page,omitempty"`
 }
 
 // WarningCode - `FONT_SUBSTITUTED`: a font the document asks for is not installed.
@@ -708,9 +724,6 @@ type Warning struct {
 //	  - `RENDER_CLAMPED`: a server limit reduced the requested resolution.
 //	    `detail` has `requested_dpi` and `effective_dpi`.
 type WarningCode string
-
-// RequestId defines model for RequestId.
-type RequestId = string
 
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
@@ -743,14 +756,14 @@ type UnsupportedFormat = Error
 type GetCapabilitiesParams struct {
 	// XRequestID Correlation ID. If present it is echoed in the response, the logs and
 	// the manifest. If absent the service generates one.
-	XRequestID *RequestId `json:"X-Request-ID,omitempty"`
+	XRequestID *string `json:"X-Request-ID,omitempty"`
 }
 
 // ConvertDocumentParams defines parameters for ConvertDocument.
 type ConvertDocumentParams struct {
 	// XRequestID Correlation ID. If present it is echoed in the response, the logs and
 	// the manifest. If absent the service generates one.
-	XRequestID *RequestId `json:"X-Request-ID,omitempty"`
+	XRequestID *string `json:"X-Request-ID,omitempty"`
 }
 
 // ConvertDocumentMultipartRequestBody defines body for ConvertDocument for multipart/form-data ContentType.
@@ -1493,9 +1506,9 @@ func (r GetCapabilitiesResponse) ContentType() string {
 type ConvertDocumentResponse200Headers struct {
 	ContentDisposition       *string
 	ConvertEngineFingerprint *string
-	ConvertPageCount         *int
+	ConvertPageCount         *int32
 	ConvertSourceFormat      *string
-	ConvertWarningCount      *int
+	ConvertWarningCount      *int32
 	ServerTiming             *string
 	XRequestID               *string
 }
@@ -1527,7 +1540,7 @@ type ConvertDocumentResponse422Headers struct {
 
 // ConvertDocumentResponse429Headers the declared response headers of an HTTP 429 response for ConvertDocument
 type ConvertDocumentResponse429Headers struct {
-	RetryAfter *int
+	RetryAfter *int32
 	XRequestID *string
 }
 
@@ -1538,7 +1551,7 @@ type ConvertDocumentResponse500Headers struct {
 
 // ConvertDocumentResponse503Headers the declared response headers of an HTTP 503 response for ConvertDocument
 type ConvertDocumentResponse503Headers struct {
-	RetryAfter *int
+	RetryAfter *int32
 	XRequestID *string
 }
 
@@ -2010,8 +2023,8 @@ func ParseConvertDocumentResponse(rsp *http.Response) (*ConvertDocumentResponse,
 			headers.ConvertEngineFingerprint = &value
 		}
 		if values := rsp.Header.Values("Convert-Page-Count"); len(values) > 0 {
-			var value int
-			if err := runtime.BindStyledParameterWithOptions("simple", "Convert-Page-Count", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+			var value int32
+			if err := runtime.BindStyledParameterWithOptions("simple", "Convert-Page-Count", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: "int32"}); err != nil {
 				return nil, err
 			}
 			headers.ConvertPageCount = &value
@@ -2024,8 +2037,8 @@ func ParseConvertDocumentResponse(rsp *http.Response) (*ConvertDocumentResponse,
 			headers.ConvertSourceFormat = &value
 		}
 		if values := rsp.Header.Values("Convert-Warning-Count"); len(values) > 0 {
-			var value int
-			if err := runtime.BindStyledParameterWithOptions("simple", "Convert-Warning-Count", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+			var value int32
+			if err := runtime.BindStyledParameterWithOptions("simple", "Convert-Warning-Count", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: "int32"}); err != nil {
 				return nil, err
 			}
 			headers.ConvertWarningCount = &value
@@ -2098,8 +2111,8 @@ func ParseConvertDocumentResponse(rsp *http.Response) (*ConvertDocumentResponse,
 	case rsp.StatusCode == 429:
 		var headers ConvertDocumentResponse429Headers
 		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
-			var value int
-			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+			var value int32
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: "int32"}); err != nil {
 				return nil, err
 			}
 			headers.RetryAfter = &value
@@ -2125,8 +2138,8 @@ func ParseConvertDocumentResponse(rsp *http.Response) (*ConvertDocumentResponse,
 	case rsp.StatusCode == 503:
 		var headers ConvertDocumentResponse503Headers
 		if values := rsp.Header.Values("Retry-After"); len(values) > 0 {
-			var value int
-			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: ""}); err != nil {
+			var value int32
+			if err := runtime.BindStyledParameterWithOptions("simple", "Retry-After", values[0], &value, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "integer", Format: "int32"}); err != nil {
 				return nil, err
 			}
 			headers.RetryAfter = &value

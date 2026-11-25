@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
 	"context"
@@ -17,6 +18,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 
 	"github.com/viktordanov/rs-convert/client/convert"
 )
@@ -70,6 +73,9 @@ func cannedServer(t *testing.T, c canned) *httptest.Server {
 // emitted spec exists.
 const spec31Form = "cmd/speccheck/testdata/emitted-part.json"
 
+// referenceSpec is the hand-written OpenAPI 3.0 reference.
+const referenceSpec = "../../api/openapi.yaml"
+
 func selfTestTransport(t *testing.T) (*validatingTransport, *recorder) {
 	t.Helper()
 	s, err := theSpec()
@@ -99,9 +105,24 @@ func pdfHeaders() map[string]string {
 
 func bundleHeaders() map[string]string {
 	h := pdfHeaders()
-	h["Content-Type"] = "application/zip"
+	h["Content-Type"] = "application/zstd"
+	h["Content-Disposition"] = `attachment; filename="doc.tar.zst"`
+	return h
+}
+
+func zipNamedHeaders() map[string]string {
+	h := bundleHeaders()
 	h["Content-Disposition"] = `attachment; filename="doc.zip"`
 	return h
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("failed to encode JSON: %v", err)
+	}
+	return b
 }
 
 func errorHeaders(extra ...string) map[string]string {
@@ -138,30 +159,50 @@ func validManifest() map[string]any {
 	}
 }
 
-// bundleZip builds a ZIP holding manifest and the named files.
-func bundleZip(t *testing.T, manifest map[string]any, files ...string) []byte {
+// bundleArchive builds a tar.zst holding manifest.json and then the named
+// files, in that order.
+func bundleArchive(t *testing.T, manifest map[string]any, files ...string) []byte {
 	t.Helper()
-	var b bytes.Buffer
-	zw := zip.NewWriter(&b)
 	raw, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatalf("failed to encode manifest: %v", err)
 	}
-	entries := map[string][]byte{"manifest.json": raw}
+	entries := []archiveEntry{{name: "manifest.json", regular: true, data: raw}}
 	for _, f := range files {
-		entries[f] = []byte("x")
+		entries = append(entries, archiveEntry{name: f, regular: true, data: []byte("x")})
 	}
-	for name, body := range entries {
-		w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
-		if err != nil {
-			t.Fatalf("failed to create %s: %v", name, err)
+	return writeArchive(t, entries)
+}
+
+// writeArchive builds a tar.zst from entries in order. A non-regular entry
+// becomes a symlink.
+func writeArchive(t *testing.T, entries []archiveEntry) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	zw, err := zstd.NewWriter(&b, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	if err != nil {
+		t.Fatalf("failed to start zstd: %v", err)
+	}
+	tw := tar.NewWriter(zw)
+	for _, e := range entries {
+		hdr := &tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.data)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR}
+		if !e.regular {
+			hdr.Typeflag, hdr.Size, hdr.Linkname = tar.TypeSymlink, 0, "/etc/passwd"
 		}
-		if _, err := w.Write(body); err != nil {
-			t.Fatalf("failed to write %s: %v", name, err)
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("failed to write %s: %v", e.name, err)
 		}
+		if e.regular {
+			if _, err := tw.Write(e.data); err != nil {
+				t.Fatalf("failed to write %s: %v", e.name, err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("failed to finish tar: %v", err)
 	}
 	if err := zw.Close(); err != nil {
-		t.Fatalf("failed to finish ZIP: %v", err)
+		t.Fatalf("failed to finish zstd: %v", err)
 	}
 	return b.Bytes()
 }
@@ -239,7 +280,7 @@ func TestSelfTestTransport(t *testing.T) {
 	}{
 		// Controls: valid responses must pass, or every failure below is noise.
 		{"valid PDF", callConvertPDF, canned{200, pdfHeaders(), onePagePDF()}, nil},
-		{"valid bundle", callConvertBundle, canned{200, bundleHeaders(), bundleZip(t, validManifest(), "document.pdf", "pages/0001.jpg")}, nil},
+		{"valid bundle", callConvertBundle, canned{200, bundleHeaders(), bundleArchive(t, validManifest(), "document.pdf", "pages/0001.jpg")}, nil},
 		{"valid 401", callConvertPDF, canned{401, errorHeaders(), errorBody("UNAUTHORIZED")}, nil},
 		{"valid 429", callConvertPDF, canned{429, errorHeaders("Retry-After", "5"), errorBody("TOO_MANY_REQUESTS")}, nil},
 		{"valid capabilities", callCapabilities, canned{200, errorHeaders(), []byte(capabilities)}, nil},
@@ -254,7 +295,7 @@ func TestSelfTestTransport(t *testing.T) {
 			[]string{"convertDocument 429: declared header Retry-After is missing"}},
 		{"undeclared status 418", callConvertPDF, canned{418, errorHeaders(), errorBody("BAD_REQUEST")},
 			[]string{"convertDocument 418: status is not supported"}},
-		{"manifest without page_count", callConvertBundle, canned{200, bundleHeaders(), bundleZip(t, noPageCountManifest, "document.pdf", "pages/0001.jpg")},
+		{"manifest without page_count", callConvertBundle, canned{200, bundleHeaders(), bundleArchive(t, noPageCountManifest, "document.pdf", "pages/0001.jpg")},
 			[]string{"convertDocument 200: bundle: manifest.json:", "page_count"}},
 		{"error code not in the enum", callConvertPDF, canned{422, errorHeaders(), errorBody("NOT_A_CODE")},
 			[]string{"convertDocument 422:", `at "/code"`}},
@@ -264,19 +305,37 @@ func TestSelfTestTransport(t *testing.T) {
 			[]string{"convertDocument 200:", "Convert-Page-Count"}},
 		{"undeclared content type", callConvertPDF, canned{200, htmlType, []byte("<html></html>")},
 			[]string{"convertDocument 200:", "text/html"}},
-		{"manifest value out of range", callConvertBundle, canned{200, bundleHeaders(), bundleZip(t, badPageManifest, "document.pdf", "pages/0001.jpg")},
+		{"manifest value out of range", callConvertBundle, canned{200, bundleHeaders(), bundleArchive(t, badPageManifest, "document.pdf", "pages/0001.jpg")},
 			[]string{"convertDocument 200: bundle: manifest.json:", `/pages/0/width_px`}},
-		{"file in the ZIP but not in the manifest", callConvertBundle, canned{200, bundleHeaders(), bundleZip(t, validManifest(), "document.pdf", "pages/0001.jpg", "extra.txt")},
-			[]string{"convertDocument 200: bundle: extra.txt is in the ZIP but not in the manifest"}},
-		{"page in the manifest but not in the ZIP", callConvertBundle, canned{200, bundleHeaders(), bundleZip(t, validManifest(), "document.pdf")},
-			[]string{"convertDocument 200: bundle: manifest names pages/0001.jpg, which is not in the ZIP"}},
+		{"file in the archive but not in the manifest", callConvertBundle, canned{200, bundleHeaders(), bundleArchive(t, validManifest(), "document.pdf", "pages/0001.jpg", "extra.txt")},
+			[]string{"convertDocument 200: bundle: extra.txt is in the archive but not in the manifest"}},
+		{"page in the manifest but not in the archive", callConvertBundle, canned{200, bundleHeaders(), bundleArchive(t, validManifest(), "document.pdf")},
+			[]string{"convertDocument 200: bundle: manifest names pages/0001.jpg, which is not in the archive"}},
+		{"manifest not first", callConvertBundle, canned{200, bundleHeaders(), writeArchive(t, []archiveEntry{
+			{name: "document.pdf", regular: true, data: []byte("x")},
+			{name: "manifest.json", regular: true, data: mustJSON(t, validManifest())},
+			{name: "pages/0001.jpg", regular: true, data: []byte("x")},
+		})}, []string{"convertDocument 200: bundle: the first entry is document.pdf, not manifest.json"}},
+		{"entries out of order", callConvertBundle, canned{200, bundleHeaders(), bundleArchive(t, validManifest(), "pages/0001.jpg", "document.pdf")},
+			[]string{"convertDocument 200: bundle: entries are in the order"}},
+		{"a symlink entry", callConvertBundle, canned{200, bundleHeaders(), writeArchive(t, []archiveEntry{
+			{name: "manifest.json", regular: true, data: mustJSON(t, validManifest())},
+			{name: "document.pdf", regular: true, data: []byte("x")},
+			{name: "pages/0001.jpg"},
+		})}, []string{"convertDocument 200: bundle: pages/0001.jpg is not a regular file"}},
+		{"not a tar.zst", callConvertBundle, canned{200, bundleHeaders(), []byte("PK\x03\x04 a zip")},
+			[]string{"convertDocument 200: bundle: not a valid tar.zst"}},
+		{"Content-Disposition names a ZIP", callConvertBundle, canned{200, zipNamedHeaders(), bundleArchive(t, validManifest(), "document.pdf", "pages/0001.jpg")},
+			[]string{"convertDocument 200: bundle: Content-Disposition"}},
 		{"capabilities missing a required field", callCapabilities, canned{200, errorHeaders(), []byte(`{"service":{"name":"convert","version":"0.1.0"}}`)},
 			[]string{"getCapabilities 200:", "engine"}},
 	}
 
-	committed, err := theSpec()
+	// The reference, not the committed emitted spec: the self-tests prove the
+	// transport, so they must not depend on what the current server emits.
+	reference, err := loadContractSpec(referenceSpec)
 	if err != nil {
-		t.Fatalf("failed to load the committed spec: %v", err)
+		t.Fatalf("failed to load the reference spec: %v", err)
 	}
 	form31, err := loadContractSpec(spec31Form)
 	if err != nil {
@@ -285,7 +344,7 @@ func TestSelfTestTransport(t *testing.T) {
 	for _, sc := range []struct {
 		name string
 		spec *contractSpec
-	}{{"committed spec", committed}, {"3.1 form", form31}} {
+	}{{"reference spec", reference}, {"3.1 form", form31}} {
 		t.Run(sc.name, func(t *testing.T) {
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {

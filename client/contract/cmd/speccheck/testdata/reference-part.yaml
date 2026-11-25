@@ -203,7 +203,7 @@ paths:
               schema:
                 type: string
                 format: binary
-            application/zip:
+            application/zstd:
               schema:
                 type: string
                 format: binary

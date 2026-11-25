@@ -234,8 +234,8 @@ func TestCompareRules(t *testing.T) {
 			delete(at(t, e, "paths", "/v1/convert", "post", "responses"), "504")
 		}, []string{"POST /v1/convert: response 504 missing in emitted"}},
 		{"response content type missing", func(t *testing.T, e, r map[string]any) {
-			delete(at(t, e, "paths", "/v1/convert", "post", "responses", "200", "content"), "application/zip")
-		}, []string{"POST /v1/convert 200: content type application/zip missing in emitted"}},
+			delete(at(t, e, "paths", "/v1/convert", "post", "responses", "200", "content"), "application/zstd")
+		}, []string{"POST /v1/convert 200: content type application/zstd missing in emitted"}},
 		{"response schema", func(t *testing.T, e, r map[string]any) {
 			at(t, e, "paths", "/readyz", "get", "responses", "503", "content", "application/json")["schema"] = map[string]any{"$ref": "#/components/schemas/Health"}
 		}, []string{"GET /readyz 503 application/json: $ref Readiness in reference, Health in emitted"}},

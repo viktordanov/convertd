@@ -2,8 +2,8 @@
 # CI builds and tests; it never pushes. Releases stay manual: tag v<x.y.z>, run
 # build_docker.sh (PLAN.md:377). The image job is manual and monthly until plan 003 step 7.
 # Actions are pinned by commit SHA (the tag is in the comment); tools by version and SHA-256.
-# Not here yet (wave two, once they exist on main): 004's ./generate.sh --check and
-# scripts/contract_test.sh, and 005's corpus-bench validate and generate.py --check.
+# Not here yet (wave two, once they exist on main): 005's corpus-bench validate and
+# generate.py --check.
 name: image
 
 on:
@@ -73,6 +73,18 @@ jobs:
         run: cargo nextest run --locked --features test-hooks --profile ci
       - name: Doc tests
         run: cargo test --locked --features test-hooks --doc
+      # The Go steps reuse the test-hooks convertd that the tests above built, so
+      # neither generate.sh nor contract_test.sh compiles Rust again.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: |
+            client/go.sum
+            client/contract/go.sum
+      - name: Generated files are current
+        run: ./generate.sh --check
+      - name: Contract tests (level A fake)
+        run: scripts/contract_test.sh
 
   test-full:
     # Every test, including slow_*: by hand and monthly.

@@ -23,9 +23,10 @@ esac
 # Pinned so that every machine generates the same code.
 OAPI_CODEGEN_VERSION="v2.9.0"
 
-# "reference" until lane 001's emitted spec matches api/openapi.yaml (ledger
-# 004 plan, step 7), then "emitted" for good. One edit, no auto-detection.
-SPEC_SOURCE="reference"
+# "emitted": api/openapi.json comes from `convertd openapi` (ledger 004 plan,
+# step 8). The hand-written api/openapi.yaml stays as the reference that the
+# emitted spec is compared with, until it is retired (step 11).
+SPEC_SOURCE="emitted"
 
 GENERATED=(client/internal/api/client.go client/go.mod client/go.sum)
 if [[ "$SPEC_SOURCE" == "emitted" ]]; then
@@ -55,8 +56,12 @@ speccheck() {
 
 if [[ "$SPEC_SOURCE" == "emitted" ]]; then
   echo "Emitting the spec from convertd..."
-  cargo run --locked --quiet --bin convertd -- openapi > "$tmp/a.json"
-  cargo run --locked --quiet --bin convertd -- openapi > "$tmp/b.json"
+  # Built with test-hooks, like the tests and scripts/contract_test.sh, so that
+  # one binary serves all three and none of them rebuilds convertd with other
+  # features. The spec code has no feature gates; contract case 16 checks that
+  # the served spec equals the committed one.
+  cargo run --locked --quiet --features test-hooks --bin convertd -- openapi > "$tmp/a.json"
+  cargo run --locked --quiet --features test-hooks --bin convertd -- openapi > "$tmp/b.json"
   if ! cmp -s "$tmp/a.json" "$tmp/b.json"; then
     echo "convertd openapi is not deterministic: two runs differ" >&2
     diff "$tmp/a.json" "$tmp/b.json" | head -40 >&2

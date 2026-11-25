@@ -7,6 +7,7 @@ go 1.26.0
 
 require (
 	github.com/getkin/kin-openapi v0.153.0
+	github.com/klauspost/compress v1.20.5
 	github.com/viktordanov/rs-convert/client v0.0.0
 	go.yaml.in/yaml/v4 v4.0.0
 )
