@@ -11,11 +11,13 @@ use crate::domain::engine::{
     InspectJob, Inspection, PageSize, PdfEngine, ProbedPage, RenderJob, Rendered, RenderedPage,
     WorkerRef,
 };
-use crate::engines::call::{Called, admission, call, unexpected, worker_ref};
+use crate::engines::call::{RETRY_MIN_LEFT, admission, call, unexpected, worker_ref};
 use crate::engines::error::EngineFailure;
-use crate::engines::poison::{CRASH_STRIKES, PoisonList, TIMEOUT_STRIKES};
+use crate::engines::poison::{PoisonList, TIMEOUT_STRIKES, strikes_for};
 use crate::engines::pool::{Admission as PoolAdmission, CallError, Lease, Pool};
-use crate::ipc::{self, DecryptArgs, InspectArgs, Op, Output, RenderArgs, Secret, WorkerErrorKind};
+use crate::ipc::{
+    self, DecryptArgs, InspectArgs, Op, Output, RenderArgs, Reply, Secret, WorkerErrorKind,
+};
 
 /// A render chunk has at least this many pages, so an extra chunk (a PDF
 /// open and one round trip) is worth its cost.
@@ -99,45 +101,31 @@ fn severity(err: &EngineError) -> u8 {
     }
 }
 
-/// One render chunk on a lease the caller already holds. A crash is
-/// retried once on a fresh lease with `Continue`.
-async fn render_chunk(
-    pool: &Pool,
-    mut lease: Lease,
-    args: RenderArgs,
-    deadline: Instant,
-) -> Result<(Vec<ipc::RenderedPage>, Duration, WorkerRef), EngineError> {
-    let op = Op::Render(args);
-    let first = lease.call(op.clone(), deadline).await;
-    let reply = match first {
-        Ok(reply) => {
-            let worker = lease.worker_ref().map(worker_ref);
-            (reply, worker)
+/// What one render chunk gives back.
+type ChunkOk = (Vec<ipc::RenderedPage>, Duration, WorkerRef);
+
+/// A failed render chunk, with the poison strikes it earned.
+struct ChunkFailure {
+    error: EngineError,
+    strikes: u32,
+}
+
+impl ChunkFailure {
+    fn of(err: CallError, retried: bool) -> Self {
+        Self {
+            strikes: strikes_for(&err, retried),
+            error: EngineFailure::from(err).into(),
         }
-        Err(CallError::Crashed { .. })
-            if deadline.saturating_duration_since(Instant::now())
-                >= crate::engines::call::RETRY_MIN_LEFT =>
-        {
-            drop(lease);
-            let Called {
-                output,
-                reply,
-                worker,
-                ..
-            } = call(pool, op, PoolAdmission::Continue, deadline, recycles).await?;
-            let Output::Rendered(out) = output else {
-                return Err(unexpected("render"));
-            };
-            return Ok((
-                out.pages,
-                Duration::from_micros(reply.engine.engine_us),
-                worker,
-            ));
-        }
-        Err(err) => return Err(EngineFailure::from(err).into()),
-    };
-    let (reply, worker) = reply;
-    let worker = worker.unwrap_or(WorkerRef {
+    }
+
+    fn engine(error: EngineError) -> Self {
+        Self { error, strikes: 0 }
+    }
+}
+
+/// A chunk's reply: the pages, or the engine-reported error (no strike).
+fn chunk_reply(lease: &mut Lease, reply: Reply, pool: &Pool) -> Result<ChunkOk, ChunkFailure> {
+    let worker = lease.worker_ref().map(worker_ref).unwrap_or(WorkerRef {
         pool: pool.name(),
         slot: 0,
         generation: 0,
@@ -149,13 +137,52 @@ async fn render_chunk(
             Duration::from_micros(reply.engine.engine_us),
             worker,
         )),
-        Ok(_) => Err(unexpected("render")),
+        Ok(_) => Err(ChunkFailure::engine(unexpected("render"))),
         Err(err) => {
             if recycles(err.kind) {
                 lease.recycle_after();
             }
-            Err(EngineFailure::from(err).into())
+            Err(ChunkFailure::engine(EngineFailure::from(err).into()))
         }
+    }
+}
+
+/// One render chunk on a lease the caller already holds, with at most one
+/// retry: after a crash with at least `RETRY_MIN_LEFT` left, once more on a
+/// fresh lease with `Continue`. The strikes follow `poison::strikes_for`,
+/// the same rule as every other call.
+async fn render_chunk(
+    pool: &Pool,
+    mut lease: Lease,
+    args: RenderArgs,
+    deadline: Instant,
+) -> Result<ChunkOk, ChunkFailure> {
+    let op = Op::Render(args);
+    match lease.call(op.clone(), deadline).await {
+        Ok(reply) => return chunk_reply(&mut lease, reply, pool),
+        Err(err @ CallError::Crashed { .. })
+            if deadline.saturating_duration_since(Instant::now()) < RETRY_MIN_LEFT =>
+        {
+            return Err(ChunkFailure::of(err, false));
+        }
+        Err(CallError::Crashed { .. }) => {}
+        Err(err) => return Err(ChunkFailure::of(err, false)),
+    }
+    drop(lease);
+    tracing::warn!(pool = pool.name(), "render chunk crashed; retrying once");
+    let mut retry = match pool.lease(deadline, PoolAdmission::Continue).await {
+        Ok(lease) => lease,
+        // The crash counts once; the retry never reached a worker.
+        Err(err) => {
+            return Err(ChunkFailure {
+                error: EngineFailure::from(err).into(),
+                strikes: TIMEOUT_STRIKES,
+            });
+        }
+    };
+    match retry.call(op, deadline).await {
+        Ok(reply) => chunk_reply(&mut retry, reply, pool),
+        Err(err) => Err(ChunkFailure::of(err, true)),
     }
 }
 
@@ -284,6 +311,7 @@ impl PdfEngine for PdfPdfium {
         let mut workers = Vec::new();
         let mut longest = Duration::ZERO;
         let mut failure: Option<EngineError> = None;
+        let mut strikes = 0;
         for result in results {
             match result {
                 Ok((chunk, engine, worker)) => {
@@ -291,24 +319,24 @@ impl PdfEngine for PdfPdfium {
                     longest = longest.max(engine);
                     workers.push(worker);
                 }
-                Err(err) => {
+                Err(chunk) => {
+                    strikes = strikes.max(chunk.strikes);
                     let worse = failure
                         .as_ref()
-                        .is_none_or(|old| severity(&err) < severity(old));
+                        .is_none_or(|old| severity(&chunk.error) < severity(old));
                     if worse {
-                        failure = Some(err);
+                        failure = Some(chunk.error);
                     }
                 }
             }
         }
         if let Some(err) = failure {
-            // A chunk's crash already survived its retry when it gets here.
-            if let Some(list) = &self.poison {
-                match err {
-                    EngineError::Timeout => list.strike(&job.sha256, TIMEOUT_STRIKES),
-                    EngineError::Crashed => list.strike(&job.sha256, CRASH_STRIKES),
-                    _ => {}
-                }
+            // One document: the strikes of its worst chunk, by the same rule
+            // as call_with_poison.
+            if let Some(list) = &self.poison
+                && strikes > 0
+            {
+                list.strike(&job.sha256, strikes);
             }
             return Err(err);
         }
