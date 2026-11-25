@@ -40,6 +40,15 @@ pub enum ImageFormat {
 }
 
 impl ImageFormat {
+    /// The API name: `jpeg`, `png` or `webp`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ImageFormat::Jpeg => "jpeg",
+            ImageFormat::Png => "png",
+            ImageFormat::Webp => "webp",
+        }
+    }
+
     /// The file extension of `pages/NNNN.<ext>`.
     pub fn extension(self) -> &'static str {
         match self {

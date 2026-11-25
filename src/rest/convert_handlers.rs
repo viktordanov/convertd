@@ -510,7 +510,7 @@ fn record_metrics(
     }
     if !result.pages.is_empty() {
         metrics::pages_rendered(
-            received.request.images.format.extension(),
+            received.request.images.format.as_str(),
             result.pages.len() as u64,
         );
     }

@@ -159,6 +159,9 @@ fn serve() -> Result<(), String> {
             .local_addr()
             .map_err(|err| format!("failed to read the bound address: {err}"))?;
         tracing::info!(addr = %addr, "server listening");
+        // Before the engines start, so that what their pools record while
+        // they start is not lost to the no-op recorder.
+        convertd::observability::metrics::handle();
         let selected = convertd::engines::select::start(&config).await?;
         let engines = Engines {
             office: selected.office,

@@ -121,26 +121,71 @@ pub fn response_cut(code: &'static str) {
 /// The four supervisor gauges of INTERFACES §11, from `/proc/self`
 /// (Linux only; elsewhere they are not published).
 fn supervisor_gauges() {
-    #[cfg(target_os = "linux")]
-    {
+    // cfg! rather than #[cfg]: the code compiles and is linted everywhere.
+    if cfg!(target_os = "linux") {
         if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-            for line in status.lines() {
-                let value = |prefix: &str| {
-                    line.strip_prefix(prefix)
-                        .and_then(|rest| rest.split_whitespace().next())
-                        .and_then(|n| n.parse::<f64>().ok())
-                };
-                if let Some(kib) = value("VmRSS:") {
-                    gauge!("convert_supervisor_rss_bytes").set(kib * 1024.0);
-                } else if let Some(kib) = value("VmHWM:") {
-                    gauge!("convert_supervisor_rss_peak_bytes").set(kib * 1024.0);
-                } else if let Some(threads) = value("Threads:") {
-                    gauge!("convert_supervisor_threads").set(threads);
-                }
+            let parsed = parse_status(&status);
+            if let Some(bytes) = parsed.rss_bytes {
+                gauge!("convert_supervisor_rss_bytes").set(bytes as f64);
+            }
+            if let Some(bytes) = parsed.rss_peak_bytes {
+                gauge!("convert_supervisor_rss_peak_bytes").set(bytes as f64);
+            }
+            if let Some(threads) = parsed.threads {
+                gauge!("convert_supervisor_threads").set(threads as f64);
             }
         }
         if let Ok(fds) = std::fs::read_dir("/proc/self/fd") {
             gauge!("convert_supervisor_open_fds").set(fds.count() as f64);
         }
+    }
+}
+
+/// What `/proc/self/status` says about memory and threads.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ProcStatus {
+    pub rss_bytes: Option<u64>,
+    pub rss_peak_bytes: Option<u64>,
+    pub threads: Option<u64>,
+}
+
+/// Parses the `VmRSS`, `VmHWM` (both in kB) and `Threads` lines.
+pub fn parse_status(status: &str) -> ProcStatus {
+    let mut out = ProcStatus::default();
+    for line in status.lines() {
+        let Some((key, rest)) = line.split_once(':') else {
+            continue;
+        };
+        let value = rest
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse::<u64>().ok());
+        match key {
+            "VmRSS" => out.rss_bytes = value.map(|kib| kib * 1024),
+            "VmHWM" => out.rss_peak_bytes = value.map(|kib| kib * 1024),
+            "Threads" => out.threads = value,
+            _ => {}
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proc_status_lines() {
+        let status =
+            "Name:\tconvertd\nVmHWM:\t   20480 kB\nVmRSS:\t   10240 kB\nThreads:\t7\nSigQ:\t0/1\n";
+        assert_eq!(
+            parse_status(status),
+            ProcStatus {
+                rss_bytes: Some(10_485_760),
+                rss_peak_bytes: Some(20_971_520),
+                threads: Some(7),
+            }
+        );
+        assert_eq!(parse_status("garbage\nVmRSS: x kB"), ProcStatus::default());
     }
 }
