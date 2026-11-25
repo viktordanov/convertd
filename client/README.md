@@ -5,7 +5,7 @@
 Do these four things in every caller:
 
 - Close `PDF.Body` after `ConvertToPDF`.
-- Call `Bundle.Close` after `ConvertToBundle` or `ConvertToImages`. It deletes the temp file of the bundle.
+- Call `Bundle.Close` after `ConvertToBundle` or `ConvertToImages`. It deletes the temp directory of the bundle.
 - Set a deadline on the context. The default HTTP client has no timeout of its own.
 - Open the file again for a retry. The client reads the file once and never retries.
 
@@ -95,7 +95,7 @@ Next: read [Errors and retries](#errors-and-retries) before you call the client 
 | `Capabilities` | The accepted formats, the limits, the engine versions and the fonts. The answer is fixed for a deployment |
 | `Ready` | `true` when `/readyz` answers 200, `false` when it answers 503. Any other status is an error |
 
-`New` takes two options. `WithHTTPClient` sets the HTTP client. `WithTempDir` sets the directory for bundle downloads, and the default is the system temp directory.
+`New` takes two options. `WithHTTPClient` sets the HTTP client. `WithTempDir` sets the parent directory for unpacked bundles, and the default is the system temp directory.
 
 Each conversion takes a `convert.Options`. The zero value asks for the server defaults, because the client leaves every zero field out of the request:
 
@@ -144,7 +144,9 @@ The upload is streamed. The client writes the multipart body through a pipe, so 
 
 `ConvertToPDF` streams the PDF too. `PDF.Body` is the response body, so you can copy it straight to storage.
 
-A bundle needs a temp file. A ZIP needs random access, so `ConvertToBundle` and `ConvertToImages` download the whole response to a temp file before they return. `Bundle.Close` deletes that file. `Bundle.PDF()` and `Bundle.Page(n)` return `(reader, found, err)`. `found` is false when the bundle has no PDF or the page was not rendered, and that is not an error. Close each reader that you open.
+A bundle needs a temp directory. The service sends `images` and `bundle` as a tar archive in one zstd stream (`application/zstd`, named `<stem>.tar.zst`). The archive can only be read front to back, so `ConvertToBundle` and `ConvertToImages` unpack the whole response into a temp directory before they return. `Bundle.Close` deletes that directory. `Bundle.PDF()` and `Bundle.Page(n)` return `(reader, found, err)`. `found` is false when the bundle has no PDF or the page was not rendered, and that is not an error. Close each reader that you open.
+
+The client accepts only the layout that the service writes. `manifest.json` comes first, then `document.pdf` for a bundle, then `pages/NNNN.<ext>`. Each entry is a regular file that the manifest names, and each comes once. A path with `..`, a link, an extra or a missing file, or a manifest that is not first fails the call. A failed call leaves no temp directory.
 
 ```go
 bundle, err := c.ConvertToImages(ctx, name, file, convert.Options{
