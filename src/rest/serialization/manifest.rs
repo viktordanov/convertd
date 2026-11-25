@@ -128,7 +128,7 @@ pub struct PdfInfo {
 /// How the PDF came to be.
 ///
 /// - `converted`: produced by LibreOffice from an office file.
-/// - `passthrough`: the upload was already a PDF and is returned unchanged.
+/// - `passthrough`: the upload was already a PDF and is returned unchanged, or decrypted when it was encrypted.
 /// - `assembled`: built from an uploaded image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
