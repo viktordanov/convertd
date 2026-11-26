@@ -9,7 +9,8 @@ use axum::response::Response;
 
 pub const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
-/// The longest accepted client request ID (`api/openapi.yaml`).
+/// The longest accepted client request ID (the `X-Request-ID` parameter in
+/// `api/openapi.json`).
 pub const MAX_LEN: usize = 128;
 
 /// This request's ID, in the request and response extensions.
