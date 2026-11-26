@@ -214,11 +214,12 @@ impl OfficeWorker {
         times.preflight_us = micros(preflight.elapsed());
         let copy = copy?;
         let result = self.convert_from(copy.as_deref().unwrap_or(&args.input), args, times);
-        if let Some(copy) = &copy {
-            let _ = std::fs::remove_file(copy);
-            if let Some(dir) = copy.parent() {
-                let _ = std::fs::remove_dir(dir);
-            }
+        // The supervisor gives the copy's reservation back when this job
+        // answers, so the copy must be gone by then.
+        if let Some(dir) = copy.as_deref().and_then(Path::parent) {
+            clear_dir(dir).inspect_err(|_| {
+                let _ = std::fs::remove_file(&args.output);
+            })?;
         }
         let doc_type = result?;
         let pdf_bytes = std::fs::metadata(&args.output)
@@ -253,16 +254,12 @@ impl OfficeWorker {
         };
         // A worker that died during an earlier attempt of this job may have
         // left a partial copy: the retry starts from the source again.
-        match std::fs::remove_dir_all(&dir) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(io_error("clear the paper copy", &err)),
-        }
+        clear_dir(&dir)?;
         std::fs::create_dir(&dir).map_err(|err| io_error("create the paper copy", &err))?;
         match docx_paper::repack(&args.input, &copy, paper) {
             Ok(()) => Ok(Some(copy)),
             Err(skip) => {
-                let _ = std::fs::remove_dir(&dir);
+                clear_dir(&dir)?;
                 match skip {
                     docx_paper::Skip::Io(err) => Err(io_error("write the paper copy", &err)),
                     _ => Ok(None),
@@ -387,6 +384,17 @@ impl Engine for OfficeWorker {
                 format!("the office worker does not answer {}", other.name()),
             )),
         }
+    }
+}
+
+/// Removes the paper copy's directory and what it holds. Gone already is
+/// fine; any other failure is the job's I/O error, because the supervisor
+/// stops reserving the copy's bytes when the job answers.
+fn clear_dir(dir: &Path) -> Result<(), WorkerError> {
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(io_error("remove the paper copy", &err)),
     }
 }
 

@@ -108,7 +108,7 @@ The worker writes the changed package to `paper/<source name>` in the job direct
 
 Only the main part changes, with its own compression method. Every other entry is copied byte for byte, data descriptors included. The copy may be at most the source size plus 1 MiB, which the supervisor reserves beside the PDF. With `DEFAULT_PAPER=Letter` there is no copy and no reservation, because Letter is the importer's own default.
 
-The main part is inflated at most twice, once to plan and once to rewrite. Each pass reads at most 64 MiB, the size of the pre-flight's per-request cap, and the archive is read under detection's caps. A failed write of the copy, such as a full disk, fails the job with the worker's I/O error. A busy disk thus never changes the paper. The time counts as `preflight_us`.
+The main part is inflated at most twice, once to plan and once to rewrite. Each pass reads at most 64 MiB, the size of the pre-flight's per-request cap, and the archive is read under detection's caps. A failed write of the copy, such as a full disk, fails the job with the worker's I/O error. A busy disk thus never changes the paper. A copy that cannot be removed fails the job too, because the supervisor gives its reservation back when the job answers. The time counts as `preflight_us`.
 
 These packages are loaded as they came, on Letter:
 
