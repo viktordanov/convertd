@@ -886,6 +886,83 @@ async fn a_client_that_stops_reading_releases_the_permit_after_the_idle_timeout(
     drop(stream);
 }
 
+/// A bundle whose client stops reading is cut by the pump. Over a real
+/// socket the cut must show: no chunked terminator after the last bytes
+/// the client gets, and `complete=false` in the access log (review, lane
+/// 001 item 5).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_a_cut_bundle_has_no_chunked_terminator() {
+    let app = App::new(
+        "cut-bundle",
+        &[
+            ("MAX_CONCURRENT_REQUESTS", "1"),
+            ("IO_IDLE_TIMEOUT_SECONDS", "1"),
+        ],
+    );
+    let addr = app.serve().await;
+    // Bytes that zstd cannot shrink, so the bundle outgrows the socket
+    // buffers (big_pdf's filler compresses to almost nothing).
+    let mut upload = pdf("big");
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    upload.extend((0..24 << 20).map(|_| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state as u8
+    }));
+    let body = with_options("big.pdf", &upload, r#"{"output":"bundle"}"#);
+    let (head_text, rest) = tokio::task::spawn_blocking(move || {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        stream
+            .write_all(&head(body.len(), &format!("Bearer {KEY}")))
+            .unwrap();
+        stream.write_all(&body).unwrap();
+        let mut head_bytes = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head_bytes.ends_with(b"\r\n\r\n") {
+            assert_eq!(stream.read(&mut byte).unwrap(), 1);
+            head_bytes.push(byte[0]);
+        }
+        // Stop reading well past the idle timeout: the socket buffers fill
+        // and the pump's next send waits more than 1 s, so it cuts the body.
+        std::thread::sleep(Duration::from_millis(5000));
+        let mut rest = Vec::new();
+        let _ = stream.read_to_end(&mut rest);
+        (String::from_utf8_lossy(&head_bytes).into_owned(), rest)
+    })
+    .await
+    .unwrap();
+    assert!(head_text.starts_with("HTTP/1.1 200"), "{head_text}");
+    assert!(
+        head_text.contains("transfer-encoding: chunked"),
+        "{head_text}"
+    );
+    assert!(
+        !rest.ends_with(b"0\r\n\r\n"),
+        "a cut bundle ended with the chunked terminator"
+    );
+    let request_id = head_text
+        .lines()
+        .find_map(|line| line.strip_prefix("x-request-id: "))
+        .unwrap()
+        .trim()
+        .to_owned();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let access = loop {
+        let lines = log_lines(&request_id);
+        if let Some(line) = lines.into_iter().find(|l| l["message"] == "http request") {
+            break line;
+        }
+        assert!(Instant::now() < deadline, "no access log line");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(access["complete"], false, "{access}");
+    app.assert_no_jobs().await;
+}
+
 /// A client that keeps reading, but slowly, never trips the pump's idle
 /// timeout. The minimum-throughput floor ends the response after a window
 /// below it and frees the permit (review, lane 001 item 3). The floor is set
