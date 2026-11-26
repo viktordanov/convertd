@@ -285,9 +285,14 @@ impl RenderWorker {
                 )
             });
         }
-        // SAFETY: `document` is open; a plain read of its permissions.
-        let owner_permissions = unsafe { bindings.FPDF_GetDocPermissions(document) };
-        if args.require_owner && !owner_unlocked(password, owner_permissions as u32) {
+        // SAFETY: `document` is open; plain reads of its permissions.
+        let (owner_permissions, user_permissions) = unsafe {
+            (
+                bindings.FPDF_GetDocPermissions(document) as u32,
+                bindings.FPDF_GetDocUserPermissions(document) as u32,
+            )
+        };
+        if args.require_owner && !may_strip(password, owner_permissions, user_permissions) {
             // SAFETY: closes the document opened above, once.
             unsafe { bindings.FPDF_CloseDocument(document) };
             times.decrypt_us = micros(started.elapsed());
@@ -430,13 +435,24 @@ fn secret(password: Option<&Secret>) -> Result<Option<&str>, WorkerError> {
     Ok(password)
 }
 
-/// Whether an open with `password` unlocked the owner. PDFium sets its
-/// owner flag only for a non-empty password that passes the owner check
-/// (`CPDF_SecurityHandler::CheckSecurity`, chromium/8179). Then
-/// `FPDF_GetDocPermissions` grants every bit, except that the Standard
-/// handler clears bits 1 and 2 (`GetPermissions`: 0xFFFFFFFC).
-pub fn owner_unlocked(password: Option<&str>, owner_permissions: u32) -> bool {
-    password.is_some_and(|p| !p.is_empty()) && owner_permissions | 0b11 == u32::MAX
+/// Whether every permission bit is granted. The Standard handler clears
+/// bits 1 and 2, so "everything" reads 0xFFFFFFFC.
+fn grants_everything(permissions: u32) -> bool {
+    permissions | 0b11 == u32::MAX
+}
+
+/// Whether decrypt may remove the security of a document opened with
+/// `password`, from `FPDF_GetDocPermissions` (`owner`) and
+/// `FPDF_GetDocUserPermissions` (`user`):
+///
+/// - the user permissions already grant everything: nothing to remove;
+/// - else the password unlocked the owner. PDFium sets its owner flag
+///   only for a non-empty password that passes the owner check
+///   (`CPDF_SecurityHandler::CheckSecurity`, chromium/8179). Then `owner`
+///   grants everything and differs from the restricted `user`.
+pub fn may_strip(password: Option<&str>, owner: u32, user: u32) -> bool {
+    grants_everything(user)
+        || (password.is_some_and(|p| !p.is_empty()) && grants_everything(owner) && owner != user)
 }
 
 /// A failed open: the password errors as PDFium reports them, else
@@ -532,14 +548,24 @@ mod tests {
     use crate::ipc::ProbePages;
 
     #[test]
-    fn the_owner_is_unlocked_only_by_a_password_with_every_permission() {
-        use super::owner_unlocked;
-        assert!(owner_unlocked(Some("owner"), 0xFFFF_FFFC));
-        assert!(owner_unlocked(Some("owner"), u32::MAX));
-        // The file's own restricted P, as a user open reports it.
-        assert!(!owner_unlocked(Some("user"), 0xFFFF_F0C4));
-        assert!(!owner_unlocked(None, 0xFFFF_FFFC));
-        assert!(!owner_unlocked(Some(""), 0xFFFF_FFFC));
+    fn security_goes_only_for_the_owner_or_when_nothing_is_restricted() {
+        use super::may_strip;
+        // P with printing off, as the Standard handler masks it.
+        let restricted = 0xFFFF_F0C0 | 0b1_0000_0000;
+        let all = 0xFFFF_FFFC;
+        assert!(
+            may_strip(Some("owner"), all, restricted),
+            "the owner unlocked"
+        );
+        assert!(!may_strip(None, restricted, restricted), "no password");
+        assert!(!may_strip(Some(""), restricted, restricted), "an empty one");
+        assert!(
+            !may_strip(Some("user"), restricted, restricted),
+            "not the owner"
+        );
+        // Nothing is restricted: there is nothing to remove.
+        assert!(may_strip(None, all, all));
+        assert!(may_strip(Some("any"), all, all));
     }
 
     #[test]

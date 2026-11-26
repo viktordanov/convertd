@@ -848,6 +848,32 @@ async fn inspect_probes_only_the_pages_it_is_given() {
     .await;
 }
 
+/// `FPDF_GetDocPermissions` and `FPDF_GetDocUserPermissions` of `pdf`
+/// opened with `password`, read with PDFium bound in this process, or
+/// `None` when the open fails.
+fn permissions(
+    pdfium: &pdfium_render::prelude::Pdfium,
+    pdf: &Path,
+    password: Option<&str>,
+) -> Option<(u32, u32)> {
+    use pdfium_render::prelude::PdfiumLibraryBindingsAccessor;
+    let bindings = pdfium.bindings();
+    // SAFETY: plain calls into the bound library on this thread; the
+    // document is closed once.
+    unsafe {
+        let document = bindings.FPDF_LoadDocument(pdf.to_str().unwrap(), password);
+        if document.is_null() {
+            return None;
+        }
+        let both = (
+            bindings.FPDF_GetDocPermissions(document) as u32,
+            bindings.FPDF_GetDocUserPermissions(document) as u32,
+        );
+        bindings.FPDF_CloseDocument(document);
+        Some(both)
+    }
+}
+
 /// An owner-only PDF opens without a password. `require_owner` writes the
 /// unrestricted copy only for the owner password, and inspect refuses a
 /// wrong one at the open.
@@ -867,6 +893,31 @@ async fn slow_only_the_owner_password_unlocks_an_owner_only_pdf() {
             1,
             r#"{"RestrictPermissions":{"type":"boolean","value":"true"},"PermissionPassword":{"type":"string","value":"owner"},"Printing":{"type":"long","value":"0"}}"#,
         );
+        // What PDFium reports, read in this process: only the owner
+        // password makes the owner permissions differ from the user ones.
+        // Only this test binds PDFium in this process, and it drops it
+        // before the first await.
+        let (none, unlocked, wrong) = {
+            use pdfium_render::prelude::Pdfium;
+            let local = Pdfium::new(
+                Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&pdfium))
+                    .expect("binds libpdfium"),
+            );
+            (
+                permissions(&local, &owner, None),
+                permissions(&local, &owner, Some("owner")),
+                permissions(&local, &owner, Some("wrong")),
+            )
+        };
+        let none = none.expect("opens without a password");
+        assert_eq!(none.0, none.1, "no password: {none:x?}");
+        assert_ne!(none.1 | 0b11, u32::MAX, "the file restricts something: {none:x?}");
+        let unlocked = unlocked.expect("the owner opens it");
+        assert_eq!(unlocked.0, 0xFFFF_FFFC, "the owner gets every bit: {unlocked:x?}");
+        assert_eq!(unlocked.1, none.1, "the user permissions stay the file's P");
+        assert_eq!(wrong, None, "a wrong one fails");
+        eprintln!("owner-only PDF: none {none:x?}, owner {unlocked:x?}");
+
         let pool = ready(render_spec(dir.path(), &pdfium, 1)).await;
         let pdf = PdfPdfium::new(pool.clone());
         let wrong = pdf
