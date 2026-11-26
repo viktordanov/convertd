@@ -22,6 +22,7 @@ The image is `debian:trixie-slim` with only what convertd uses. Each part has a 
 - **LibreOffice 26.8.3** from the `.deb` tarball of The Document Foundation (TDF). The image installs 13 of its packages, which the `engines` stage names. The full set does not install, because `postgresql-sdbc` needs Base. Java, Base, Python, help and other UI languages are not installed. The build fails if `java` or `python3` is present. `dpkg/libreoffice.cfg` also drops the parts that a headless conversion never reads: the icon themes except colibre, the offline help, the gallery, the templates, the Basic wizards and the credits document.
 - **PDFium `chromium/8179`** from `bblanchon/pdfium-binaries`, with its `LICENSE` and the third-party licenses in `/opt/pdfium`.
 - **Fonts** that replace the common Office families with metric-compatible free fonts. [Fonts and build-info.json](#fonts-and-build-infojson) gives the set.
+- **Paper locales.** The compiled `en_GB.UTF-8` and `en_US.UTF-8` locales, in `/usr/lib/locale`, without the `locales` package. The workers get `LC_PAPER` from `DEFAULT_PAPER`, and LibreOffice needs this data to read it. A build gate checks that `LC_PAPER` gives 210 × 297 mm and 216 × 279 mm.
 - **No network tools.** curl, ca-certificates and procps are not in the product image. All downloads happen in the `engines` build stage.
 - **No documentation.** The dpkg excludes in `dpkg/docs.cfg` drop docs, man pages and message catalogs before dpkg unpacks them. They keep the `copyright` file of each package.
 
