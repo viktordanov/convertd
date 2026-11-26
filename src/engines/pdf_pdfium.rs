@@ -432,6 +432,7 @@ impl PdfEngine for PdfPdfium {
         let attempt = Attempt::new(
             Work::Render {
                 pages: job.pages.len() as u32,
+                rerun_of: None,
             },
             deadline,
             started,
@@ -504,6 +505,8 @@ impl PdfEngine for PdfPdfium {
         // The budget of the call whose strike counts: a timeout covers only
         // requests that give a worker no more time than that call had.
         let mut strike_ran = Duration::ZERO;
+        // The work of the call whose strike counts: the job, or its rerun.
+        let mut strike_work = attempt.work;
         // Pages of the chunks that went over their share: an equal share
         // keeps the disk within the reservation, but the job's cap is the
         // whole budget, so these get what the other chunks left.
@@ -538,13 +541,15 @@ impl PdfEngine for PdfPdfium {
             over.sort_unstable();
             let finished: u64 = pages.iter().map(|p: &RenderedPage| p.size_bytes).sum();
             let left = job.max_output_bytes.saturating_sub(finished);
-            // The rerun renders only these pages: its check weighs that
-            // work. A strike still records the job's pages (with the
-            // rerun's budget), so it covers a retry of this job but not a
-            // request for fewer pages.
+            // The rerun renders only these pages, as the rerun of a job of
+            // this size: its check and its strike weigh that work, so a
+            // repeated rerun matches its own strikes, and a standalone
+            // render of fewer pages is not covered.
             let rerun_work = Work::Render {
                 pages: over.len() as u32,
+                rerun_of: Some(job.pages.len() as u32),
             };
+            strike_work = rerun_work;
             let rerun_guard = guard.map(|g| Guard {
                 work: rerun_work,
                 ..g
@@ -573,7 +578,7 @@ impl PdfEngine for PdfPdfium {
                 && let Some(strike) = strike
             {
                 let ran = Attempt {
-                    work: attempt.work,
+                    work: strike_work,
                     budget: strike_ran,
                 };
                 list.strike(&job.sha256, strike, &ran);

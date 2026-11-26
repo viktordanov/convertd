@@ -633,7 +633,13 @@ async fn a_crash_whose_retry_is_refused_counts_one_strike() {
             let deadline = || Instant::now() + Duration::from_secs(5);
             let cases: [(Work, [u8; 32]); 2] = [
                 (Work::Convert, [31; 32]),
-                (Work::Render { pages: 1 }, [32; 32]),
+                (
+                    Work::Render {
+                        pages: 1,
+                        rerun_of: None,
+                    },
+                    [32; 32],
+                ),
             ];
             for (work, key) in cases {
                 let covered = Attempt {

@@ -57,8 +57,10 @@ pub enum Work {
     /// owner password writes a copy, a user password of a restricted PDF
     /// stops at the permission check when `check_owner` is set.
     Decrypt { password: u64, check_owner: bool },
-    /// A render of this many pages.
-    Render { pages: u32 },
+    /// A render of this many pages. A rerun of a job's over-share chunks
+    /// names the job's page count in `rerun_of`: it matches only the same
+    /// kind of rerun, never a standalone render (`None`).
+    Render { pages: u32, rerun_of: Option<u32> },
 }
 
 /// A fingerprint of a decrypt password for [`Work::Decrypt`]: SipHash under
@@ -142,7 +144,13 @@ impl Attempt {
                 };
                 probe_covered && password == timed_out_password && export == timed_out_export
             }
-            (Work::Render { pages: timed_out }, Work::Render { pages }) => pages >= timed_out,
+            (
+                Work::Render {
+                    pages: timed_out,
+                    rerun_of: timed_out_parent,
+                },
+                Work::Render { pages, rerun_of },
+            ) => rerun_of == timed_out_parent && pages >= timed_out,
             _ => false,
         };
         work && next.budget <= self.budget + BUDGET_SLACK
@@ -354,7 +362,10 @@ mod tests {
 
     fn render(pages: u32, budget_ms: u64) -> Attempt {
         Attempt {
-            work: Work::Render { pages },
+            work: Work::Render {
+                pages,
+                rerun_of: None,
+            },
             budget: Duration::from_millis(budget_ms),
         }
     }
@@ -549,6 +560,29 @@ mod tests {
             "another password"
         );
         assert_eq!(password_fingerprint("owner"), password_fingerprint("owner"));
+    }
+
+    #[test]
+    fn a_rerun_timeout_covers_only_the_same_rerun() {
+        let now = Instant::now();
+        let l = list(600_000);
+        let render = |pages, rerun_of| Attempt {
+            work: Work::Render { pages, rerun_of },
+            budget: Duration::from_secs(3),
+        };
+        let rerun = render(4, Some(8));
+        l.strike_at(&KEY, Strike::Timeout, &rerun, now);
+        l.strike_at(&KEY, Strike::Timeout, &rerun, now);
+        assert!(l.refuses_at(&KEY, &rerun, now), "the same rerun");
+        assert!(
+            !l.refuses_at(&KEY, &render(4, None), now),
+            "a standalone render"
+        );
+        assert!(!l.refuses_at(&KEY, &render(8, None), now), "the whole job");
+        assert!(
+            !l.refuses_at(&KEY, &render(4, Some(12)), now),
+            "another job's rerun"
+        );
     }
 
     #[test]
