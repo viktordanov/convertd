@@ -132,7 +132,7 @@ The scanners stream each part through quick-xml under fixed caps: 4 MiB per part
 <!-- memoria:section id="lifecycle" files="main.rs rest/server.rs rest/ops_handlers.rs observability/metrics.rs" -->
 ## Lifecycle and metrics
 
-`convertd serve` creates `TMP_DIR` and removes the `job-*` directories that a crash left. On SIGTERM or SIGINT it stops in five steps:
+`convertd serve` creates `TMP_DIR` and takes an exclusive lock on `TMP_DIR/.lock` for its whole life. If another process holds that lock, it stops with an error before it touches anything. Then it removes the `job-*` directories that a crash left. On SIGTERM or SIGINT it stops in five steps:
 
 1. It sets the draining flag: `/readyz` answers 503 with `draining`, and new conversions answer 503 `SERVICE_UNAVAILABLE` with `Retry-After: 5`.
 2. It waits until no request holds a permit, at most `SHUTDOWN_GRACE_SECONDS`. The listener stays open during this time. A request admitted before the signal finishes, even if its upload is still arriving, and its later engine calls still get a worker.

@@ -618,3 +618,64 @@ fn slow_sigterm_at_level_b_finishes_office_then_render() {
     let status = served.wait_exit();
     assert!(status.success(), "{status:?}");
 }
+
+/// Two `convertd serve` on one `TMP_DIR` would sweep each other's job
+/// directories and worker slots. The second refuses to start, and a job
+/// directory of the first survives (review, lane 001 item 2).
+#[cfg(feature = "test-hooks")]
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test runs the binary directly; no supervisor reaper exists here"
+)]
+fn slow_a_second_server_on_the_same_tmp_dir_refuses_to_start() {
+    let first = Served::start("tmp-lock", &[("TEST_ENGINE", "fake")]);
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("ops-tmp-lock");
+    let live = dir.join("job-live");
+    std::fs::create_dir_all(&live).unwrap();
+    std::fs::write(live.join("marker"), b"in use").unwrap();
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut second = std::process::Command::new(env!("CARGO_BIN_EXE_convertd"))
+        .arg("serve")
+        .env_clear()
+        .env("HOST", "127.0.0.1")
+        .env("PORT", port.to_string())
+        .env("API_KEY", KEY)
+        .env("TMP_DIR", &dir)
+        .env("TEST_ENGINE", "fake")
+        .env("BUILD_INFO_PATH", "/nonexistent")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = second.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = second.kill();
+            let _ = second.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    if let Some(mut pipe) = second.stderr.take() {
+        let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr);
+    }
+    let status = status.expect("the second server kept running");
+    assert!(!status.success(), "{status:?}");
+    assert!(stderr.contains("TMP_DIR"), "{stderr}");
+    assert!(
+        live.join("marker").exists(),
+        "the first server's job was swept"
+    );
+    first.sigterm();
+    assert!(first.wait_exit().success());
+}

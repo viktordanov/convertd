@@ -144,7 +144,10 @@ fn healthcheck() -> ExitCode {
 fn serve() -> Result<(), String> {
     let config = Config::from_process().map_err(|err| err.to_string())?;
     logging::init(config.server.log_mode).map_err(|err| err.to_string())?;
-    prepare_tmp_dir(&config)?;
+    // Held until serve returns: before the sweep below and before the
+    // engines clear their worker slots, so a second server on the same
+    // TMP_DIR stops here instead of sweeping this one's files.
+    let _tmp_lock = prepare_tmp_dir(&config)?;
     let runtime = runtime::serve(config.server.tokio_worker_threads)
         .map_err(|err| format!("failed to build the runtime: {err}"))?;
 
@@ -224,15 +227,17 @@ const METRICS_UPKEEP: std::time::Duration = std::time::Duration::from_secs(5);
 /// How long open connections get after the listener closes.
 const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Creates `TMP_DIR` and removes the job directories a crash left.
-fn prepare_tmp_dir(config: &Config) -> Result<(), String> {
+/// Creates `TMP_DIR`, takes its lock, and removes the job directories a
+/// crash left. Returns the lock, to hold for the life of the process.
+fn prepare_tmp_dir(config: &Config) -> Result<std::fs::File, String> {
     let dir = &config.server.tmp_dir;
     std::fs::create_dir_all(dir)
         .map_err(|err| format!("failed to create TMP_DIR {}: {err}", dir.display()))?;
+    let lock = jobs::job_dir::lock_tmp_dir(dir)?;
     match jobs::job_dir::sweep_stale(dir) {
         Ok(0) => {}
         Ok(removed) => tracing::info!(removed, "removed stale job directories"),
         Err(err) => tracing::warn!(error = %err, "failed to sweep TMP_DIR"),
     }
-    Ok(())
+    Ok(lock)
 }
