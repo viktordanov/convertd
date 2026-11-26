@@ -483,6 +483,7 @@ impl Pool {
                 let worker = idle.workers.pop();
                 if worker.is_some() {
                     idle.busy += 1;
+                    inner.publish_counts(&idle);
                 }
                 worker
             };
@@ -577,6 +578,7 @@ impl Pool {
                 let worker = idle.workers.pop();
                 if worker.is_some() {
                     idle.busy += 1;
+                    inner.publish_counts(&idle);
                 }
                 worker
             }?;
@@ -728,6 +730,18 @@ impl Drop for WaitingGuard<'_> {
 }
 
 impl PoolInner {
+    /// Sets `convert_workers` from the idle list. Called under the idle
+    /// lock on every lease and return, and after every manager event, so
+    /// the gauges agree with `status()` and two updates never reorder.
+    fn publish_counts(&self, idle: &Idle) {
+        let name = self.spec.name;
+        metrics::gauge!("convert_workers", "pool" => name, "state" => "idle")
+            .set(idle.workers.len() as f64);
+        metrics::gauge!("convert_workers", "pool" => name, "state" => "busy").set(idle.busy as f64);
+        metrics::gauge!("convert_workers", "pool" => name, "state" => "starting")
+            .set(self.starting.load(Ordering::Acquire) as f64);
+    }
+
     fn unavailable_now(&self) -> bool {
         self.backoff.load(Ordering::Acquire) && self.live.load(Ordering::Acquire) == 0
     }
@@ -735,7 +749,11 @@ impl PoolInner {
     /// Discards a leased (busy) worker.
     fn discard(&self, mut worker: Worker, reason: Reason) {
         worker.reason = reason;
-        lock(&self.idle).busy -= 1;
+        {
+            let mut idle = lock(&self.idle);
+            idle.busy -= 1;
+            self.publish_counts(&idle);
+        }
         drop(worker);
     }
 
@@ -745,12 +763,14 @@ impl PoolInner {
         let retire = {
             let mut idle = lock(&self.idle);
             idle.busy -= 1;
-            if worker.retiring() {
+            let retire = if worker.retiring() {
                 Some(worker)
             } else {
                 idle.workers.push(worker);
                 None
-            }
+            };
+            self.publish_counts(&idle);
+            retire
         };
         match retire {
             Some(mut worker) => {
@@ -1066,15 +1086,7 @@ impl Manager {
     }
 
     fn publish(&self, pool: &PoolInner) {
-        let (idle, busy) = {
-            let idle = lock(&pool.idle);
-            (idle.workers.len(), idle.busy)
-        };
-        let name = self.spec.name;
-        metrics::gauge!("convert_workers", "pool" => name, "state" => "idle").set(idle as f64);
-        metrics::gauge!("convert_workers", "pool" => name, "state" => "busy").set(busy as f64);
-        metrics::gauge!("convert_workers", "pool" => name, "state" => "starting")
-            .set(pool.starting.load(Ordering::Acquire) as f64);
+        pool.publish_counts(&lock(&pool.idle));
     }
 
     /// Members that count towards the target: not being replaced.

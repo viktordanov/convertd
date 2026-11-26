@@ -94,7 +94,7 @@ The pool logs these events:
 - `worker recycled`, with the reason `jobs`, `rss`, `age` or `error`, and `worker killed`, with the reason `timeout`, `cancelled` or `rss`. A kill over `kill_rss` also logs `worker over its memory limit` with `rss_bytes` and `kill_rss`.
 - `worker start failed`, with `error` and `backoff_ms`. `worker started` is a debug event.
 
-The pool sets three metrics: `convert_workers{pool,state}` for `idle`, `busy` and `starting`, `convert_worker_restarts_total{pool,reason}`, and `convert_queue_depth{pool}`.
+The pool sets three metrics: `convert_workers{pool,state}` for `idle`, `busy` and `starting`, `convert_worker_restarts_total{pool,reason}`, and `convert_queue_depth{pool}`. Each lease, each return and each manager event sets `convert_workers` under the idle lock, so the gauges agree with `/readyz`.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="contract" files="pool.rs" -->
