@@ -466,15 +466,23 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                         });
                     }
                 }
+                // The body is the root w:document's only child body; one
+                // anywhere else (in an extension, or a body per branch),
+                // before or after it, makes the one LibreOffice reads
+                // unclear.
+                if tag == Tag::Body
+                    && (body.is_some()
+                        || alternates > 0
+                        || depth != 1
+                        || stack.first() != Some(&Tag::Document))
+                {
+                    return Err(Skip::Unsupported);
+                }
                 if tag == Tag::Body
                     && body.is_none()
                     && let Some(ns) = ns
                 {
-                    // The body is the root w:document's child; one anywhere
-                    // else (in an extension, or a body per branch) makes the
-                    // one LibreOffice reads unclear.
-                    let under_root = depth == 1 && stack.first() == Some(&Tag::Document);
-                    if !under_root || alternates > 0 || prefix.len() > MAX_PREFIX {
+                    if prefix.len() > MAX_PREFIX {
                         return Err(Skip::Unsupported);
                     }
                     if empty {
@@ -1056,7 +1064,11 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
         if u32_at(&header, 0) != 0x0403_4b50 || record.local_offset + needed > end {
             return Err(Skip::Unsupported);
         }
-        // No entry may use ZIP64 in its local header either.
+        // No entry may use ZIP64 in its local header either: no size
+        // sentinel, and no ZIP64 extra block.
+        if u32_at(&header, 18) == 0xFFFF_FFFF || u32_at(&header, 22) == 0xFFFF_FFFF {
+            return Err(Skip::Unsupported);
+        }
         let name_len = usize::from(u16_at(&header, 26));
         let mut name_extra = vec![0u8; name_len + usize::from(u16_at(&header, 28))];
         file.read_exact(&mut name_extra).map_err(source_io)?;

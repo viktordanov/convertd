@@ -1245,3 +1245,25 @@ fn trailing_compressed_bytes_in_the_main_part_keep_the_package() {
     }
     assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unreadable), None));
 }
+
+#[test]
+fn a_second_body_after_the_first_keeps_the_package() {
+    let mc = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+    let xml = format!(
+        r#"<w:document xmlns:w="{W}" xmlns:mc="{mc}"><w:body><w:p/><mc:AlternateContent><mc:Choice Requires="x"><w:body><w:p/></w:body></mc:Choice></mc:AlternateContent></w:body></w:document>"#
+    );
+    assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
+}
+
+#[test]
+fn a_zip64_size_sentinel_in_any_local_header_keeps_the_package() {
+    let main = doc("<w:p/>");
+    let mut source = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", main.as_bytes(), true, false),
+    ]);
+    // The first entry's local uncompressed size becomes the sentinel.
+    put_u32(&mut source, 22, 0xFFFF_FFFF);
+    assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
+}
