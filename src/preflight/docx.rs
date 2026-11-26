@@ -18,8 +18,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use quick_xml::events::BytesStart;
 
-use super::package::{Package, attr, attr_prefixed, rels_path, resolve};
-use super::{FONT_SCAN_CAP, PART_CAP, add_font};
+use super::package::{Package, XmlEvent, attr, attr_prefixed, rels_path, resolve};
+use super::{FONT_SCAN_CAP, MAX_FONTS, PART_CAP, add_font};
 use crate::domain::verification::{Check, SkipReason, SourceFacts};
 
 /// At most this many styles are kept.
@@ -89,7 +89,15 @@ struct Style {
 
 pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &mut SourceFacts) {
     let main = main_part(package).unwrap_or_else(|| "word/document.xml".to_owned());
-    let rels = package.rels(&main).unwrap_or_default();
+    // An unreadable relationships part leaves the theme and styles to their
+    // usual names, but the font table cannot be found without it.
+    let (rels, rels_error) = match package.rels(&main) {
+        Ok(rels) => (rels, None),
+        Err(SkipReason::MissingPart) if !package.has(&rels_path(&main)) => {
+            (Default::default(), None)
+        }
+        Err(reason) => (Default::default(), Some(reason)),
+    };
     let target = |suffix: &str| {
         rels.values()
             .filter(|(kind, _)| kind.ends_with(suffix))
@@ -185,6 +193,10 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
             return;
         }
     }
+    if let Some(reason) = rels_error {
+        facts.skipped.push((Check::Fonts, reason));
+        return;
+    }
     match embedded_fonts(package, font_table_part.as_deref(), &found) {
         Ok(embedded) => facts.embedded_fonts = embedded.into_iter().collect(),
         Err(reason) => {
@@ -196,10 +208,12 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
 }
 
 /// The requested families that `part`, the font table linked from the
-/// main part, embeds: a `w:font` with an embed element whose relationship
-/// points at a font part the package holds. Only requested families are
-/// kept, so the result is bounded by the requested set and an unrelated
-/// family cannot crowd one out. Each name is kept once. No linked table,
+/// main part, embeds. A family counts when one of its embed elements, a
+/// direct child of its `w:font`, points through the table's relationships
+/// at a font part whose first bytes, deobfuscated with the element's
+/// `w:fontKey`, are an sfnt header. Only requested families are kept, so
+/// the result is bounded by the requested set and an unrelated family
+/// cannot crowd one out; no name is copied per element. No linked table,
 /// or a linked table absent from the package, embeds nothing; a table or
 /// relationships part that is present but cannot be read is an error,
 /// because the font check must not run without knowing what is embedded.
@@ -219,34 +233,115 @@ fn embedded_fonts(
     } else {
         Default::default()
     };
-    // The relationship ids that point at a font part in the package.
-    let fonts: HashSet<String> = rels
+    // Relationship id to font part, for the parts the package holds.
+    let font_parts: HashMap<String, String> = rels
         .into_iter()
         .filter(|(_, (kind, target))| kind.ends_with("/font") && package.has(target))
-        .map(|(id, _)| id)
+        .map(|(id, (_, target))| (id, target))
         .collect();
     let wanted: HashMap<String, &String> =
         requested.iter().map(|name| (fold(name), name)).collect();
-    let mut current: Option<&String> = None;
-    let mut embedded = BTreeSet::new();
-    package.xml(part, PART_CAP, |e| {
-        match e.local_name().as_ref() {
-            b"font" => {
-                current = attr(e, b"name").and_then(|name| wanted.get(&fold(&name)).copied())
+
+    // (family, font part, obfuscation key), at most four per family.
+    let mut candidates: Vec<(&String, &String, Option<[u8; 16]>)> = Vec::new();
+    // The requested family of the open `w:font`, and the depth below it.
+    let mut current: Option<(Option<&String>, usize)> = None;
+    package.xml_events(part, PART_CAP, |event| {
+        let (e, opens) = match event {
+            XmlEvent::Start(e) => (e, true),
+            XmlEvent::Empty(e) => (e, false),
+            XmlEvent::End => {
+                current = match current {
+                    Some((family, depth)) if depth > 0 => Some((family, depth - 1)),
+                    _ => None,
+                };
+                return true;
             }
-            b"embedRegular" | b"embedBold" | b"embedItalic" | b"embedBoldItalic" => {
-                if let Some(name) = current
-                    && !embedded.contains(name)
-                    && attr_prefixed(e, b"id").is_some_and(|id| fonts.contains(&id))
-                {
-                    embedded.insert(name.clone());
+        };
+        match current.as_mut() {
+            None => {
+                if opens && e.local_name().as_ref() == b"font" {
+                    let family =
+                        attr(e, b"name").and_then(|name| wanted.get(&fold(&name)).copied());
+                    current = Some((family, 0));
                 }
             }
-            _ => {}
+            Some((family, depth)) => {
+                if *depth == 0
+                    && let Some(family) = *family
+                    && matches!(
+                        e.local_name().as_ref(),
+                        b"embedRegular" | b"embedBold" | b"embedItalic" | b"embedBoldItalic"
+                    )
+                    && candidates.len() < 4 * MAX_FONTS
+                {
+                    let target = attr_prefixed(e, b"id").and_then(|id| font_parts.get(&id));
+                    let key = match attr(e, b"fontKey") {
+                        None => Some(None),
+                        Some(key) => font_key(&key).map(Some),
+                    };
+                    if let (Some(target), Some(key)) = (target, key) {
+                        candidates.push((family, target, key));
+                    }
+                }
+                if opens {
+                    *depth += 1;
+                }
+            }
         }
         true
     })?;
+
+    let mut embedded = BTreeSet::new();
+    for (family, target, key) in candidates {
+        if embedded.contains(family) {
+            continue;
+        }
+        let Ok(mut head) = package.head(target, SFNT_HEADER) else {
+            continue;
+        };
+        if let Some(key) = key {
+            for (i, byte) in head.iter_mut().enumerate() {
+                *byte ^= key[i % 16];
+            }
+        }
+        if is_sfnt(&head) {
+            embedded.insert(family.clone());
+        }
+    }
     Ok(embedded)
+}
+
+/// Bytes read from a font part: the obfuscated span (ECMA-376 Part 1,
+/// 17.8.1), which holds the sfnt version.
+const SFNT_HEADER: usize = 32;
+
+/// The 16 bytes of a `w:fontKey` GUID, read from its end (ECMA-376 Part 1,
+/// 17.8.1). `None` for a malformed key.
+fn font_key(key: &str) -> Option<[u8; 16]> {
+    let hex: Vec<u8> = key
+        .bytes()
+        .filter(|b| !matches!(b, b'{' | b'}' | b'-'))
+        .collect();
+    if hex.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let at = 30 - 2 * i;
+        let pair = std::str::from_utf8(&hex[at..at + 2]).ok()?;
+        *slot = u8::from_str_radix(pair, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Whether `head` starts with an sfnt version: TrueType, OpenType with CFF,
+/// Apple TrueType, or a font collection.
+fn is_sfnt(head: &[u8]) -> bool {
+    matches!(
+        head.get(..4),
+        Some([0x00, 0x01, 0x00, 0x00] | b"OTTO" | b"true" | b"ttcf")
+    )
 }
 
 /// Trimmed, case-folded, runs of whitespace collapsed to one space: the

@@ -144,20 +144,47 @@ fn docx_referenced_styles_their_chain_runs_and_headers() {
     );
 }
 
-/// A `word/fontTable.xml` with its relationships: each font is
-/// (name, embed element and relationship id, or none).
-fn font_table(fonts: &[(&str, Option<(&str, &str)>)]) -> String {
+/// The `w:fontKey` of the test fonts, as Word writes it.
+const KEY: &str = "{5F3C1A2B-9D4E-4C6F-8A7B-0E1D2C3B4A59}";
+
+/// A font part that starts with the sfnt version `magic`.
+fn sfnt(magic: &[u8; 4]) -> Vec<u8> {
+    let mut out = magic.to_vec();
+    out.extend_from_slice(&[0x5a; 60]);
+    out
+}
+
+/// ECMA-376 Part 1, 17.8.1, written independently of the scanner: the
+/// first 32 bytes XORed with the key's GUID bytes, read from the end.
+fn obfuscate(data: &[u8], key: &str) -> Vec<u8> {
+    let hex: String = key.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    let k: Vec<u8> = (0..16)
+        .map(|i| u8::from_str_radix(&hex[30 - 2 * i..32 - 2 * i], 16).unwrap())
+        .collect();
+    let mut out = data.to_vec();
+    for (i, byte) in out.iter_mut().take(32).enumerate() {
+        *byte ^= k[i % 16];
+    }
+    out
+}
+
+/// One embed element of a test font: (element, relationship id, font key).
+type Embed<'a> = (&'a str, &'a str, Option<&'a str>);
+
+/// A `word/fontTable.xml`: each font with its embed elements.
+fn font_table(fonts: &[(&str, &[Embed<'_>])]) -> String {
     let mut out = format!(
         r#"<w:fonts {W} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#
     );
-    for (name, embed) in fonts {
+    for (name, embeds) in fonts {
         out.push_str(&format!(
             r#"<w:font w:name="{name}"><w:family w:val="swiss"/>"#
         ));
-        if let Some((element, id)) = embed {
-            out.push_str(&format!(
-                r#"<w:{element} r:id="{id}" w:fontKey="{{5F3C1A2B-9D4E-4C6F-8A7B-0E1D2C3B4A59}}"/>"#
-            ));
+        for (element, id, key) in *embeds {
+            let key = key
+                .map(|k| format!(r#" w:fontKey="{k}""#))
+                .unwrap_or_default();
+            out.push_str(&format!(r#"<w:{element} r:id="{id}"{key}/>"#));
         }
         out.push_str("</w:font>");
     }
@@ -176,47 +203,120 @@ fn runs(families: &[&str]) -> String {
 
 #[test]
 fn docx_embedded_fonts_from_the_font_table() {
-    // F1: a requested family counts as embedded only when an embed element
-    // points at a font part that the package holds, obfuscated (odttf) or
-    // plain. "Not Requested" is embedded but no run asks for it.
+    // F1: a requested family counts as embedded only when one of its embed
+    // elements points at a font part that the package holds and that is an
+    // sfnt font once deobfuscated with the element's key.
+    let other_key = "{00000000-1111-2222-3333-444444444444}";
     let table = font_table(&[
-        ("Calibri", None),
-        ("Aptos", Some(("embedRegular", "rIdF1"))),
-        ("Embed Plain", Some(("embedBold", "rIdF2"))),
-        ("Gone Part", Some(("embedItalic", "rIdF3"))),
-        ("No Relationship", Some(("embedBoldItalic", "rIdF9"))),
-        ("Not Requested", Some(("embedRegular", "rIdF1"))),
+        ("Calibri", &[]),
+        ("Aptos", &[("embedRegular", "rIdF1", Some(KEY))]),
+        ("Embed Plain", &[("embedBold", "rIdF2", None)]),
+        ("Gone Part", &[("embedItalic", "rIdF3", None)]),
+        ("No Relationship", &[("embedBoldItalic", "rIdF9", None)]),
+        ("Not Requested", &[("embedRegular", "rIdF1", Some(KEY))]),
+        ("Empty Font", &[("embedRegular", "rIdF4", None)]),
+        ("Junk Font", &[("embedRegular", "rIdF5", None)]),
+        ("Wrong Key", &[("embedRegular", "rIdF1", Some(other_key))]),
+        ("Bad Key", &[("embedRegular", "rIdF2", Some("not a guid"))]),
+        (
+            "Second Try",
+            &[
+                ("embedRegular", "rIdF4", None),
+                ("embedBold", "rIdF2", None),
+            ],
+        ),
     ]);
     let table_rels = rels(&[
         ("rIdF1", "font", "fonts/font1.odttf"),
-        ("rIdF2", "font", "fonts/font2.ttf"),
+        ("rIdF2", "font", "fonts/font2.otf"),
         ("rIdF3", "font", "fonts/font3.odttf"),
+        ("rIdF4", "font", "fonts/font4.ttf"),
+        ("rIdF5", "font", "fonts/font5.ttf"),
     ]);
+    let obfuscated = obfuscate(&sfnt(&[0, 1, 0, 0]), KEY);
+    let plain = sfnt(b"OTTO");
     let bytes = docx(
         &[
             ("word/fontTable.xml", table.as_bytes()),
             ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
-            ("word/fonts/font1.odttf", b"\x00obfuscated"),
-            ("word/fonts/font2.ttf", b"\x00\x01\x00\x00plain"),
+            ("word/fonts/font1.odttf", &obfuscated),
+            ("word/fonts/font2.otf", &plain),
+            ("word/fonts/font4.ttf", b""),
+            (
+                "word/fonts/font5.ttf",
+                b"not a font at all, not a font at all",
+            ),
         ],
-        &runs(&["aptos", "Embed Plain", "Gone Part", "No Relationship"]),
+        &runs(&[
+            "aptos",
+            "Embed Plain",
+            "Gone Part",
+            "No Relationship",
+            "Empty Font",
+            "Junk Font",
+            "Wrong Key",
+            "Bad Key",
+            "Second Try",
+        ]),
     );
     let facts = scan_bytes("embedded.docx", &bytes, Family::Document);
     // The run's spelling: names compare case-folded, as the catalog does.
-    assert_eq!(facts.embedded_fonts, ["Embed Plain", "aptos"]);
+    assert_eq!(facts.embedded_fonts, ["Embed Plain", "Second Try", "aptos"]);
     assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_embed_elements_count_only_inside_their_font() {
+    // An embed element after a `w:font` closed, after a self-closing
+    // `w:font`, or below another child is not that family's embed.
+    let table = format!(
+        r#"<w:fonts {W} xmlns:r="r"><w:font w:name="Aptos"><w:family w:val="swiss"/></w:font><w:embedRegular r:id="rIdF1"/><w:font w:name="Georgia"/><w:embedRegular r:id="rIdF1"/><w:font w:name="Verdana"><w:sig><w:embedRegular r:id="rIdF1"/></w:sig></w:font></w:fonts>"#
+    );
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", &font),
+        ],
+        &runs(&["Aptos", "Georgia", "Verdana"]),
+    );
+    let facts = scan_bytes("scoped.docx", &bytes, Family::Document);
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_unreadable_main_relationships_skip_the_font_check() {
+    // Without the main part's relationships the font table cannot be found,
+    // so the check does not run as if nothing were embedded.
+    let mut bytes = docx(&[], &runs(&["Aptos"]));
+    set_method(&mut bytes, "word/_rels/document.xml.rels", 12);
+    let facts = scan_bytes("norels.docx", &bytes, Family::Document);
+    assert!(
+        facts.requested_fonts.is_empty(),
+        "{:?}",
+        facts.requested_fonts
+    );
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MissingPart)]);
 }
 
 #[test]
 fn docx_font_table_counts_only_when_the_main_part_links_it() {
     // A leftover table that no relationship of the main part names is not
     // loaded by LibreOffice, so it embeds nothing.
-    let table = font_table(&[("Aptos", Some(("embedRegular", "rIdF1")))]);
+    let table = font_table(&[("Aptos", &[("embedRegular", "rIdF1", Some(KEY))])]);
     let table_rels = rels(&[("rIdF1", "font", "fonts/font1.odttf")]);
+    let font = obfuscate(&sfnt(&[0, 1, 0, 0]), KEY);
     let entries: [(&str, &[u8]); 3] = [
         ("word/fontTable.xml", table.as_bytes()),
         ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
-        ("word/fonts/font1.odttf", b"\x00font"),
+        ("word/fonts/font1.odttf", &font),
     ];
     let unlinked = docx_linking(&entries, &runs(&["Aptos"]), false);
     let facts = scan_bytes("stale.docx", &unlinked, Family::Document);
@@ -265,7 +365,7 @@ fn set_method(zip: &mut [u8], name: &str, method: u16) {
 fn docx_font_table_present_but_unreadable_skips_the_font_check() {
     // An entry in a compression method the reader does not support is not
     // absent: the check is skipped instead of running without the table.
-    let table = font_table(&[("Aptos", Some(("embedRegular", "rIdF1")))]);
+    let table = font_table(&[("Aptos", &[("embedRegular", "rIdF1", Some(KEY))])]);
     let mut bytes = docx(
         &[("word/fontTable.xml", table.as_bytes())],
         &runs(&["Aptos"]),

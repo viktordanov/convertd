@@ -16,6 +16,13 @@ use crate::domain::verification::SkipReason;
 /// The bytes a slide's root start tag may take.
 pub const ROOT_TAG_CAP: u64 = 4 * 1024;
 
+/// One event of [`Package::xml_events`].
+pub enum XmlEvent<'a, 'b> {
+    Start(&'a BytesStart<'b>),
+    Empty(&'a BytesStart<'b>),
+    End,
+}
+
 pub struct Package {
     file: File,
     entries: HashMap<String, Entry>,
@@ -54,6 +61,21 @@ impl Package {
         cap: u64,
         mut on_start: impl FnMut(&BytesStart<'_>) -> bool,
     ) -> Result<u64, SkipReason> {
+        self.xml_events(name, cap, |event| match event {
+            XmlEvent::Start(e) | XmlEvent::Empty(e) => on_start(e),
+            XmlEvent::End => true,
+        })
+    }
+
+    /// [`Package::xml`] with end tags too, for a scan that must know where
+    /// an element ends. `Start` opens an element with content, `Empty` is a
+    /// self-closing one, and `End` closes the innermost open element.
+    pub fn xml_events(
+        &mut self,
+        name: &str,
+        cap: u64,
+        mut on_event: impl FnMut(XmlEvent<'_, '_>) -> bool,
+    ) -> Result<u64, SkipReason> {
         let entry = *self.entries.get(name).ok_or(SkipReason::MissingPart)?;
         let cap = cap.min(self.left);
         let reader = zip_scan::open_entry(&mut self.file, &entry)
@@ -68,22 +90,40 @@ impl Package {
         let mut xml = quick_xml::Reader::from_reader(BufReader::with_capacity(64 * 1024, counted));
         let mut buf = Vec::with_capacity(4 * 1024);
         let result = loop {
-            match xml.read_event_into(&mut buf) {
-                Ok(Event::Start(e) | Event::Empty(e)) => {
-                    if !on_start(&e) {
-                        break Ok(());
-                    }
-                }
+            let go_on = match xml.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => on_event(XmlEvent::Start(&e)),
+                Ok(Event::Empty(e)) => on_event(XmlEvent::Empty(&e)),
+                Ok(Event::End(_)) => on_event(XmlEvent::End),
                 Ok(Event::Eof) => break Ok(()),
-                Ok(_) => {}
+                Ok(_) => true,
                 Err(_) if count.get() > cap => break Err(SkipReason::CapReached),
                 Err(_) => break Err(SkipReason::MalformedXml),
+            };
+            if !go_on {
+                break Ok(());
             }
             buf.clear();
         };
         let read = count.get().min(cap);
         self.left = self.left.saturating_sub(read);
         result.map(|()| read)
+    }
+
+    /// The first `len` inflated bytes of `name`, or fewer when it is
+    /// shorter. They count against the request budget.
+    pub fn head(&mut self, name: &str, len: usize) -> Result<Vec<u8>, SkipReason> {
+        let entry = *self.entries.get(name).ok_or(SkipReason::MissingPart)?;
+        let reader = zip_scan::open_entry(&mut self.file, &entry)
+            .map_err(|_| SkipReason::MalformedXml)?
+            .ok_or(SkipReason::MissingPart)?;
+        let cap = (len as u64).min(self.left);
+        let mut out = Vec::with_capacity(len);
+        reader
+            .take(cap)
+            .read_to_end(&mut out)
+            .map_err(|_| SkipReason::MalformedXml)?;
+        self.left = self.left.saturating_sub(out.len() as u64);
+        Ok(out)
     }
 
     /// The attributes of the root element of `name`, read from its first

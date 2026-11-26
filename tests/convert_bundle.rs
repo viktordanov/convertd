@@ -556,8 +556,9 @@ fn aptos_docx(vba: bool) -> Vec<u8> {
     package(&entries)
 }
 
-/// `aptos_docx(false)` with Aptos embedded in `word/fontTable.xml`, as
-/// Word writes it: an obfuscated `odttf` part behind `w:embedRegular`.
+/// `aptos_docx(false)` with Aptos embedded in `word/fontTable.xml`: a font
+/// part behind `w:embedRegular` that starts with an sfnt version (`true`).
+/// The pre-flight unit tests cover obfuscated parts.
 fn aptos_embedded_docx() -> Vec<u8> {
     let main = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
     package(&[
@@ -577,10 +578,10 @@ fn aptos_embedded_docx() -> Vec<u8> {
         ),
         (
             "word/fontTable.xml",
-            r#"<w:fonts xmlns:w="w" xmlns:r="r"><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1" w:fontKey="{5F3C1A2B-9D4E-4C6F-8A7B-0E1D2C3B4A59}"/></w:font></w:fonts>"#.to_owned(),
+            r#"<w:fonts xmlns:w="w" xmlns:r="r"><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1"/></w:font></w:fonts>"#.to_owned(),
         ),
-        ("word/_rels/fontTable.xml.rels", rels(&[("rIdF1", "font", "fonts/font1.odttf")])),
-        ("word/fonts/font1.odttf", "obfuscated font bytes".to_owned()),
+        ("word/_rels/fontTable.xml.rels", rels(&[("rIdF1", "font", "fonts/font1.ttf")])),
+        ("word/fonts/font1.ttf", format!("true{}", "\0".repeat(60))),
     ])
 }
 
