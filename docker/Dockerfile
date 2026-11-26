@@ -195,9 +195,11 @@ ARG PDFIUM_BUILD
 # 1 adds Noto CJK (size unmeasured).
 ARG FONTS_CJK=0
 # What dpkg never unpacks. docs: documentation, man pages, message catalogs (product only).
-# fonts: the Noto subset (product and dev, so both see the same families).
+# fonts: the Noto subset. libreoffice: the LibreOffice parts headless never loads. Both are in
+# product and dev, so both images see the same families and the same LibreOffice.
 COPY docker/dpkg/docs.cfg /etc/dpkg/dpkg.cfg.d/90-rs-convert-docs
 COPY docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
+COPY docker/dpkg/libreoffice.cfg /etc/dpkg/dpkg.cfg.d/92-rs-convert-libreoffice
 # fonts.json: {family -> metric_compatible} for FONT_SUBSTITUTED (005 §5). The aliases add the
 # Office families Debian does not map; build-info.json records what fc-match then picks.
 COPY docker/fonts/fonts.json /etc/convertd/fonts.json
@@ -280,8 +282,9 @@ ARG LO_BUILD
 ARG PDFIUM_BUILD
 ARG RUST_VERSION
 ARG FONTS_CJK=0
-# Only the font excludes: the docs/locale excludes would fight locale-gen here.
+# The font and LibreOffice excludes only: the docs/locale excludes would fight locale-gen here.
 COPY docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
+COPY docker/dpkg/libreoffice.cfg /etc/dpkg/dpkg.cfg.d/92-rs-convert-libreoffice
 COPY docker/fonts/fonts.json /etc/convertd/fonts.json
 COPY docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
 COPY docker/fonts/35-rs-convert-aliases.conf /etc/fonts/conf.d/35-rs-convert-aliases.conf
