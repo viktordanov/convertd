@@ -238,7 +238,9 @@ fn dashboard_queries(value: &serde_json::Value, out: &mut Vec<String>) {
     }
 }
 
-/// The `expr:` values of a rules file, inline or as a `|` or `>` block.
+/// The `expr:` values of a rules file: a `|` or `>` block, or a plain or
+/// quoted value with its continuation lines (any line indented deeper than
+/// the `expr:` key belongs to the value).
 fn rule_queries(yaml: &str) -> Vec<String> {
     let lines: Vec<&str> = yaml.lines().collect();
     let mut out = Vec::new();
@@ -248,16 +250,17 @@ fn rule_queries(yaml: &str) -> Vec<String> {
             continue;
         };
         let value = value.trim();
-        if value.starts_with('|') || value.starts_with('>') {
-            let block: Vec<&str> = lines[n + 1..]
+        let mut parts = Vec::new();
+        if !(value.starts_with('|') || value.starts_with('>')) {
+            parts.push(value);
+        }
+        parts.extend(
+            lines[n + 1..]
                 .iter()
                 .take_while(|l| l.trim().is_empty() || l.len() - l.trim_start().len() > indent)
-                .copied()
-                .collect();
-            out.push(block.join("\n"));
-        } else {
-            out.push(value.trim_matches(['"', '\'']).to_owned());
-        }
+                .copied(),
+        );
+        out.push(parts.join("\n").trim_matches(['"', '\'']).to_owned());
     }
     out
 }
@@ -351,10 +354,14 @@ fn the_name_scan_reports_a_misspelled_metric() {
 
 #[test]
 fn the_query_extractors_find_every_query() {
-    let yaml = "rules:\n  - alert: A\n    expr: |\n      sum(a_total)\n        > 0\n    for: 5m\n  - alert: B\n    expr: b_total > 1\n";
+    let yaml = "rules:\n  - alert: A\n    expr: |\n      sum(a_total)\n        > 0\n    for: 5m\n  - alert: B\n    expr: b_total > 1\n  - alert: C\n    expr: c_total > 0\n      and covert_d > 0\n    for: 1m\n";
     assert_eq!(
         rule_queries(yaml),
-        ["      sum(a_total)\n        > 0", "b_total > 1"]
+        [
+            "      sum(a_total)\n        > 0",
+            "b_total > 1",
+            "c_total > 0\n      and covert_d > 0"
+        ]
     );
     let dashboard = serde_json::json!({
         "panels": [{"targets": [{"expr": "rate(x_total[1m])"}]}],
