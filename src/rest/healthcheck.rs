@@ -135,11 +135,14 @@ mod tests {
 
     #[test]
     fn fails_when_nothing_listens() {
-        let port = {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.local_addr().unwrap().port()
-        };
-        let err = check(port, Duration::from_secs(2)).unwrap_err();
+        // Bound but never listening: the port stays ours for the whole test,
+        // so no other process can take it and answer. Linux refuses the
+        // connect; macOS lets it time out.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = socket.local_addr().unwrap().port();
+        let err = check(port, Duration::from_millis(300)).unwrap_err();
         assert!(matches!(err, HealthcheckError::Connect { .. }), "{err}");
+        drop(socket);
     }
 }
