@@ -96,7 +96,8 @@ pub fn tar_body(plan: TarPlan, pump: Pump) -> Body {
                     io::ErrorKind::WouldBlock => PumpEnd::TooSlow,
                     io::ErrorKind::BrokenPipe => PumpEnd::Disconnected,
                     _ => {
-                        let _ = handle.block_on(tokio::time::timeout(idle, tx.send(Err(err))));
+                        let _ = handle
+                            .block_on(tokio::time::timeout(idle, tx.send(Piece::Failed(err))));
                         PumpEnd::Aborted
                     }
                 }
@@ -105,7 +106,18 @@ pub fn tar_body(plan: TarPlan, pump: Pump) -> Body {
     })
 }
 
-type Sender = mpsc::Sender<io::Result<Bytes>>;
+/// What the pump sends to the body. The body ends cleanly only on `Done`:
+/// a pump that stops without it (stalled, too slow, aborted, a timed-out
+/// send, a panic) leaves the body with an error, so hyper drops the
+/// connection instead of sending a chunked terminator, and a cut tar.zst
+/// never looks complete.
+enum Piece {
+    Data(Bytes),
+    Failed(io::Error),
+    Done,
+}
+
+type Sender = mpsc::Sender<Piece>;
 
 /// Runs `work` on one blocking thread that owns the job directory and the
 /// permit, and returns the body that receives its chunks.
@@ -113,10 +125,15 @@ fn spawn_pump(
     pump: Pump,
     work: impl FnOnce(&Sender, &Handle, Duration, Meter) -> PumpEnd + Send + 'static,
 ) -> Body {
-    let (tx, rx) = mpsc::channel::<io::Result<Bytes>>(BODY_QUEUE_CHUNKS);
+    let (tx, rx) = mpsc::channel::<Piece>(BODY_QUEUE_CHUNKS);
     let handle = Handle::current();
     tokio::task::spawn_blocking(move || {
         let end = work(&tx, &handle, pump.idle, Meter::new(pump.rate));
+        if end == PumpEnd::Complete {
+            // If even this send stalls, the body ends with an error.
+            let _ = handle.block_on(tokio::time::timeout(pump.idle, tx.send(Piece::Done)));
+        }
+        drop(tx);
         // Nothing reads the job directory any more: remove it here, on a
         // blocking thread, with no extra hop.
         pump.job.remove_now();
@@ -137,8 +154,17 @@ fn spawn_pump(
             }
         }
     });
-    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (item, rx))
+    let stream = futures_util::stream::unfold(Some(rx), |rx| async move {
+        let mut rx = rx?;
+        match rx.recv().await {
+            Some(Piece::Data(chunk)) => Some((Ok(chunk), Some(rx))),
+            Some(Piece::Failed(err)) => Some((Err(err), None)),
+            Some(Piece::Done) => None,
+            None => Some((
+                Err(io::Error::other("the response was cut before its end")),
+                None,
+            )),
+        }
     });
     Body::from_stream(stream)
 }
@@ -161,10 +187,10 @@ impl ChannelWriter<'_> {
         let bytes = chunk.len() as u64;
         // The sent chunk keeps its allocation alive while it is queued.
         self.buf.reserve(READ_CHUNK);
-        match self
-            .handle
-            .block_on(tokio::time::timeout(self.idle, self.tx.send(Ok(chunk))))
-        {
+        match self.handle.block_on(tokio::time::timeout(
+            self.idle,
+            self.tx.send(Piece::Data(chunk)),
+        )) {
             Ok(Ok(())) => {
                 if self.meter.record(bytes).is_err() {
                     // The reason travels as the error kind: the writer
@@ -209,7 +235,7 @@ impl Write for ChannelWriter<'_> {
 fn run(
     mut file: File,
     size: u64,
-    tx: &mpsc::Sender<io::Result<Bytes>>,
+    tx: &Sender,
     handle: &Handle,
     idle: Duration,
     mut meter: Meter,
@@ -222,10 +248,13 @@ fn run(
         if let Err(err) = file.read_exact(&mut chunk) {
             // After the 200 a read error cannot become a status: abort the
             // body so hyper drops the connection.
-            let _ = handle.block_on(tokio::time::timeout(idle, tx.send(Err(err))));
+            let _ = handle.block_on(tokio::time::timeout(idle, tx.send(Piece::Failed(err))));
             return PumpEnd::Aborted;
         }
-        match handle.block_on(tokio::time::timeout(idle, tx.send(Ok(chunk.freeze())))) {
+        match handle.block_on(tokio::time::timeout(
+            idle,
+            tx.send(Piece::Data(chunk.freeze())),
+        )) {
             Ok(Ok(())) => {
                 left -= len as u64;
                 if meter.record(len as u64).is_err() {
@@ -408,7 +437,11 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(semaphore.available_permits(), 0, "still within idle");
         wait_for_cleanup(&root, &semaphore).await;
-        drop(body);
+        // The pump gave up: the body must end with an error, so hyper drops
+        // the connection instead of sending the chunked terminator that
+        // would make a cut tar.zst look complete (review, item 5).
+        let read = axum::body::to_bytes(body, 64 << 20).await;
+        assert!(read.is_err(), "a cut body ended cleanly");
         std::fs::remove_dir_all(tmp).unwrap();
     }
 }
