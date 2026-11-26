@@ -26,6 +26,8 @@ use listener::Listener;
 
 /// How long after a case the harness waits for a late canary connection.
 const LISTENER_GRACE: Duration = Duration::from_millis(200);
+/// How long the listener control may take.
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Added to the case's `timeout_seconds` before the harness gives up.
 const TIMEOUT_SLACK: Duration = Duration::from_secs(15);
 
@@ -74,6 +76,13 @@ pub fn run(args: Args) -> ExitCode {
         }
     };
     println!("check: canary listener on {}", listener.addr());
+    match listener.control(CONTROL_TIMEOUT) {
+        Ok(line) => println!("check: listener control passed: 1 connection from {line}"),
+        Err(err) => {
+            eprintln!("check: {err}");
+            return ExitCode::FAILURE;
+        }
+    }
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -91,7 +100,7 @@ pub fn run(args: Args) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    for line in listener.seen() {
+    for line in listener.seen().iter().skip(1) {
         eprintln!("check: listener connection from {line}");
     }
     summarize(&results);
