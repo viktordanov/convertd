@@ -364,6 +364,29 @@ impl Drop for Worker {
 struct Idle {
     workers: Vec<Worker>,
     busy: usize,
+    /// Ready replacements without a permit, out of `workers` so no lease
+    /// can take them: each waits until a busy incumbent it replaces has
+    /// left.
+    waiting: Vec<Worker>,
+}
+
+impl Idle {
+    /// Workers a lease can take now.
+    fn leasable(&self) -> usize {
+        self.workers.len()
+    }
+
+    /// A retired incumbent left: one waiting replacement becomes leasable.
+    /// True when the caller must add its permit.
+    fn release_one(&mut self) -> bool {
+        match self.waiting.pop() {
+            Some(worker) => {
+                self.workers.push(worker);
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 struct PoolInner {
@@ -608,7 +631,7 @@ impl Pool {
         let inner = &self.inner;
         let (idle, busy) = {
             let idle = lock(&inner.idle);
-            (idle.workers.len(), idle.busy)
+            (idle.leasable(), idle.busy)
         };
         PoolStatus {
             target: inner.spec.size,
@@ -654,7 +677,12 @@ impl Pool {
         while lock(&inner.idle).busy > 0 && Instant::now() < until {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        let idle: Vec<Worker> = std::mem::take(&mut lock(&inner.idle).workers);
+        let idle: Vec<Worker> = {
+            let mut idle = lock(&inner.idle);
+            let mut all = std::mem::take(&mut idle.workers);
+            all.append(&mut idle.waiting);
+            all
+        };
         for mut worker in idle {
             worker.reason = Reason::Shutdown;
             drop(worker);
@@ -736,7 +764,7 @@ impl PoolInner {
     fn publish_counts(&self, idle: &Idle) {
         let name = self.spec.name;
         metrics::gauge!("convert_workers", "pool" => name, "state" => "idle")
-            .set(idle.workers.len() as f64);
+            .set(idle.leasable() as f64);
         metrics::gauge!("convert_workers", "pool" => name, "state" => "busy").set(idle.busy as f64);
         metrics::gauge!("convert_workers", "pool" => name, "state" => "starting")
             .set(self.starting.load(Ordering::Acquire) as f64);
@@ -749,21 +777,29 @@ impl PoolInner {
     /// Discards a leased (busy) worker.
     fn discard(&self, mut worker: Worker, reason: Reason) {
         worker.reason = reason;
-        {
+        let release = {
             let mut idle = lock(&self.idle);
             idle.busy -= 1;
+            let release = worker.retiring() && idle.release_one();
             self.publish_counts(&idle);
-        }
+            release
+        };
         drop(worker);
+        if release {
+            self.permits.add_permits(1);
+        }
     }
 
     /// Returns a leased worker to the idle list, unless it was retired
     /// while it was out.
     fn give_back(&self, worker: Worker) {
+        let mut release = false;
         let retire = {
             let mut idle = lock(&self.idle);
             idle.busy -= 1;
             let retire = if worker.retiring() {
+                // Its replacement waited for this: it gets the permit.
+                release = idle.release_one();
                 Some(worker)
             } else {
                 idle.workers.push(worker);
@@ -776,6 +812,9 @@ impl PoolInner {
             Some(mut worker) => {
                 worker.reason = worker.fate.reason();
                 drop(worker);
+                if release {
+                    self.permits.add_permits(1);
+                }
             }
             None => self.permits.add_permits(1),
         }
@@ -1181,9 +1220,21 @@ impl Manager {
                     child.wait().await;
                     let _ = events.send(Event::Exited { slot, generation });
                 });
-                lock(&pool.idle).workers.push(*worker);
-                pool.permits.add_permits(1);
-                self.retire_one_replaced(pool);
+                // A replacement whose incumbent is still busy waits for it:
+                // the pool never runs more jobs at once than its size.
+                let wait = self.retire_one_replaced(pool);
+                {
+                    let mut idle = lock(&pool.idle);
+                    if wait {
+                        idle.waiting.push(*worker);
+                    } else {
+                        idle.workers.push(*worker);
+                    }
+                    pool.publish_counts(&idle);
+                }
+                if !wait {
+                    pool.permits.add_permits(1);
+                }
             }
             Err(error) => {
                 if current {
@@ -1215,22 +1266,28 @@ impl Manager {
     }
 
     /// A replacement is `Ready`: the oldest worker being replaced is
-    /// retired, now if idle, else when its lease ends.
-    fn retire_one_replaced(&mut self, pool: &PoolInner) {
+    /// retired, now if idle, else when its lease ends. True when it is
+    /// still leased, so the replacement must wait for it.
+    fn retire_one_replaced(&mut self, pool: &PoolInner) -> bool {
         let Some((&slot, member)) = self
             .members
             .iter()
             .filter(|(_, m)| m.fate.state() == FATE_REPLACING)
             .min_by_key(|(_, m)| m.generation)
         else {
-            return;
+            return false;
         };
         member.fate.retire();
         let generation = member.generation;
         let reason = member.fate.reason();
-        if let Some(mut worker) = pool.take_idle(|w| w.slot == slot && w.generation == generation) {
-            worker.reason = reason;
-            drop(worker);
+        match pool.take_idle(|w| w.slot == slot && w.generation == generation) {
+            Some(mut worker) => {
+                worker.reason = reason;
+                drop(worker);
+                false
+            }
+            // Leased, or taken by a lease that will find it retired.
+            None => true,
         }
     }
 

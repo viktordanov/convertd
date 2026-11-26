@@ -843,3 +843,64 @@ async fn the_worker_gauges_follow_a_lease_and_its_return() {
     )
     .await;
 }
+
+/// A replacement starts beside its incumbent but is leased only after the
+/// incumbent has left, so a pool never has more busy workers than its
+/// size and never more than one worker's memory above its kill budget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replacement_is_leased_only_after_its_incumbent_leaves() {
+    within(
+        TEST,
+        "a_replacement_is_leased_only_after_its_incumbent_leaves",
+        async {
+            let mut spec = spec("overlap", 1);
+            spec.max_jobs = 2;
+            spec.init.test.ready_delay_ms = 300;
+            let pool = ready(spec).await;
+            for _ in 0..2 {
+                let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+                lease
+                    .call(test_op(TestOp::Sleep { ms: 0 }), after(5000))
+                    .await
+                    .unwrap();
+            }
+            // The second return asked for a replacement; the incumbent
+            // still serves while it starts.
+            let mut last = pool.lease(after(5000), Admission::Queue).await.unwrap();
+            assert_eq!(last.worker_ref().unwrap().generation, 1);
+            let long = tokio::spawn(async move {
+                last.call(test_op(TestOp::Sleep { ms: 1500 }), after(5000))
+                    .await
+                    .unwrap();
+                last
+            });
+            let until = Instant::now() + Duration::from_secs(5);
+            while pool.status().starting > 0 || pool.status().idle + pool.status().busy < 1 {
+                assert!(
+                    Instant::now() < until,
+                    "no replacement: {:?}",
+                    pool.status()
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            let status = pool.status();
+            assert!(!long.is_finished(), "the incumbent's job ended too early");
+            assert_eq!(status.busy, 1, "{status:?}");
+            assert_eq!(
+                status.idle, 0,
+                "the replacement is not leasable yet: {status:?}"
+            );
+            assert!(
+                pool.try_lease().is_none(),
+                "a second worker was leased beside the incumbent"
+            );
+            drop(long.await.unwrap());
+            let lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+            assert_eq!(lease.worker_ref().unwrap().generation, 2);
+            drop(lease);
+            finish(pool, "overlap").await;
+        },
+    )
+    .await;
+}
