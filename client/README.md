@@ -180,16 +180,16 @@ The client ignores manifest fields that it does not know, and it keeps every enu
 <!-- memoria:section id="contributing" files="oapi-codegen.yaml convert/api_surface_test.go contract/go.mod contract/harness_test.go contract/contract_test.go contract/levelb_test.go contract/cmd/speccheck/main.go" -->
 ## For contributors
 
-`convert` wraps the generated client in `internal/api/client.go`. oapi-codegen generates that file from `../api/openapi.json` with the settings in `oapi-codegen.yaml`. `convertd openapi` emits `openapi.json` from the server code, and the hand-written `../api/openapi.yaml` stays as the reference that it is compared with. Go's internal rule lets only code under `client/` import the generated package. No exported identifier in `convert` uses a generated type, and `convert/api_surface_test.go` fails when one does.
+`convert` wraps the generated client in `internal/api/client.go`. oapi-codegen generates that file from `../api/openapi.json` with the settings in `oapi-codegen.yaml`. `convertd openapi` emits `openapi.json` from the server code, and the committed file is the contract. Go's internal rule lets only code under `client/` import the generated package. No exported identifier in `convert` uses a generated type, and `convert/api_surface_test.go` fails when one does.
 
 When you change the API in the server code:
 
-1. Run `../generate.sh`. It emits and validates `openapi.json`, compares it with the reference, regenerates the client and runs `go vet` and `go test -race`.
+1. Run `../generate.sh`. It emits and validates `openapi.json`, regenerates the client and runs `go vet` and `go test -race`.
 2. Commit `api/openapi.json` and `internal/api/client.go` together.
 3. Commit a facade change in a separate commit.
 4. Run `../generate.sh --check`. It fails when a generated file differs from what generation produces or from `HEAD`. It also fails on an untracked file under `api/` or `client/`. CI runs it in the `test` job.
 
-`contract/` is a nested module that is never published or tagged. It holds `speccheck`, the validating transport that checks each response against the spec, the test harness, the live contract cases and the self-tests. `speccheck validate` checks one spec, and `speccheck compare` checks the emitted spec against the reference.
+`contract/` is a nested module that is never published or tagged. It holds `speccheck`, the validating transport that checks each response against the spec, the test harness, the live contract cases and the self-tests. `speccheck validate` checks the spec: its structure and examples, no null types, no integer arrays, the `pages` pattern and the error codes named in its description.
 
 `../scripts/contract_test.sh` builds convertd with the `test-hooks` feature and runs the contract tests against the level A fake. The timeout and queue cases start their own level B servers (`TEST_ENGINE=worker`), so their 504 and 429 come from the real pool. In image mode these two cases skip, because they need a server of their own. CI runs it in the `test` job. `../scripts/contract_test.sh --image REF` runs them against an image. There, the cases that need a fake engine or a server of their own skip. `cd contract && go test ./...` runs only the spec tools and the self-tests, and it needs no server.
 

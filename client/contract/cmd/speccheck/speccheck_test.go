@@ -86,13 +86,13 @@ func TestValidateCleanDocument(t *testing.T) {
 	}
 }
 
-func TestValidateReferenceSpec(t *testing.T) {
-	data, err := os.ReadFile("../../../../api/openapi.yaml")
+func TestValidateCommittedSpec(t *testing.T) {
+	data, err := os.ReadFile("../../../../api/openapi.json")
 	if err != nil {
-		t.Fatalf("failed to read reference spec: %v", err)
+		t.Fatalf("failed to read the committed spec: %v", err)
 	}
 	if findings := validateForTest(t, data); len(findings) != 0 {
-		t.Fatalf("reference spec has findings:\n%s", strings.Join(findings, "\n"))
+		t.Fatalf("committed spec has findings:\n%s", strings.Join(findings, "\n"))
 	}
 }
 
