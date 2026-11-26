@@ -89,6 +89,32 @@ pub fn read_oom_kills(path: &std::path::Path) -> Option<u64> {
         .find_map(|line| line.strip_prefix("oom_kill ")?.trim().parse().ok())
 }
 
+/// Test hooks: a function the manager calls in `place_ready` for the pool of
+/// that name, at the start of its critical section (to drive a race).
+#[cfg(feature = "test-hooks")]
+type ReadyHook = Arc<dyn Fn() + Send + Sync>;
+#[cfg(feature = "test-hooks")]
+static PLACE_READY_HOOKS: Mutex<Vec<(&'static str, ReadyHook)>> = Mutex::new(Vec::new());
+
+/// Registers `hook` for the pool named `pool` (test hooks only).
+#[cfg(feature = "test-hooks")]
+pub fn set_place_ready_hook(pool: &'static str, hook: impl Fn() + Send + Sync + 'static) {
+    lock(&PLACE_READY_HOOKS).push((pool, Arc::new(hook)));
+}
+
+fn place_ready_hook(_pool: &str) {
+    #[cfg(feature = "test-hooks")]
+    {
+        let hook = lock(&PLACE_READY_HOOKS)
+            .iter()
+            .find(|(name, _)| *name == _pool)
+            .map(|(_, hook)| Arc::clone(hook));
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+}
+
 /// The cgroup v2 file whose `oom_kill` count tells a kernel OOM kill, as
 /// seen inside the container's cgroup namespace.
 pub const CGROUP_MEMORY_EVENTS: &str = "/sys/fs/cgroup/memory.events";
@@ -1340,18 +1366,27 @@ impl Manager {
     /// - If it is leased, the new worker waits outside the idle list until
     ///   it leaves (`release_one`): the pool never runs more jobs at once
     ///   than its size.
+    ///
+    /// The retire happens inside the critical section. Before, a lease that
+    /// ended between the retire and the lock saw its worker retired with
+    /// no replacement waiting yet, so nobody released the replacement.
     fn place_ready(&mut self, pool: &PoolInner, worker: Worker) {
-        let replaced = self
-            .members
-            .iter()
-            .filter(|(_, m)| m.fate.state() == FATE_REPLACING)
-            .min_by_key(|(_, m)| m.generation)
-            .map(|(&slot, member)| {
-                member.fate.retire();
-                (slot, member.generation, member.fate.reason())
-            });
+        place_ready_hook(self.spec.name);
         let (gone, new_permit) = {
             let mut idle = lock(&pool.idle);
+            // Retire under the idle lock: `give_back` and `discard` read
+            // `retiring()` under it too, so a lease that ends now either
+            // returned its worker before (and it is swapped below) or sees it
+            // retired after the replacement is in `waiting` (and releases it).
+            let replaced = self
+                .members
+                .iter()
+                .filter(|(_, m)| m.fate.state() == FATE_REPLACING)
+                .min_by_key(|(_, m)| m.generation)
+                .map(|(&slot, member)| {
+                    member.fate.retire();
+                    (slot, member.generation, member.fate.reason())
+                });
             let (gone, new_permit) = match replaced {
                 None => {
                     idle.workers.push(worker);

@@ -1092,3 +1092,58 @@ async fn a_sigkill_with_a_cgroup_oom_kill_is_too_big() {
     })
     .await;
 }
+
+/// The handoff race: a replacement becomes `Ready` while its incumbent is
+/// leased, and the incumbent's lease ends while the manager places the
+/// replacement. The replacement must still become leasable, so a pool of one
+/// keeps serving. The manager's hook at the start of its critical section
+/// ends the incumbent's lease itself, so the interleaving is exact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lease_that_ends_while_its_replacement_is_placed_does_not_strand_it() {
+    within(
+        TEST,
+        "a_lease_that_ends_while_its_replacement_is_placed_does_not_strand_it",
+        async {
+            let held: Arc<Mutex<Option<convertd::engines::pool::Lease>>> =
+                Arc::new(Mutex::new(None));
+            let ended = Arc::new(AtomicBool::new(false));
+            let (hook_held, hook_ended) = (Arc::clone(&held), Arc::clone(&ended));
+            convertd::engines::pool::set_place_ready_hook("race", move || {
+                if let Some(lease) = hook_held.lock().unwrap().take() {
+                    drop(lease);
+                    hook_ended.store(true, Ordering::Release);
+                }
+            });
+            let mut spec = spec("race", 1);
+            spec.name = "race";
+            spec.max_jobs = 2;
+            spec.init.test.ready_delay_ms = 300;
+            let pool = ready(spec).await;
+            for _ in 0..2 {
+                let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+                lease
+                    .call(test_op(TestOp::Sleep { ms: 0 }), after(5000))
+                    .await
+                    .unwrap();
+            }
+            // The second return asked for a replacement. Hold the incumbent
+            // where the hook ends it, when the replacement is placed.
+            let incumbent = pool.lease(after(5000), Admission::Queue).await.unwrap();
+            assert_eq!(incumbent.worker_ref().unwrap().generation, 1);
+            *held.lock().unwrap() = Some(incumbent);
+            let until = Instant::now() + Duration::from_secs(5);
+            while !ended.load(Ordering::Acquire) {
+                assert!(Instant::now() < until, "the replacement never became ready");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let lease = pool
+                .lease(after(3000), Admission::Queue)
+                .await
+                .expect("the replacement was stranded: no worker is leasable");
+            assert_eq!(lease.worker_ref().unwrap().generation, 2);
+            drop(lease);
+            finish(pool, "race").await;
+        },
+    )
+    .await;
+}
