@@ -67,6 +67,10 @@ impl PdfPdfium {
         if left == 0 || deadline.saturating_duration_since(Instant::now()) < RETRY_MIN_LEFT {
             return Err(ChunkFailure::engine(limit));
         }
+        // Before the wait for a worker, and again after it below.
+        if guard.is_some_and(|g| g.refuses(deadline)) {
+            return Err(ChunkFailure::engine(EngineError::Poisoned));
+        }
         let lease = self
             .pool
             .lease(deadline, PoolAdmission::Continue)
@@ -260,6 +264,15 @@ async fn render_chunk(
         Err(err) => return Err(ChunkFailure::of(err, false, ran)),
     }
     drop(lease);
+    // Check before the wait for a retry worker too: a covered retry fails
+    // fast, and the crash counts once.
+    if guard.is_some_and(|g| g.refuses(deadline)) {
+        return Err(ChunkFailure {
+            error: EngineError::Poisoned,
+            strike: Some(Strike::Crash(1)),
+            ran,
+        });
+    }
     tracing::warn!(pool = pool.name(), "render chunk crashed; retrying once");
     let mut retry = match pool.lease(deadline, PoolAdmission::Continue).await {
         Ok(lease) => lease,
@@ -304,7 +317,10 @@ impl PdfEngine for PdfPdfium {
                     dpi,
                     pages: job.probe_max_pages,
                 }),
-                password: job.password.is_some(),
+                password: job
+                    .password
+                    .as_ref()
+                    .map(|p| password_fingerprint(p.expose())),
                 export: job.export,
             },
         );
@@ -370,6 +386,7 @@ impl PdfEngine for PdfPdfium {
             job.sha256,
             Work::Decrypt {
                 password: password_fingerprint(job.password.expose()),
+                check_owner: job.check_owner,
             },
         );
         let op = Op::Decrypt(DecryptArgs {

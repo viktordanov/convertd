@@ -43,18 +43,20 @@ pub enum Work {
     Convert,
     /// A PDF inspect of the whole document: the page sizes, and with
     /// `probe` the blank-page probe renders too, at `dpi` for at most
-    /// `pages` pages. With `password` the worker also opens the file once
-    /// without it. `export` is the office export that made the PDF (`None`
+    /// `pages` pages. `password` is the keyed fingerprint of the password,
+    /// if any: a wrong one stops at the open, a right one probes, and a
+    /// password makes the worker open the file once more without it. `export` is the office export that made the PDF (`None`
     /// for a PDF upload): two exports of one upload are different PDFs.
     Inspect {
         probe: Option<Probe>,
-        password: bool,
+        password: Option<u64>,
         export: Option<ExportOptions>,
     },
     /// A PDF decrypt with one password, by its keyed fingerprint
-    /// ([`password_fingerprint`]): an owner password writes a copy, a user
-    /// password of a restricted PDF stops at the permission check.
-    Decrypt { password: u64 },
+    /// ([`password_fingerprint`]), and whether it checks the owner: an
+    /// owner password writes a copy, a user password of a restricted PDF
+    /// stops at the permission check when `check_owner` is set.
+    Decrypt { password: u64, check_owner: bool },
     /// A render of this many pages.
     Render { pages: u32 },
 }
@@ -63,14 +65,11 @@ pub enum Work {
 /// a random key of this process, so the poison memory never holds the
 /// password, and the value means nothing outside this process.
 pub fn password_fingerprint(password: &str) -> u64 {
-    use std::hash::{BuildHasher, Hash, Hasher};
+    use std::hash::BuildHasher;
     static KEY: std::sync::OnceLock<std::collections::hash_map::RandomState> =
         std::sync::OnceLock::new();
-    let mut hasher = KEY
-        .get_or_init(std::collections::hash_map::RandomState::new)
-        .build_hasher();
-    password.hash(&mut hasher);
-    hasher.finish()
+    KEY.get_or_init(std::collections::hash_map::RandomState::new)
+        .hash_one(password)
 }
 
 /// The blank-page probe of an inspect: its DPI and its page cap.
@@ -115,9 +114,13 @@ impl Attempt {
             (
                 Work::Decrypt {
                     password: timed_out,
+                    check_owner: timed_out_check,
                 },
-                Work::Decrypt { password },
-            ) => password == timed_out,
+                Work::Decrypt {
+                    password,
+                    check_owner,
+                },
+            ) => password == timed_out && check_owner == timed_out_check,
             // A probed inspect is more work, and another export is another
             // PDF: a timeout covers only the same export, probed if it was.
             (
@@ -137,7 +140,7 @@ impl Attempt {
                     (Some(_), None) => false,
                     (Some(t), Some(p)) => p.at_least(&t),
                 };
-                probe_covered && password >= timed_out_password && export == timed_out_export
+                probe_covered && password == timed_out_password && export == timed_out_export
             }
             (Work::Render { pages: timed_out }, Work::Render { pages }) => pages >= timed_out,
             _ => false,
@@ -438,7 +441,7 @@ mod tests {
         let inspect = |probe: bool, export| Attempt {
             work: Work::Inspect {
                 probe: probe.then_some(probe_200),
-                password: false,
+                password: None,
                 export,
             },
             budget: Duration::from_secs(10),
@@ -477,7 +480,7 @@ mod tests {
         let with_password = Attempt {
             work: Work::Inspect {
                 probe: None,
-                password: true,
+                password: Some(password_fingerprint("secret")),
                 export: None,
             },
             budget: Duration::from_secs(10),
@@ -490,11 +493,21 @@ mod tests {
             !l.refuses_at(&fourth, &inspect(false, None), now),
             "one open"
         );
+        // A wrong password stops at the open: it is another attempt.
+        let wrong = Attempt {
+            work: Work::Inspect {
+                probe: None,
+                password: Some(password_fingerprint("wrong")),
+                export: None,
+            },
+            budget: Duration::from_secs(10),
+        };
+        assert!(!l.refuses_at(&fourth, &wrong, now), "another password");
         // A probe of fewer pages, or at a lower DPI, is less work.
         let smaller = |dpi, pages| Attempt {
             work: Work::Inspect {
                 probe: Some(Probe { dpi, pages }),
-                password: false,
+                password: None,
                 export: None,
             },
             budget: Duration::from_secs(10),
@@ -524,6 +537,7 @@ mod tests {
         let decrypt = |password: &str| Attempt {
             work: Work::Decrypt {
                 password: password_fingerprint(password),
+                check_owner: true,
             },
             budget: Duration::from_secs(10),
         };

@@ -82,6 +82,18 @@ pub async fn call_with_poison(
     let mut first_queue = None;
     let mut retried = false;
     loop {
+        // A crash retry checks before it waits for a worker, as well as
+        // after: a covered retry fails fast, and the crash counts once.
+        if retried
+            && let Some((p, attempt)) = &poison
+            && p.list.refuses(
+                &p.key,
+                &Attempt::new(attempt.work, deadline, Instant::now()),
+            )
+        {
+            p.list.strike(&p.key, Strike::Crash(1), attempt);
+            return Err(EngineError::Poisoned);
+        }
         let mut lease = match pool.lease(deadline, adm).await {
             Ok(lease) => lease,
             Err(err) => {
