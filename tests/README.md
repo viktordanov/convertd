@@ -71,6 +71,8 @@ The engine tests need `LO_PROGRAM_DIR` with `soffice.bin`, `PDFIUM_LIB_DIR` with
 
 The RSS measurement runs only on request, in the dev image, against a release build with the real pools: `cargo test --release --test rss_linux -- --ignored --nocapture`. It runs three rounds (`RSS_ROUNDS`) of 1 000 requests each: PDFs of 15 KB to 20 MB and a small DOCX, as pdf, images and bundle. It checks every reading against 30 MB, the reading after the first round against 1.5 × the reading after start (plan 001), and the growth from the first round to the last against 1 MiB per later round, on average, because single rounds can swing by more than 1 MiB.
 
+On 2026-11-26, at commit `1eafa6e`, in the arm64 dev image with one office worker and one render worker, the supervisor used 7.4 MB after start and 16.5, 12.3 and 16.3 MB after the three rounds: all under 30 MB, but 2.24 × the start, so the 1.5 × check of plan 001 fails. With `MALLOC_ARENA_MAX=2`, as a diagnostic only, the readings were 7.1, 10.9, 12.1 and 12.9 MB (1.53 ×).
+
 `scripts/contract_test.sh` builds `convertd` with `test-hooks`, and the contract tests start it with `TEST_ENGINE=fake`. With `--image REF`, the script runs the tests against a container of that image instead. The contract tests prove that the server, the spec and the Go client agree. They do not prove that a conversion is correct, because the fake engine converts nothing.
 <!-- /memoria:section -->
 
