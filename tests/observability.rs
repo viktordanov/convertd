@@ -200,19 +200,29 @@ fn query_metrics(expr: &str) -> BTreeSet<String> {
                     next += 1;
                 }
                 let call = next < b.len() && b[next] == b'(';
+                // PromQL keywords ignore case; metric names do not.
+                let lower = word.to_ascii_lowercase();
+                let lower = lower.as_str();
                 let grouped = ["by", "without"].iter().any(|g| {
-                    expr[next..].starts_with(g)
+                    expr[next..].len() >= g.len()
+                        && expr[next..next + g.len()].eq_ignore_ascii_case(g)
                         && !expr[next + g.len()..]
                             .starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
                 });
-                if LABEL_LISTS.contains(&word) {
-                    if call {
-                        i = skip_group(b, next, b')');
+                if LABEL_LISTS.contains(&lower) && call {
+                    i = skip_group(b, next, b')');
+                } else {
+                    // A function call, a keyword, a bare `group_left` or an
+                    // aggregation with its `(` or `by` is not a metric.
+                    let syntax = call
+                        || KEYWORDS.contains(&lower)
+                        || lower == "group_left"
+                        || lower == "group_right"
+                        || (AGGREGATIONS.contains(&lower) && grouped);
+                    if !syntax {
+                        names.insert(word.to_owned());
+                        after_metric = true;
                     }
-                } else if AGGREGATIONS.contains(&word) && (call || grouped) {
-                } else if !call && !KEYWORDS.contains(&word) {
-                    names.insert(word.to_owned());
-                    after_metric = true;
                 }
             }
             _ => i += 1,
@@ -461,10 +471,15 @@ fn the_name_scan_reports_a_misspelled_metric() {
         ["convert_workers", VARIABLE].map(String::from).into()
     );
     // An aggregation name without `(`, `by` or `without` is a metric.
-    let names = query_metrics("sum by (pool) (convert_workers) or sum without (pod) (x) or count");
+    let names = query_metrics(
+        "sum by (pool) (convert_workers) or sum without (pod) (x) or count or without \
+         or SUM BY (pool) (y) / ignoring (pod) z * on(pod) group_left w",
+    );
     assert_eq!(
         names,
-        ["convert_workers", "count", "x"].map(String::from).into()
+        ["convert_workers", "count", "w", "without", "x", "y", "z"]
+            .map(String::from)
+            .into()
     );
 }
 
