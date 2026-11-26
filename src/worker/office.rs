@@ -208,6 +208,13 @@ impl OfficeWorker {
         times: &mut EngineTimes,
     ) -> Result<Output, WorkerError> {
         let preflight = Instant::now();
+        // A worker that died during a swap may have left the source set
+        // aside: it goes back before anything reads it.
+        if docx_paper::is_word_package(&args.input)
+            && let Some(swap) = Swap::new(&args.input)
+        {
+            swap.recover()?;
+        }
         let facts = crate::preflight::scan(&args.input, domain_family(args.family));
         // The copy with page sizes counts as pre-flight: it reads the source
         // before LibreOffice does.
@@ -254,9 +261,7 @@ impl OfficeWorker {
         let Some(swap) = Swap::new(&args.input) else {
             return Ok(None);
         };
-        // A worker that died during an earlier attempt of this job may have
-        // left the copy in the source's place: the original goes back first.
-        swap.recover()?;
+        // convert() has already put a set-aside source back.
         match docx_paper::repack(&args.input, &swap.fresh, paper) {
             Ok(()) => {}
             Err(skip) => {

@@ -271,6 +271,8 @@ enum Tag {
     SectPrChange,
     /// `mc:AlternateContent`, by local name.
     Alternate,
+    /// An element in no Word namespace: an extension, or a drawing's markup.
+    Foreign,
     Other,
 }
 
@@ -337,6 +339,9 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     let mut body_has_section = false;
     // Open `mc:AlternateContent` elements.
     let mut alternates = 0usize;
+    // Open elements of other namespaces: a section in one is extension
+    // content (often ignorable), not a section of the document.
+    let mut foreign = 0usize;
     // Open `w:sectPrChange` elements: a section's former properties.
     let mut history = 0usize;
     let mut before = skipped + xml.buffer_position();
@@ -366,6 +371,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     (Some(_), b"sectPr") => Tag::SectPr,
                     (Some(_), b"sectPrChange") => Tag::SectPrChange,
                     _ if mc && local == b"AlternateContent" => Tag::Alternate,
+                    (None, _) => Tag::Foreign,
                     _ => Tag::Other,
                 };
                 let depth = stack.len();
@@ -412,7 +418,10 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                 }
                 let parent = stack.last().copied();
                 let grandparent = depth.checked_sub(2).map(|i| stack[i]);
-                if tag == Tag::SectPr && parent != Some(Tag::SectPrChange) {
+                if tag == Tag::SectPr
+                    && parent != Some(Tag::SectPrChange)
+                    && (alternates > 0 || foreign == 0)
+                {
                     let hosted = match parent {
                         Some(Tag::Body) => true,
                         Some(Tag::PPr) => grandparent == Some(Tag::P),
@@ -462,6 +471,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                 }
                 if !empty {
                     alternates += usize::from(tag == Tag::Alternate);
+                    foreign += usize::from(tag == Tag::Foreign);
                     history += usize::from(tag == Tag::SectPrChange);
                     stack.push(tag);
                     declared.push(declares as u32);
@@ -475,6 +485,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                 let closed = stack.pop();
                 bindings -= declared.pop().unwrap_or(0) as usize;
                 alternates -= usize::from(closed == Some(Tag::Alternate));
+                foreign -= usize::from(closed == Some(Tag::Foreign));
                 history -= usize::from(closed == Some(Tag::SectPrChange));
                 let depth = stack.len();
                 if let Some(s) = open.as_mut()
@@ -989,6 +1000,18 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
             + record.compressed;
         if u32_at(&header, 0) != 0x0403_4b50 || record.local_offset + needed > end {
             return Err(Skip::Unsupported);
+        }
+        // No entry may use ZIP64 in its local header either.
+        let name_len = usize::from(u16_at(&header, 26));
+        let mut name_extra = vec![0u8; name_len + usize::from(u16_at(&header, 28))];
+        file.read_exact(&mut name_extra).map_err(source_io)?;
+        let extra = &name_extra[name_len..];
+        let mut at = 0;
+        while at + 4 <= extra.len() {
+            if u16_at(extra, at) == 0x0001 {
+                return Err(Skip::Unsupported);
+            }
+            at += 4 + usize::from(u16_at(extra, at + 2));
         }
         // The main part's own CRC and sizes are replaced: they must agree
         // with the directory first, so that the copy never repairs damage

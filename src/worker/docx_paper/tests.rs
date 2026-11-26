@@ -1014,3 +1014,31 @@ fn only_the_root_documents_body_counts() {
     );
     assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
 }
+
+#[test]
+fn a_section_in_extension_content_is_not_the_documents() {
+    // An ignorable extension holds a sized section; the body has none.
+    let xml = format!(
+        r#"<w:document xmlns:w="{W}" xmlns:x="ext"><w:body><x:ext><w:p><w:pPr><w:sectPr><w:pgSz w:w="1" w:h="2"/></w:sectPr></w:pPr></w:p></x:ext><w:p/></w:body></w:document>"#
+    );
+    let out = fixed(&xml, Paper::A4).unwrap();
+    assert!(out.ends_with(&format!(
+        "<w:p/><w:sectPr>{A4}</w:sectPr></w:body></w:document>"
+    )));
+    assert!(out.contains(r#"<w:sectPr><w:pgSz w:w="1" w:h="2"/></w:sectPr>"#));
+}
+
+#[test]
+fn a_zip64_local_header_on_any_entry_keeps_the_package() {
+    let main = doc("<w:p/>");
+    let mut source = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, false, false),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", main.as_bytes(), true, false),
+    ]);
+    // The first entry's 4-byte extra block (id 0xFECA) becomes a ZIP64
+    // block (id 0x0001) of length 0.
+    let name_len = u16_at(&source, 26) as usize;
+    put_u16(&mut source, 30 + name_len, 0x0001);
+    assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
+}
