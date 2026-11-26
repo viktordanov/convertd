@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Installed into /opt/libreoffice/share/registry by docker/install-engines.sh.
+     Keeps ooSetupSystemLocale empty ("use the system"), so that LibreOffice takes the
+     default paper from LC_PAPER, which the workers get from DEFAULT_PAPER.
+     LibreOfficeKit's start-up (desktop/source/lib/init.cxx, setLanguageAndLocale) commits
+     ooSetupSystemLocale = en-US. A non-empty value makes PaperInfo::getSystemDefaultPaper()
+     skip LC_PAPER and return the paper of that locale: Letter for en-US, so DEFAULT_PAPER had
+     no effect. oor:finalized at the install layer makes that commit not stick. The value stays
+     empty, which also means that the formatting locale stays the system one (LANG=C.UTF-8,
+     en-US), as before. -->
+<oor:data xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+ <oor:component-data oor:package="org.openoffice" oor:name="Setup">
+  <node oor:name="L10N">
+   <prop oor:name="ooSetupSystemLocale" oor:finalized="true">
+    <value></value>
+   </prop>
+  </node>
+ </oor:component-data>
+</oor:data>

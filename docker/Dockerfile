@@ -226,8 +226,11 @@ RUN --mount=type=bind,from=engines,source=/out/debs,target=/debs \
     LO_VERSION="${LO_VERSION}" FONTS_CJK="${FONTS_CJK}" bash /install-engines.sh runtime
 COPY --from=engines /out/pdfium /opt/pdfium
 COPY --from=paper-locales /out/ /usr/lib/locale/
-# Gate: LC_PAPER must give the paper that DEFAULT_PAPER promises (glibc stores mm).
-RUN for spec in "en_GB.UTF-8 297 210" "en_US.UTF-8 279 216"; do \
+# Gate: LC_PAPER must give the paper that DEFAULT_PAPER promises (glibc stores mm), and the
+# install layer must keep ooSetupSystemLocale empty (docker/libreoffice/rs-convert-paper.xcd).
+RUN grep -q 'oor:name="ooSetupSystemLocale" oor:finalized="true"' \
+      /opt/libreoffice/share/registry/rs-convert-paper.xcd; \
+    for spec in "en_GB.UTF-8 297 210" "en_US.UTF-8 279 216"; do \
       read -r name height width <<<"${spec}"; \
       got="$(env -u LC_ALL LC_PAPER="${name}" locale height width | tr '\n' ' ')"; \
       [[ "${got}" == "${height} ${width} " ]] \
