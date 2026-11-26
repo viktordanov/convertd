@@ -238,9 +238,10 @@ fn dashboard_queries(value: &serde_json::Value, out: &mut Vec<String>) {
     }
 }
 
-/// The `expr:` values of a rules file: a `|` or `>` block, or a plain or
-/// quoted value with its continuation lines (any line indented deeper than
-/// the `expr:` key belongs to the value).
+/// The `expr:` values of a rules file: a `|` or `>` block, or a plain
+/// value with its continuation lines (any line indented deeper than the
+/// `expr:` key belongs to the value). A quoted value fails the test: its
+/// escapes would need a YAML parser, and a block scalar needs none.
 fn rule_queries(yaml: &str) -> Vec<String> {
     let lines: Vec<&str> = yaml.lines().collect();
     let mut out = Vec::new();
@@ -256,6 +257,10 @@ fn rule_queries(yaml: &str) -> Vec<String> {
         };
         let value = value.trim();
         let mut parts = Vec::new();
+        assert!(
+            !value.starts_with(['"', '\'']),
+            "write expr as a | block, not a quoted string: {line}"
+        );
         if !(value.starts_with('|') || value.starts_with('>')) {
             parts.push(value);
         }
@@ -265,7 +270,7 @@ fn rule_queries(yaml: &str) -> Vec<String> {
                 .take_while(|l| l.trim().is_empty() || l.len() - l.trim_start().len() > indent)
                 .copied(),
         );
-        out.push(parts.join("\n").trim_matches(['"', '\'']).to_owned());
+        out.push(parts.join("\n"));
     }
     out
 }
@@ -382,6 +387,14 @@ fn the_query_extractors_find_every_query() {
     assert_eq!(
         out,
         ["rate(x_total[1m])", "y_bytes{n=~\"$n\"}", "covert_y_bytes"]
+    );
+}
+
+#[test]
+#[should_panic(expected = "not a quoted string")]
+fn a_quoted_rule_expression_is_refused() {
+    rule_queries(
+        "  - alert: A\n    expr: \"convert_workers{state=\\\"busy\\\"} + covert_workers\"\n",
     );
 }
 
@@ -599,12 +612,19 @@ fn every_metric_the_dashboard_and_rules_name_is_emitted() {
     // (the queue gauge exists only after a wait), a render with a clamped
     // DPI (a warning and rendered pages), a render worker that panics (a
     // restart), and a format the service refuses.
-    std::thread::scope(|scope| {
-        let first = scope.spawn(|| served.convert(&level_b::docx_with("FAKE:DELAY_MS=600"), "{}"));
-        std::thread::sleep(Duration::from_millis(150));
-        assert_eq!(served.convert(&level_b::docx_with("hello"), "{}"), 200);
-        assert_eq!(first.join().unwrap(), 200);
-    });
+    // A loaded runner can miss the overlap, so try again until the gauge
+    // shows, within a deadline.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !served.get("/metrics").contains("convert_queue_depth") {
+        assert!(Instant::now() < deadline, "no office request ever waited");
+        std::thread::scope(|scope| {
+            let first =
+                scope.spawn(|| served.convert(&level_b::docx_with("FAKE:DELAY_MS=600"), "{}"));
+            std::thread::sleep(Duration::from_millis(150));
+            assert_eq!(served.convert(&level_b::docx_with("hello"), "{}"), 200);
+            assert_eq!(first.join().unwrap(), 200);
+        });
+    }
     assert_eq!(
         served.convert(
             &level_b::pdf_with("plain"),
