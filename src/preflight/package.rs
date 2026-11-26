@@ -196,10 +196,14 @@ impl Package {
     /// resolved targets may take at most [`super::PART_CAP`] bytes in all.
     /// More than 20 000 kept, or more bytes, fail with `CapReached`; a
     /// cut, empty, wrongly rooted or multi-rooted part with `MalformedXml`.
+    ///
+    /// At most `budget` inflated bytes are read, and the bytes read are
+    /// taken from it; a part that needs more fails with `CapReached`.
     pub fn rels_complete(
         &mut self,
         part: &str,
         types: &[&str],
+        budget: &mut u64,
     ) -> Result<HashMap<String, (String, String)>, SkipReason> {
         let rels_name = rels_path(part);
         let mut map = HashMap::new();
@@ -210,7 +214,7 @@ impl Package {
         let mut malformed = false;
         let mut capped = false;
         let mut kept_bytes = 0u64;
-        self.xml_events(&rels_name, super::PART_CAP, |event| {
+        let read = self.xml_events(&rels_name, super::PART_CAP.min(*budget), |event| {
             let (e, opens) = match event {
                 XmlEvent::Start(e) => (e, true),
                 XmlEvent::Empty(e) => (e, false),
@@ -245,6 +249,7 @@ impl Package {
             }
             true
         })?;
+        *budget = budget.saturating_sub(read);
         if capped {
             return Err(SkipReason::CapReached);
         }

@@ -544,6 +544,20 @@ fn docx_font_table_relationships_with_a_second_root_skip_the_font_check() {
 }
 
 #[test]
+fn docx_family_names_over_256_bytes_are_not_kept() {
+    // Such a name is not a font name; kept, it would only grow the facts
+    // that cross IPC, twice when it is also embedded.
+    let long = "A".repeat(257);
+    let facts = scan_bytes(
+        "long.docx",
+        &docx(&[], &runs(&[&long, "Georgia"])),
+        Family::Document,
+    );
+    assert!(facts.requested_fonts.contains(&"Georgia".to_owned()));
+    assert!(!facts.requested_fonts.contains(&long));
+}
+
+#[test]
 fn docx_font_relationships_need_the_font_type() {
     // A relationship whose type only ends in "/font" is not a font part.
     let custom = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://example.com/custom/font" Target="fonts/font1.ttf"/></Relationships>"#;

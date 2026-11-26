@@ -185,7 +185,7 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
     }
     // The font table and its font parts take what the runs left of the
     // font scan's budget.
-    match font_table(package, &main)
+    match font_table(package, &main, &mut budget)
         .and_then(|table| embedded_fonts(package, table.as_deref(), &found, &mut budget))
     {
         Ok(embedded) => facts.embedded_fonts = embedded.into_iter().collect(),
@@ -201,11 +201,15 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
 /// from a complete relationships part: a leftover table is not loaded, and
 /// a partial map would hide the link. Sorted, so that the choice never
 /// depends on map order. No relationships part means no table.
-fn font_table(package: &mut Package, main: &str) -> Result<Option<String>, SkipReason> {
+fn font_table(
+    package: &mut Package,
+    main: &str,
+    budget: &mut u64,
+) -> Result<Option<String>, SkipReason> {
     if !package.has(&rels_path(main)) {
         return Ok(None);
     }
-    let rels = package.rels_complete(main, &FONT_TABLE_TYPES)?;
+    let rels = package.rels_complete(main, &FONT_TABLE_TYPES, budget)?;
     let mut tables: Vec<&String> = rels
         .values()
         .filter(|(kind, _)| FONT_TABLE_TYPES.contains(&kind.as_str()))
@@ -238,7 +242,7 @@ fn embedded_fonts(
         return Ok(BTreeSet::new());
     }
     let rels = if package.has(&rels_path(part)) {
-        package.rels_complete(part, &FONT_TYPES)?
+        package.rels_complete(part, &FONT_TYPES, budget)?
     } else {
         Default::default()
     };
