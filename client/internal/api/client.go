@@ -695,6 +695,8 @@ type Timings struct {
 // Warning A quality signal. Warnings never fail the request.
 type Warning struct {
 	// Code - `FONT_SUBSTITUTED`: a font the document asks for is not installed.
+	//   `detail.substitute` is the font that the image's fontconfig picked
+	//   for it when the image was built, not one read from the PDF.
 	//   Text may reflow. `detail` has `requested` and `substitute`.
 	// - `PAGE_COUNT_MISMATCH`: the PDF has a different number of pages than
 	//   the source declares. `detail` has `expected` and `actual`.
@@ -716,6 +718,8 @@ type Warning struct {
 
 // WarningCode - `FONT_SUBSTITUTED`: a font the document asks for is not installed.
 //
+//		`detail.substitute` is the font that the image's fontconfig picked
+//		for it when the image was built, not one read from the PDF.
 //		Text may reflow. `detail` has `requested` and `substitute`.
 //	  - `PAGE_COUNT_MISMATCH`: the PDF has a different number of pages than
 //	    the source declares. `detail` has `expected` and `actual`.
@@ -894,9 +898,12 @@ type ClientInterface interface {
 	// are rejected with `VALIDATION_ERROR` so that typos never pass silently.
 	//
 	// **Timing.** The call is synchronous. `timeout_seconds` is the whole
-	// budget for queueing, conversion, rendering and packaging. When it runs
-	// out the engine process is killed and the call returns
-	// `CONVERSION_TIMEOUT`.
+	// budget from the end of the upload to the response headers: queueing,
+	// conversion, rendering and packaging. When it runs out the engine
+	// process is killed and the call returns `CONVERSION_TIMEOUT`. Streaming
+	// the body comes after it and is not part of that budget. The server cuts
+	// a body that the client stops reading, or reads below the deployment's
+	// minimum rate; the same holds for an upload that stalls or trickles.
 	//
 	// **Safety.** Macros never run, external links are never fetched and the
 	// engine has no network access. A document that relies on any of those
@@ -999,9 +1006,12 @@ func (c *Client) GetCapabilities(ctx context.Context, params *GetCapabilitiesPar
 // are rejected with `VALIDATION_ERROR` so that typos never pass silently.
 //
 // **Timing.** The call is synchronous. `timeout_seconds` is the whole
-// budget for queueing, conversion, rendering and packaging. When it runs
-// out the engine process is killed and the call returns
-// `CONVERSION_TIMEOUT`.
+// budget from the end of the upload to the response headers: queueing,
+// conversion, rendering and packaging. When it runs out the engine
+// process is killed and the call returns `CONVERSION_TIMEOUT`. Streaming
+// the body comes after it and is not part of that budget. The server cuts
+// a body that the client stops reading, or reads below the deployment's
+// minimum rate; the same holds for an upload that stalls or trickles.
 //
 // **Safety.** Macros never run, external links are never fetched and the
 // engine has no network access. A document that relies on any of those
@@ -1292,9 +1302,12 @@ type ClientWithResponsesInterface interface {
 	// are rejected with `VALIDATION_ERROR` so that typos never pass silently.
 	//
 	// **Timing.** The call is synchronous. `timeout_seconds` is the whole
-	// budget for queueing, conversion, rendering and packaging. When it runs
-	// out the engine process is killed and the call returns
-	// `CONVERSION_TIMEOUT`.
+	// budget from the end of the upload to the response headers: queueing,
+	// conversion, rendering and packaging. When it runs out the engine
+	// process is killed and the call returns `CONVERSION_TIMEOUT`. Streaming
+	// the body comes after it and is not part of that budget. The server cuts
+	// a body that the client stops reading, or reads below the deployment's
+	// minimum rate; the same holds for an upload that stalls or trickles.
 	//
 	// **Safety.** Macros never run, external links are never fetched and the
 	// engine has no network access. A document that relies on any of those
@@ -1763,9 +1776,12 @@ func (c *ClientWithResponses) GetCapabilitiesWithResponse(ctx context.Context, p
 // are rejected with `VALIDATION_ERROR` so that typos never pass silently.
 //
 // **Timing.** The call is synchronous. `timeout_seconds` is the whole
-// budget for queueing, conversion, rendering and packaging. When it runs
-// out the engine process is killed and the call returns
-// `CONVERSION_TIMEOUT`.
+// budget from the end of the upload to the response headers: queueing,
+// conversion, rendering and packaging. When it runs out the engine
+// process is killed and the call returns `CONVERSION_TIMEOUT`. Streaming
+// the body comes after it and is not part of that budget. The server cuts
+// a body that the client stops reading, or reads below the deployment's
+// minimum rate; the same holds for an upload that stalls or trickles.
 //
 // **Safety.** Macros never run, external links are never fetched and the
 // engine has no network access. A document that relies on any of those
