@@ -59,6 +59,17 @@ pub struct DeclaredPages {
     pub source: &'static str,
 }
 
+/// The slides of a presentation in show order, hidden ones included, and
+/// which of them are hidden (`show="0"` in PPTX, `presentation:visibility`
+/// in ODP). Pre-flight sets it only when it read every slide.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Slides {
+    /// Every slide, hidden ones included.
+    pub count: u32,
+    /// The 1-based positions of the hidden slides, ascending.
+    pub hidden: Vec<u32>,
+}
+
 /// Where a document keeps its macros (V4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MacroKind {
@@ -105,6 +116,8 @@ pub struct SourceFacts {
     /// `requested_fonts` up to case and white space.
     pub embedded_fonts: Vec<String>,
     pub macros: Option<MacroFact>,
+    /// PPTX family and ODP only; `None` when a slide could not be read.
+    pub slides: Option<Slides>,
     pub skipped: Vec<(Check, SkipReason)>,
 }
 

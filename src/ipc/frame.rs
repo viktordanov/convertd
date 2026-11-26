@@ -277,6 +277,10 @@ mod tests {
                         kind: MacroKindWire::Vba,
                         part: "word/vbaProject.bin".into(),
                     }),
+                    slides: Some(SlidesWire {
+                        count: 3,
+                        hidden: vec![2],
+                    }),
                     skipped: vec![(CheckWire::Fonts, SkipReasonWire::CapReached)],
                 })),
             }))),

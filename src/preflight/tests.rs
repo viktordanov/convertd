@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use super::package::Package;
 use super::*;
-use crate::domain::verification::DeclaredPages;
+use crate::domain::verification::{DeclaredPages, Slides};
 
 const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
 const A: &str = r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main""#;
@@ -880,10 +880,50 @@ fn pptx_counts_visible_slides_and_follows_the_master_theme() {
             source: "ppt/presentation.xml"
         })
     );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 5,
+            hidden: vec![2, 4]
+        })
+    );
     // +mj-lt (layout) and +mn-lt (master) resolve through the master's
     // theme; the unreached layout's Zzyzx Grotesk is not read.
     assert_eq!(facts.requested_fonts, ["Aptos", "Calibri", "Georgia"]);
     assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn pptx_lists_the_hidden_slides_in_slide_order() {
+    // pptx-hidden3: 3 slides, the 2nd hidden; `show="false"` is hidden too.
+    let slides = [("p:sld", ""), ("p:sld show=\"0\"", ""), ("p:sld", "")];
+    let facts = scan_bytes("hidden3.pptx", &pptx(&slides, true), Family::Presentation);
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 3,
+            hidden: vec![2]
+        })
+    );
+    let slides = [("p:sld show=\"false\"", ""), ("p:sld show=\"1\"", "")];
+    let facts = scan_bytes("false.pptx", &pptx(&slides, true), Family::Presentation);
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![1]
+        })
+    );
+    // No hidden slide: the list is empty, not absent.
+    let slides = [("p:sld", ""), ("p:sld", "")];
+    let facts = scan_bytes("plain.pptx", &pptx(&slides, true), Family::Presentation);
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![]
+        })
+    );
 }
 
 #[test]
@@ -999,6 +1039,99 @@ fn odf_fonts_and_basic_macros() {
     let script: (&str, &[u8]) = ("Scripts/python/x.py", b"x");
     let facts = scan_bytes("script.odt", &odt(&[script]), Family::Document);
     assert_eq!(facts.macros.map(|m| m.kind), Some(MacroKind::Script));
+}
+
+/// An ODP whose pages use the given drawing-page styles. `styles` holds
+/// the automatic styles of `content.xml`, `common` those of `styles.xml`.
+fn odp(pages: &[Option<&str>], styles: &str, common: &str) -> Vec<u8> {
+    const NS: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0""#;
+    let pages: String = pages
+        .iter()
+        .map(|style| match style {
+            Some(name) => format!(r#"<draw:page draw:name="p" draw:style-name="{name}"/>"#),
+            None => r#"<draw:page draw:name="p"/>"#.to_owned(),
+        })
+        .collect();
+    let content = format!(
+        r#"<office:document-content {NS}><office:automatic-styles>{styles}</office:automatic-styles><office:body><office:presentation>{pages}</office:presentation></office:body></office:document-content>"#
+    );
+    let common = format!(
+        r#"<office:document-styles {NS}><office:styles>{common}</office:styles></office:document-styles>"#
+    );
+    zip(&[
+        (
+            "mimetype",
+            b"application/vnd.oasis.opendocument.presentation",
+        ),
+        ("content.xml", content.as_bytes()),
+        ("styles.xml", common.as_bytes()),
+    ])
+}
+
+fn page_style(name: &str, visibility: Option<&str>, parent: Option<&str>) -> String {
+    let parent = parent
+        .map(|p| format!(r#" style:parent-style-name="{p}""#))
+        .unwrap_or_default();
+    let props = visibility
+        .map(|v| format!(r#"<style:drawing-page-properties presentation:visibility="{v}"/>"#))
+        .unwrap_or_default();
+    format!(
+        r#"<style:style style:name="{name}" style:family="drawing-page"{parent}>{props}</style:style>"#
+    )
+}
+
+#[test]
+fn odp_lists_the_pages_whose_style_hides_them() {
+    let styles = [
+        page_style("dp1", None, None),
+        page_style("dp2", Some("hidden"), None),
+        page_style("dp3", Some("visible"), None),
+    ]
+    .concat();
+    let pages = [Some("dp1"), Some("dp2"), None, Some("dp3"), Some("dp2")];
+    let facts = scan_bytes("deck.odp", &odp(&pages, &styles, ""), Family::Presentation);
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 5,
+            hidden: vec![2, 5]
+        })
+    );
+    // A style inherits the visibility of its parent, here a common style
+    // in styles.xml.
+    let styles = page_style("dp1", None, Some("Hide"));
+    let common = page_style("Hide", Some("hidden"), None);
+    let pages = [Some("dp1"), None];
+    let facts = scan_bytes(
+        "inherit.odp",
+        &odp(&pages, &styles, &common),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![1]
+        })
+    );
+    // A page whose style is defined nowhere: the visibility is unknown, so
+    // no slide list.
+    let facts = scan_bytes(
+        "unknown.odp",
+        &odp(&[Some("dp9")], "", ""),
+        Family::Presentation,
+    );
+    assert_eq!(facts.slides, None);
+}
+
+#[test]
+fn only_presentations_list_slides() {
+    let facts = scan_bytes("plain.odt", &odt(&[]), Family::Document);
+    assert_eq!(facts.slides, None);
+    // A legacy .ppt: no slide list is read from the binary format.
+    let bytes = ole2(&["PowerPoint Document", "Current User"]);
+    let facts = scan_bytes("deck.ppt", &bytes, Family::Presentation);
+    assert_eq!(facts.slides, None);
 }
 
 fn ole2(names: &[&str]) -> Vec<u8> {

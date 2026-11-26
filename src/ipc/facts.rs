@@ -7,10 +7,11 @@
 //! becomes a `String` in Round B).
 
 use crate::domain::verification::{
-    Check, DeclaredPages, MacroFact, MacroKind, SkipReason, SourceFacts,
+    Check, DeclaredPages, MacroFact, MacroKind, SkipReason, Slides, SourceFacts,
 };
 use crate::ipc::protocol::{
-    CheckWire, DeclaredPagesWire, MacroFactWire, MacroKindWire, SkipReasonWire, SourceFactsWire,
+    CheckWire, DeclaredPagesWire, MacroFactWire, MacroKindWire, SkipReasonWire, SlidesWire,
+    SourceFactsWire,
 };
 
 /// The page-count sources the pre-flight scanners name (005 §5).
@@ -42,6 +43,10 @@ impl From<&SourceFacts> for SourceFactsWire {
                     MacroKind::Script => MacroKindWire::Script,
                 },
                 part: m.part.clone(),
+            }),
+            slides: facts.slides.as_ref().map(|s| SlidesWire {
+                count: s.count,
+                hidden: s.hidden.clone(),
             }),
             skipped: facts
                 .skipped
@@ -82,6 +87,7 @@ impl From<&SourceFactsWire> for SourceFacts {
                 },
                 part: m.part.clone(),
             }),
+            slides: wire.slides.as_ref().and_then(slides),
             skipped: wire
                 .skipped
                 .iter()
@@ -103,6 +109,18 @@ impl From<&SourceFactsWire> for SourceFacts {
     }
 }
 
+/// The wire slide list, only when it is well formed: the hidden positions
+/// ascend strictly and lie in `1..=count`. A malformed list reads as no
+/// list, so the manifest marks no page.
+fn slides(wire: &SlidesWire) -> Option<Slides> {
+    let ascending = wire.hidden.windows(2).all(|w| w[0] < w[1]);
+    let in_range = wire.hidden.iter().all(|&n| (1..=wire.count).contains(&n));
+    (ascending && in_range).then(|| Slides {
+        count: wire.count,
+        hidden: wire.hidden.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,6 +138,10 @@ mod tests {
                 kind: MacroKind::Basic,
                 part: "Basic/".into(),
             }),
+            slides: Some(Slides {
+                count: 7,
+                hidden: vec![2, 3, 7],
+            }),
             skipped: vec![
                 (Check::Fonts, SkipReason::CapReached),
                 (Check::Macros, SkipReason::MalformedXml),
@@ -133,6 +155,23 @@ mod tests {
             SourceFacts::from(&SourceFactsWire::default()),
             SourceFacts::default()
         );
+    }
+
+    #[test]
+    fn a_malformed_slide_list_reads_as_none() {
+        for hidden in [vec![3, 2], vec![2, 2], vec![0], vec![4]] {
+            let wire = SourceFactsWire {
+                slides: Some(SlidesWire { count: 3, hidden }),
+                ..Default::default()
+            };
+            assert_eq!(SourceFacts::from(&wire).slides, None);
+        }
+        // An older worker sends no `slides` key.
+        let wire: SourceFactsWire = serde_json::from_str(
+            r#"{"declared_pages":null,"requested_fonts":[],"macros":null,"skipped":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(wire.slides, None);
     }
 
     #[test]

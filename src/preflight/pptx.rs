@@ -4,8 +4,9 @@
 //! V1 counts `p:sldIdLst/p:sldId`, resolves each `r:id` through the
 //! presentation's relationships and reads only the root start tag of each
 //! slide: `show="0"` is a hidden slide. The declared count is the visible
-//! slides. The hidden count has no place in `SourceFacts` this round, so
-//! verification skips V1 when hidden slides are included.
+//! slides. `SourceFacts::slides` keeps every slide and the positions of the
+//! hidden ones, so V1 can compare with `slides.include_hidden` set too, and
+//! the manifest can mark the pages of hidden slides.
 //!
 //! V2 reads `a:latin@typeface` from the slides, and from only the layouts
 //! and masters that a slide reaches (slide to layout to master).
@@ -16,7 +17,7 @@ use std::collections::{BTreeSet, HashMap};
 use super::docx::{ThemeFonts, main_part, theme_fonts};
 use super::package::{Package, attr, attr_prefixed};
 use super::{FONT_SCAN_CAP, PART_CAP, add_font};
-use crate::domain::verification::{Check, DeclaredPages, SkipReason, SourceFacts};
+use crate::domain::verification::{Check, DeclaredPages, SkipReason, Slides, SourceFacts};
 
 /// At most this many slides are counted and scanned.
 pub const MAX_SLIDES: usize = 10_000;
@@ -64,7 +65,8 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
     let mut slides = Vec::with_capacity(ids.len());
     let mut page_skip = too_many.then_some(SkipReason::CapReached);
     let mut visible = 0u32;
-    for id in &ids {
+    let mut hidden_at = Vec::new();
+    for (position, id) in (1u32..).zip(&ids) {
         let Some((_, target)) = rels.get(id) else {
             page_skip.get_or_insert(SkipReason::MissingPart);
             continue;
@@ -74,7 +76,9 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
                 let hidden = attributes.iter().any(|(name, prefixed, value)| {
                     name == b"show" && !prefixed && (value == "0" || value == "false")
                 });
-                if !hidden {
+                if hidden {
+                    hidden_at.push(position);
+                } else {
                     visible += 1;
                 }
                 slides.push(target.clone());
@@ -90,7 +94,11 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
             facts.declared_pages = Some(DeclaredPages {
                 count: visible,
                 source: SOURCE,
-            })
+            });
+            facts.slides = Some(Slides {
+                count: ids.len().try_into().unwrap_or(u32::MAX),
+                hidden: hidden_at,
+            });
         }
     }
 

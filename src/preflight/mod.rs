@@ -94,7 +94,7 @@ fn skip_all(facts: &mut SourceFacts, reason: SkipReason) {
 
 fn scan_package(mut package: Package, family: Family, facts: &mut SourceFacts) {
     if package.has("mimetype") {
-        odf::scan(&mut package, facts);
+        odf::scan(&mut package, family, facts);
         return;
     }
     if !package.has("[Content_Types].xml") {
