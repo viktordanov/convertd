@@ -6,7 +6,8 @@
 //! - upload: `Content-Length` (or `MAX_UPLOAD_BYTES`), trued up to the
 //!   real size afterwards;
 //! - office PDF: `min(cap, max(64 MiB, 8 × source))`, plus source + 1 MiB
-//!   for a DOCX, DOCM or DOTX (the worker's copy with page sizes);
+//!   for a DOCX, DOCM or DOTX with `DEFAULT_PAPER=A4` (the worker's copy
+//!   with page sizes);
 //! - decrypt: source size + 1 MiB;
 //! - pages: the cap, `min(TMP_MAX_BYTES / 4, 4 GiB − 1 MiB)`.
 //!

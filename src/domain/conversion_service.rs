@@ -76,6 +76,9 @@ pub struct ConversionService {
     pub(super) probe_max_pages: u32,
     /// For `FONT_SUBSTITUTED`; empty until [`ConversionService::with_fonts`].
     pub(super) fonts: FontCatalog,
+    /// The office worker writes a copy of a Word package with page sizes
+    /// (`DEFAULT_PAPER=A4`); see [`ConversionService::with_paper_copy`].
+    pub(super) paper_copy: bool,
 }
 
 /// The DPI of the probe render for `BLANK_PAGE` (V3).
@@ -98,7 +101,16 @@ impl ConversionService {
             probe_dpi: verify_probe_render.then_some(PROBE_DPI),
             probe_max_pages: DEFAULT_PROBE_MAX_PAGES,
             fonts: FontCatalog::default(),
+            paper_copy: false,
         }
+    }
+
+    /// The office worker writes a copy of a DOCX, DOCM or DOTX that names
+    /// its page sizes, so its office conversion reserves the copy too. Only
+    /// with `DEFAULT_PAPER=A4`: Letter is the importer's own default.
+    pub fn with_paper_copy(mut self, paper_copy: bool) -> Self {
+        self.paper_copy = paper_copy;
+        self
     }
 
     /// At most `pages` probed pages count for V3 (`VERIFY_PROBE_MAX_PAGES`).
@@ -174,10 +186,11 @@ impl ConversionService {
                     return Err(ConversionError::Engine(EngineError::PasswordRequired));
                 }
                 // The office worker may write a copy of a Word package that
-                // gives its sections a page size (DEFAULT_PAPER): reserved
+                // gives its sections a page size (DEFAULT_PAPER=A4): reserved
                 // too, but not part of the PDF's cap. An encrypted package
                 // is not a ZIP, and gets no copy.
-                let copy = if !job.detection.encrypted
+                let copy = if self.paper_copy
+                    && !job.detection.encrypted
                     && matches!(format, Format::Docx | Format::Docm | Format::Dotx)
                 {
                     self.limits.paper_copy_bytes(job.upload.size_bytes)
