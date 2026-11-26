@@ -36,16 +36,14 @@ pub enum ImageFormat {
     #[default]
     Jpeg,
     Png,
-    Webp,
 }
 
 impl ImageFormat {
-    /// The API name: `jpeg`, `png` or `webp`.
+    /// The API name: `jpeg` or `png`.
     pub fn as_str(self) -> &'static str {
         match self {
             ImageFormat::Jpeg => "jpeg",
             ImageFormat::Png => "png",
-            ImageFormat::Webp => "webp",
         }
     }
 
@@ -54,7 +52,6 @@ impl ImageFormat {
         match self {
             ImageFormat::Jpeg => "jpg",
             ImageFormat::Png => "png",
-            ImageFormat::Webp => "webp",
         }
     }
 }

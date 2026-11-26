@@ -133,7 +133,6 @@ pub struct ExportOptions {
 pub enum ImageFormat {
     Jpeg,
     Png,
-    Webp,
 }
 
 impl ImageFormat {
@@ -142,7 +141,6 @@ impl ImageFormat {
         match self {
             ImageFormat::Jpeg => "jpg",
             ImageFormat::Png => "png",
-            ImageFormat::Webp => "webp",
         }
     }
 }

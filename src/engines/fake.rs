@@ -584,7 +584,6 @@ fn tiny_image(format: ImageFormat, quality: u8) -> Result<Vec<u8>, EngineError> 
     let mut out = Cursor::new(Vec::new());
     let result = match format {
         ImageFormat::Png => pixel.write_to(&mut out, image::ImageFormat::Png),
-        ImageFormat::Webp => pixel.write_to(&mut out, image::ImageFormat::WebP),
         ImageFormat::Jpeg => {
             image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.max(1))
                 .encode_image(&pixel)
@@ -701,10 +700,9 @@ mod tests {
         let pdf = dir.join("document.pdf");
         std::fs::write(&pdf, ONE_PAGE_PDF).unwrap();
         let fake = FakePdf::new(FakeBehavior::Succeed);
-        let magic: [(ImageFormat, &[u8]); 3] = [
+        let magic: [(ImageFormat, &[u8]); 2] = [
             (ImageFormat::Png, b"\x89PNG"),
             (ImageFormat::Jpeg, b"\xFF\xD8\xFF"),
-            (ImageFormat::Webp, b"RIFF"),
         ];
         for (format, magic) in magic {
             let job = RenderJob {

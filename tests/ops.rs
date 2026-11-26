@@ -256,10 +256,7 @@ async fn capabilities_follow_the_schema_and_build_info() {
         caps["outputs"],
         serde_json::json!(["pdf", "images", "bundle"])
     );
-    assert_eq!(
-        caps["image_formats"],
-        serde_json::json!(["jpeg", "png", "webp"])
-    );
+    assert_eq!(caps["image_formats"], serde_json::json!(["jpeg", "png"]));
     assert_eq!(caps["limits"]["max_dpi"], 200);
     assert_eq!(caps["limits"]["max_upload_bytes"], 125_829_120);
     let inputs: Vec<&str> = caps["inputs"]

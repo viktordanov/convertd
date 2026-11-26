@@ -297,13 +297,34 @@ async fn bundle_from_a_docx_and_from_a_pdf() {
         .send(
             "a.pdf",
             &upload,
-            r#"{"output":"bundle","images":{"format":"webp"}}"#,
+            r#"{"output":"bundle","images":{"format":"png"}}"#,
         )
         .await;
     assert_eq!(response.status(), StatusCode::OK);
     let entries = read_bundle(&body);
-    assert_eq!(entries[1], ("document.pdf".to_owned(), upload));
-    assert_eq!(entries[2].0, "pages/0001.webp");
+    assert_eq!(entries[1], ("document.pdf".to_owned(), upload.clone()));
+    assert_eq!(entries[2].0, "pages/0001.png");
+    // WebP output is gone (owner): it is an unknown format like any other,
+    // 422 VALIDATION_ERROR naming the formats that exist.
+    for format in ["webp", "gif"] {
+        let options = format!(r#"{{"output":"bundle","images":{{"format":"{format}"}}}}"#);
+        let (response, body) = app.send("a.pdf", &upload, &options).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{format}: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["code"], "VALIDATION_ERROR");
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap()
+                .contains("expected `jpeg` or `png`"),
+            "{json}"
+        );
+    }
     let manifest: Value = serde_json::from_slice(&entries[0].1).unwrap();
     assert_eq!(manifest["pdf"]["origin"], "passthrough");
     app.assert_no_jobs().await;

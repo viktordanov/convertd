@@ -157,9 +157,6 @@ pub fn fake_image(format: ImageFormat) -> Result<Vec<u8>, String> {
         ImageFormat::Png => image::codecs::png::PngEncoder::new(&mut out)
             .write_image(&rgb, IMAGE_EDGE, IMAGE_EDGE, image::ExtendedColorType::Rgb8)
             .map_err(|err| err.to_string())?,
-        ImageFormat::Webp => image::codecs::webp::WebPEncoder::new_lossless(&mut out)
-            .write_image(&rgb, IMAGE_EDGE, IMAGE_EDGE, image::ExtendedColorType::Rgb8)
-            .map_err(|err| err.to_string())?,
     }
     Ok(out)
 }
@@ -477,7 +474,6 @@ mod tests {
         for (format, magic) in [
             (ImageFormat::Jpeg, &b"\xFF\xD8"[..]),
             (ImageFormat::Png, &b"\x89PNG"[..]),
-            (ImageFormat::Webp, &b"RIFF"[..]),
         ] {
             let bytes = fake_image(format).unwrap();
             assert!(bytes.starts_with(magic), "{format:?}");

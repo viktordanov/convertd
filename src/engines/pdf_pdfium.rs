@@ -79,7 +79,6 @@ fn image_format(format: ImageFormat) -> ipc::ImageFormat {
     match format {
         ImageFormat::Jpeg => ipc::ImageFormat::Jpeg,
         ImageFormat::Png => ipc::ImageFormat::Png,
-        ImageFormat::Webp => ipc::ImageFormat::Webp,
     }
 }
 

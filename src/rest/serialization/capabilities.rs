@@ -112,7 +112,7 @@ impl Capabilities {
                 .into_iter()
                 .map(OutputKind::from)
                 .collect(),
-            image_formats: [ImageFormat::Jpeg, ImageFormat::Png, ImageFormat::Webp]
+            image_formats: [ImageFormat::Jpeg, ImageFormat::Png]
                 .into_iter()
                 .map(ImageFormatDto::from)
                 .collect(),

@@ -196,7 +196,7 @@ mod tests {
                 pdf: "/j/document.pdf".into(),
                 password: pw.clone(),
                 pages: vec![1, 2, 3],
-                format: ImageFormat::Webp,
+                format: ImageFormat::Png,
                 dpi: 150,
                 quality: 85,
                 max_edge: 4000,
