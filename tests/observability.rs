@@ -80,7 +80,7 @@ fn skip_string(b: &[u8], at: usize) -> usize {
 /// The metric names that a PromQL expression selects: every identifier
 /// that is not a keyword, an aggregation, a function call, a label in
 /// `{...}` or `by (...)`, or part of a string, a number or a `[...]` range.
-/// A `__name__` matcher gives [`NAME_MATCHER`].
+/// A `# comment` is skipped. A `__name__` matcher gives [`NAME_MATCHER`].
 fn query_metrics(expr: &str) -> BTreeSet<String> {
     const KEYWORDS: &[&str] = &[
         "and",
@@ -121,6 +121,12 @@ fn query_metrics(expr: &str) -> BTreeSet<String> {
     while i < b.len() {
         match b[i] {
             b'"' | b'\'' | b'`' => i = skip_string(b, i),
+            // A comment runs to the end of its line.
+            b'#' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
             b'{' => {
                 let end = skip_group(b, i, b'}');
                 // A name matcher selects a metric that the scan does not
@@ -361,7 +367,8 @@ fn the_name_scan_reports_a_misspelled_metric() {
     let query = r#"histogram_quantile(0.99, sum by (le, stage) (rate(convert_stage_duration_seconds_bucket{stage=~"a|b", x="y,}"}[$__rate_interval])))
         / ignoring(state) (covert_workers{state="max"} > 0) * 1e4
         + (sum(rate(convert_requests_total{code!="OK"}[5m])) or vector(0))
-        + max_over_time(sum by (pool) (convert_workers{state="busy"})[1m:]) and on (pod) up or {__name__="covert_workers"}"#;
+        + max_over_time(sum by (pool) (convert_workers{state="busy"})[1m:]) and on (pod) up or {__name__="covert_workers"} # office capacity
+        + convert_workers"#;
     let selected = query_metrics(query);
     assert_eq!(
         selected,
@@ -511,16 +518,11 @@ mod level_b {
             let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("observability");
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
-            let port = std::net::TcpListener::bind("127.0.0.1:0")
-                .unwrap()
-                .local_addr()
-                .unwrap()
-                .port();
-            let child = std::process::Command::new(env!("CARGO_BIN_EXE_convertd"))
+            let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_convertd"))
                 .arg("serve")
                 .env_clear()
                 .env("HOST", "127.0.0.1")
-                .env("PORT", port.to_string())
+                .env("PORT", "0")
                 .env("API_KEY", KEY)
                 .env("TMP_DIR", &dir)
                 .env("SHUTDOWN_GRACE_SECONDS", "5")
@@ -529,11 +531,33 @@ mod level_b {
                 .env("TEST_ENGINE", "worker")
                 .env("OFFICE_WORKERS", "1")
                 .env("RENDER_WORKERS", "1")
-                .stdout(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .unwrap();
-            let served = Self { child, port };
+            // The server binds port 0 and logs its address on stdout; the
+            // reader drains the log to the end so the child never blocks.
+            let stdout = child.stdout.take().unwrap();
+            let mut served = Self { child, port: 0 };
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(stdout).lines() {
+                    let Ok(line) = line else { break };
+                    let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
+                        continue;
+                    };
+                    if event["message"] == "server listening"
+                        && let Some(addr) = event["addr"].as_str()
+                        && let Ok(addr) = addr.parse::<std::net::SocketAddr>()
+                    {
+                        let _ = tx.send(addr.port());
+                    }
+                }
+            });
+            served.port = rx
+                .recv_timeout(Duration::from_secs(30))
+                .expect("the server never logged its address");
             let deadline = Instant::now() + Duration::from_secs(30);
             while !served.get("/readyz").starts_with("HTTP/1.1 200") {
                 assert!(Instant::now() < deadline, "the server never became ready");
