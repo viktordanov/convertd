@@ -82,9 +82,11 @@ mod measured {
             if !matches!(self.0.try_wait(), Ok(None)) {
                 return;
             }
-            if let Ok(pid) = libc::pid_t::try_from(self.0.id()) {
-                // SAFETY: a signal to our own child, which is not reaped yet.
-                unsafe { libc::kill(pid, libc::SIGTERM) };
+            let pid = i32::try_from(self.0.id())
+                .ok()
+                .and_then(rustix::process::Pid::from_raw);
+            if let Some(pid) = pid {
+                let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
                 let until = Instant::now() + Duration::from_secs(20);
                 while Instant::now() < until {
                     if matches!(self.0.try_wait(), Ok(Some(_))) {
@@ -114,12 +116,16 @@ mod measured {
 
     /// The engines to run, or why none can run.
     fn engines() -> Result<Engines, String> {
-        if std::env::var("RSS_ENGINE").as_deref() == Ok("fake") {
-            return if cfg!(feature = "test-hooks") {
-                Ok(Engines::Fake)
-            } else {
-                Err("RSS_ENGINE=fake needs --features test-hooks".into())
-            };
+        match std::env::var("RSS_ENGINE").as_deref() {
+            Ok("fake") => {
+                return if cfg!(feature = "test-hooks") {
+                    Ok(Engines::Fake)
+                } else {
+                    Err("RSS_ENGINE=fake needs --features test-hooks".into())
+                };
+            }
+            Ok("real") | Err(_) => {}
+            Ok(other) => return Err(format!("RSS_ENGINE={other:?}: give real or fake")),
         }
         // As the supervisor reads them: an empty value is unset.
         let dir = |name: &str, default: &str| {
@@ -233,10 +239,16 @@ mod measured {
             .unwrap_or(0)
     }
 
+    /// One readiness probe, bounded to 2 s, so a server that accepts and
+    /// then stalls cannot hold the start-up loop past its deadline.
     fn ready(port: u16) -> bool {
-        let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+        let limit = Duration::from_secs(2);
+        let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let Ok(mut stream) = TcpStream::connect_timeout(&address, limit) else {
             return false;
         };
+        let _ = stream.set_read_timeout(Some(limit));
+        let _ = stream.set_write_timeout(Some(limit));
         let _ = stream.write_all(b"GET /readyz HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n");
         let mut answer = Vec::new();
         let _ = stream.read_to_end(&mut answer);
