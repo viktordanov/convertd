@@ -558,6 +558,29 @@ fn docx_family_names_over_256_bytes_are_not_kept() {
 }
 
 #[test]
+fn docx_text_after_the_root_skips_the_font_check() {
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let table = font_table(&[("Aptos", &[("embedRegular", "rIdF1", None)])]) + "stray";
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", &font),
+        ],
+        &runs(&["Aptos"]),
+    );
+    let facts = scan_bytes("text.docx", &bytes, Family::Document);
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+    // The same in the font table's relationships.
+    let facts = aptos_embedded(&(table_rels.clone() + "stray"), &font);
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+    // White space after the root is fine.
+    let facts = aptos_embedded(&(table_rels + "\n  \n"), &font);
+    assert_eq!(facts.embedded_fonts, ["Aptos"]);
+}
+
+#[test]
 fn docx_font_relationships_need_the_font_type() {
     // A relationship whose type only ends in "/font" is not a font part.
     let custom = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://example.com/custom/font" Target="fonts/font1.ttf"/></Relationships>"#;

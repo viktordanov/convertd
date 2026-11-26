@@ -288,6 +288,14 @@ fn embedded_fonts(
                 };
                 return true;
             }
+            // Text outside the root is not XML.
+            XmlEvent::Text => {
+                if open == 0 {
+                    second_root = true;
+                    return false;
+                }
+                return true;
+            }
         };
         if root.is_none() {
             root = Some(e.local_name().as_ref() == b"fonts");

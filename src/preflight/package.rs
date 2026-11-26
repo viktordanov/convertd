@@ -24,6 +24,8 @@ pub enum XmlEvent<'a, 'b> {
     Start(&'a BytesStart<'b>),
     Empty(&'a BytesStart<'b>),
     End,
+    /// Character data that is not only white space.
+    Text,
 }
 
 pub struct Package {
@@ -71,7 +73,7 @@ impl Package {
     ) -> Result<u64, SkipReason> {
         self.xml_events(name, cap, |event| match event {
             XmlEvent::Start(e) | XmlEvent::Empty(e) => on_start(e),
-            XmlEvent::End => true,
+            XmlEvent::End | XmlEvent::Text => true,
         })
     }
 
@@ -102,6 +104,10 @@ impl Package {
                 Ok(Event::Start(e)) => on_event(XmlEvent::Start(&e)),
                 Ok(Event::Empty(e)) => on_event(XmlEvent::Empty(&e)),
                 Ok(Event::End(_)) => on_event(XmlEvent::End),
+                Ok(Event::Text(t)) if t.iter().any(|b| !b.is_ascii_whitespace()) => {
+                    on_event(XmlEvent::Text)
+                }
+                Ok(Event::CData(_)) => on_event(XmlEvent::Text),
                 Ok(Event::Eof) => break Ok(()),
                 Ok(_) => true,
                 Err(_) if count.get() > cap => break Err(SkipReason::CapReached),
@@ -179,8 +185,9 @@ impl Package {
         let rels_name = rels_path(part);
         let mut map = HashMap::new();
         self.xml(&rels_name, super::PART_CAP, |e| {
-            if let Some((id, value)) = relationship(part, e)
-                && map.len() < MAX_RELATIONSHIPS
+            // The cap first, so that a dropped relationship is never resolved.
+            if map.len() < MAX_RELATIONSHIPS
+                && let Some((id, value)) = relationship(part, e)
             {
                 map.insert(id, value);
             }
@@ -222,6 +229,11 @@ impl Package {
                     open = open.saturating_sub(1);
                     closed |= open == 0;
                     return true;
+                }
+                // Text outside the root is not XML.
+                XmlEvent::Text => {
+                    malformed |= open == 0;
+                    return !malformed;
                 }
             };
             if closed {
