@@ -1135,10 +1135,20 @@ fn stream_body(
     mut stream: TcpStream,
     total: usize,
     sent: &std::sync::atomic::AtomicUsize,
+    gate: Option<(usize, std::sync::mpsc::Receiver<()>)>,
 ) -> Option<std::io::ErrorKind> {
     use std::sync::atomic::Ordering;
     let chunk = vec![b'x'; 64 * 1024];
+    let mut gate = gate;
     while sent.load(Ordering::Relaxed) < total {
+        // After the first part, wait for the answer (or 10 s), so that it
+        // arrives while the upload is still running however fast it is.
+        if let Some((after, answered)) = &gate
+            && sent.load(Ordering::Relaxed) >= *after
+        {
+            let _ = answered.recv_timeout(Duration::from_secs(10));
+            gate = None;
+        }
         let left = total - sent.load(Ordering::Relaxed);
         match stream.write(&chunk[..chunk.len().min(left)]) {
             Ok(n) => {
@@ -1153,6 +1163,11 @@ fn stream_body(
 /// The answer comes while the upload is still arriving, and the server
 /// then keeps reading (lingering close), so the client's write never
 /// fails with a broken pipe or a reset (contract case 19).
+///
+/// The client sends a first 4 MiB (past the 1 MiB cap, for the 413), then
+/// waits for the answer before it sends the rest. So "the answer came while
+/// the upload was still running" holds on any machine, not only on one
+/// slower than the server (CI run 45811942939 sent all 64 MiB first).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn early_401_and_413_arrive_while_the_client_still_uploads() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1169,12 +1184,14 @@ async fn early_401_and_413_arrive_while_the_client_still_uploads() {
             stream.write_all(&head(total, &authorization)).unwrap();
             let writer = stream.try_clone().unwrap();
             let sent = Arc::new(AtomicUsize::new(0));
+            let (answered, gate) = std::sync::mpsc::channel();
             let upload = std::thread::spawn({
                 let sent = sent.clone();
-                move || stream_body(writer, total, &sent)
+                move || stream_body(writer, total, &sent, Some((4 << 20, gate)))
             });
             let status = read_status(&mut stream);
             let answered_at = sent.load(Ordering::Relaxed);
+            let _ = answered.send(());
             let write_error = upload.join().unwrap();
             (
                 status,
