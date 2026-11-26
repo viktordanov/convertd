@@ -590,6 +590,7 @@ async fn warnings_reach_the_manifest_and_the_header() {
         .send("deck.pptx", &three_slide_pptx(), r#"{"output":"bundle"}"#)
         .await;
     let manifest: Value = serde_json::from_slice(&read_bundle(&body)[0].1).unwrap();
+    assert_eq!(manifest["warnings"][0]["code"], "PAGE_COUNT_MISMATCH");
     assert_eq!(
         manifest["warnings"][0]["detail"],
         serde_json::json!({"expected": 3, "actual": 1, "source": "ppt/presentation.xml"})

@@ -598,6 +598,33 @@ mod tests {
         );
     }
 
+    /// The corpus can no longer prove V1 on real engines (LibreOffice
+    /// renders a slide whose root is not `p:sld` as a blank page), so these
+    /// cases stand in for it: every deck format, fewer and more pages.
+    #[test]
+    fn v1_fires_for_every_deck_format_in_both_directions() {
+        let fonts = FontCatalog::default();
+        for format in [Format::Pptx, Format::Pptm, Format::Ppsx, Format::Potx] {
+            for (declared_count, produced) in [(5, 2), (2, 5)] {
+                let verdict = case(format, declared(declared_count), produced, &fonts).verdict();
+                let codes: Vec<WarningCode> = verdict.warnings.iter().map(|w| w.code).collect();
+                assert_eq!(
+                    codes,
+                    [WarningCode::PageCountMismatch],
+                    "{format:?}: {declared_count} declared, {produced} produced"
+                );
+                assert_eq!(
+                    verdict.warnings[0].detail[..2],
+                    [
+                        ("expected", DetailValue::Int(i64::from(declared_count))),
+                        ("actual", DetailValue::Int(i64::from(produced))),
+                    ]
+                );
+                assert!(verdict.skipped.is_empty(), "{format:?}");
+            }
+        }
+    }
+
     #[test]
     fn v1_skips() {
         let fonts = FontCatalog::default();
