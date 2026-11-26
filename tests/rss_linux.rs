@@ -106,10 +106,11 @@ mod measured {
     }
 
     /// The engines the measured server runs.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     enum Engines {
-        /// LibreOffice and PDFium, from `LO_PROGRAM_DIR` and `PDFIUM_LIB_DIR`.
-        Real,
+        /// LibreOffice and PDFium, from `LO_PROGRAM_DIR` and `PDFIUM_LIB_DIR`,
+        /// as absolute paths: each worker starts in its own directory.
+        Real { lo: PathBuf, pdfium: PathBuf },
         /// The level-A fake (`TEST_ENGINE=fake`), only with `test-hooks`.
         Fake,
     }
@@ -145,7 +146,11 @@ mod measured {
                 pdfium.display()
             ));
         }
-        Ok(Engines::Real)
+        let absolute = |dir: PathBuf| std::fs::canonicalize(&dir).unwrap_or(dir);
+        Ok(Engines::Real {
+            lo: absolute(lo),
+            pdfium: absolute(pdfium),
+        })
     }
 
     /// The content stream of the page in [`pdf_of_size`].
@@ -242,20 +247,10 @@ mod measured {
             .unwrap_or(0)
     }
 
-    /// One readiness probe, bounded to 2 s, so a server that accepts and
-    /// then stalls cannot hold the start-up loop past its deadline.
+    /// One readiness probe: `convertd healthcheck`'s own check, with one
+    /// 2 s deadline over connect, write and read.
     fn ready(port: u16) -> bool {
-        let limit = Duration::from_secs(2);
-        let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        let Ok(mut stream) = TcpStream::connect_timeout(&address, limit) else {
-            return false;
-        };
-        let _ = stream.set_read_timeout(Some(limit));
-        let _ = stream.set_write_timeout(Some(limit));
-        let _ = stream.write_all(b"GET /readyz HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n");
-        let mut answer = Vec::new();
-        let _ = stream.read_to_end(&mut answer);
-        answer.starts_with(b"HTTP/1.1 200")
+        convertd::rest::healthcheck::check(port, Duration::from_secs(2)).is_ok()
     }
 
     /// Both readings ≤ 30 MB, the second ≤ 1.5 × the first, and no engine
@@ -306,19 +301,20 @@ mod measured {
             .env("SHUTDOWN_GRACE_SECONDS", "10")
             .stdout(log.try_clone().unwrap())
             .stderr(log);
-        match engines {
+        match &engines {
             Engines::Fake => {
                 command
                     .env("TEST_ENGINE", "fake")
                     .env("BUILD_INFO_PATH", "/nonexistent");
             }
-            Engines::Real => {
+            Engines::Real { lo, pdfium } => {
                 // The engine paths and the PDFium build check, as the image
                 // sets them, and the image's build-info.json at its default
                 // path; one worker in each pool.
+                command
+                    .env("LO_PROGRAM_DIR", lo)
+                    .env("PDFIUM_LIB_DIR", pdfium);
                 for name in [
-                    "LO_PROGRAM_DIR",
-                    "PDFIUM_LIB_DIR",
                     "PDFIUM_BUILD",
                     "PATH",
                     "LANG",
@@ -445,8 +441,13 @@ mod measured {
         drop(server);
 
         eprintln!(
-            "{engines:?} engines: VmRSS after start {:.1} MB; after each round of 1 000 requests \
+            "{} engines: VmRSS after start {:.1} MB; after each round of 1 000 requests \
              and 15 s idle {:?} MB",
+            if matches!(engines, Engines::Fake) {
+                "fake"
+            } else {
+                "real"
+            },
             first as f64 / MB as f64,
             readings
                 .iter()
