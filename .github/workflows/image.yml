@@ -192,6 +192,21 @@ jobs:
           python -m venv "${RUNNER_TEMP}/corpus-venv"
           "${RUNNER_TEMP}/corpus-venv/bin/python" -I -m pip install --require-hashes -r corpus/requirements.txt
           "${RUNNER_TEMP}/corpus-venv/bin/python" -I corpus/generate.py corpus/out --hostile
+      # corpus-bench needs only rustc and cargo. rust-toolchain.toml also asks for clippy and
+      # rustfmt, and an implicit install of those failed once on the arm64 runner ("detected
+      # conflict: 'bin/cargo-clippy'", run 45805165059). So the pinned toolchain is installed
+      # here, before rust-cache calls rustc, with the minimal profile. RUSTUP_TOOLCHAIN then
+      # overrides the toolchain file, so no later step installs a component.
+      - name: Install Rust 1.99.0 (minimal profile)
+        run: |
+          rustup --version
+          if ! rustup toolchain install 1.99.0 --profile minimal --no-self-update; then
+            echo "retrying after removing the partial 1.99.0 install"
+            rustup toolchain uninstall 1.99.0 || true
+            rustup toolchain install 1.99.0 --profile minimal --no-self-update
+          fi
+          echo "RUSTUP_TOOLCHAIN=1.99.0" >> "$GITHUB_ENV"
+          rustup run 1.99.0 cargo --version
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: "tools/corpus -> target"
