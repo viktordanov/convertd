@@ -99,9 +99,7 @@ impl Encoder {
             }
             ImageFormat::Png if stored_png_len(width, height) <= WHOLE_PAGE_PNG => {
                 // A small page: one RGB copy of at most 1 MiB, and image's
-                // encoder, so the bytes stay as they were. Streaming feeds
-                // fdeflate in smaller calls and compresses some narrow
-                // pages worse (5 x 1000 px: 4 117 B against 2 493 B).
+                // encoder (fdeflate), so the bytes stay as they were.
                 use image::ImageEncoder;
                 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
                 self.rgb.clear();
@@ -117,13 +115,13 @@ impl Encoder {
                 .map_err(|err| failed(err.to_string()))?;
             }
             ImageFormat::Png => {
-                self.png(bgra, width, height, png::Compression::Fast)?;
-                // As png's own whole-image path does for fdeflate: data that
-                // does not compress, such as noise or photos, is stored
-                // instead, so the file never grows past a stored PNG.
+                self.png(bgra, width, height, Deflate::Zlib1)?;
+                // As png's own whole-image path does: data that does not
+                // compress, such as noise or photos, is stored instead, so
+                // the file never grows past a stored PNG.
                 if self.out.len() > stored_png_len(width, height) {
                     self.out.clear();
-                    self.png(bgra, width, height, png::Compression::NoCompression)?;
+                    self.png(bgra, width, height, Deflate::Stored)?;
                 }
             }
         }
@@ -132,26 +130,31 @@ impl Encoder {
 }
 
 impl Encoder {
-    /// Streams the bitmap into `self.out` as a PNG, one RGB row at a time.
-    /// Fast gets the adaptive filter, as image's PngEncoder sets it with
-    /// CompressionType::Fast; a stored image needs no filter.
+    /// Streams the bitmap into `self.out` as a PNG, one RGB row at a time,
+    /// with the adaptive filter for zlib and none for a stored image.
     fn png(
         &mut self,
         bgra: &[u8],
         width: u32,
         height: u32,
-        compression: png::Compression,
+        deflate: Deflate,
     ) -> Result<(), EncodeError> {
         let failed = |err: String| EncodeError::Failed(err);
         let mut encoder = png::Encoder::new(&mut self.out, width, height);
         encoder.set_color(png::ColorType::Rgb);
         encoder.set_depth(png::BitDepth::Eight);
         // set_compression also sets a filter, so the filter comes after it.
-        encoder.set_compression(compression);
-        encoder.set_filter(match compression {
-            png::Compression::NoCompression => png::Filter::NoFilter,
-            _ => png::Filter::Adaptive,
-        });
+        match deflate {
+            Deflate::Zlib1 => {
+                encoder.set_compression(png::Compression::Fast);
+                encoder.set_deflate_compression(png::DeflateCompression::Level(1));
+                encoder.set_filter(png::Filter::Adaptive);
+            }
+            Deflate::Stored => {
+                encoder.set_compression(png::Compression::NoCompression);
+                encoder.set_filter(png::Filter::NoFilter);
+            }
+        }
         let mut writer = encoder
             .write_header()
             .map_err(|err| failed(err.to_string()))?;
@@ -170,6 +173,20 @@ impl Encoder {
         }
         stream.finish().map_err(|err| failed(err.to_string()))
     }
+}
+
+/// How a streamed PNG is compressed.
+///
+/// Not fdeflate, which the whole-page encoder uses: png's StreamWriter
+/// gives it the filter byte and the row in two calls, and its output then
+/// depends on the page width (white 93 x 3777 px: +43 %, 5 x 1000: +65 %
+/// against the whole-page bytes). zlib level 1 does not depend on the calls:
+/// text pages come out about half the size, a blank A4 page about 7 %
+/// larger, at about the speed of the old copy and encode.
+#[derive(Debug, Clone, Copy)]
+enum Deflate {
+    Zlib1,
+    Stored,
 }
 
 /// The largest stored PNG size that still takes the whole-page encoder:
@@ -335,6 +352,21 @@ mod tests {
         }
     }
 
+    /// Lines of dark "glyphs" on white, roughly like a rendered text page.
+    fn text(w: u32, h: u32) -> Vec<u8> {
+        (0..w * h)
+            .flat_map(|i| {
+                let (x, y) = (i % w, i / w);
+                let ink = (y / 12) % 3 == 0 && (x / 7 + y / 12) % 5 != 0 && x % 7 < 4;
+                if ink {
+                    [20, 20, 20, 255]
+                } else {
+                    [255, 255, 255, 255]
+                }
+            })
+            .collect()
+    }
+
     /// Pseudo-random noise, which compresses badly: the worst case for size.
     fn noise(w: u32, h: u32) -> Vec<u8> {
         let mut state = 0x2545_F491_4F6C_DD1Du64;
@@ -350,10 +382,9 @@ mod tests {
     }
 
     /// A small PNG page keeps the bytes of the whole-page encoder. A large
-    /// one streams: it holds the same pixels, channels in RGB order, but not
-    /// the same bytes, because png's StreamWriter feeds fdeflate the filter
-    /// byte and the row apart. With the stored fallback for data that does
-    /// not compress (noise), its size stays within 5 % of the old output.
+    /// one streams with zlib level 1: the same pixels, channels in RGB
+    /// order, but other bytes, within 10 % of the old size and smaller for
+    /// text. Noise falls back to stored data, as the old encoder did.
     #[test]
     fn png_keeps_the_pixels_and_the_size_of_the_whole_page_encoder() {
         let mut encoder = Encoder::new();
@@ -377,6 +408,22 @@ mod tests {
                 bitmap(1240, 1754, [255, 255, 255, 255]),
                 false,
             ),
+            // The widths at which fdeflate streaming grew by 16 % and 43 %.
+            (
+                "white 597",
+                597,
+                842,
+                bitmap(597, 842, [255, 255, 255, 255]),
+                false,
+            ),
+            (
+                "white 93",
+                93,
+                3777,
+                bitmap(93, 3777, [255, 255, 255, 255]),
+                false,
+            ),
+            ("text", 1240, 1754, text(1240, 1754), false),
         ] {
             let streamed = encoder
                 .encode(ImageFormat::Png, &bgra, w, h, 85)
@@ -399,7 +446,7 @@ mod tests {
                     "{name}: the pixels changed"
                 );
                 assert!(
-                    streamed.len() * 100 <= before.len() * 105,
+                    streamed.len() * 100 <= before.len() * 110,
                     "{name}: {} B against {} B",
                     streamed.len(),
                     before.len()
