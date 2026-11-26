@@ -19,7 +19,6 @@ type ImageFormat string
 const (
 	JPEG ImageFormat = "jpeg"
 	PNG  ImageFormat = "png"
-	WebP ImageFormat = "webp"
 )
 
 // SlideNotes says what to do with speaker notes.
@@ -53,7 +52,7 @@ type Options struct {
 type ImageOptions struct {
 	Format  ImageFormat // default JPEG
 	DPI     int         // default 150
-	Quality int         // default 85; JPEG and WebP only
+	Quality int         // default 85; JPEG only
 	MaxEdge int         // longest edge in pixels; 0 means no clamp
 }
 

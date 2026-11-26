@@ -32,7 +32,7 @@ const (
 	tarRecordSize = 20 * 512
 )
 
-var pagePath = regexp.MustCompile(`^pages/[0-9]{4,}\.(jpg|jpeg|png|webp)$`)
+var pagePath = regexp.MustCompile(`^pages/[0-9]{4,}\.(jpg|png)$`)
 
 // Info is the metadata the service sends in response headers.
 type Info struct {
@@ -90,7 +90,7 @@ type Source struct {
 type PDFFile struct {
 	Path      string
 	SizeBytes int64
-	// Origin is "converted", "passthrough" or "assembled".
+	// Origin is "converted" or "passthrough".
 	Origin string
 }
 

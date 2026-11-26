@@ -151,7 +151,7 @@ The client accepts only the layout that the service writes. `manifest.json` come
 ```go
 bundle, err := c.ConvertToImages(ctx, name, file, convert.Options{
 	Pages:  "1-5",
-	Images: convert.ImageOptions{Format: convert.WebP, DPI: 72, MaxEdge: 320},
+	Images: convert.ImageOptions{Format: convert.JPEG, DPI: 72, MaxEdge: 320},
 })
 if err != nil {
 	return err
