@@ -181,6 +181,9 @@ pub struct InspectJob {
     /// With `probe_dpi`: probe pages `1..=min(page_count, probe_max_pages)`
     /// only (`VERIFY_PROBE_MAX_PAGES`); `u32::MAX` probes every page.
     pub probe_max_pages: u32,
+    /// The upload's SHA-256, also for a converted or decrypted PDF: the
+    /// poison memory's key, one entry per document across all operations.
+    pub sha256: [u8; 32],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -246,6 +249,8 @@ pub struct DecryptJob {
     /// `Restricted` instead of writing a copy without them. The service
     /// sets it on every decrypt.
     pub check_owner: bool,
+    /// The upload's SHA-256: the poison memory's key.
+    pub sha256: [u8; 32],
 }
 
 #[derive(Debug, Clone)]
@@ -426,6 +431,7 @@ mod tests {
             probe_dpi: None,
             collect_fonts: false,
             probe_max_pages: u32::MAX,
+            sha256: [0; 32],
         };
         let inspection =
             futures_util::FutureExt::now_or_never(pdf.inspect(job, Admission::Queue, deadline))

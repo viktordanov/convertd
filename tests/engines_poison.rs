@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use convertd::domain::conversion::ImageFormat;
 use convertd::domain::document::Family;
 use convertd::domain::engine::{
-    Admission, EngineError, OfficeEngine, OfficeJob, PdfEngine, RenderJob,
+    Admission, DecryptJob, EngineError, InspectJob, OfficeEngine, OfficeJob, PdfEngine, RenderJob,
 };
 use convertd::engines::config::Paper;
 use convertd::engines::office_lok::OfficeLok;
@@ -421,6 +421,90 @@ async fn a_convert_crash_whose_retry_gets_no_worker_counts_one_strike() {
                 "{err:?}"
             );
             assert!(list.is_poisoned(&key), "two single strikes poison");
+            pool.shutdown(Duration::from_secs(1)).await;
+        },
+    )
+    .await;
+}
+
+/// Inspect and decrypt go through poison memory by the same rule as convert
+/// and render: a crash that survives its retry counts two, so the next
+/// request for that document is refused before it takes a worker. A crash
+/// with no time for a retry counts one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inspects_and_decrypts_are_poisoned_by_the_same_rule() {
+    within(
+        TEST,
+        "inspects_and_decrypts_are_poisoned_by_the_same_rule",
+        async {
+            let dir = Scratch::new("poison-inspect");
+            let panics = dir.join("panic.pdf");
+            std::fs::write(&panics, b"%PDF FAKE:PANIC").unwrap();
+            let pool = pool(&dir.0).await;
+            let list = PoisonList::new(Duration::from_secs(60)).unwrap();
+            let pdf = PdfPdfium::new(pool.clone()).with_poison(Some(list.clone()));
+            let inspect = |sha256| InspectJob {
+                pdf: panics.clone(),
+                password: None,
+                probe_dpi: None,
+                collect_fonts: false,
+                probe_max_pages: u32::MAX,
+                sha256,
+            };
+            let decrypt = |sha256, output: &str| DecryptJob {
+                pdf: panics.clone(),
+                password: convertd::domain::secret::Password::new("x"),
+                output: dir.join(output),
+                max_output_bytes: 1 << 20,
+                check_owner: true,
+                sha256,
+            };
+            let long = || Instant::now() + Duration::from_secs(10);
+
+            // Inspect: the crash and its retry count two.
+            let key = [11u8; 32];
+            let err = pdf
+                .inspect(inspect(key), Admission::Queue, long())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Crashed);
+            assert!(list.is_poisoned(&key), "a crash after its retry counts two");
+            let before = generation(&pool).await;
+            let started = Instant::now();
+            let err = pdf
+                .inspect(inspect(key), Admission::Queue, long())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Poisoned);
+            assert!(started.elapsed() < Duration::from_millis(50));
+            assert_eq!(
+                generation(&pool).await,
+                before,
+                "the poisoned inspect took a worker"
+            );
+
+            // Decrypt: the same.
+            let key = [12u8; 32];
+            let err = pdf
+                .decrypt(decrypt(key, "a.pdf"), Admission::Queue, long())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Crashed);
+            let err = pdf
+                .decrypt(decrypt(key, "b.pdf"), Admission::Queue, long())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Poisoned);
+
+            // Less than 1 s left: no retry, one strike.
+            let key = [13u8; 32];
+            let short = || Instant::now() + Duration::from_millis(800);
+            let err = pdf
+                .inspect(inspect(key), Admission::Queue, short())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Crashed);
+            assert!(!list.is_poisoned(&key), "a crash with no retry counts one");
             pool.shutdown(Duration::from_secs(1)).await;
         },
     )

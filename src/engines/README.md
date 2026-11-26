@@ -172,11 +172,11 @@ There is no image assembly: image inputs are out of v1 (the owner's decision), a
 
 Poison memory (`poison.rs`) protects the workers from documents that hang or crash them. It is keyed by the upload's SHA-256 and shared by both pools, and it works like this:
 
-- A call that times out adds one timeout strike. A crash that survived its retry adds two crash strikes. A crash with no retry adds one: there was no time left for it, or the retry got no worker. A protocol error and the RSS kill add none. `poison::strike_for` holds this rule for `convert` and for each render chunk.
+- A call that times out adds one timeout strike. A crash that survived its retry adds two crash strikes. A crash with no retry adds one: there was no time left for it, or the retry got no worker. A protocol error and the RSS kill add none. `poison::strike_for` holds this rule for `convert`, `inspect`, `decrypt` and each render chunk.
 - A crash strike counts against every request for the document.
 - A timeout strike keeps its attempt: the operation, the page count of a render, and the time left when the call began. It counts only against a request for the same operation with no more time and no fewer pages. Times within 500 ms count as the same. A retry with a longer deadline or fewer pages thus still runs.
 - A render strikes once, with the worst strike of its chunks: a crash before a timeout.
-- At two strikes that count against a request, `convert` and `render` return `Poisoned` before they lease a worker. `Poisoned` gives 422 `CONVERSION_FAILED`.
+- At two strikes that count against a request, `convert`, `inspect`, `decrypt` and `render` return `Poisoned` before they lease a worker. `Poisoned` gives 422 `CONVERSION_FAILED`. Each operation is its own kind of work for the timeout rule, and all four share one entry per upload: `InspectJob` and `DecryptJob` carry the upload's SHA-256 too, also for a converted or decrypted PDF.
 - Each strike sets the expiry to now + `POISON_TTL_SECONDS`. An expired entry starts again from zero.
 - The list keeps at most 1024 documents and 8 timeout strikes for each. When it is full, the entry that expires first goes. `POISON_TTL_SECONDS=0` turns poison memory off.
 <!-- /memoria:section -->

@@ -1,11 +1,11 @@
 //! Poison memory (plan 002 step 12): documents that recently timed out or
 //! crashed a worker are refused before they take a worker again.
 //!
-//! Keyed by the upload's SHA-256, which the domain passes in `OfficeJob`
-//! and `RenderJob`. A crash that survives the one retry counts two
-//! strikes, a crash with no retry one, and a timeout one. At [`STRIKES`]
-//! strikes a request is refused: `convert` and `render` return `Poisoned`
-//! (422) before they lease. Crash strikes count against every request for
+//! Keyed by the upload's SHA-256, which the domain passes in `OfficeJob`,
+//! `InspectJob`, `DecryptJob` and `RenderJob`. A crash that survives the
+//! one retry counts two strikes, a crash with no retry one, and a timeout
+//! one. At [`STRIKES`] strikes a request is refused: `convert`, `inspect`,
+//! `decrypt` and `render` return `Poisoned` (422) before they lease. Crash strikes count against every request for
 //! the document. A timeout strike counts only against a request that asks
 //! for the same operation with no more time and no fewer pages
 //! ([`Attempt::covers`]), so a retry with a longer deadline or fewer pages
@@ -39,6 +39,10 @@ pub const BUDGET_SLACK: Duration = Duration::from_millis(500);
 pub enum Work {
     /// An office conversion: always the whole document.
     Convert,
+    /// A PDF inspect: the page sizes and the probe, the whole document.
+    Inspect,
+    /// A PDF decrypt: a copy of the whole document.
+    Decrypt,
     /// A render of this many pages.
     Render { pages: u32 },
 }
@@ -64,7 +68,9 @@ impl Attempt {
     /// pages.
     pub fn covers(&self, next: &Attempt) -> bool {
         let work = match (self.work, next.work) {
-            (Work::Convert, Work::Convert) => true,
+            (Work::Convert, Work::Convert)
+            | (Work::Inspect, Work::Inspect)
+            | (Work::Decrypt, Work::Decrypt) => true,
             (Work::Render { pages: timed_out }, Work::Render { pages }) => pages >= timed_out,
             _ => false,
         };

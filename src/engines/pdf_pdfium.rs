@@ -10,9 +10,9 @@ use crate::domain::engine::{
     Admission, DecryptJob, Decrypted, EngineError, EngineTiming, InspectJob, Inspection, PageSize,
     PdfEngine, ProbedPage, RenderJob, Rendered, RenderedPage, WorkerRef,
 };
-use crate::engines::call::{RETRY_MIN_LEFT, admission, call, unexpected, worker_ref};
+use crate::engines::call::{RETRY_MIN_LEFT, admission, call_with_poison, unexpected, worker_ref};
 use crate::engines::error::EngineFailure;
-use crate::engines::poison::{Attempt, PoisonList, Strike, Work, strike_for, worse};
+use crate::engines::poison::{Attempt, Poison, PoisonList, Strike, Work, strike_for, worse};
 use crate::engines::pool::{Admission as PoolAdmission, CallError, Lease, Pool};
 use crate::ipc::{
     self, DecryptArgs, InspectArgs, Op, Output, ProbePages, RenderArgs, Reply, Secret,
@@ -34,11 +34,21 @@ impl PdfPdfium {
         Self { pool, poison: None }
     }
 
-    /// Refuses renders of documents that recently timed out or crashed a
-    /// worker.
+    /// Refuses inspects, decrypts and renders of documents that recently
+    /// timed out or crashed a worker.
     pub fn with_poison(mut self, poison: Option<Arc<PoisonList>>) -> Self {
         self.poison = poison;
         self
+    }
+
+    /// The poison handle of one inspect or decrypt; render keeps its own
+    /// per-chunk rule.
+    fn poison(&self, key: [u8; 32], work: Work) -> Option<Poison> {
+        self.poison.as_ref().map(|list| Poison {
+            list: Arc::clone(list),
+            key,
+            work,
+        })
     }
 
     /// Renders the pages that went over their share on one lease, with
@@ -223,6 +233,7 @@ impl PdfEngine for PdfPdfium {
         adm: Admission,
         deadline: Instant,
     ) -> Result<Inspection, EngineError> {
+        let poison = self.poison(job.sha256, Work::Inspect);
         let op = Op::Inspect(InspectArgs {
             pdf: job.pdf,
             password: job.password.map(|p| Secret::new(p.expose())),
@@ -233,7 +244,15 @@ impl PdfEngine for PdfPdfium {
             },
             collect_fonts: job.collect_fonts,
         });
-        let called = call(&self.pool, op, admission(adm), deadline, recycles).await?;
+        let called = call_with_poison(
+            &self.pool,
+            op,
+            admission(adm),
+            deadline,
+            recycles,
+            poison.as_ref(),
+        )
+        .await?;
         let Output::Inspected(out) = called.output else {
             return Err(unexpected("inspect"));
         };
@@ -273,6 +292,7 @@ impl PdfEngine for PdfPdfium {
         adm: Admission,
         deadline: Instant,
     ) -> Result<Decrypted, EngineError> {
+        let poison = self.poison(job.sha256, Work::Decrypt);
         let op = Op::Decrypt(DecryptArgs {
             pdf: job.pdf,
             password: Secret::new(job.password.expose()),
@@ -280,7 +300,15 @@ impl PdfEngine for PdfPdfium {
             max_output_bytes: job.max_output_bytes,
             check_owner: job.check_owner,
         });
-        let called = call(&self.pool, op, admission(adm), deadline, recycles).await?;
+        let called = call_with_poison(
+            &self.pool,
+            op,
+            admission(adm),
+            deadline,
+            recycles,
+            poison.as_ref(),
+        )
+        .await?;
         let Output::Decrypted(out) = called.output else {
             return Err(unexpected("decrypt"));
         };

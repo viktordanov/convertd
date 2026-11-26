@@ -215,6 +215,7 @@ impl ConversionService {
                         Admission::Continue,
                         job.deadline,
                         probe,
+                        job.upload.sha256,
                         timings,
                     )
                     .await
@@ -234,6 +235,7 @@ impl ConversionService {
                         Admission::Queue,
                         job.deadline,
                         probe,
+                        job.upload.sha256,
                         timings,
                     )
                     .await
@@ -264,6 +266,7 @@ impl ConversionService {
                                 output: paths.document_pdf.clone(),
                                 max_output_bytes,
                                 check_owner: true,
+                                sha256: job.upload.sha256,
                             },
                             Admission::Continue,
                             job.deadline,
@@ -429,6 +432,9 @@ impl ConversionService {
         Ok(rendered.pages)
     }
 
+    // One more argument than clippy's default: the upload's hash for the
+    // poison memory. A struct for one call site would only move the list.
+    #[allow(clippy::too_many_arguments)]
     async fn inspect(
         &self,
         pdf: &Path,
@@ -436,6 +442,7 @@ impl ConversionService {
         adm: Admission,
         deadline: Instant,
         probe: bool,
+        sha256: [u8; 32],
         timings: &mut StageTimings,
     ) -> Result<Inspection, EngineError> {
         let probe_dpi = if probe { self.probe_dpi } else { None };
@@ -449,6 +456,7 @@ impl ConversionService {
                     probe_dpi,
                     collect_fonts: false,
                     probe_max_pages: self.probe_max_pages,
+                    sha256,
                 },
                 adm,
                 deadline,
