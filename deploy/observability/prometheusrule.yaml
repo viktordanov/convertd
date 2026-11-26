@@ -68,6 +68,9 @@ spec:
         # calls of admitted requests (for example the render calls after an office conversion),
         # and only first calls count against the capacity. So this is sustained queue pressure:
         # new requests can get 429, and ConvertdTooManyRequests says whether they do.
+        # The expressions select every convertd that the Prometheus scrapes, in all namespaces.
+        # If deployments with other capacities share that Prometheus, add a namespace or job
+        # matcher to each selector, for example convert_queue_depth{namespace="convertd", pool="office"}.
         - alert: ConvertdQueueAtCapacity
           expr: |
             max by (namespace, pod, pool) (convert_queue_depth{pool="office"}) >= 4
