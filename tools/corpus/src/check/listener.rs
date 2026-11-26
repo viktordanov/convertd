@@ -8,7 +8,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct Listener {
     addr: SocketAddr,
@@ -56,7 +56,53 @@ impl Listener {
     pub fn seen(&self) -> Vec<String> {
         self.seen.lock().map(|s| s.clone()).unwrap_or_default()
     }
+
+    /// Waits until the listener has counted `n` connections in all, or
+    /// until `timeout`. Returns the count it saw last.
+    pub fn wait_for(&self, n: u64, timeout: Duration) -> u64 {
+        let until = Instant::now() + timeout;
+        loop {
+            let count = self.count();
+            if count >= n || Instant::now() >= until {
+                return count;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The listener control: connects to the listener from this process
+    /// and requires that it counts exactly that one connection. Run it
+    /// before any case, in the network namespace of the service, so that
+    /// a count of 0 later means that nothing connected, not that the
+    /// listener could not see a connection.
+    pub fn control(&self, timeout: Duration) -> Result<String, String> {
+        let before = self.count();
+        let mut client = TcpStream::connect_timeout(&self.addr, timeout)
+            .map_err(|err| format!("failed to connect to the listener on {}: {err}", self.addr))?;
+        let _ = client.set_read_timeout(Some(timeout));
+        client
+            .write_all(CONTROL_REQUEST)
+            .map_err(|err| format!("failed to write to the listener: {err}"))?;
+        let mut answer = Vec::new();
+        let _ = client.read_to_end(&mut answer);
+        let count = self.wait_for(before + 1, timeout);
+        // The line is stored after the answer, so give it the same time.
+        let until = Instant::now() + timeout;
+        while self.seen().len() < count as usize && Instant::now() < until {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if count != before + 1 {
+            return Err(format!(
+                "the listener control saw {} connection(s), expected 1",
+                count - before
+            ));
+        }
+        Ok(self.seen().last().cloned().unwrap_or_default())
+    }
 }
+
+/// What the control connection sends, so that its line is easy to tell apart.
+const CONTROL_REQUEST: &[u8] = b"GET /corpus-bench-listener-control HTTP/1.1\r\n\r\n";
 
 /// Reads up to 512 bytes for one second, answers 404 and returns the first line.
 fn first_line(mut stream: TcpStream) -> String {
@@ -76,7 +122,6 @@ fn first_line(mut stream: TcpStream) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     #[test]
     fn a_connection_is_counted_and_its_first_line_kept() {
@@ -98,6 +143,23 @@ mod tests {
             "{:?}",
             listener.seen()
         );
+    }
+
+    #[test]
+    fn the_control_counts_its_own_connection() {
+        let listener = Listener::start("127.0.0.1:0").expect("bind");
+        let line = listener.control(Duration::from_secs(5)).expect("control");
+        assert!(
+            line.ends_with("GET /corpus-bench-listener-control HTTP/1.1"),
+            "{line}"
+        );
+        assert_eq!(listener.count(), 1);
+    }
+
+    #[test]
+    fn wait_for_gives_up_at_the_timeout() {
+        let listener = Listener::start("127.0.0.1:0").expect("bind");
+        assert_eq!(listener.wait_for(1, Duration::from_millis(50)), 0);
     }
 
     #[test]

@@ -208,6 +208,58 @@ def docx_small(_ctx):
     return docx_bytes(spike_document(4))
 
 
+DESCRIPTOR_PART = "word/document.xml"
+
+
+def zip_with_descriptor(data, part, method):
+    """Rewrites a zip by hand so that `part` alone has a data descriptor (flag bit 3):
+    its local header carries zero CRC and sizes, and the real values follow the data,
+    as Go's archive/zip writes them. `method` is ZIP_STORED or ZIP_DEFLATED for that
+    part; every other part stays deflated with sizes in its local header."""
+    dos_time = (ZIP_TIME[3] << 11) | (ZIP_TIME[4] << 5) | (ZIP_TIME[5] // 2)
+    dos_date = ((ZIP_TIME[0] - 1980) << 9) | (ZIP_TIME[1] << 5) | ZIP_TIME[2]
+    src = zipfile.ZipFile(io.BytesIO(data))
+    out = bytearray()
+    central = bytearray()
+    found = False
+    for info in src.infolist():
+        body = src.read(info.filename)
+        name = info.filename.encode("utf-8")
+        is_part = info.filename == part
+        found = found or is_part
+        entry_method = method if is_part else zipfile.ZIP_DEFLATED
+        if entry_method == zipfile.ZIP_DEFLATED:
+            packer = zlib.compressobj(ZIP_LEVEL, zlib.DEFLATED, -15)
+            packed = packer.compress(body) + packer.flush()
+        else:
+            packed = body
+        crc = zlib.crc32(body)
+        flags = 0x08 if is_part else 0
+        offset = len(out)
+        local_crc, local_csize, local_size = (0, 0, 0) if is_part else (crc, len(packed), len(body))
+        out += struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, flags, entry_method, dos_time, dos_date,
+                           local_crc, local_csize, local_size, len(name), 0) + name + packed
+        if is_part:
+            out += struct.pack("<IIII", 0x08074B50, crc, len(packed), len(body))
+        central += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014B50, 20, 20, flags, entry_method, dos_time,
+                               dos_date, crc, len(packed), len(body), len(name), 0, 0, 0, 0, 0,
+                               offset) + name
+    if not found:
+        raise KeyError(f"failed to find {part}")
+    count = len(src.infolist())
+    out += central + struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, count, count, len(central),
+                                 len(out), 0)
+    return bytes(out)
+
+
+def docx_stored_descriptor(ctx):
+    return zip_with_descriptor(ctx["docx-small"], DESCRIPTOR_PART, zipfile.ZIP_STORED)
+
+
+def docx_deflated_descriptor(ctx):
+    return zip_with_descriptor(ctx["docx-small"], DESCRIPTOR_PART, zipfile.ZIP_DEFLATED)
+
+
 def docx_one_page(_ctx):
     """The spike's document cut to two paragraphs, so that it fits one page: the
     file of the overhead gate (docx-small renders two pages in LibreOffice)."""
@@ -811,6 +863,8 @@ def pptm_vba(_ctx):
 ENTRIES = [
     ("docx-small", "docx/small.docx", docx_small, False),
     ("docx-one-page", "docx/one-page.docx", docx_one_page, False),
+    ("docx-stored-descriptor", "docx/stored-descriptor.docx", docx_stored_descriptor, False),
+    ("docx-deflated-descriptor", "docx/deflated-descriptor.docx", docx_deflated_descriptor, False),
     ("docx-long", "docx/long.docx", docx_long, False),
     ("docx-breaks12", "docx/breaks12.docx", docx_breaks12, False),
     ("docx-empty-page", "docx/empty-page.docx", docx_empty_page, False),
@@ -920,7 +974,7 @@ def check_file(entry_id, path, data):
     suffix = path.suffix
     low, high = SIZE_BOUNDS.get(entry_id, (1, 1 << 30))
     require(low <= len(data) <= high, f"{len(data)} bytes, outside {low}..{high}")
-    if entry_id not in UNHASHED and suffix in ZIP_SUFFIXES:
+    if entry_id not in UNHASHED and entry_id not in DESCRIPTOR_ENTRIES and suffix in ZIP_SUFFIXES:
         for info in members(data).infolist():
             method = zipfile.ZIP_STORED if info.filename == "mimetype" else zipfile.ZIP_DEFLATED
             require(info.date_time == ZIP_TIME and info.compress_type == method,
@@ -980,8 +1034,23 @@ def check_hostile(entry_id, data):
         require(struct.unpack(">II", data[16:24]) == (PNG_BOMB_SIDE, PNG_BOMB_SIDE), "IHDR size")
 
 
+DESCRIPTOR_ENTRIES = {"docx-stored-descriptor": zipfile.ZIP_STORED,
+                      "docx-deflated-descriptor": zipfile.ZIP_DEFLATED}
+
+
 def check_facts(entry_id, data):
-    if entry_id in VBA_ENTRIES:
+    if entry_id in DESCRIPTOR_ENTRIES:
+        z = members(data)
+        for info in z.infolist():
+            is_part = info.filename == DESCRIPTOR_PART
+            require(bool(info.flag_bits & 0x08) == is_part, f"{info.filename} flag bits {info.flag_bits}")
+            if is_part:
+                require(info.compress_type == DESCRIPTOR_ENTRIES[entry_id], "wrong method")
+        # The local header of the part must carry zero CRC and sizes.
+        at = data.find(b"PK\x03\x04" + struct.pack("<HH", 20, 8))
+        require(at >= 0 and struct.unpack("<III", data[at + 14:at + 26]) == (0, 0, 0),
+                "the local header of the part has sizes")
+    elif entry_id in VBA_ENTRIES:
         # The VBA project is never parsed: only its bytes, type and relationship are checked.
         name, part, rels, _plain, _macro = VBA_HOSTS[VBA_ENTRIES[entry_id]]
         z = members(data)
