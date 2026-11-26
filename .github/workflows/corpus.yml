@@ -1,14 +1,15 @@
 name: corpus
 
 # Regenerates the test corpus with its pinned packages and compares every
-# file with the SHA-256 in corpus/expected.json. Runs only when the corpus
-# or this workflow changes; the Rust jobs live in image.yml.
+# file with the SHA-256 in corpus/expected.json, and lints and tests
+# corpus-bench (tools/corpus). Runs only when the corpus, corpus-bench or
+# this workflow changes; the convertd Rust jobs live in image.yml.
 on:
   pull_request:
-    paths: ["corpus/**", ".github/workflows/corpus.yml"]
+    paths: ["corpus/**", "tools/corpus/**", ".github/workflows/corpus.yml"]
   push:
     branches: [main]
-    paths: ["corpus/**", ".github/workflows/corpus.yml"]
+    paths: ["corpus/**", "tools/corpus/**", ".github/workflows/corpus.yml"]
   workflow_dispatch: {}
 
 permissions:
@@ -45,3 +46,35 @@ jobs:
           shellcheck --version
       - name: Shell scripts
         run: /usr/local/bin/shellcheck corpus/check.sh
+
+  bench:
+    # corpus-bench's own checks. Its tests read corpus/expected.json and
+    # expected.schema.json, so a change under either path runs them. They need
+    # no network, no Docker and no image.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The image job's pin, with clippy and rustfmt in the same install, so no
+      # later step installs a component implicitly (the arm64 conflict of run
+      # 45805165059). RUSTUP_TOOLCHAIN overrides rust-toolchain.toml.
+      - name: Install Rust 1.99.0 (minimal profile, clippy, rustfmt)
+        run: |
+          rustup --version
+          if ! rustup toolchain install 1.99.0 --profile minimal --component clippy,rustfmt --no-self-update; then
+            echo "retrying after removing the partial 1.99.0 install"
+            rustup toolchain uninstall 1.99.0 || true
+            rustup toolchain install 1.99.0 --profile minimal --component clippy,rustfmt --no-self-update
+          fi
+          echo "RUSTUP_TOOLCHAIN=1.99.0" >> "$GITHUB_ENV"
+          rustup run 1.99.0 cargo --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: "tools/corpus -> target"
+          shared-key: corpus-bench
+      - name: Format
+        run: cargo fmt --manifest-path tools/corpus/Cargo.toml --check
+      - name: Clippy
+        run: cargo clippy --manifest-path tools/corpus/Cargo.toml --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --manifest-path tools/corpus/Cargo.toml --locked
