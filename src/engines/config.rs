@@ -28,6 +28,12 @@ impl FromStr for Paper {
     }
 }
 
+/// `OFFICE_MAX_JOBS` when neither it nor `WORKER_MAX_JOBS` is set. An office
+/// worker lived 20 s at 50 jobs in the soak, and its RSS at recycle did not
+/// grow with the job count, so 200 cuts the restarts by 4.
+/// `OFFICE_MAX_RSS_MB` still recycles a worker that grows.
+pub const OFFICE_DEFAULT_MAX_JOBS: u32 = 200;
+
 /// The recycle and kill limits of one pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PoolLimits {
@@ -55,7 +61,9 @@ pub struct EngineConfig {
     /// Kill during a job above this RSS.
     pub worker_kill_rss_mb: u64,
     /// The office pool's limits: `OFFICE_MAX_JOBS`, `OFFICE_MAX_RSS_MB` and
-    /// `OFFICE_KILL_RSS_MB`, else the shared `WORKER_*` values.
+    /// `OFFICE_KILL_RSS_MB`, else the shared `WORKER_*` values. The job limit
+    /// falls back to [`OFFICE_DEFAULT_MAX_JOBS`] when `WORKER_MAX_JOBS` is
+    /// not set either.
     pub office: PoolLimits,
     /// The render pool's limits: `RENDER_MAX_JOBS`, `RENDER_MAX_RSS_MB` and
     /// `RENDER_KILL_RSS_MB`, else the shared `WORKER_*` values.
@@ -76,17 +84,29 @@ impl EngineConfig {
         let worker_max_jobs = env.positive("WORKER_MAX_JOBS", 50)?;
         let worker_max_rss_mb = env.positive("WORKER_MAX_RSS_MB", 1024)?;
         let worker_kill_rss_mb = env.positive("WORKER_KILL_RSS_MB", 2048)?;
-        let limits = |names: [&'static str; 3]| -> Result<PoolLimits, ConfigError> {
+        // The office pool's own default unless WORKER_MAX_JOBS is set.
+        let office_jobs = if env.get("WORKER_MAX_JOBS")?.is_some() {
+            worker_max_jobs
+        } else {
+            OFFICE_DEFAULT_MAX_JOBS
+        };
+        let limits = |names: [&'static str; 3], jobs: u32| -> Result<PoolLimits, ConfigError> {
             let [max_jobs, max_rss, kill_rss] = names;
             Ok(PoolLimits {
-                max_jobs: env.positive(max_jobs, worker_max_jobs)?,
+                max_jobs: env.positive(max_jobs, jobs)?,
                 max_rss_mb: env.positive(max_rss, worker_max_rss_mb)?,
                 kill_rss_mb: env.positive(kill_rss, worker_kill_rss_mb)?,
             })
         };
         Ok(Self {
-            office: limits(["OFFICE_MAX_JOBS", "OFFICE_MAX_RSS_MB", "OFFICE_KILL_RSS_MB"])?,
-            render: limits(["RENDER_MAX_JOBS", "RENDER_MAX_RSS_MB", "RENDER_KILL_RSS_MB"])?,
+            office: limits(
+                ["OFFICE_MAX_JOBS", "OFFICE_MAX_RSS_MB", "OFFICE_KILL_RSS_MB"],
+                office_jobs,
+            )?,
+            render: limits(
+                ["RENDER_MAX_JOBS", "RENDER_MAX_RSS_MB", "RENDER_KILL_RSS_MB"],
+                worker_max_jobs,
+            )?,
             office_workers,
             render_workers: env.positive("RENDER_WORKERS", cpus)?,
             queue_capacity: env.parse("QUEUE_CAPACITY", 2 * office_workers)?,
@@ -124,6 +144,17 @@ mod tests {
             assert_eq!(limits.max_rss_mb, 1024);
             assert_eq!(limits.max_jobs, 40);
         }
+    }
+
+    #[test]
+    fn the_office_pool_defaults_to_200_jobs_and_the_render_pool_to_50() {
+        let e = engines(&[]);
+        assert_eq!((e.office.max_jobs, e.render.max_jobs), (200, 50));
+        // An explicit shared value applies to both pools.
+        let e = engines(&[("WORKER_MAX_JOBS", "40")]);
+        assert_eq!((e.office.max_jobs, e.render.max_jobs), (40, 40));
+        let e = engines(&[("WORKER_MAX_JOBS", "40"), ("OFFICE_MAX_JOBS", "300")]);
+        assert_eq!((e.office.max_jobs, e.render.max_jobs), (300, 40));
     }
 
     #[test]
