@@ -267,6 +267,9 @@ pub struct ServerConfig {
     /// The disk budget for everything under `tmp_dir`.
     pub tmp_max_bytes: u64,
     pub verify_probe_render: bool,
+    /// Without a page selection, the blank-page probe looks at no more
+    /// than this many pages.
+    pub verify_probe_max_pages: u32,
     pub metrics_enabled: bool,
     /// Serves `/swagger/doc.json` only.
     pub swagger_enabled: bool,
@@ -329,6 +332,7 @@ impl ServerConfig {
             tmp_dir: env.path("TMP_DIR", "/tmp/convert")?,
             tmp_max_bytes: env.positive("TMP_MAX_BYTES", 3_221_225_472)?,
             verify_probe_render: env.parse("VERIFY_PROBE_RENDER", true)?,
+            verify_probe_max_pages: env.positive("VERIFY_PROBE_MAX_PAGES", 200)?,
             metrics_enabled: env.parse("METRICS_ENABLED", true)?,
             swagger_enabled: env.parse("SWAGGER_ENABLED", true)?,
             build_info_path: env.path("BUILD_INFO_PATH", "/opt/convertd/build-info.json")?,
@@ -418,6 +422,7 @@ mod tests {
         assert_eq!(s.tmp_max_bytes, 3_221_225_472);
         assert_eq!(s.max_output_bytes(), 768 * 1024 * 1024);
         assert!(s.verify_probe_render);
+        assert_eq!(s.verify_probe_max_pages, 200);
         assert!(s.metrics_enabled);
         assert!(s.swagger_enabled);
         assert_eq!(
