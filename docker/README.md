@@ -2,7 +2,7 @@
 
 `docker/` builds the one rs-convert image: convertd, a pinned LibreOffice, a pinned PDFium, a fixed font set and `build-info.json`, for `linux/amd64` and `linux/arm64`.
 
-The product image converts documents on arm64 and amd64. On 2026-11-26 the `runtime` image converted a DOCX, a PDF and a PPTX under Docker on arm64, and the CI image job converted a DOCX with it natively on both architectures ([What is verified](#what-is-verified)). It is not run yet on Kubernetes, Container Apps or gVisor. The engines, the fonts and the library check are proved on both architectures.
+The product image converts documents on arm64 and amd64. On 2026-11-26 the `runtime` image converted a DOCX, a PDF and a PPTX under Docker on arm64, and the CI image job converted a DOCX with it natively on both architectures ([What is verified](#what-is-verified)). It is not run yet on Kubernetes or gVisor. The engines, the fonts and the library check are proved on both architectures.
 
 ## Contents
 
@@ -25,7 +25,7 @@ The image is `debian:trixie-slim` with only what convertd uses. Each part has a 
 - **No network tools.** curl, ca-certificates and procps are not in the product image. All downloads happen in the `engines` build stage.
 - **No documentation.** The dpkg excludes in `dpkg/docs.cfg` drop docs, man pages and message catalogs before dpkg unpacks them. They keep the `copyright` file of each package.
 
-The image runs as user and group `10001:10001` (`convertd`), with `HOME=/tmp`. The Kubernetes manifest and the engine check make the root file system read-only, and `/tmp` is the only writable path. Container Apps is believed to have no read-only option. The image ships nothing under `/tmp`, because a mount there hides it. There is no init process: convertd is PID 1 and reaps its own children.
+The image runs as user and group `10001:10001` (`convertd`), with `HOME=/tmp`. The Kubernetes manifest and the engine check make the root file system read-only, and `/tmp` is the only writable path. The image ships nothing under `/tmp`, because a mount there hides it. There is no init process: convertd is PID 1 and reaps its own children.
 
 The paths and variables that other parts of the service depend on:
 
@@ -205,7 +205,7 @@ An earlier `runtime` build of the same day, with no real engines in convertd, ga
 - **Health check:** `convertd healthcheck` exits 1 while `/readyz` answers 503, and also when nothing listens.
 - **Build cache:** after a change in `src/`, the cooked dependency layer comes from the cache, and the rebuild takes 18 s.
 
-These results prove conversion on arm64 under Docker. They do not prove Kubernetes, Container Apps or gVisor.
+These results prove conversion on arm64 under Docker. They do not prove Kubernetes or gVisor.
 
 On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a baseline image built from the same `main` without them:
 
