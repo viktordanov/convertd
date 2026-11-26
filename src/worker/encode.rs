@@ -114,16 +114,9 @@ impl Encoder {
                 .write_image(&self.rgb, width, height, image::ExtendedColorType::Rgb8)
                 .map_err(|err| failed(err.to_string()))?;
             }
-            ImageFormat::Png => {
-                self.png(bgra, width, height, Deflate::Zlib1)?;
-                // As png's own whole-image path does: data that does not
-                // compress, such as noise or photos, is stored instead, so
-                // the file never grows past a stored PNG.
-                if self.out.len() > stored_png_len(width, height) {
-                    self.out.clear();
-                    self.png(bgra, width, height, Deflate::Stored)?;
-                }
-            }
+            // zlib stores a block that does not compress, so noise or a
+            // photo stays within a few bytes of a stored PNG.
+            ImageFormat::Png => self.png(bgra, width, height)?,
         }
         Ok(&self.out)
     }
@@ -131,30 +124,16 @@ impl Encoder {
 
 impl Encoder {
     /// Streams the bitmap into `self.out` as a PNG, one RGB row at a time,
-    /// with the adaptive filter for zlib and none for a stored image.
-    fn png(
-        &mut self,
-        bgra: &[u8],
-        width: u32,
-        height: u32,
-        deflate: Deflate,
-    ) -> Result<(), EncodeError> {
+    /// with the adaptive filter and zlib at [`STREAM_ZLIB_LEVEL`].
+    fn png(&mut self, bgra: &[u8], width: u32, height: u32) -> Result<(), EncodeError> {
         let failed = |err: String| EncodeError::Failed(err);
         let mut encoder = png::Encoder::new(&mut self.out, width, height);
         encoder.set_color(png::ColorType::Rgb);
         encoder.set_depth(png::BitDepth::Eight);
         // set_compression also sets a filter, so the filter comes after it.
-        match deflate {
-            Deflate::Zlib1 => {
-                encoder.set_compression(png::Compression::Fast);
-                encoder.set_deflate_compression(png::DeflateCompression::Level(1));
-                encoder.set_filter(png::Filter::Adaptive);
-            }
-            Deflate::Stored => {
-                encoder.set_compression(png::Compression::NoCompression);
-                encoder.set_filter(png::Filter::NoFilter);
-            }
-        }
+        encoder.set_compression(png::Compression::Fast);
+        encoder.set_deflate_compression(png::DeflateCompression::Level(STREAM_ZLIB_LEVEL));
+        encoder.set_filter(png::Filter::Adaptive);
         let mut writer = encoder
             .write_header()
             .map_err(|err| failed(err.to_string()))?;
@@ -175,19 +154,16 @@ impl Encoder {
     }
 }
 
-/// How a streamed PNG is compressed.
+/// The zlib level of a streamed PNG.
 ///
 /// Not fdeflate, which the whole-page encoder uses: png's StreamWriter
 /// gives it the filter byte and the row in two calls, and its output then
 /// depends on the page width (white 93 x 3777 px: +43 %, 5 x 1000: +65 %
-/// against the whole-page bytes). zlib level 1 does not depend on the calls:
-/// text pages come out about half the size, a blank A4 page about 7 %
-/// larger, at about the speed of the old copy and encode.
-#[derive(Debug, Clone, Copy)]
-enum Deflate {
-    Zlib1,
-    Stored,
-}
+/// against the whole-page bytes). zlib's output does not depend on the
+/// calls. Level 1 was 15 to 18 % larger than the old bytes on blank pages;
+/// level 2 is about a quarter of level 1 on blank and text pages, smaller
+/// than the old bytes, for about 1.5 times the old encode time.
+const STREAM_ZLIB_LEVEL: u8 = 2;
 
 /// The largest stored PNG size that still takes the whole-page encoder:
 /// above it, the rows stream and no page copy is made.
@@ -382,9 +358,9 @@ mod tests {
     }
 
     /// A small PNG page keeps the bytes of the whole-page encoder. A large
-    /// one streams with zlib level 1: the same pixels, channels in RGB
-    /// order, but other bytes, within 10 % of the old size and smaller for
-    /// text. Noise falls back to stored data, as the old encoder did.
+    /// one streams with zlib: the same pixels, channels in RGB order, but
+    /// other bytes. No page grows by more than 0.2 %: blank and text pages
+    /// come out smaller than before, and noise within a few bytes of it.
     #[test]
     fn png_keeps_the_pixels_and_the_size_of_the_whole_page_encoder() {
         let mut encoder = Encoder::new();
@@ -408,7 +384,22 @@ mod tests {
                 bitmap(1240, 1754, [255, 255, 255, 255]),
                 false,
             ),
-            // The widths at which fdeflate streaming grew by 16 % and 43 %.
+            // The widths at which fdeflate streaming grew by 16 % and 43 %,
+            // and those at which zlib level 1 grew by 18 % and 15 %.
+            (
+                "white 400",
+                400,
+                900,
+                bitmap(400, 900, [255, 255, 255, 255]),
+                false,
+            ),
+            (
+                "white 600",
+                600,
+                600,
+                bitmap(600, 600, [255, 255, 255, 255]),
+                false,
+            ),
             (
                 "white 597",
                 597,
@@ -446,7 +437,7 @@ mod tests {
                     "{name}: the pixels changed"
                 );
                 assert!(
-                    streamed.len() * 100 <= before.len() * 110,
+                    streamed.len() * 1000 <= before.len() * 1002,
                     "{name}: {} B against {} B",
                     streamed.len(),
                     before.len()
