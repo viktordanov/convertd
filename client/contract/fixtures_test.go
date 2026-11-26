@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
@@ -81,7 +82,20 @@ func docxWithText(text string) []byte {
 		{"word/document.xml", docxDocumentHead + text + docxDocumentTail, zip.Store},
 	}
 	for _, p := range parts {
-		w, err := zw.CreateHeader(&zip.FileHeader{Name: p.name, Method: p.method})
+		hdr := &zip.FileHeader{Name: p.name, Method: p.method}
+		var w io.Writer
+		var err error
+		if p.method == zip.Store {
+			// A stored part gets its sizes and CRC in the local header, with
+			// no data descriptor: LibreOffice does not load a DOCX whose
+			// stored entry is followed by one, which CreateHeader writes.
+			hdr.CRC32 = crc32.ChecksumIEEE([]byte(p.body))
+			hdr.CompressedSize64 = uint64(len(p.body))
+			hdr.UncompressedSize64 = uint64(len(p.body))
+			w, err = zw.CreateRaw(hdr)
+		} else {
+			w, err = zw.CreateHeader(hdr)
+		}
 		if err != nil {
 			panic(fmt.Sprintf("failed to create docx part: %v", err))
 		}

@@ -191,7 +191,7 @@ When you change the API in the server code:
 
 `contract/` is a nested module that is never published or tagged. It holds `speccheck`, the validating transport that checks each response against the spec, the test harness, the live contract cases and the self-tests. `speccheck validate` checks one spec, and `speccheck compare` checks the emitted spec against the reference.
 
-`../scripts/contract_test.sh` builds convertd with the `test-hooks` feature and runs the contract tests against the level A fake. The timeout and queue cases start their own level B servers (`TEST_ENGINE=worker`), so their 504 and 429 come from the real pool. In image mode these two cases skip, because they need a server of their own. CI runs it in the `test` job. `../scripts/contract_test.sh --image REF` runs them against an image. `cd contract && go test ./...` runs only the spec tools and the self-tests, and it needs no server.
+`../scripts/contract_test.sh` builds convertd with the `test-hooks` feature and runs the contract tests against the level A fake. The timeout and queue cases start their own level B servers (`TEST_ENGINE=worker`), so their 504 and 429 come from the real pool. In image mode these two cases skip, because they need a server of their own. CI runs it in the `test` job. `../scripts/contract_test.sh --image REF` runs them against an image. There, the cases that need a fake engine or a server of their own skip. `cd contract && go test ./...` runs only the spec tools and the self-tests, and it needs no server.
 
 The script prints the skipped cases with their reasons and the declared `(operationId, status)` pairs that no case observed.
 
