@@ -830,8 +830,9 @@ fn every_metric_the_dashboard_and_rules_name_is_emitted() {
                 let text =
                     std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(file))
                         .unwrap();
+                // The whole identifier: `{name}_v2` in the file does not count.
                 assert!(
-                    text.contains(name.as_str()),
+                    metric_names(&text).contains(&name),
                     "{name} is not scraped ({reason}) and {file} does not name it"
                 );
             }
