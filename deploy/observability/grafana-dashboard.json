@@ -706,7 +706,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 6,
         "x": 12,
         "y": 5
       },
@@ -759,6 +759,67 @@
     {
       "type": "timeseries",
       "id": 10,
+      "title": "Errors since the process started",
+      "description": "The counter itself, per pod and code. A series starts at its first request with the value it has at the first scrape, so a rate does not show a first burst that ends between two scrapes; this panel does.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (namespace, pod, code) (convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code!=\"OK\"})",
+          "legendFormat": "{{code}} {{namespace}}/{{pod}}",
+          "refId": "A",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 11,
       "title": "Successful requests by output and family",
       "description": "200 responses by requested output and detected input family.",
       "datasource": {
@@ -819,7 +880,7 @@
     },
     {
       "type": "timeseries",
-      "id": 11,
+      "id": 12,
       "title": "Responses cut after the head, since the process started",
       "description": "200 responses that convertd cut: RESPONSE_STALLED, RESPONSE_TOO_SLOW and RESPONSE_ABORTED. convert_requests_total counted them as OK at the head. A client that closes the connection itself is not counted. The counter starts again when the convertd process restarts. The counter itself, per pod: its series starts at the first cut with the value 1, so a rate would not show an isolated cut.",
       "datasource": {
@@ -880,7 +941,7 @@
     },
     {
       "type": "row",
-      "id": 12,
+      "id": 13,
       "title": "Latency per stage",
       "collapsed": false,
       "gridPos": {
@@ -893,7 +954,7 @@
     },
     {
       "type": "timeseries",
-      "id": 13,
+      "id": 14,
       "title": "p50 per stage",
       "description": "Median duration of each stage of a request (Server-Timing stages). Short rate windows keep bursts visible.",
       "datasource": {
@@ -954,7 +1015,7 @@
     },
     {
       "type": "timeseries",
-      "id": 14,
+      "id": 15,
       "title": "p99 per stage",
       "description": "99th percentile of each stage. A histogram quantile is an estimate inside its bucket.",
       "datasource": {
@@ -1015,7 +1076,7 @@
     },
     {
       "type": "timeseries",
-      "id": 15,
+      "id": 16,
       "title": "Time in each stage (seconds per second)",
       "description": "Rate of the summed time per stage, counted when each request finishes. Under steady load it estimates the requests in that stage at once. The stages overlap (an office preflight is inside convert, and receive is outside total), so the series do not add up and the panel does not stack them.",
       "datasource": {
@@ -1076,7 +1137,7 @@
     },
     {
       "type": "timeseries",
-      "id": 16,
+      "id": 17,
       "title": "Total and overhead by family, p50 and p99",
       "description": "The total stage (from the end of the upload to the response head; the upload and the body download are outside it) and the overhead (total minus queue minus engine time) for each input family.",
       "datasource": {
@@ -1167,7 +1228,7 @@
     },
     {
       "type": "timeseries",
-      "id": 17,
+      "id": 18,
       "title": "Engine overhead per pool and op, p50 and p99",
       "description": "Wall time of an engine call minus its queue and engine time: IPC, spawn and lease costs, per pool and operation.",
       "datasource": {
@@ -1238,7 +1299,7 @@
     },
     {
       "type": "timeseries",
-      "id": 18,
+      "id": 19,
       "title": "Input size, p50 and p99",
       "description": "Upload size per input family.",
       "datasource": {
@@ -1309,7 +1370,7 @@
     },
     {
       "type": "row",
-      "id": 19,
+      "id": 20,
       "title": "Pools",
       "collapsed": false,
       "gridPos": {
@@ -1322,7 +1383,7 @@
     },
     {
       "type": "timeseries",
-      "id": 20,
+      "id": 21,
       "title": "Queue depth per pool (max over the trailing rate window)",
       "description": "Leases that wait for a worker. Each point is the maximum of the scraped samples in the trailing $__rate_interval (at least four scrapes), so a short queue stays visible when you zoom out, and one high sample shows in several points. A pool that never waited shows 0. The depth also counts the later engine calls of admitted requests. Only first calls count against QUEUE_CAPACITY (office: 2 x OFFICE_WORKERS) or 2 x RENDER_WORKERS, past which a request gets 429.",
       "datasource": {
@@ -1383,7 +1444,7 @@
     },
     {
       "type": "timeseries",
-      "id": 21,
+      "id": 22,
       "title": "Workers per pool and state",
       "description": "Workers that are idle, busy or starting, summed over the selected pods.",
       "datasource": {
@@ -1444,7 +1505,7 @@
     },
     {
       "type": "timeseries",
-      "id": 22,
+      "id": 23,
       "title": "Busy workers per pool and pod (max over the trailing rate window)",
       "description": "Each point is the highest busy count of a pod over its scraped samples in the trailing $__rate_interval, so one high sample shows in several points.",
       "datasource": {
@@ -1505,7 +1566,7 @@
     },
     {
       "type": "timeseries",
-      "id": 23,
+      "id": 24,
       "title": "Worker restarts by reason",
       "description": "Workers that left the pool, by pool and reason: jobs, rss, age, timeout, crash, cancelled, error, start_failed. No series exists until the first restart.",
       "datasource": {
@@ -1566,7 +1627,7 @@
     },
     {
       "type": "timeseries",
-      "id": 24,
+      "id": 25,
       "title": "Worker restarts since the process started",
       "description": "The counter itself. Its series starts at the first restart with the value 1, so increase() shows no isolated first restart; this panel does.",
       "datasource": {
@@ -1627,7 +1688,7 @@
     },
     {
       "type": "row",
-      "id": 25,
+      "id": 26,
       "title": "Supervisor and disk",
       "collapsed": false,
       "gridPos": {
@@ -1640,7 +1701,7 @@
     },
     {
       "type": "timeseries",
-      "id": 26,
+      "id": 27,
       "title": "Supervisor RSS and peak",
       "description": "Resident memory of the convertd serve process (VmRSS and VmHWM). Linux only.",
       "datasource": {
@@ -1711,7 +1772,7 @@
     },
     {
       "type": "timeseries",
-      "id": 27,
+      "id": 28,
       "title": "Supervisor threads and open descriptors",
       "description": "Threads and open file descriptors of the supervisor. Linux only.",
       "datasource": {
@@ -1782,7 +1843,7 @@
     },
     {
       "type": "timeseries",
-      "id": 28,
+      "id": 29,
       "title": "Disk budget used versus the limit",
       "description": "Bytes reserved under TMP_DIR against TMP_MAX_BYTES. A failed reservation gives 503.",
       "datasource": {
@@ -1853,7 +1914,7 @@
     },
     {
       "type": "row",
-      "id": 29,
+      "id": 30,
       "title": "Quality",
       "collapsed": false,
       "gridPos": {
@@ -1866,7 +1927,7 @@
     },
     {
       "type": "timeseries",
-      "id": 30,
+      "id": 31,
       "title": "Warnings by code",
       "description": "Manifest warnings per second, such as FONT_SUBSTITUTED or RENDER_CLAMPED.",
       "datasource": {
@@ -1927,7 +1988,7 @@
     },
     {
       "type": "timeseries",
-      "id": 31,
+      "id": 32,
       "title": "Warnings since the process started",
       "description": "The counter itself, per pod. A code's series starts at its first warning with the value 1, so a rate does not show an isolated warning; this panel does.",
       "datasource": {
@@ -1988,7 +2049,7 @@
     },
     {
       "type": "timeseries",
-      "id": 32,
+      "id": 33,
       "title": "Skipped checks by check and reason",
       "description": "Verification checks that did not run. blank_page counts pages.",
       "datasource": {
@@ -2049,7 +2110,7 @@
     },
     {
       "type": "timeseries",
-      "id": 33,
+      "id": 34,
       "title": "Pages rendered by format",
       "description": "Image pages rendered per second.",
       "datasource": {
@@ -2110,7 +2171,7 @@
     },
     {
       "type": "row",
-      "id": 34,
+      "id": 35,
       "title": "CPU per job (O2)",
       "collapsed": false,
       "gridPos": {
@@ -2123,7 +2184,7 @@
     },
     {
       "type": "text",
-      "id": 35,
+      "id": 36,
       "title": "CPU per job",
       "gridPos": {
         "h": 4,
