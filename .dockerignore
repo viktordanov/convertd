@@ -1,5 +1,5 @@
 # The Dockerfile copies named paths only; this keeps the build context small and keeps
-# private or bulky files out of it. spikes/ stays: the engine-check target builds from it.
+# private or bulky files out of it.
 .git
 target
 **/target

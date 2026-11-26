@@ -6,7 +6,6 @@
 #   runtime        (default) the service image
 #   runtime-base   engines, fonts, build-info and user, no convertd
 #   dev            Rust toolchain + the same engines, for lane 002's engine tests (host arch only)
-#   engine-check   runtime-base + the spike binaries (plan steps 2-4 only, then deleted)
 #
 # The Rust stages run on $BUILDPLATFORM and cross-compile to $TARGETARCH, so no rustc runs
 # under QEMU. The library check (lib-check) also runs natively, with readelf, because ldd is
@@ -78,7 +77,7 @@ WORKDIR /src
 # manifest, the lock file and src/ are all that `cargo build --bin convertd` reads. tests/ and
 # examples/ stay out, so a test change does not rebuild convertd. If the manifest starts to
 # declare such a target, copy its folder here and in the builder, or cargo rejects the
-# manifest. spikes/ and tools/ are separate crates and never enter the recipe.
+# manifest. tools/ holds separate crates, which never enter the recipe.
 FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS planner
 COPY --from=chef-tool /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
 WORKDIR /src
@@ -110,17 +109,6 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
     triple="$(cat /etc/rust-target)"; \
     cargo build --release --locked --target "${triple}" --bin convertd; \
     install -D -m 0755 "target/${triple}/release/convertd" /out/convertd
-
-# ---- Spike binaries, only for the engine-check target --------------------------------------
-FROM rust-cross AS spike-build
-COPY spikes/lok ./spikes/lok
-COPY spikes/pdfium ./spikes/pdfium
-RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
-    triple="$(cat /etc/rust-target)"; \
-    for s in lok pdfium; do \
-      cargo build --release --locked --target "${triple}" --manifest-path "spikes/${s}/Cargo.toml"; \
-      install -D -m 0755 "spikes/${s}/target/${triple}/release/spike-${s}" "/out/spike-${s}"; \
-    done
 
 # ---- Engine downloads: built on the build platform, never in the runtime ------------------
 # Each download lands in a cache mount under its SHA-256. docker/fetch-verified.sh tries the
@@ -239,7 +227,7 @@ USER 10001:10001
 # ---- Native library check: readelf on the build platform, no emulation ---------------------
 # Every DT_NEEDED of every LibreOffice and PDFium object must resolve to a file in the target
 # rootfs, unless docker/libreoffice/ldd-allow.txt lists that exact "<object>: <library>" pair.
-# runtime and engine-check copy a marker from here, so BuildKit always runs it.
+# runtime copies a marker from here, so BuildKit always runs it.
 FROM --platform=$BUILDPLATFORM ${RUNTIME_BASE} AS lib-check
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ARG TARGETARCH
@@ -309,11 +297,6 @@ ENV HOME=/home/convertd \
     CARGO_HOME=/home/convertd/.cargo
 USER 10001:10001
 WORKDIR /src
-
-# ---- Engine check (plan steps 2-4 only) -----------------------------------------------------
-FROM runtime-base AS engine-check
-COPY --from=lib-check /lib-check.ok /opt/convertd/lib-check.ok
-COPY --from=spike-build /out/ /usr/local/bin/
 
 # ---- The service image -----------------------------------------------------------------------
 FROM runtime-base AS runtime
