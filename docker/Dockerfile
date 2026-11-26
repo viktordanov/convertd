@@ -188,6 +188,10 @@ ARG FONTS_CJK=0
 # What dpkg never unpacks. docs: documentation, man pages, message catalogs (product only).
 # fonts: the Noto subset. libreoffice: the LibreOffice parts headless never loads. Both are in
 # product and dev, so both images see the same families and the same LibreOffice.
+# COPY --chmod also gives that mode to any parent folder it creates, so a 0644 file would make
+# /etc/convertd and /etc/fonts/conf.d untraversable (fontconfig is not installed yet here). The
+# folders are created first, with 0755; COPY leaves an existing folder alone.
+RUN mkdir -p -m 0755 /etc/convertd /etc/fonts/conf.d /opt/convertd
 COPY --chmod=0644 docker/dpkg/docs.cfg /etc/dpkg/dpkg.cfg.d/90-rs-convert-docs
 COPY --chmod=0644 docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
 COPY --chmod=0644 docker/dpkg/libreoffice.cfg /etc/dpkg/dpkg.cfg.d/92-rs-convert-libreoffice
@@ -282,6 +286,10 @@ ARG LO_BUILD
 ARG PDFIUM_BUILD
 ARG RUST_VERSION
 ARG FONTS_CJK=0
+# COPY --chmod also gives that mode to any parent folder it creates, so a 0644 file would make
+# /etc/convertd and /etc/fonts/conf.d untraversable (fontconfig is not installed yet here). The
+# folders are created first, with 0755; COPY leaves an existing folder alone.
+RUN mkdir -p -m 0755 /etc/convertd /etc/fonts/conf.d /opt/convertd
 # The font and LibreOffice excludes only: the docs/locale excludes would fight locale-gen here.
 COPY --chmod=0644 docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
 COPY --chmod=0644 docker/dpkg/libreoffice.cfg /etc/dpkg/dpkg.cfg.d/92-rs-convert-libreoffice
