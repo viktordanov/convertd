@@ -130,7 +130,7 @@ The pod security settings limit what a worker can do on the node: a non-root use
 
 convertd serves Prometheus metrics on `GET /metrics` on the `http` port, without the API key. `deploy/observability/` holds two examples that read them:
 
-- **`grafana-dashboard.json`**: a Grafana dashboard. It shows the `/v1/convert` requests by status and error code, and p50 and p99 per stage. It also shows the queue, workers and restarts of each pool, supervisor memory, the disk budget and the warnings.
+- **`grafana-dashboard.json`**: a Grafana dashboard, made by `tools/observability/gen_dashboard.py`. It shows the `/v1/convert` requests by status and error code, and p50 and p99 per stage. It also shows the queue, workers and restarts of each pool, supervisor memory, the disk budget and the warnings.
 - **`prometheusrule.yaml`**: a `PrometheusRule` for the Prometheus Operator with four alerts. They fire on 429, on 422 `LIMIT_EXCEEDED`, on a queue at its capacity and on a disk budget that is 90 % reserved. A comment above each alert gives the reason for its threshold.
 
 The scrape configuration belongs to the deployment, not to this repository. With the Prometheus Operator, a `ServiceMonitor` like this one selects the Service of the base:
@@ -171,6 +171,8 @@ If Prometheus runs in another namespace, its `serviceMonitorNamespaceSelector` a
 
 ### Dashboard
 
+To change the dashboard, edit `tools/observability/gen_dashboard.py`, not the JSON. Then run `python3 -I tools/observability/gen_dashboard.py deploy/observability/grafana-dashboard.json` and commit both files.
+
 The dashboard computes rates over `$__rate_interval`, which is at least four scrape intervals. Each query takes its minimum step from the `scrape_interval` variable, and Grafana uses that step as the scrape interval. With 15 s, a rate window can be as short as 1 minute. The dashboard tells processes apart by their `namespace` and `pod` labels, which a `ServiceMonitor` adds. A scrape without them merges the counters of all processes.
 
 The "Conversions in flight" and "Time in each stage" panels estimate the concurrency from the stage time sums. Thus a burst between two scrapes still counts. Each request adds its time when it finishes, so the estimate is exact only under steady load. An upload that fails records no stage time. A stage and family series starts at its first request, so the first burst of a new pod or family has no rate.
@@ -195,7 +197,7 @@ Plan 003 step 8 (Kubernetes) and step 10 (gVisor) do the live checks, on the clu
 
 - **Render:** `kubectl kustomize` (v1.33.9) renders the base and the `gvisor` overlay.
 - **Schema:** `kubeconform -strict` (v0.8.0) passed for all 7 resources on 2026-11-26, after the base got `TIMEOUT_DEFAULT_SECONDS`.
-- **Observability examples:** on 2026-11-26, by hand, the dashboard JSON and the rules YAML parsed, and all 50 queries parsed with the PromQL parser of Prometheus v0.54.1. No Grafana import, `promtool` check or Prometheus Operator load has run.
+- **Observability examples:** on 2026-11-26, by hand, the dashboard JSON and the rules YAML parsed, and all 50 queries parsed with the PromQL parser of Prometheus v0.54.1. No Grafana import, `promtool` check or Prometheus Operator load has run. Two Grafana behaviors are not checked live: a query Min step replaces the scrape interval of the data source in `$__rate_interval`, and Min step accepts the `$scrape_interval` variable.
 - **Not done:** a live deployment and a gVisor run. Also not checked are the native `preStop` sleep on the Kubernetes version of the owner and egress denial by the CNI of the cluster. Time to ready and worker memory under gVisor are not measured.
 
 A passing render and schema check proves that the files are valid Kubernetes objects. It does not prove that the probes, limits or network policy behave as intended on a real cluster.
