@@ -65,6 +65,21 @@ mod measured {
     const BOUNDARY: &str = "rss-linux-boundary";
     const MB: u64 = 1_000_000;
 
+    /// The measured server: killed and reaped when the test ends, also when
+    /// it fails, so its pools never outlive it.
+    struct Server(std::process::Child);
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test runs the binary directly; no supervisor reaper exists here"
+    )]
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
     fn rss_bytes(pid: u32) -> u64 {
         let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
         vm_rss_kib(&status).unwrap() * 1024
@@ -240,16 +255,18 @@ mod measured {
             .env("PORT", port.to_string())
             .env("API_KEY", KEY)
             .env("TMP_DIR", &tmp)
-            .env("BUILD_INFO_PATH", "/nonexistent")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         match engines {
             Engines::Fake => {
-                command.env("TEST_ENGINE", "fake");
+                command
+                    .env("TEST_ENGINE", "fake")
+                    .env("BUILD_INFO_PATH", "/nonexistent");
             }
             Engines::Real => {
                 // The engine paths and the PDFium build check, as the image
-                // sets them; one worker in each pool.
+                // sets them, and the image's build-info.json at its default
+                // path; one worker in each pool.
                 for name in [
                     "LO_PROGRAM_DIR",
                     "PDFIUM_LIB_DIR",
@@ -266,27 +283,24 @@ mod measured {
                     .env("RENDER_WORKERS", "1");
             }
         }
-        let mut child = command.spawn().unwrap();
-        let pid = child.id();
+        // The allocator setting of plan 001's glibc comparison, when given.
+        if let Some(arenas) = std::env::var_os("MALLOC_ARENA_MAX") {
+            command.env("MALLOC_ARENA_MAX", arenas);
+        }
+        let server = Server(command.spawn().unwrap());
+        let pid = server.0.id();
         let deadline = Instant::now() + Duration::from_secs(60);
         while !ready(port) {
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("the server never became ready");
-            }
+            assert!(Instant::now() < deadline, "the server never became ready");
             std::thread::sleep(Duration::from_millis(50));
         }
         std::thread::sleep(Duration::from_secs(2));
         let first = rss_bytes(pid);
 
         // Rounds of 1 000 mixed requests: pdf, images and bundle; 15 KB to
-        // 20 MB. The first round warms the supervisor: it faults in the code
-        // of the request paths and the malloc arenas of the runtime threads
-        // (7.3 MB after start, 13 to 16 MB after each round, in the dev
-        // image). Two checks: plan 001's target, the first round against
-        // the reading after start, and a plateau check, the last round
-        // against the first, which shows a leak. RSS_ROUNDS sets the count,
+        // 20 MB. Two checks: plan 001's target, the first round against the
+        // reading after start, and a plateau check, the last round against
+        // the first, which a steady leak fails. RSS_ROUNDS sets the count,
         // at least 2.
         let files = [15_000, 1 << 20, 20 << 20].map(pdf_of_size);
         let outputs = ["pdf", "images", "bundle"];
@@ -299,11 +313,7 @@ mod measured {
         for round in 0..rounds {
             for i in 0..1000 {
                 let status = convert(port, &files[i % 3], outputs[(i / 3) % 3]);
-                if status != 200 {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!("round {round}, request {i} gave {status}");
-                }
+                assert_eq!(status, 200, "round {round}, request {i}");
             }
             // Blocking threads exit after 10 s of idle.
             std::thread::sleep(Duration::from_secs(15));
@@ -353,8 +363,7 @@ mod measured {
             }
         }
         let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).unwrap();
-        let _ = child.kill();
-        let _ = child.wait();
+        drop(server);
 
         eprintln!(
             "{engines:?} engines: VmRSS after start {:.1} MB; after each round of 1 000 requests \
