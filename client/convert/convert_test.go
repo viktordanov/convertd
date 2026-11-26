@@ -146,6 +146,13 @@ func manifestEntry(t *testing.T, manifest map[string]any) entry {
 // tarZst builds a tar archive in one zstd frame, as the service streams it.
 func tarZst(t *testing.T, entries ...entry) []byte {
 	t.Helper()
+	return tarZstWithTail(t, nil, entries...)
+}
+
+// tarZstWithTail is tarZst with tail written after the tar end-of-archive
+// marker, inside the same zstd frame.
+func tarZstWithTail(t *testing.T, tail []byte, entries ...entry) []byte {
+	t.Helper()
 	var buf bytes.Buffer
 	zw, err := zstd.NewWriter(&buf, zstd.WithEncoderLevel(zstd.SpeedFastest))
 	if err != nil {
@@ -169,10 +176,23 @@ func tarZst(t *testing.T, entries ...entry) []byte {
 	if err := tw.Close(); err != nil {
 		t.Fatalf("tar close: %v", err)
 	}
+	if _, err := zw.Write(tail); err != nil {
+		t.Fatalf("zstd write tail: %v", err)
+	}
 	if err := zw.Close(); err != nil {
 		t.Fatalf("zstd close: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// bundleEntries are the entries of a valid bundle, as bundleArchive writes them.
+func bundleEntries(t *testing.T) []entry {
+	t.Helper()
+	return []entry{
+		manifestEntry(t, testManifest(true)),
+		{name: "document.pdf", data: []byte("%PDF-1.7")},
+		{name: "pages/0001.jpg", data: []byte("page-1")},
+	}
 }
 
 // bundleArchive builds a valid bundle (or images output when withPDF is
@@ -352,6 +372,18 @@ func TestConvertToBundle(t *testing.T) {
 	})
 }
 
+func TestBundleZeroPaddingAfterTarEnd(t *testing.T) {
+	// A tar writer may pad the archive to a whole 10240-byte record.
+	for _, n := range []int{512, 9216, 10240} {
+		c, _, _ := newFakeService(t, respondWith(tarZstWithTail(t, make([]byte, n), bundleEntries(t)...)))
+		b, err := c.ConvertToBundle(context.Background(), "a.docx", strings.NewReader("x"), convert.Options{})
+		if err != nil {
+			t.Fatalf("%d zero bytes after the tar end: %v", n, err)
+		}
+		_ = b.Close()
+	}
+}
+
 func TestConvertToImages(t *testing.T) {
 	c, got, _ := newFakeService(t, respondWithBundle(t, false))
 
@@ -408,6 +440,9 @@ func TestBundleFailures(t *testing.T) {
 		{"a page longer than its manifest size", tarZst(t, manifestEntry(t, testManifest(true)), pdf, entry{name: "pages/0001.jpg", data: []byte("page-10")}),
 			`entry "pages/0001.jpg" has 7 bytes, the manifest says 6`},
 		{"trailing data after the zstd frame", append(append([]byte{}, valid...), []byte("trailing junk")...), "failed to read the end of the archive"},
+		{"32 MiB of data after the tar end", tarZstWithTail(t, bytes.Repeat([]byte("A"), 32<<20), bundleEntries(t)...), "failed to read the end of the archive"},
+		{"one non-zero byte after the tar end", tarZstWithTail(t, []byte("x"), bundleEntries(t)...), "non-zero data follows the tar end"},
+		{"more zero padding than a tar record", tarZstWithTail(t, make([]byte, 10240+1), bundleEntries(t)...), "more than 10240 bytes follow the tar end"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name+" fails and leaves no temp directory", func(t *testing.T) {
