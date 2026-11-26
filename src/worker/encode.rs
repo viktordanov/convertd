@@ -236,10 +236,15 @@ mod tests {
             unsafe { System.dealloc(ptr, layout) }
         }
         unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-            add(new_size);
-            sub(layout.size());
             // SAFETY: as `GlobalAlloc::realloc` requires of its caller.
-            unsafe { System.realloc(ptr, layout, new_size) }
+            let grown = unsafe { System.realloc(ptr, layout, new_size) };
+            // Count only a reallocation that happened: the old block goes,
+            // the new one comes, so an in-place change is not a peak.
+            if !grown.is_null() {
+                sub(layout.size());
+                add(new_size);
+            }
+            grown
         }
     }
 
