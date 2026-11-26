@@ -188,14 +188,17 @@ fn serve() -> Result<(), String> {
             result = &mut serving => joined(result),
             () = shutdown => {
                 // Drain: readyz says draining and new conversions get 503
-                // while the platform removes the endpoint; requests in
-                // flight finish within SHUTDOWN_GRACE_SECONDS.
+                // while the platform removes the endpoint. Requests already
+                // admitted, uploads included, finish within
+                // SHUTDOWN_GRACE_SECONDS. Only then do the pools stop
+                // leasing: a request in flight still needs its later engine
+                // calls (the render after an office convert).
                 let grace = config.server.shutdown_grace;
                 server::begin_drain(&state);
-                selected.handle.drain().await;
                 if !server::wait_idle(&state, grace).await {
                     tracing::warn!(grace_seconds = grace.as_secs(), "requests still in flight after the grace period");
                 }
+                selected.handle.drain().await;
                 let _ = stop.send(());
                 // axum now stops accepting and finishes open connections.
                 match tokio::time::timeout(CLOSE_GRACE, &mut serving).await {

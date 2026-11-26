@@ -38,6 +38,9 @@ pub fn detect_file<R: Read + Seek>(file: &mut R, size: u64) -> Result<Detection,
         }
         Sniff::Unsupported(label) => return Err(DetectError::Unsupported { label }),
     };
+    if !format.accepted() {
+        return Err(DetectError::Unsupported { label: format.id() });
+    }
     Ok(Detection {
         format,
         encrypted: false,

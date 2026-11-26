@@ -37,7 +37,8 @@ use super::state::AppState;
 /// **Routing.** The file type is detected from the bytes, never from the
 /// file name or the part's content type. Office and OpenDocument files go
 /// through LibreOffice. PDFs skip conversion and go straight to rendering.
-/// Images are wrapped into a PDF with one page per image frame.
+/// Image files (PNG, JPEG, TIFF, GIF, BMP, WebP) are not accepted as
+/// input and answer 415 `UNSUPPORTED_FORMAT`.
 ///
 /// **Options.** Send them as a JSON object in the `options` part. Leave
 /// the part out to get a PDF with default settings. Unknown properties
@@ -75,7 +76,7 @@ use super::state::AppState;
                 ("Convert-Page-Count" = u32, description = "Number of pages in the resulting PDF."),
                 ("Convert-Warning-Count" = u32, description = "Number of warnings raised for this conversion. The warnings\nthemselves are in `manifest.json`; ask for `bundle` to read them.\n"),
                 ("Convert-Engine-Fingerprint" = String, description = "Identifies the exact engine build: service version, LibreOffice\nversion, PDFium version and installed font set. Use it in cache keys.\n"),
-                ("Server-Timing" = String, description = "Where the time of this request went, in the W3C Server-Timing form\n`name;dur=<milliseconds>`, comma-separated, with 3 decimals. It is\nsent on every response produced after the file type was detected,\nincluding the error responses that follow detection. It is meant for\ndiagnosis and benchmarks.\n\n| Name | Stage |\n| --- | --- |\n| `recv` | Receiving the upload. Outside `total`. |\n| `detect` | Detecting the file type. |\n| `preflight` | Scanning the source before conversion. Runs alongside `convert`. |\n| `queue` | Waiting for a free worker. |\n| `lease` | Taking the worker from its pool. |\n| `spawn` | Starting a worker on this request's path. 0 when a warm worker was used. |\n| `bind` | Loading the engine library in that worker. 0 when a warm worker was used. |\n| `convert`, `convert_engine` | Producing the PDF: wall time, then time inside the engine. |\n| `inspect`, `inspect_engine` | Reading the PDF's facts: wall time, then engine time. |\n| `probe`, `probe_engine` | The blank-page probe: wall time, then engine time. |\n| `render`, `render_engine` | Rendering page images: wall time, then engine time (the longest chunk). |\n| `verify` | The quality checks that raise warnings. |\n| `package` | Building the manifest and the bundle plan before the headers are sent. |\n| `total` | From the end of the upload to the start of the response. |\n\nStages that did not run are left out, except `spawn` and `bind`.\n"),
+                ("Server-Timing" = String, description = "Where the time of this request went, in the W3C Server-Timing form\n`name;dur=<milliseconds>`, comma-separated, with 3 decimals. It is\nsent on every response produced after the file type was detected,\nincluding the error responses that follow detection. It is meant for\ndiagnosis and benchmarks.\n\n| Name | Stage |\n| --- | --- |\n| `recv` | Receiving the upload. Outside `total`. |\n| `detect` | Detecting the file type. |\n| `preflight` | The office worker's scan of an office source, inside `convert` before the engine opens the file. Counted as overhead. |\n| `queue` | Waiting for a free worker. |\n| `lease` | Taking the worker from its pool. |\n| `spawn` | Starting a worker on this request's path. 0 when a warm worker was used. |\n| `bind` | Loading the engine library in that worker. 0 when a warm worker was used. |\n| `convert`, `convert_engine` | Producing the PDF: wall time, then time inside the engine. |\n| `inspect`, `inspect_engine` | Reading the PDF's facts: wall time, then engine time. |\n| `probe`, `probe_engine` | The blank-page probe: wall time, then engine time. |\n| `render`, `render_engine` | Rendering page images: wall time, then engine time (the longest chunk). |\n| `verify` | The quality checks that raise warnings. |\n| `package` | Building the manifest and the bundle plan before the headers are sent. |\n| `total` | From the end of the upload to the start of the response. |\n\nStages that did not run are left out, except `spawn` and `bind`.\n"),
             ),
             content(
                 (inline(Binary) = "application/pdf"),
@@ -101,11 +102,15 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
         .map(|id| id.as_str().to_owned())
         .unwrap_or_default();
     // Admission before the body is read: a 503 or 429 never reads it.
-    if state.draining.load(Ordering::Acquire) {
+    // The permit comes first and the drain flag second, so a request that
+    // the drain does not refuse holds a permit that `wait_idle` sees.
+    let permit = Arc::clone(&state.inflight).try_acquire_owned();
+    if state.draining.load(Ordering::SeqCst) {
+        drop(permit);
         metrics::request("unknown", "unknown", ErrorCode::ServiceUnavailable.as_str());
         return ApiError::unavailable("the service is shutting down").into_response();
     }
-    let Ok(permit) = Arc::clone(&state.inflight).try_acquire_owned() else {
+    let Ok(permit) = permit else {
         metrics::request("unknown", "unknown", ErrorCode::TooManyRequests.as_str());
         return ApiError::busy().into_response();
     };
@@ -240,10 +245,14 @@ async fn success(
 ) -> Response {
     let output = received.request.output;
     let prepared = match output {
-        Output::Pdf => File::open(&result.pdf)
-            .and_then(|file| Ok((file.metadata()?.len(), file)))
-            .map(|(size, file)| Prepared::Pdf { file, size })
-            .map_err(|err| ApiError::internal(format!("failed to open the result: {err}"))),
+        Output::Pdf => {
+            // A few entries: cheap enough on this thread.
+            settle(&job);
+            File::open(&result.pdf)
+                .and_then(|file| Ok((file.metadata()?.len(), file)))
+                .map(|(size, file)| Prepared::Pdf { file, size })
+                .map_err(|err| ApiError::internal(format!("failed to open the result: {err}")))
+        }
         Output::Images | Output::Bundle => {
             let manifest = ManifestInput::new(state, received, request_id, timings);
             let job = Arc::clone(&job);
@@ -359,6 +368,15 @@ impl ManifestInput {
     }
 }
 
+/// Gives back the disk reservation that the finished engine calls did not
+/// use, so a long download holds only what is on disk. On an error the
+/// whole reservation stays until the job ends, which is safe.
+fn settle(job: &JobDir) {
+    if let Err(err) = job.settle_budget() {
+        tracing::warn!(error = %err, "failed to measure the job directory; its reservation stays");
+    }
+}
+
 /// Builds the tar.zst plan: `manifest.json`, then `document.pdf` for a
 /// bundle, then `pages/NNNN.<ext>` in page order. Sizes come from `fstat`;
 /// the page paths come from the page numbers, never from the engine's file
@@ -368,6 +386,7 @@ fn plan_tar(
     input: &ManifestInput,
     result: &ConversionResult,
 ) -> Result<Prepared, ApiError> {
+    settle(job);
     let format = input.request.images.format;
     let io = |err: std::io::Error| ApiError::internal(format!("failed to plan the bundle: {err}"));
     let pages: Vec<(String, std::path::PathBuf)> = result
@@ -454,6 +473,7 @@ fn log_finished(
         render_us = s.render.map(micros),
         recv_us = timings.recv.map(micros),
         queue_us = micros(s.queue),
+        preflight_us = s.preflight.map(micros),
         convert_us = s.convert.map(micros),
         decrypt_us = s.decrypt.map(micros),
         inspect_us = s.inspect.map(micros),
@@ -493,6 +513,7 @@ fn record_metrics(
         ("receive", timings.recv),
         ("detect", timings.detect),
         ("queue", Some(s.queue)),
+        ("preflight", s.preflight),
         ("convert", s.convert),
         ("inspect", s.inspect),
         ("render", s.render),

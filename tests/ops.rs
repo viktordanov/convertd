@@ -268,9 +268,20 @@ async fn capabilities_follow_the_schema_and_build_info() {
         .iter()
         .map(|i| i["format"].as_str().unwrap())
         .collect();
-    for format in ["docx", "doc", "xls", "ppt", "pdf", "png", "webp"] {
+    for format in ["docx", "doc", "xls", "ppt", "pdf"] {
         assert!(inputs.contains(&format), "{format}");
     }
+    // Image inputs are out of v1; images remain an output.
+    for format in ["png", "jpeg", "tiff", "gif", "bmp", "webp"] {
+        assert!(!inputs.contains(&format), "{format}");
+    }
+    assert!(
+        caps["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["family"] != "image" && i["engine"] != "image")
+    );
     for input in caps["inputs"].as_array().unwrap() {
         for key in ["format", "family", "extensions", "media_types", "engine"] {
             assert!(input.get(key).is_some(), "{input}");
@@ -347,113 +358,202 @@ async fn healthcheck_exit_follows_readyz() {
     assert!(tokio::task::spawn_blocking(check).await.unwrap().is_err());
 }
 
-/// SIGTERM on the real binary: the request in flight finishes, a new one
-/// and readyz answer 503 while the drain waits, then the process exits 0.
 #[cfg(feature = "test-hooks")]
-#[test]
+/// `convertd serve` as a child process on a free loopback port, for the
+/// tests that send it a real SIGTERM.
+struct Served {
+    child: std::process::Child,
+    port: u16,
+}
+
+#[cfg(feature = "test-hooks")]
 #[allow(
     clippy::disallowed_methods,
     reason = "a test runs the binary directly; no supervisor reaper exists here"
 )]
-fn slow_sigterm_drains_then_exits() {
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
-    use std::time::Instant;
-
-    let dir = tmp("sigterm");
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_convertd"))
-        .arg("serve")
-        .env_clear()
-        .env("HOST", "127.0.0.1")
-        .env("PORT", port.to_string())
-        .env("API_KEY", KEY)
-        .env("TMP_DIR", &dir)
-        .env("TEST_ENGINE", "fake")
-        .env("SHUTDOWN_GRACE_SECONDS", "10")
-        .env("BUILD_INFO_PATH", "/nonexistent")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(Instant::now() < deadline, "the server never listened");
-        std::thread::sleep(Duration::from_millis(20));
+impl Served {
+    fn start(name: &str, env: &[(&str, &str)]) -> Self {
+        let dir = tmp(name);
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let child = std::process::Command::new(env!("CARGO_BIN_EXE_convertd"))
+            .arg("serve")
+            .env_clear()
+            .env("HOST", "127.0.0.1")
+            .env("PORT", port.to_string())
+            .env("API_KEY", KEY)
+            .env("TMP_DIR", &dir)
+            .env("SHUTDOWN_GRACE_SECONDS", "10")
+            .env("BUILD_INFO_PATH", "/nonexistent")
+            .envs(env.iter().copied())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let served = Self { child, port };
+        // Ready: at level B the pools need a moment to start their workers.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !served.get("/readyz").starts_with("HTTP/1.1 200") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the server never became ready"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        served
     }
-    let request = |file: Vec<u8>| {
-        let mut body = format!(
-            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.docx\"\r\n\r\n"
-        )
-        .into_bytes();
-        body.extend_from_slice(&file);
-        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
-        let mut out = format!(
-            "POST /v1/convert HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer {KEY}\r\nConnection: close\r\n\
-             Content-Type: multipart/form-data; boundary={BOUNDARY}\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        )
-        .into_bytes();
-        out.extend_from_slice(&body);
-        out
-    };
-    let status_of = move |bytes: &[u8]| -> u16 {
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+
+    fn connect(&self) -> std::net::TcpStream {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", self.port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .unwrap();
+        stream
+    }
+
+    /// The whole answer to a GET, or "" when nothing listens yet.
+    fn get(&self, path: &str) -> String {
+        use std::io::{Read, Write};
+        let Ok(mut stream) = std::net::TcpStream::connect(("127.0.0.1", self.port)) else {
+            return String::new();
+        };
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
-        stream.write_all(bytes).unwrap();
-        let mut answer = Vec::new();
-        let _ = stream.read_to_end(&mut answer);
-        String::from_utf8_lossy(&answer)
-            .split(' ')
-            .nth(1)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0)
-    };
-    // A DOCX whose marker makes the fake take 1.5 s.
-    let slow = {
-        let mut out = Vec::new();
-        let mut zip = zip::ZipWriter::new(Cursor::new(&mut out));
-        let stored = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
-        zip.start_file("[Content_Types].xml", stored).unwrap();
-        zip.write_all(br#"<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#).unwrap();
-        zip.start_file("word/document.xml", stored).unwrap();
-        zip.write_all(b"<w:document><w:t>FAKE:DELAY_MS=1500</w:t></w:document>")
-            .unwrap();
-        zip.finish().unwrap();
-        out
-    };
-    let in_flight = std::thread::spawn({
-        let bytes = request(slow);
-        move || status_of(&bytes)
-    });
-    std::thread::sleep(Duration::from_millis(300));
-    let pid = rustix::process::Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
-    rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
-    std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(
-        status_of(&request(PDF.to_vec())),
-        503,
-        "new work during the drain"
-    );
-    let readyz = {
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
-        stream
-            .write_all(b"GET /readyz HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n")
-            .unwrap();
+        let request = format!("GET {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n");
+        if stream.write_all(request.as_bytes()).is_err() {
+            return String::new();
+        }
         let mut answer = Vec::new();
         let _ = stream.read_to_end(&mut answer);
         String::from_utf8_lossy(&answer).into_owned()
-    };
+    }
+
+    fn sigterm(&self) {
+        let pid = rustix::process::Pid::from_raw(i32::try_from(self.child.id()).unwrap()).unwrap();
+        rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
+    }
+
+    fn wait_exit(mut self) -> std::process::ExitStatus {
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the server did not exit"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test runs the binary directly; no supervisor reaper exists here"
+)]
+impl Drop for Served {
+    fn drop(&mut self) {
+        // Only this test's own child, and only if it still runs.
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+/// A raw `POST /v1/convert`: the `options` part (if any), then the file.
+fn raw_convert(file: &[u8], options: Option<&str>) -> Vec<u8> {
+    let mut body = Vec::new();
+    if let Some(options) = options {
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"options\"\r\n\
+                 Content-Type: application/json\r\n\r\n{options}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.bin\"\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(file);
+    body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+    let mut out = format!(
+        "POST /v1/convert HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer {KEY}\r\nConnection: close\r\n\
+         Content-Type: multipart/form-data; boundary={BOUNDARY}\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    out.extend_from_slice(&body);
+    out
+}
+
+#[cfg(feature = "test-hooks")]
+/// Sends `bytes` and returns the whole answer.
+fn exchange(stream: &mut std::net::TcpStream, bytes: &[u8]) -> Vec<u8> {
+    use std::io::{Read, Write};
+    stream.write_all(bytes).unwrap();
+    let mut answer = Vec::new();
+    let _ = stream.read_to_end(&mut answer);
+    answer
+}
+
+#[cfg(feature = "test-hooks")]
+fn status_line(answer: &[u8]) -> u16 {
+    String::from_utf8_lossy(answer)
+        .split(' ')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(feature = "test-hooks")]
+/// A DOCX whose marker makes the fake office engine take 1.5 s.
+fn slow_docx() -> Vec<u8> {
+    use std::io::Write;
+    let mut out = Vec::new();
+    let mut zip = zip::ZipWriter::new(Cursor::new(&mut out));
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("[Content_Types].xml", stored).unwrap();
+    zip.write_all(br#"<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#).unwrap();
+    zip.start_file("word/document.xml", stored).unwrap();
+    zip.write_all(b"<w:document><w:t>FAKE:DELAY_MS=1500</w:t></w:document>")
+        .unwrap();
+    zip.finish().unwrap();
+    out
+}
+
+#[cfg(feature = "test-hooks")]
+/// SIGTERM on the real binary: the request in flight finishes, a new one
+/// and readyz answer 503 while the drain waits, then the process exits 0.
+#[test]
+fn slow_sigterm_drains_then_exits() {
+    let served = Served::start("sigterm", &[("TEST_ENGINE", "fake")]);
+    let in_flight = std::thread::spawn({
+        let mut stream = served.connect();
+        let bytes = raw_convert(&slow_docx(), None);
+        move || status_line(&exchange(&mut stream, &bytes))
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    served.sigterm();
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        status_line(&exchange(&mut served.connect(), &raw_convert(PDF, None))),
+        503,
+        "new work during the drain"
+    );
+    let readyz = served.get("/readyz");
     assert!(readyz.starts_with("HTTP/1.1 503"), "{readyz}");
     assert!(readyz.contains(r#""status":"draining""#), "{readyz}");
     assert_eq!(
@@ -461,13 +561,60 @@ fn slow_sigterm_drains_then_exits() {
         200,
         "the request in flight finishes"
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        assert!(Instant::now() < deadline, "the server did not exit");
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    let status = served.wait_exit();
+    assert!(status.success(), "{status:?}");
+}
+
+#[cfg(feature = "test-hooks")]
+/// Level B: the real pools around `convertd worker test`. SIGTERM lands
+/// while the office worker converts; the request still needs the render
+/// pool for inspect and render after it. A second request is still
+/// uploading when the signal arrives; its first engine call comes after.
+/// Both finish with 200 before the pools stop.
+#[test]
+fn slow_sigterm_at_level_b_finishes_office_then_render() {
+    use std::io::Write;
+    let served = Served::start(
+        "sigterm-b",
+        &[
+            ("TEST_ENGINE", "worker"),
+            ("OFFICE_WORKERS", "1"),
+            ("RENDER_WORKERS", "1"),
+        ],
+    );
+    let images = Some(r#"{"output":"images"}"#);
+    let office = std::thread::spawn({
+        let mut stream = served.connect();
+        let bytes = raw_convert(&slow_docx(), images);
+        move || exchange(&mut stream, &bytes)
+    });
+    // Half of the second upload now, the rest after the signal.
+    let mut uploading = served.connect();
+    let upload = raw_convert(PDF, images);
+    let (head, tail) = upload.split_at(upload.len() / 2);
+    uploading.write_all(head).unwrap();
+
+    std::thread::sleep(Duration::from_millis(400));
+    served.sigterm();
+    std::thread::sleep(Duration::from_millis(200));
+    let readyz = served.get("/readyz");
+    assert!(readyz.contains(r#""status":"draining""#), "{readyz}");
+    assert_eq!(
+        status_line(&exchange(&mut served.connect(), &raw_convert(PDF, None))),
+        503,
+        "new work during the drain"
+    );
+    let late = exchange(&mut uploading, tail);
+    assert_eq!(
+        status_line(&late),
+        200,
+        "{}",
+        String::from_utf8_lossy(&late)
+    );
+    let answer = office.join().unwrap();
+    let head = String::from_utf8_lossy(&answer[..answer.len().min(600)]).into_owned();
+    assert_eq!(status_line(&answer), 200, "{head}");
+    assert!(head.contains("content-type: application/zstd"), "{head}");
+    let status = served.wait_exit();
     assert!(status.success(), "{status:?}");
 }

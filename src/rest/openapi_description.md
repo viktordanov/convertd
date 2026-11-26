@@ -1,5 +1,4 @@
-Converts office documents, PDFs and images into a standard PDF and per-page
-images.
+Converts office documents and PDFs into a standard PDF and per-page images.
 
 One call does the whole job. Upload a file, say what you want back, and
 receive either the PDF itself or a tar.zst bundle holding the PDF, the page

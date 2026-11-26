@@ -12,7 +12,8 @@
 4. [Warnings](#warnings)
 5. [Lifecycle and metrics](#lifecycle-and-metrics)
 6. [Engine selection](#engine-selection)
-7. [Configuration](#configuration)
+7. [Measurement](#measurement)
+8. [Configuration](#configuration)
 
 <!-- memoria:section id="overview" files="main.rs runtime.rs" -->
 ## Process model
@@ -67,13 +68,14 @@ The dependency rule keeps the domain at the center. `domain/` uses no other modu
 `domain/engine.rs` is the seam between the two sides. The conversion service calls the `OfficeEngine` and `PdfEngine` traits. Lane 002's adapters `OfficeLok` and `PdfPdfium` in `engines/` implement them over the pools. `worker/` is the only place with `unsafe` code and engine calls. Changes to `domain/engine.rs` go through the lead.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="usage" files="detect/ole2.rs rest/server.rs rest/convert_handlers.rs rest/upload.rs rest/body.rs rest/timing.rs domain/conversion_service.rs detect/mod.rs jobs/job_dir.rs jobs/disk_budget.rs bundle/tar_zst.rs rest/serialization/manifest.rs" -->
+<!-- memoria:section id="usage" files="detect/ole2.rs rest/server.rs rest/convert_handlers.rs rest/upload.rs rest/body.rs rest/timing.rs rest/middleware/linger.rs domain/conversion_service.rs detect/mod.rs jobs/job_dir.rs jobs/disk_budget.rs bundle/tar_zst.rs rest/serialization/manifest.rs" -->
 ## Request path
 
 One `POST /v1/convert` goes through these files:
 
 ```text
 rest/server.rs                    layers, outermost first
+├── middleware/linger.rs          drain an unread body after an early answer
 ├── middleware/request_id.rs      accept or mint X-Request-ID
 ├── middleware/access_log.rs      one "http request" line
 ├── CatchPanicLayer               a panic becomes a 500
@@ -101,13 +103,17 @@ An encrypted OOXML package is an OLE2 file whose type is inside the encryption. 
 
 The upload never sits whole in memory. The handler sends the chunks of the file part through a queue of four to one blocking sink. The sink computes SHA-256 and CRC-32 while it writes, then runs detection while the file is still in the page cache.
 
+Some answers come while the client is still uploading: 401, 413, 415, 429 and 503. If the server then closed the socket with unread bytes, the kernel would send a reset. A client such as Go's `http.Transport` would then often report a broken pipe instead of the answer. So `middleware/linger.rs` wraps every request body. When a body is dropped before its end, a task reads and discards the rest after the answer is sent. The task stops at the end of the body, after 256 MiB, after 10 s, or after 2 s without data. At most 32 bodies drain at once, and the task holds no permit and no job directory.
+
 The deadline is the end of the upload plus `timeout_seconds`. The engines enforce it inside each call, and the service makes sure that it has time left between calls. The handler drops the conversion 250 ms after the deadline and answers 504 `CONVERSION_TIMEOUT`. Dropping the future cancels the engine job.
 
 For `images` and `bundle`, the response is a ustar archive in one zstd frame at level 1: `application/zstd`, named `<stem>.tar.zst`. Its entries come in this order: `manifest.json`, then `document.pdf` for a bundle, then `pages/NNNN.<ext>` in page order. Each entry is a regular file with mode 0644, mtime 0 and uid and gid 0, so the bytes depend only on the content. The sizes in the headers come from `fstat`. The compressed length is not known in advance, so the response is chunked, without `Content-Length`. The disk budget and `max_output_bytes` bound its size.
 
+Each engine call that writes reserves its cap of the disk budget first: the render reserves `max_output_bytes`, 768 MiB by default. After the last engine call, the handler measures the job directory with `fstat` and gives back the rest of the reservation. So a download that is still open holds only its files, and slow clients do not spend the budget of the next requests.
+
 The response pump is one blocking task. It reads the PDF, or writes the tar.zst, in 64 KiB chunks and sends them to the response body through a queue of four. The pump, not the body, owns the job directory and the permit. If the client stops reading for `IO_IDLE_TIMEOUT_SECONDS`, the pump stops, logs `RESPONSE_STALLED` and releases both.
 
-Every 200 carries `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers and `Server-Timing`, and a PDF also `Content-Length`. Every error after detection also carries `Server-Timing`. `rest/timing.rs` builds the header and computes the overhead and the strict overhead for the `conversion finished` log line.
+Every 200 carries `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers and `Server-Timing`, and a PDF also `Content-Length`. Every error after detection also carries `Server-Timing`. `rest/timing.rs` builds the header and computes the overhead and the strict overhead for the `conversion finished` log line. The `preflight` stage is the office worker's scan, which the worker times inside `convert`. It is not engine time, so it counts as overhead.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="warnings" files="domain/verification.rs preflight/mod.rs preflight/package.rs preflight/docx.rs preflight/pptx.rs preflight/xlsx.rs preflight/odf.rs" -->
@@ -127,12 +133,13 @@ The scanners stream each part through quick-xml under fixed caps: 4 MiB per part
 <!-- memoria:section id="lifecycle" files="main.rs rest/server.rs rest/ops_handlers.rs observability/metrics.rs" -->
 ## Lifecycle and metrics
 
-`convertd serve` creates `TMP_DIR` and removes the `job-*` directories that a crash left. On SIGTERM or SIGINT it stops in four steps:
+`convertd serve` creates `TMP_DIR` and removes the `job-*` directories that a crash left. On SIGTERM or SIGINT it stops in five steps:
 
 1. It sets the draining flag: `/readyz` answers 503 with `draining`, and new conversions answer 503 `SERVICE_UNAVAILABLE` with `Retry-After: 5`.
-2. It calls the engines' `drain`, and waits until no request holds a permit, at most `SHUTDOWN_GRACE_SECONDS`. The listener stays open during this time. With the real pools, `drain` also refuses the next engine call of a request in flight, and that request answers 503, as [Selection](engines/README.md#selection) explains.
-3. It stops axum, which stops accepting and gives open connections 2 s more.
-4. It calls the engines' `shutdown` with `SHUTDOWN_GRACE_SECONDS`, then exits 0.
+2. It waits until no request holds a permit, at most `SHUTDOWN_GRACE_SECONDS`. The listener stays open during this time. A request admitted before the signal finishes, even if its upload is still arriving, and its later engine calls still get a worker.
+3. It calls the engines' `drain`, so the pools lease no more workers.
+4. It stops axum, which stops accepting and gives open connections 2 s more.
+5. It calls the engines' `shutdown` with `SHUTDOWN_GRACE_SECONDS`, then exits 0.
 
 `/metrics` renders one process-wide Prometheus recorder in the text format. 001 records `convert_requests_total`, `convert_stage_duration_seconds`, `convert_input_bytes`, `convert_warnings_total`, `convert_verify_skipped_total`, `convert_pages_rendered_total`, `convert_responses_cut_total` and `convert_disk_budget_bytes`. On Linux it adds the supervisor's RSS, peak RSS, open descriptors and threads from `/proc/self` at each scrape. A 200 whose body stalls or aborts counts once in `convert_requests_total` with code `OK` and once in `convert_responses_cut_total`. The pools and the adapters in `engines/` record their own metrics, which [engines/README.md](engines/README.md) lists. `METRICS_ENABLED=false` makes `/metrics` answer 404.
 <!-- /memoria:section -->
@@ -142,7 +149,30 @@ The scanners stream each part through quick-xml under fixed caps: 4 MiB per part
 
 `main.rs` calls `engines::select::start` once, after it binds the listener and before it builds the application state. `TEST_ENGINE` picks the real pools, the level-B test worker or the level-A fakes. `config.rs` accepts `TEST_ENGINE` only in a build with the `test-hooks` feature. If `PDFIUM_BUILD` is not set, `convertd serve` stops with an error. [Selection](engines/README.md#selection) gives the three modes and the readiness states.
 
-Image inputs do not convert yet: the assembly answers 422 `CONVERSION_FAILED`. [Not built yet](engines/README.md#not-built-yet) lists the other parts that are missing.
+Image inputs are out of v1 (owner, 2026-11-26). Detection still names a PNG, JPEG, TIFF, GIF, BMP or WebP file by its signature. So an image is never taken for a PDF inside it. Then it answers 415 `UNSUPPORTED_FORMAT`, and `/v1/capabilities` does not list image inputs. [Not built yet](engines/README.md#not-built-yet) lists the parts of the engines that are missing.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="measurement" files="rest/timing.rs" -->
+## Measurement
+
+The crate has three targets of its own. They are 1 ms p50 of overhead, 30 MB of idle RSS, and memory per request that does not grow with the file. Three tools measure them with the level-A fakes:
+
+- `examples/overhead.rs` serves in-process and sends keep-alive requests from a raw client. It prints p50, p95 and p99 of three figures: the client time, `overhead` (`total` − `queue` − Σ `*_engine`), and 001's share (`total` − Σ engine-stage walls). Run it with `cargo run --release --example overhead -- --help`.
+- `tests/peak_heap.rs` counts the live heap with its own allocator while it uploads PDFs of 1, 16 and 100 MiB.
+- `tests/rss_linux.rs` reads `VmRSS` of `convertd serve` before and after 1 000 requests. It runs only on Linux, with `--ignored` and `--features test-hooks`.
+
+The numbers that follow come from macOS on arm64 (release build for the example, debug for the heap), measured on 2026-11-26. Linux has not been measured.
+
+| Measurement | Result |
+| --- | --- |
+| 001's share, 15 KB DOCX, engine time 30 ms | 0.15 ms p50, 0.51 ms p99 |
+| 001's share, 15 KB PDF, engine time 30 ms | 0.26 ms p50, 0.61 ms p99 |
+| `overhead`, 15 KB DOCX, engine time 0 | 0.27 ms p50, 0.45 ms p99 |
+| `overhead`, 15 KB PDF, engine time 0 | 0.15 ms p50, 0.28 ms p99 |
+| Peak heap per upload, 1 MiB / 16 MiB / 100 MiB | 3.1 MB / 3.6 to 4.1 MB / 3.6 to 4.1 MB |
+| Allocations per 15 KB `output=pdf` request | 340 |
+
+hyper reads up to about 496 KiB at a time, and up to four such chunks wait in the upload queue. A 1 MiB upload never fills the queue, so its peak is lower. With a queue of one chunk, every size peaks at 3.06 MB.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="setup" files="config.rs" -->

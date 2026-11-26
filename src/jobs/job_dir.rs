@@ -81,6 +81,20 @@ impl JobDir {
         }
     }
 
+    /// Gives back the part of this job's disk reservation that no file
+    /// uses. Call after the last engine call, when nothing writes here any
+    /// more: the reservations cover what each call may write (the render's
+    /// is `max_output_bytes`, 768 MiB by default), but the response only
+    /// needs what is on disk while it streams. Sizes come from this
+    /// process's own `fstat` of every file under the job directory, never
+    /// from an engine. Returns the bytes on disk. Blocks briefly.
+    pub fn settle_budget(&self) -> io::Result<u64> {
+        let used = disk_usage(&self.root, 2)?;
+        self.budget
+            .release(self.budget.reserved().saturating_sub(used));
+        Ok(used)
+    }
+
     /// Removes the directory now. Call on a thread that may block, such as
     /// the response pump's at its end.
     pub fn remove_now(&self) {
@@ -105,6 +119,22 @@ impl Drop for JobDir {
             Err(_) => remove_with_retry(&root),
         }
     }
+}
+
+/// The sizes of the files under `dir`, `depth` levels deep at most (the
+/// job directory and `pages/`). Symbolic links are not followed.
+fn disk_usage(dir: &Path, depth: u8) -> io::Result<u64> {
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_dir() && depth > 1 {
+            total = total.saturating_add(disk_usage(&entry.path(), depth - 1)?);
+        } else if kind.is_file() {
+            total = total.saturating_add(entry.metadata()?.len());
+        }
+    }
+    Ok(total)
 }
 
 /// `remove_dir_all`; on `ENOTEMPTY` (a killed worker's last write landed
@@ -194,6 +224,27 @@ mod tests {
         assert_eq!(budget.used(), 100);
         drop(job);
         assert!(!root.exists(), "removed inline without a runtime");
+        assert_eq!(budget.used(), 0);
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn settle_keeps_what_is_on_disk() {
+        let tmp = scratch("settle");
+        let budget = DiskBudget::new(1 << 20);
+        let job = JobDir::create(&tmp, &budget).unwrap();
+        assert!(job.budget().try_reserve(500_000));
+        std::fs::write(job.pdf_path(), vec![0u8; 1000]).unwrap();
+        std::fs::create_dir(job.pages_dir()).unwrap();
+        std::fs::write(job.pages_dir().join("0001.png"), vec![0u8; 300]).unwrap();
+        assert_eq!(job.settle_budget().unwrap(), 1300);
+        assert_eq!(job.budget().reserved(), 1300);
+        assert_eq!(budget.used(), 1300);
+        // Never more than was reserved.
+        std::fs::write(job.pdf_path(), vec![0u8; 900_000]).unwrap();
+        assert_eq!(job.settle_budget().unwrap(), 900_300);
+        assert_eq!(budget.used(), 1300);
+        drop(job);
         assert_eq!(budget.used(), 0);
         std::fs::remove_dir_all(tmp).unwrap();
     }

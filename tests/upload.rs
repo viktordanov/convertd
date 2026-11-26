@@ -404,9 +404,34 @@ fn head(content_length: usize) -> Vec<u8> {
 }
 
 /// The status of the response on `stream`, and its body.
+/// The status and body of one answer: the head, then `Content-Length`
+/// bytes. It does not wait for the close, which a lingering close delays
+/// while the server drains an unread upload.
 fn read_response(stream: &mut TcpStream) -> (u16, String) {
     let mut all = Vec::new();
-    let _ = stream.read_to_end(&mut all);
+    let mut byte = [0u8; 1];
+    while !all.ends_with(b"\r\n\r\n") {
+        match stream.read(&mut byte) {
+            Ok(1) => all.push(byte[0]),
+            _ => break,
+        }
+    }
+    let length = String::from_utf8_lossy(&all).lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())?
+    });
+    match length {
+        Some(length) => {
+            let mut body = vec![0u8; length];
+            if stream.read_exact(&mut body).is_ok() {
+                all.extend_from_slice(&body);
+            }
+        }
+        None => {
+            let _ = stream.read_to_end(&mut all);
+        }
+    }
     let text = String::from_utf8_lossy(&all).into_owned();
     let status = text
         .split(' ')

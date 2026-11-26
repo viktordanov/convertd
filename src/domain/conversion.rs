@@ -238,6 +238,10 @@ pub struct StageTimings {
     /// Inspect engine time without the probe render.
     pub inspect_engine: Option<Duration>,
     pub probe_engine: Option<Duration>,
+    /// The office worker's pre-flight scan, inside `convert`: worker time,
+    /// not engine time, so it stays out of `engine_total` and counts as
+    /// overhead. `None` for inputs without pre-flight (PDFs).
+    pub preflight: Option<Duration>,
     /// Not one of the 18 `Server-Timing` names (INTERFACES §9); logged only.
     pub decrypt: Option<Duration>,
     pub decrypt_engine: Option<Duration>,

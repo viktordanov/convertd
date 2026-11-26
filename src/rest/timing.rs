@@ -37,14 +37,15 @@ impl RequestTimings {
 
     /// `name;dur=<ms>` entries with 3 decimals, in 005 §6's order. Stages
     /// that did not run are left out; `spawn` and `bind` are always sent.
-    /// `preflight` and `probe` have no supervisor-side figure yet: the
-    /// pre-flight runs in the office worker and the probe inside inspect.
+    /// `preflight` is the office worker's scan (`EngineTiming.preflight`),
+    /// sent only for office inputs. `probe` has no wall figure of its own:
+    /// the probe runs inside inspect.
     pub fn header(&self) -> HeaderValue {
         let s = &self.stages;
         let entries: [(&str, Option<Duration>); 18] = [
             ("recv", self.recv),
             ("detect", self.detect),
-            ("preflight", None),
+            ("preflight", s.preflight),
             ("queue", Some(s.queue)),
             ("lease", Some(s.lease)),
             ("spawn", Some(s.spawn)),
