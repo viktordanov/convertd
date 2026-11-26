@@ -554,6 +554,16 @@ async fn an_owner_password_is_verified_when_given() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(body, upload, "no password: passed through unchanged");
 
+    // An empty password is no password: the original, restrictions and
+    // all, never a decrypted copy.
+    let (response, body) = send(
+        &app,
+        with_options("perms.pdf", &upload, r#"{"password":""}"#),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body, upload, "empty password: passed through unchanged");
+
     let (response, body) = send(
         &app,
         with_options("perms.pdf", &upload, r#"{"password":"wrong"}"#),
@@ -938,6 +948,36 @@ async fn a_client_that_stops_reading_releases_the_permit_after_the_idle_timeout(
     );
     app.assert_no_jobs().await;
     drop(stream);
+}
+
+/// `timeout_seconds` covers everything up to the headers. A render that
+/// returns only at the deadline lands after the service's last check but
+/// inside the backstop's grace, so the handler's check before packaging is
+/// what answers 504, not a stream.
+#[tokio::test]
+async fn slow_a_bundle_past_its_deadline_is_504_not_a_stream() {
+    let app = App::with_pdf(
+        "deadline-package",
+        &[],
+        FakePdf::new(FakeBehavior::Succeed).with_render_until_deadline(),
+    );
+    let (response, body) = send(
+        &app,
+        with_options(
+            "a.pdf",
+            &pdf("x"),
+            r#"{"output":"bundle","timeout_seconds":5}"#,
+        ),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::GATEWAY_TIMEOUT,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(error_code(&body), "CONVERSION_TIMEOUT");
+    app.assert_no_jobs().await;
 }
 
 /// A bundle whose client stops reading is cut by the pump. Over a real

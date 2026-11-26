@@ -357,6 +357,9 @@ pub struct FakePdf {
     password: Option<String>,
     /// The owner password of a `/Restricted` PDF.
     owner_password: Option<String>,
+    /// render returns only at the deadline, with success: an engine that
+    /// used up the whole budget.
+    render_until_deadline: bool,
 }
 
 impl FakePdf {
@@ -365,6 +368,7 @@ impl FakePdf {
             settings: Settings::new(behavior, false),
             password: None,
             owner_password: None,
+            render_until_deadline: false,
         }
     }
 
@@ -375,6 +379,7 @@ impl FakePdf {
             settings: Settings::new(FakeBehavior::Succeed, true),
             password: None,
             owner_password: None,
+            render_until_deadline: false,
         }
     }
 
@@ -387,6 +392,12 @@ impl FakePdf {
     /// password of an owner-only one (`/OwnerOnly`).
     pub fn with_password(mut self, password: impl Into<String>) -> Self {
         self.password = Some(password.into());
+        self
+    }
+
+    /// render succeeds, but only once the deadline has passed.
+    pub fn with_render_until_deadline(mut self) -> Self {
+        self.render_until_deadline = true;
         self
     }
 
@@ -518,8 +529,17 @@ impl PdfEngine for FakePdf {
         deadline: Instant,
     ) -> Result<Rendered, EngineError> {
         let started = Instant::now();
-        let behavior = self.settings.behavior_for(&job.pdf).await?;
-        let played = self.settings.play(behavior, deadline).await?;
+        let played = if self.render_until_deadline {
+            // Succeeds, but only once the deadline has passed.
+            tokio::time::sleep_until(deadline.into()).await;
+            Played {
+                pages: None,
+                engine: started.elapsed(),
+            }
+        } else {
+            let behavior = self.settings.behavior_for(&job.pdf).await?;
+            self.settings.play(behavior, deadline).await?
+        };
         let image = tiny_image(job.format, job.quality)?;
         let mut written = 0u64;
         let mut pages = Vec::with_capacity(job.pages.len());
