@@ -18,8 +18,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 const PREFIX: &str = "convert_";
-/// Stands for a `{__name__=...}` matcher, which the check does not support.
-const NAME_MATCHER: &str = "{__name__} matcher (write the metric name before the braces)";
+/// Stands for a metric named inside braces, `{__name__="x"}` or the quoted
+/// `{"x"}`, which the check does not support.
+const NAME_MATCHER: &str =
+    "{__name__} or {\"name\"} selector (write the metric name before the braces)";
 
 /// Every `convert_*` identifier in `text`. An identifier starts at a
 /// character that cannot continue a name, so `rs_convert_x` is not one.
@@ -77,6 +79,29 @@ fn skip_string(b: &[u8], at: usize) -> usize {
     b.len()
 }
 
+/// Whether a `{...}` group has a string where a label name goes: right
+/// after `{` or `,`. Prometheus 3 reads `{"x"}` as the metric `x`.
+fn quoted_name(group: &[u8]) -> bool {
+    let mut previous = 0u8;
+    let mut i = 0;
+    while i < group.len() {
+        match group[i] {
+            b'"' | b'\'' | b'`' => {
+                if previous == b'{' || previous == b',' {
+                    return true;
+                }
+                i = skip_string(group, i);
+                previous = b'"';
+                continue;
+            }
+            c if c.is_ascii_whitespace() => {}
+            c => previous = c,
+        }
+        i += 1;
+    }
+    false
+}
+
 /// The metric names that a PromQL expression selects: every identifier
 /// that is not a keyword, an aggregation, a function call, a label in
 /// `{...}` or `by (...)`, or part of a string, a number or a `[...]` range.
@@ -129,9 +154,10 @@ fn query_metrics(expr: &str) -> BTreeSet<String> {
             }
             b'{' => {
                 let end = skip_group(b, i, b'}');
-                // A name matcher selects a metric that the scan does not
-                // read; record a name that no scrape has, so it fails.
-                if expr[i..end].contains("__name__") {
+                // A name inside the braces selects a metric that the scan
+                // does not read; record a name that no scrape has, so it
+                // fails. A quoted name sits where a label name would be.
+                if expr[i..end].contains("__name__") || quoted_name(&b[i..end]) {
                     names.insert(NAME_MATCHER.to_owned());
                 }
                 i = end;
@@ -346,6 +372,9 @@ fn named_metrics() -> BTreeSet<String> {
 
 #[test]
 fn the_name_scan_reports_a_misspelled_metric() {
+    assert!(quoted_name(br#"{"covert_x"}"#));
+    assert!(quoted_name(br#"{pod="a", "covert_x"}"#));
+    assert!(!quoted_name(br#"{pod="a,{", code!~"x|y"}"#));
     let exposition = "# HELP x\n# TYPE convert_requests_total counter\n\
         convert_requests_total{code=\"OK\"} 1\n\
         # TYPE convert_stage_duration_seconds histogram\n\
@@ -368,6 +397,7 @@ fn the_name_scan_reports_a_misspelled_metric() {
         / ignoring(state) (covert_workers{state="max"} > 0) * 1e4
         + (sum(rate(convert_requests_total{code!="OK"}[5m])) or vector(0))
         + max_over_time(sum by (pool) (convert_workers{state="busy"})[1m:]) and on (pod) up or {__name__="covert_workers"} # office capacity
+        + {"covert_x", pod="a"}
         + convert_workers"#;
     let selected = query_metrics(query);
     assert_eq!(
