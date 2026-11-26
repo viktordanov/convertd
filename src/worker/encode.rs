@@ -100,9 +100,8 @@ impl Encoder {
                 self.png(bgra, width, height, png::Compression::Fast)?;
                 // As png's own whole-image path does for fdeflate: data that
                 // does not compress, such as noise or photos, is stored
-                // instead, so the file never grows past the raw rows.
-                let raw = (width as usize * 3 + 1) * height as usize;
-                if self.out.len() > raw {
+                // instead, so the file never grows past a stored PNG.
+                if self.out.len() > stored_png_len(width, height) {
                     self.out.clear();
                     self.png(bgra, width, height, png::Compression::NoCompression)?;
                 }
@@ -156,6 +155,16 @@ impl Encoder {
 /// The IDAT chunk size of the streamed PNG: one buffer of this size, and
 /// 12 bytes of chunk framing for each.
 const PNG_CHUNK: usize = 64 * 1024;
+
+/// The size of an RGB PNG whose rows are stored, not compressed: the
+/// signature, IHDR and IEND, the zlib stream of stored deflate blocks of
+/// at most 65 535 bytes (5 bytes of header each, 2 of zlib header, 4 of
+/// Adler-32), and 12 bytes of framing for each IDAT chunk.
+fn stored_png_len(width: u32, height: u32) -> usize {
+    let raw = (width as usize * 3 + 1) * height as usize;
+    let zlib = 2 + 4 + raw + 5 * raw.div_ceil(65_535).max(1);
+    8 + 25 + 12 + zlib + 12 * zlib.div_ceil(PNG_CHUNK)
+}
 
 /// One BGRA row into a same-width RGB row.
 fn bgra_row_to_rgb(bgra: &[u8], rgb: &mut [u8]) {
@@ -329,6 +338,8 @@ mod tests {
             ("gradient", 300, 200, gradient(300, 200)),
             ("noise", 256, 256, noise(256, 256)),
             ("white", 640, 480, bitmap(640, 480, [255, 255, 255, 255])),
+            // So small that the framing outweighs the rows.
+            ("tiny", 8, 4, bitmap(8, 4, [255, 255, 255, 255])),
         ] {
             let streamed = encoder
                 .encode(ImageFormat::Png, &bgra, w, h, 85)

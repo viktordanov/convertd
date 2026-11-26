@@ -383,10 +383,12 @@ fn render_into(
     if width <= 0 || height <= 0 {
         return Err(PdfiumError::ImageSizeOutOfBounds);
     }
-    let len = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or(PdfiumError::ImageSizeOutOfBounds)?;
+    // PdfBitmap::from_bytes takes the stride and the byte count as i32 and
+    // refuses more; refuse it here, before the buffer is reserved.
+    let len = width
+        .checked_mul(4)
+        .and_then(|stride| stride.checked_mul(height))
+        .ok_or(PdfiumError::ImageSizeOutOfBounds)? as usize;
     // Same-size pages leave the buffer as it is; a larger page grows it. A
     // size the allocator refuses is an error, as PDFium's own bitmap
     // allocation was, not an abort of the worker.
@@ -732,12 +734,17 @@ mod tests {
 
     /// PDFium bound from `PDFIUM_LIB_DIR`, as in the dev image; `None`
     /// elsewhere, and the test then passes without checking.
+    /// A library that is there but does not bind fails the test, so a
+    /// broken dev image cannot pass by skipping.
     fn bound_pdfium() -> Option<Pdfium> {
-        let dir = std::env::var_os("PDFIUM_LIB_DIR")?;
-        let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
-            &std::path::PathBuf::from(dir),
-        ))
-        .ok()?;
+        let dir = std::path::PathBuf::from(std::env::var_os("PDFIUM_LIB_DIR")?);
+        let library = Pdfium::pdfium_platform_library_name_at_path(&dir);
+        if !library.exists() {
+            eprintln!("skipped: no {} in PDFIUM_LIB_DIR", library.display());
+            return None;
+        }
+        let bindings = Pdfium::bind_to_library(&library)
+            .unwrap_or_else(|err| panic!("failed to bind {}: {err}", library.display()));
         Some(Pdfium::new(bindings))
     }
 
@@ -779,7 +786,7 @@ mod tests {
     #[test]
     fn render_into_matches_the_crate_render() {
         let Some(pdfium) = bound_pdfium() else {
-            eprintln!("skipped: PDFIUM_LIB_DIR is not set");
+            eprintln!("skipped: no PDFium");
             return;
         };
         let document = square_pages(&pdfium, 595.3, 1);
@@ -812,7 +819,7 @@ mod tests {
     fn render_peak_rss_per_page() {
         const NAME: &str = "worker::render::tests::render_peak_rss_per_page";
         let Some(pdfium) = bound_pdfium() else {
-            eprintln!("skipped: PDFIUM_LIB_DIR is not set");
+            eprintln!("skipped: no PDFium");
             return;
         };
         let max_rss_kib = || {
@@ -863,7 +870,8 @@ mod tests {
                         .unwrap();
                 }
             }
-            println!("P2 {path} {}", max_rss_kib() - before);
+            // On a line of its own: libtest's "test ... " has no newline.
+            println!("\nP2 {path} {}", max_rss_kib() - before);
             return;
         }
         drop(pdfium);
@@ -881,7 +889,7 @@ mod tests {
                 .unwrap();
             let text = String::from_utf8_lossy(&out.stdout);
             text.lines()
-                .find_map(|line| line.strip_prefix(&format!("P2 {path} ")))
+                .find_map(|line| line.split(&format!("P2 {path} ")).nth(1))
                 .and_then(|kib| kib.trim().parse().ok())
                 .unwrap_or_else(|| panic!("no result from the {path} child: {text}"))
         };
