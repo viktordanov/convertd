@@ -336,6 +336,9 @@ pub struct SourceFactsWire {
     /// supervisor hold or sort more.
     #[serde(default, deserialize_with = "bounded_code_points")]
     pub text_code_points: Vec<u32>,
+    /// The same for a deck's speaker notes.
+    #[serde(default, deserialize_with = "bounded_code_points")]
+    pub notes_code_points: Vec<u32>,
     pub macros: Option<MacroFactWire>,
     pub skipped: Vec<(CheckWire, SkipReasonWire)>,
 }
