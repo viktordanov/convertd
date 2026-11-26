@@ -77,6 +77,11 @@ mod measured {
         /// SIGTERM first, so the supervisor stops its pools and reaps its
         /// workers; SIGKILL only if it has not left after 20 s.
         fn drop(&mut self) {
+            // A child that was reaped already, as after an early exit, may
+            // have a reused PID: it gets no signal.
+            if !matches!(self.0.try_wait(), Ok(None)) {
+                return;
+            }
             if let Ok(pid) = libc::pid_t::try_from(self.0.id()) {
                 // SAFETY: a signal to our own child, which is not reaped yet.
                 unsafe { libc::kill(pid, libc::SIGTERM) };
@@ -304,6 +309,12 @@ mod measured {
                     "LD_LIBRARY_PATH",
                     "BUILD_INFO_PATH",
                     "FONTS_PATH",
+                    // What the supervisor passes on to its workers
+                    // (engines::slot::PASSTHROUGH).
+                    "FONTCONFIG_FILE",
+                    "FONTCONFIG_PATH",
+                    "FONTCONFIG_SYSROOT",
+                    "TZ",
                 ] {
                     if let Some(value) = std::env::var_os(name) {
                         command.env(name, value);
