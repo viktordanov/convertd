@@ -737,9 +737,13 @@ async fn an_embedded_font_raises_no_font_warning() {
     ];
     let app = App::new("embedded", &env, FakeBehavior::Succeed);
 
-    let (response, body) = app
-        .send("e.docx", &aptos_embedded_docx(), r#"{"output":"bundle"}"#)
-        .await;
+    // AGENT-RULES 13a: every await in a test has a deadline.
+    let (response, body) = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        app.send("e.docx", &aptos_embedded_docx(), r#"{"output":"bundle"}"#),
+    )
+    .await
+    .expect("the embedded-font conversion did not answer within 30 s");
     assert_eq!(
         response.status(),
         StatusCode::OK,
