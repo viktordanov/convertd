@@ -11,7 +11,9 @@
 # /tmp is a Docker volume (disk) unless TMPFS=1, which mounts a 1536 MiB
 # tmpfs with TMP_MAX_BYTES at 1 GiB instead: tmpfs pages count against the
 # memory limit. WORKER_MAX_RSS_MB is 3/4 of KILL_MB, at most 1024. EXTRA_ENV
-# adds docker run flags, for example "-e QUEUE_WAIT_SECONDS=30".
+# adds docker run flags, for example "-e QUEUE_WAIT_SECONDS=30". The host's
+# load average at the start and the end of the load goes to OUT/load-start.txt
+# and OUT/load-end.txt, so a noisy host shows in each cell.
 set -u
 NAME=$1 OFFICE=$2 RENDER=$3 KILL=$4
 shift 5
@@ -44,8 +46,10 @@ for _ in $(seq 1 120); do
 done
 printf '{"office":%s,"render":%s,"kill_mb":%s,"max_rss_mb":%s,"tmpfs":%s,"extra":"%s"}\n' \
   "$OFFICE" "$RENDER" "$KILL" "$MAXRSS" "${TMPFS:-0}" "${EXTRA_ENV:-}" > "$OUT/cell.json"
+uptime > "$OUT/load-start.txt"
 python3 -I -u "$HERE/ingest.py" --base "http://127.0.0.1:$PORT" --container "$C" --out "$OUT" "$@" \
   > "$OUT/console.log" 2>&1
+uptime > "$OUT/load-end.txt"
 curl -s "http://127.0.0.1:$PORT/metrics" > "$OUT/metrics.txt"
 docker logs "$C" > "$OUT/docker.log" 2>&1
 docker inspect "$C" --format '{{json .State}}' > "$OUT/state.json"
