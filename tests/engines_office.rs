@@ -16,7 +16,9 @@ use convertd::domain::document::Family;
 use convertd::domain::engine::{
     Admission as DomainAdmission, EngineError, InspectJob, OfficeEngine, OfficeJob, PdfEngine,
 };
+use convertd::domain::pages::hidden_pages;
 use convertd::domain::secret::Password;
+use convertd::domain::verification::Slides;
 use convertd::engines::config::Paper;
 use convertd::engines::office_lok::OfficeLok;
 use convertd::engines::pdf_pdfium::PdfPdfium;
@@ -533,6 +535,90 @@ async fn slow_corpus_files_convert_with_their_page_counts() {
             );
             office_pool.shutdown(Duration::from_secs(5)).await;
             render_pool.shutdown(Duration::from_secs(5)).await;
+        },
+    )
+    .await;
+}
+
+/// Hidden slides with each notes mode: the page counts that
+/// `domain::pages::hidden_pages` predicts from the slide list, on the real
+/// LibreOffice. `pptx-hidden3` and `odp-hidden` have 3 slides, the 2nd
+/// hidden.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_hidden_slides_give_the_pages_the_slide_list_predicts() {
+    let (Some(lo), Some(pdfium), Some(corpus)) = (lo(), pdfium(), corpus()) else {
+        return;
+    };
+    within(
+        TEST,
+        "slow_hidden_slides_give_the_pages_the_slide_list_predicts",
+        async {
+            let dir = Scratch::new("office-hidden");
+            let office_pool = ready(office_spec(dir.path(), &lo, true)).await;
+            let render_pool = ready(render_spec(dir.path(), &pdfium)).await;
+            let office = OfficeLok::new(office_pool.clone());
+            let pdf = PdfPdfium::new(render_pool.clone());
+            let three = Slides {
+                count: 3,
+                hidden: vec![2],
+            };
+            let mut failures = Vec::new();
+            for rel in ["pptx/hidden3.pptx", "odf/hidden.odp"] {
+                for notes in [SlideNotes::None, SlideNotes::Append, SlideNotes::Only] {
+                    for include_hidden_slides in [false, true] {
+                        let export = ExportOptions {
+                            notes,
+                            include_hidden_slides,
+                            one_page_per_sheet: false,
+                        };
+                        let ext = rel.rsplit('.').next().unwrap();
+                        let n = failures.len();
+                        let source = copy_in(
+                            &corpus,
+                            rel,
+                            &dir,
+                            &format!("hidden-{notes:?}-{include_hidden_slides}-{n}.{ext}"),
+                        );
+                        let output =
+                            dir.join(&format!("hidden-{notes:?}-{include_hidden_slides}-{n}.pdf"));
+                        let mut job = job(source, output.clone(), Family::Presentation);
+                        job.export = export;
+                        let converted = office
+                            .convert(job, DomainAdmission::Queue, deadline())
+                            .await
+                            .unwrap_or_else(|err| panic!("{rel} {export:?}: {err:?}"));
+                        assert_eq!(
+                            converted.facts.and_then(|f| f.slides).as_ref(),
+                            Some(&three),
+                            "{rel}"
+                        );
+                        let count = pages_of(&pdf, &output).await;
+                        // Slides or notes pages: one per exported slide.
+                        let slides = if include_hidden_slides { 3 } else { 2 };
+                        let expected = match notes {
+                            SlideNotes::Append => 2 * slides,
+                            SlideNotes::None | SlideNotes::Only => slides,
+                        };
+                        let marks = hidden_pages(Some(&three), &export, count);
+                        eprintln!("{rel} {export:?}: {count} pages, marks {marks:?}");
+                        if count != expected {
+                            failures.push(format!(
+                                "{rel} {export:?}: {count} pages, expected {expected}"
+                            ));
+                        }
+                        if include_hidden_slides && count == expected {
+                            let want: Vec<u32> = match notes {
+                                SlideNotes::Append => vec![2, 5],
+                                _ => vec![2],
+                            };
+                            assert_eq!(marks, want, "{rel} {export:?}");
+                        }
+                    }
+                }
+            }
+            office_pool.shutdown(Duration::from_secs(5)).await;
+            render_pool.shutdown(Duration::from_secs(5)).await;
+            assert!(failures.is_empty(), "{failures:#?}");
         },
     )
     .await;
