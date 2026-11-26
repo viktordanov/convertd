@@ -644,6 +644,15 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
         }
         // Relationship elements count only as children of the root.
         let child_of_root = depth == 1;
+        // A Relationship deeper down may be live (mc:ProcessContent can make
+        // its wrapper transparent) and may be a signature origin.
+        if let Event::Start(e) | Event::Empty(e) = &event
+            && !child_of_root
+            && in_rels
+            && e.local_name().as_ref() == b"Relationship"
+        {
+            return Err(Skip::Unsupported);
+        }
         match &event {
             Event::Start(_) => depth += 1,
             Event::End(_) => depth = depth.saturating_sub(1),
