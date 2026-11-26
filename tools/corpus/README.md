@@ -1,6 +1,6 @@
 # corpus-bench
 
-`corpus-bench` is the Rust harness that checks the corpus in [`corpus/`](../../corpus/README.md) and runs it against the service. Later steps of item 005 add the measurements.
+`corpus-bench` is the Rust harness that checks the corpus in [`corpus/`](../../corpus/README.md) and runs it against the service. It does not measure the service: the benchmark of record uses `examples/overhead.rs`.
 
 The crate is not part of the `convertd` workspace. It has its own `[workspace]` table and its own `Cargo.lock`, so the root `cargo build` never builds it, and its dependencies stay out of the service's lock file. Run Cargo here, or give `--manifest-path tools/corpus/Cargo.toml`.
 
@@ -95,6 +95,8 @@ On 2026-11-26, `check` ran that way against the image `rs-convert-lead-runtime:w
 On 2026-11-26, `check` ran the same way against `rs-convert-lead-runtime:wave2b`, built from `main` at `1eafd5ee`, and all 57 cases passed, with exit status 0. The listener saw no connection, and the service log had no error and no worker restart. The full run took about 31 s of request time. The slowest cases were `xlsx-100k` at about 7 to 8 s each and `pptx-photos60` at about 4 to 5 s each. Still no positive control had run, so the canaries proved only that no connection was made.
 
 Later on 2026-11-26, with two data-descriptor cases added, `check` ran again against `rs-convert-lead-runtime:wave2b`, and all 59 cases passed. The listener control passed inside the namespace of the service. `docx-stored-descriptor` gave `422 CONVERSION_FAILED` and `docx-deflated-descriptor` gave 200 with 2 pages, as expected.
+
+`expected.json` then gained a 60th case, `pdf-text3/webp-refused`, when WebP output left the service. It expects `422 VALIDATION_ERROR`, as lane 001 answers an unknown image format. No `check` run with that case is recorded yet.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="listen" files="src/main.rs src/check/listener.rs" -->
@@ -120,19 +122,19 @@ In the throwaway image even a direct call of the Basic macro through the script 
 
 ## Later subcommands
 
-`validate`, `check` and `listen` exist at this time. The 005 plan adds these subcommands in later steps:
+`validate`, `check` and `listen` exist at this time. The 005 plan listed four more subcommands. None of them is planned now, because other tools do the work:
 
-| Subcommand | What it will do | Plan step |
+| Subcommand | What the plan wanted | Status |
 | --- | --- | --- |
-| `bench` | Runs the `overhead`, `spawn`, `formats` and `memory` suites and writes `summary.json` | 8, 9 |
-| `exec` | Times an external command for each file, such as a cold `soffice` start | 10 |
-| `soak` | Runs 10,000 conversions and samples memory, processes and the job directories | 11 |
-| `compare` | Compares two `summary.json` files against the thresholds | 8 |
+| `bench` | The `overhead`, `spawn`, `formats` and `memory` suites, with `summary.json` | Not planned. `examples/overhead.rs` made the benchmark of record |
+| `exec` | Times an external command for each file, such as a cold `soffice` start | Not planned |
+| `soak` | 10,000 conversions with samples of memory, processes and job directories | Not planned. Lane 002 runs the soak |
+| `compare` | Compares two `summary.json` files against absolute thresholds | Not planned while no `summary.json` exists |
 
-The harness will run in its own container that shares only the network namespace of the service, so that its traffic stays on loopback. The image and `run.sh` are step 6.
+In CI, `docker/corpus-check.sh` runs `check` against the image, with the harness in a container that shares the network namespace of the service.
 
 ## Results over time
 
-The plan keeps a summary of each public-corpus benchmark run in `bench/results/`, and the regression thresholds in `bench/thresholds.json`. The thresholds are absolute, such as 0.5 ms of growth in the p50 overhead, because the overhead can be near 1 to 2 ms, where a percentage is noise. `compare` will refuse two runs whose architecture, CPU count, memory or corpus hash differ. None of this exists yet, and no benchmark of the service has run.
+The benchmark of record is [`bench/results/2026-11-26-wave2b.md`](../../bench/results/2026-11-26-wave2b.md). `examples/overhead.rs` made it against `rs-convert-lead-runtime:wave2b`, and it gives `overhead` 0.883 ms at p50 for the one-page DOCX, against the 5 ms gate. That file records its conditions. A later run is compared with it by hand, because no `compare` subcommand and no `bench/thresholds.json` exist.
 
 Next: run `cargo test --locked` in `tools/corpus` before you change `validate` or `check`.

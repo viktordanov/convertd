@@ -131,7 +131,7 @@ pub struct ExpectedWarning {
 }
 
 /// The detail keys each warning code may carry (`INTERFACES.md` §13, plan 005 §5,
-/// `api/openapi.yaml` `WarningCode`).
+/// the `WarningCode` schema of `api/openapi.json`).
 pub fn detail_keys(code: &str) -> &'static [&'static str] {
     match code {
         "FONT_SUBSTITUTED" => &["requested", "substitute", "substitute_source"],

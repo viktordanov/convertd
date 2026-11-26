@@ -41,7 +41,7 @@ pub struct Observed {
     pub timed_out: bool,
 }
 
-/// The parts of `manifest.json` that the expectations use (api/openapi.yaml `Manifest`).
+/// The parts of `manifest.json` that the expectations use (the `Manifest` schema of `api/openapi.json`).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Manifest {
     pub page_count: u32,

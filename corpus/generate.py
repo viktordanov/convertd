@@ -412,7 +412,7 @@ def pptx_aptos_theme(_ctx):
 
 
 def photo_jpeg(index, width, height, seed):
-    """A smooth gradient with seeded noise: the hard case for PNG and lossless WebP."""
+    """A smooth gradient with seeded noise: the hard case for PNG."""
     rng = random.Random(seed * 1000 + index)
     img = Image.radial_gradient("L").resize((width, height)).convert("RGB")
     noise = Image.frombytes("L", (width, height), rng.randbytes(width * height)).convert("RGB")
