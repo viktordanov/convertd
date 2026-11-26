@@ -244,22 +244,17 @@ fn dashboard_queries(value: &serde_json::Value, out: &mut Vec<String>) {
 /// escapes would need a YAML parser, and a block scalar needs none.
 fn rule_queries(yaml: &str) -> Vec<String> {
     let lines: Vec<&str> = yaml.lines().collect();
-    // Every `expr` key in any YAML form, such as a flow mapping
-    // `{alert: A, expr: x}`, which the line scan below does not read.
-    let keys = lines
-        .iter()
-        .map(|line| line.split_once('#').map_or(*line, |(code, _)| code))
-        .map(|code| {
-            code.match_indices("expr")
-                .filter(|(at, _)| {
-                    let before = code[..*at].chars().next_back();
-                    let after = code[at + 4..].trim_start();
-                    !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-                        && after.starts_with(':')
-                })
-                .count()
+    // The word `expr` anywhere, comments included: every rule key in any
+    // YAML form (`"expr":`, a flow mapping) counts, so a form that the line
+    // scan below does not read fails the test instead of escaping it.
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let keys = yaml
+        .match_indices("expr")
+        .filter(|(at, _)| {
+            !yaml[..*at].chars().next_back().is_some_and(is_word)
+                && !yaml[at + 4..].chars().next().is_some_and(is_word)
         })
-        .sum::<usize>();
+        .count();
     let mut out = Vec::new();
     for (n, line) in lines.iter().enumerate() {
         // The key's own indent: `- expr:` opens a list item at the dash.
@@ -291,7 +286,7 @@ fn rule_queries(yaml: &str) -> Vec<String> {
     assert_eq!(
         out.len(),
         keys,
-        "write each expr as its own `expr:` line in block style"
+        "write each expr as its own `expr:` line in block style, and use the word expr nowhere else"
     );
     out
 }
@@ -419,6 +414,12 @@ fn the_query_extractors_find_every_query() {
 #[should_panic(expected = "in block style")]
 fn a_flow_style_rule_is_refused() {
     rule_queries("  - alert: A\n    expr: up\n  - {alert: B, expr: covert_workers == 0}\n");
+}
+
+#[test]
+#[should_panic(expected = "in block style")]
+fn a_quoted_rule_key_is_refused() {
+    rule_queries("  - alert: A\n    expr: up\n  - alert: B\n    \"expr\": covert_workers > 0\n");
 }
 
 #[test]
