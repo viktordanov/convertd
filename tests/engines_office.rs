@@ -698,6 +698,76 @@ async fn a_full_disk_gives_disk_full() {
     .await;
 }
 
+/// The first page of each source, `(width, height)` in points rounded,
+/// converted by an office pool for each paper: A4 first, then Letter.
+async fn first_pages(
+    lo: &Path,
+    pdfium: &Path,
+    scratch: &str,
+    sources: &[(&str, Vec<u8>, Family)],
+) -> Vec<Vec<(u32, u32)>> {
+    let dir = Scratch::new(scratch);
+    let render_pool = ready(render_spec(dir.path(), pdfium)).await;
+    let pdf = PdfPdfium::new(render_pool.clone());
+    let mut sizes = Vec::new();
+    for (paper, name) in [(Paper::A4, "a4"), (Paper::Letter, "letter")] {
+        let mut spec = office_spec(&dir.join(name), lo, false);
+        spec.name = if name == "a4" {
+            "office-a4"
+        } else {
+            "office-letter"
+        };
+        spec.env = WorkerEnv::from_vars(std::env::vars_os(), paper).with_path_prefix(lo);
+        let pool = ready(spec).await;
+        let mut per_paper = Vec::new();
+        for (index, (file, bytes, family)) in sources.iter().enumerate() {
+            // A job directory of its own, as the service gives every job.
+            let job_dir = dir.join(&format!("{name}-{index}"));
+            std::fs::create_dir_all(&job_dir).unwrap();
+            let source = job_dir.join(file);
+            std::fs::write(&source, bytes).unwrap();
+            let output = job_dir.join("document.pdf");
+            OfficeLok::new(pool.clone())
+                .convert(
+                    job(source, output.clone(), *family),
+                    DomainAdmission::Queue,
+                    deadline(),
+                )
+                .await
+                .expect("converted");
+            let inspection = pdf
+                .inspect(
+                    InspectJob {
+                        pdf: output,
+                        password: None,
+                        probe_dpi: None,
+                        collect_fonts: false,
+                        probe_max_pages: u32::MAX,
+                    },
+                    DomainAdmission::Queue,
+                    deadline(),
+                )
+                .await
+                .unwrap();
+            let page = inspection.pages[0];
+            eprintln!(
+                "DEFAULT_PAPER={name} {file}: {} x {} pt",
+                page.width_pt, page.height_pt
+            );
+            per_paper.push((page.width_pt.round() as u32, page.height_pt.round() as u32));
+            // The worker's copy with page sizes is gone.
+            assert!(!job_dir.join("paper").exists(), "the copy stayed behind");
+        }
+        sizes.push(per_paper);
+        pool.shutdown(Duration::from_secs(5)).await;
+    }
+    render_pool.shutdown(Duration::from_secs(5)).await;
+    sizes
+}
+
+const A4_PT: (u32, u32) = (595, 842);
+const LETTER_PT: (u32, u32) = (612, 792);
+
 /// `DEFAULT_PAPER` reaches LibreOffice as `LC_PAPER`, and decides the page of
 /// a document that leaves the page to LibreOffice: here an XLSX without
 /// `<pageSetup>`, which keeps the default page style of Calc. LibreOffice
@@ -708,10 +778,7 @@ async fn a_full_disk_gives_disk_full() {
 /// Letter. The image keeps it empty with `docker/libreoffice/rs-convert-paper.xcd`
 /// and ships the en_GB.UTF-8 and en_US.UTF-8 locale data that `LC_PAPER` needs.
 ///
-/// A DOCX is no probe: the DOCX importer of LibreOffice 26.8.3 sets Letter
-/// for a section without `w:pgSz` and never asks the locale
-/// (`sw/source/writerfilter/dmapper/PropertyMap.cxx`, `SectionPropertyMap`).
-/// An RTF is no probe either: RTF defines Letter as its own default page size.
+/// An RTF is no probe: RTF defines Letter as its own default page size.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_paper_sets_the_page_size_of_a_sheet_without_one() {
     let (Some(lo), Some(pdfium)) = (lo(), pdfium()) else {
@@ -721,61 +788,87 @@ async fn default_paper_sets_the_page_size_of_a_sheet_without_one() {
         TEST,
         "default_paper_sets_the_page_size_of_a_sheet_without_one",
         async {
-            let dir = Scratch::new("office-paper");
-            let source = dir.join("source.xlsx");
-            std::fs::write(&source, warmup::xlsx("No page setup.")).unwrap();
-            let render_pool = ready(render_spec(dir.path(), &pdfium)).await;
-            let pdf = PdfPdfium::new(render_pool.clone());
-            let mut sizes = Vec::new();
-            for (paper, name) in [(Paper::A4, "a4"), (Paper::Letter, "letter")] {
-                let mut spec = office_spec(&dir.join(name), &lo, false);
-                spec.name = if name == "a4" {
-                    "office-a4"
-                } else {
-                    "office-letter"
-                };
-                spec.env = WorkerEnv::from_vars(std::env::vars_os(), paper).with_path_prefix(&lo);
-                let pool = ready(spec).await;
-                let output = dir.join(&format!("{name}.pdf"));
-                OfficeLok::new(pool.clone())
-                    .convert(
-                        job(source.clone(), output.clone(), Family::Spreadsheet),
-                        DomainAdmission::Queue,
-                        deadline(),
-                    )
-                    .await
-                    .expect("converted");
-                let inspection = pdf
-                    .inspect(
-                        InspectJob {
-                            pdf: output,
-                            password: None,
-                            probe_dpi: None,
-                            collect_fonts: false,
-                            probe_max_pages: u32::MAX,
-                        },
-                        DomainAdmission::Queue,
-                        deadline(),
-                    )
-                    .await
-                    .unwrap();
-                let page = inspection.pages[0];
-                eprintln!(
-                    "DEFAULT_PAPER={name}: {} x {} pt",
-                    page.width_pt, page.height_pt
-                );
-                sizes.push((page.width_pt.round() as u32, page.height_pt.round() as u32));
-                pool.shutdown(Duration::from_secs(5)).await;
-            }
-            render_pool.shutdown(Duration::from_secs(5)).await;
+            let sizes = first_pages(
+                &lo,
+                &pdfium,
+                "office-paper",
+                &[(
+                    "source.xlsx",
+                    warmup::xlsx("No page setup."),
+                    Family::Spreadsheet,
+                )],
+            )
+            .await;
             assert_eq!(
                 sizes,
-                vec![(595, 842), (612, 792)],
+                vec![vec![A4_PT], vec![LETTER_PT]],
                 "LC_PAPER did not decide the paper"
             );
         },
     )
     .await;
+}
+
+/// A DOCX whose sections name no page size follows `DEFAULT_PAPER` too. The
+/// DOCX importer of LibreOffice 26.8.3 sets Letter for a section without
+/// `w:pgSz` and never asks the locale
+/// (`sw/source/writerfilter/dmapper/PropertyMap.cxx`, `SectionPropertyMap`),
+/// so the office worker loads a copy that names the size
+/// (`worker::docx_paper`). A DOCX that names Letter keeps it on A4.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_paper_sets_the_page_size_of_a_docx_without_one() {
+    let (Some(lo), Some(pdfium)) = (lo(), pdfium()) else {
+        return;
+    };
+    within(
+        TEST,
+        "default_paper_sets_the_page_size_of_a_docx_without_one",
+        async {
+            const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+            let letter = warmup::stored_zip(&[
+                (
+                    "[Content_Types].xml",
+                    String::from_utf8(read_part(&warmup::docx("x"), "[Content_Types].xml")).unwrap(),
+                ),
+                (
+                    "_rels/.rels",
+                    String::from_utf8(read_part(&warmup::docx("x"), "_rels/.rels")).unwrap(),
+                ),
+                (
+                    "word/document.xml",
+                    format!(
+                        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="{W}"><w:body><w:p><w:r><w:t>Letter.</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document>"#
+                    ),
+                ),
+            ]);
+            let sizes = first_pages(
+                &lo,
+                &pdfium,
+                "office-docx-paper",
+                &[
+                    ("source.docx", warmup::docx("No page size."), Family::Document),
+                    ("source.docx", letter, Family::Document),
+                ],
+            )
+            .await;
+            assert_eq!(
+                sizes,
+                vec![vec![A4_PT, LETTER_PT], vec![LETTER_PT, LETTER_PT]],
+                "DEFAULT_PAPER did not decide the page of the DOCX without w:pgSz"
+            );
+        },
+    )
+    .await;
+}
+
+/// One part of a stored ZIP, for building a fixture from another.
+fn read_part(zip: &[u8], name: &str) -> Vec<u8> {
+    let mut cursor = std::io::Cursor::new(zip);
+    let entries = convertd::detect::zip_scan::list(&mut cursor, zip.len() as u64).unwrap();
+    let (_, entry) = entries.into_iter().find(|(n, _)| n == name).unwrap();
+    convertd::detect::zip_scan::read_entry(&mut cursor, &entry, 1 << 20)
+        .unwrap()
+        .unwrap()
 }
 
 /// The encrypted deck and sheet, as `corpus/expected.json` names them.
