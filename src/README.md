@@ -156,7 +156,7 @@ Image inputs are out of v1 (owner, 2026-11-26). Detection still names a PNG, JPE
 
 The crate has three targets of its own. They are 1 ms p50 of overhead, 30 MB of idle RSS, and memory per request that does not grow with the file. Three tools measure them with the level-A fakes:
 
-- `examples/overhead.rs` serves in-process and sends keep-alive requests from a raw client. It prints p50, p95 and p99 of three figures: the client time, `overhead` (`total` − `queue` − Σ `*_engine`), and 001's share (`total` − Σ engine-stage walls). Run it with `cargo run --release --example overhead -- --help`.
+- `examples/overhead.rs` sends keep-alive requests from a raw client, one at a time. It serves in-process with the fakes, or drives a running server or image with `--url`. It prints p50, p95 and p99 of every `Server-Timing` stage and of five figures: `overhead` (`total` − `queue` − Σ `*_engine`), `overhead_strict`, 001's share (`total` − Σ engine-stage walls), 002's share and the client time. Run it with `cargo run --release --example overhead -- --help`.
 - `tests/peak_heap.rs` counts the live heap with its own allocator while it uploads PDFs of 1, 16 and 100 MiB.
 - `tests/rss_linux.rs` reads `VmRSS` of `convertd serve` before and after 1 000 requests. It runs only on Linux, with `--ignored` and `--features test-hooks`.
 
@@ -172,6 +172,16 @@ The numbers that follow come from macOS on arm64 with the level-A fakes, measure
 | Allocations per 15 KB `output=pdf` request | 340 |
 
 hyper reads up to about 496 KiB at a time, and up to four such chunks wait in the upload queue. A 1 MiB upload never fills the queue, so its peak is lower. With a queue of one chunk, every size peaks at 3.06 MB.
+
+The benchmark of record ran the same example against the real image (`rs-convert-lead-runtime:wave2b`, linux/arm64) on 2026-11-26. The container had 4 of the host's 14 CPUs and 2 office and 2 render workers. It measured 6 000 warm requests per case, one at a time. The Mac ran on battery, at a load average of about 4.1 from other apps. [bench/results/2026-11-26-wave2b.md](../bench/results/2026-11-26-wave2b.md) has every stage and the conditions.
+
+| Case | `overhead` p50 / p99 | `overhead_strict` p50 / p99 | 001's share p50 |
+| --- | --- | --- | --- |
+| One-page DOCX to PDF (the 5 ms gate) | 0.883 / 1.267 ms | 1.736 / 2.372 ms | 0.020 ms |
+| PDF to PDF | 0.047 / 0.070 ms | 0.279 / 0.386 ms | 0.006 ms |
+| One-page DOCX to bundle, JPEG at 72 dpi | 1.011 / 1.637 ms | 1.876 / 2.722 ms | 0.070 ms |
+
+For a DOCX, most of `overhead` is the office worker's pre-flight scan, 0.73 ms at p50.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="setup" files="config.rs" -->

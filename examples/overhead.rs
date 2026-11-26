@@ -1,43 +1,51 @@
-//! 001's share of the request overhead, with the level-A fakes (plan 001,
-//! Verification 1).
+//! Request overhead from `Server-Timing`: 001's lane check with the
+//! level-A fakes in-process (plan 001, Verification 1), and the benchmark
+//! of record against a running server or image (INTERFACES.md §11).
 //!
 //! ```text
+//! # In-process, level-A fakes
 //! cargo run --release --example overhead -- --requests 5000 --warmup 500 --input docx
 //! cargo run --release --example overhead -- --input docx --engine-ms 30
-//! cargo run --release --example overhead -- --input pdf
 //! cargo run --release --example overhead -- --cold 200
+//!
+//! # A running server or image
+//! CONVERT_API_KEY=... cargo run --release --example overhead -- \
+//!   --url http://127.0.0.1:8080 --input corpus/out/docx/one-page.docx \
+//!   --requests 2000 --warmup 200 --samples bench/docx-pdf.jsonl
 //! ```
 //!
-//! It starts the server in-process on loopback, with `FakeOffice` and
-//! `FakePdf` sleeping `--engine-ms` per call (0 by default), and drives it
-//! with one raw keep-alive TCP client that writes the multipart from a
-//! fixed buffer. It prints p50, p95 and p99 of:
+//! One raw keep-alive TCP client sends the same multipart request again
+//! and again, one at a time, and reads each answer into a fixed buffer
+//! (`Content-Length` or chunked). Every answer must be 200. For each
+//! measured request it keeps every `Server-Timing` stage and computes:
 //!
-//! - `client`: wall time seen by the client, upload and download included;
-//! - `overhead`: 005's formula, `total − queue − Σ *_engine`, from
-//!   `Server-Timing`;
-//! - `share_001`: `total − Σ engine-stage walls` (convert, inspect,
-//!   render), which is 001's share, the figure for 001's 1 ms target.
+//! - `overhead` = `total − queue − Σ *_engine` (convert, inspect, probe,
+//!   render): the 5 ms gate;
+//! - `overhead_strict` = `overhead` + `inspect_engine` + `probe_engine`;
+//! - `share_001` = `total − Σ engine-stage walls` (convert, inspect,
+//!   render);
+//! - `share_002` = `Σ (stage wall − stage engine time) − queue` over the
+//!   same stages (probe runs inside inspect);
+//! - `client`: the wall time the client saw, upload and download included.
 //!
-//! The two differ even at `--engine-ms 0`: a fake call's wall holds more
-//! than its engine time, such as `FakeOffice`'s pre-flight scan and the
-//! PDF it writes, as a worker call does.
+//! It prints one Markdown table: count, p50, p95, p99 and mean of every
+//! stage that was sent and of the five figures. `--samples` also writes
+//! one JSON line per measured request, with every stage in microseconds;
+//! `--report a.jsonl b.jsonl ...` sends nothing and prints the table
+//! pooled over such files.
 //!
-//! The scenarios of the plan:
+//! In-process, `FakeOffice` and `FakePdf` sleep `--engine-ms` per call (0
+//! by default). The cold scenario (`--cold N`) waits 11 s before each
+//! request, so tokio has retired its blocking threads; 200 requests take
+//! about 37 minutes, so it is opt-in.
 //!
-//! 1. warm, pre-flight on the critical path: `--engine-ms 0`;
-//! 2. warm, with an engine time about the real one-page DOCX:
-//!    `--engine-ms 30`. The office worker runs pre-flight before the
-//!    engine, inside `convert`, so it counts in both scenarios;
-//! 3. cold: `--cold N` sends N requests, each after 11 s of idle, so tokio
-//!    has retired its blocking threads (`thread_keep_alive` 10 s). 200
-//!    requests take about 37 minutes, so it is opt-in.
-//!
-//! `--input` is `docx` (a generated one-page DOCX of about 15 KB), `pdf`,
-//! or a path to a file of your own.
+//! `--input` is `docx` (a generated DOCX of about 15 KB), `pdf`, or a path.
+//! `--options` is the JSON of the `options` part, for example
+//! `{"output":"bundle","images":{"format":"jpeg","dpi":72}}`.
 
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::fmt::Write as _;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,13 +56,35 @@ use convertd::engines::fake::{FakeBehavior, FakeOffice, FakePdf, FakeReadiness};
 use convertd::rest::server::router;
 use convertd::rest::state::{AppState, Engines};
 
-const KEY: &str = "overhead-key";
+const IN_PROCESS_KEY: &str = "overhead-key";
 const BOUNDARY: &str = "overhead-boundary";
 
+/// The 18 `Server-Timing` names, in the order the server sends them.
+const STAGES: [&str; 18] = [
+    "recv",
+    "detect",
+    "preflight",
+    "queue",
+    "lease",
+    "spawn",
+    "bind",
+    "convert",
+    "convert_engine",
+    "inspect",
+    "inspect_engine",
+    "probe",
+    "probe_engine",
+    "render",
+    "render_engine",
+    "verify",
+    "package",
+    "total",
+];
+
 #[derive(Parser)]
-#[command(about = "001's share of the request overhead, with the level-A fakes")]
+#[command(about = "Request overhead from Server-Timing, in-process or against a server")]
 struct Args {
-    /// Measured requests (warm scenarios).
+    /// Measured requests.
     #[arg(long, default_value_t = 5000)]
     requests: usize,
     /// Requests before the measurement starts.
@@ -63,22 +93,71 @@ struct Args {
     /// `docx`, `pdf`, or a path to a file.
     #[arg(long, default_value = "docx")]
     input: String,
-    /// Engine time of every fake call, in milliseconds.
+    /// The JSON of the `options` part; none by default.
+    #[arg(long)]
+    options: Option<String>,
+    /// A running server, `http://host:port`. Without it the server runs
+    /// in-process with the level-A fakes.
+    #[arg(long)]
+    url: Option<String>,
+    /// The API key for `--url`; defaults to `$CONVERT_API_KEY`.
+    #[arg(long)]
+    api_key: Option<String>,
+    /// In-process only: engine time of every fake call, in milliseconds.
     #[arg(long, default_value_t = 0)]
     engine_ms: u64,
     /// Run the cold scenario with this many requests instead.
     #[arg(long)]
     cold: Option<usize>,
+    /// Write one JSON line per measured request to this file.
+    #[arg(long)]
+    samples: Option<PathBuf>,
+    /// A note for the client row, such as what lies between client and
+    /// server.
+    #[arg(long)]
+    client_note: Option<String>,
+    /// Send nothing: print the table pooled over these `--samples` files.
+    #[arg(long, num_args = 1..)]
+    report: Vec<PathBuf>,
 }
 
 fn main() {
     let args = Args::parse();
+    if !args.report.is_empty() {
+        let samples: Vec<Sample> = args.report.iter().flat_map(|p| read_samples(p)).collect();
+        println!(
+            "pooled over {} files: {} requests",
+            args.report.len(),
+            samples.len()
+        );
+        println!();
+        print!("{}", table(&samples, args.client_note.as_deref()));
+        return;
+    }
     let (name, file) = input(&args.input);
-    let tmp = std::env::temp_dir().join(format!("convertd-overhead-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp).expect("create the temp directory");
-    let runtime = convertd::runtime::serve(None).expect("build the runtime");
-    let addr = runtime.block_on(start(&tmp, Duration::from_millis(args.engine_ms)));
-    let request = request(&name, &file);
+    let mut runtime = None;
+    let mut tmp = None;
+    let (addr, key) = match &args.url {
+        Some(url) => {
+            let key = args
+                .api_key
+                .clone()
+                .or_else(|| std::env::var("CONVERT_API_KEY").ok())
+                .expect("--api-key or CONVERT_API_KEY");
+            (resolve(url), key)
+        }
+        None => {
+            let dir =
+                std::env::temp_dir().join(format!("convertd-overhead-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("create the temp directory");
+            let rt = convertd::runtime::serve(None).expect("build the runtime");
+            let addr = rt.block_on(start(&dir, Duration::from_millis(args.engine_ms)));
+            runtime = Some(rt);
+            tmp = Some(dir);
+            (addr, IN_PROCESS_KEY.to_owned())
+        }
+    };
+    let request = request(&name, &file, args.options.as_deref(), &key);
 
     let mut client = Client::connect(addr);
     let samples = match args.cold {
@@ -102,22 +181,47 @@ fn main() {
             (0..args.requests).map(|_| client.run(&request)).collect()
         }
     };
-    let scenario = match (args.cold, args.engine_ms) {
-        (Some(_), _) => "cold",
-        (None, 0) => "warm, engine 0 ms",
-        (None, _) => "warm, engine > 0 ms",
+
+    let target = match &args.url {
+        Some(url) => format!("server {url}"),
+        None => format!("in-process fakes, engine {} ms", args.engine_ms),
     };
+    let scenario = if args.cold.is_some() { "cold" } else { "warm" };
     println!(
-        "{scenario}: input {name} ({} bytes), engine {} ms, {} requests",
+        "{scenario}, {target}: input {name} ({} bytes), options {}, {} measured after {} warm-up",
         file.len(),
-        args.engine_ms,
-        samples.len()
+        args.options.as_deref().unwrap_or("none"),
+        samples.len(),
+        if args.cold.is_some() { 1 } else { args.warmup },
     );
-    report("client", samples.iter().map(|s| s.client));
-    report("overhead", samples.iter().map(|s| s.overhead));
-    report("share_001", samples.iter().map(|s| s.share_001));
+    println!();
+    print!("{}", table(&samples, args.client_note.as_deref()));
+    let count = |f: &dyn Fn(&Sample) -> bool| samples.iter().filter(|s| f(s)).count();
+    println!();
+    println!(
+        "requests with a worker started on their path (spawn or bind > 0): {}; with a queue wait > 0.1 ms: {}",
+        count(&|s| s.stage("spawn") > 0.0 || s.stage("bind") > 0.0),
+        count(&|s| s.stage("queue") > 0.1),
+    );
+    if let Some(path) = &args.samples {
+        write_samples(path, &samples);
+    }
     drop(runtime);
-    let _ = std::fs::remove_dir_all(&tmp);
+    if let Some(dir) = tmp {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+fn resolve(url: &str) -> SocketAddr {
+    let host_port = url
+        .strip_prefix("http://")
+        .expect("--url must start with http://")
+        .trim_end_matches('/');
+    host_port
+        .to_socket_addrs()
+        .expect("resolve --url")
+        .next()
+        .expect("--url has an address")
 }
 
 /// The input's file name and bytes.
@@ -167,7 +271,7 @@ fn small_pdf() -> Vec<u8> {
 async fn start(tmp: &Path, engine: Duration) -> SocketAddr {
     let tmp_text = tmp.to_string_lossy().into_owned();
     let pairs = vec![
-        ("API_KEY", KEY),
+        ("API_KEY", IN_PROCESS_KEY),
         ("TMP_DIR", tmp_text.as_str()),
         ("BUILD_INFO_PATH", "/nonexistent/build-info.json"),
     ];
@@ -188,16 +292,29 @@ async fn start(tmp: &Path, engine: Duration) -> SocketAddr {
     addr
 }
 
-/// The whole request, built once.
-fn request(name: &str, file: &[u8]) -> Vec<u8> {
-    let mut body = format!(
-        "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n\r\n"
-    )
-    .into_bytes();
+/// The whole request, built once: the `options` part (if any), then the
+/// file.
+fn request(name: &str, file: &[u8], options: Option<&str>, key: &str) -> Vec<u8> {
+    let mut body = Vec::new();
+    if let Some(options) = options {
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"options\"\r\n\
+                 Content-Type: application/json\r\n\r\n{options}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(
+        format!(
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\n\r\n"
+        )
+        .as_bytes(),
+    );
     body.extend_from_slice(file);
     body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
     let mut out = format!(
-        "POST /v1/convert HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer {KEY}\r\n\
+        "POST /v1/convert HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer {key}\r\n\
          Content-Type: multipart/form-data; boundary={BOUNDARY}\r\nContent-Length: {}\r\n\r\n",
         body.len()
     )
@@ -206,15 +323,59 @@ fn request(name: &str, file: &[u8]) -> Vec<u8> {
     out
 }
 
+/// One measured request: every stage the server sent, in milliseconds.
 struct Sample {
-    client: Duration,
-    overhead: Duration,
-    share_001: Duration,
+    client: f64,
+    body_bytes: u64,
+    stages: [Option<f64>; 18],
+}
+
+impl Sample {
+    fn stage(&self, name: &str) -> f64 {
+        STAGES
+            .iter()
+            .position(|s| *s == name)
+            .and_then(|i| self.stages[i])
+            .unwrap_or(0.0)
+    }
+
+    fn overhead(&self) -> f64 {
+        let engines: f64 = [
+            "convert_engine",
+            "inspect_engine",
+            "probe_engine",
+            "render_engine",
+        ]
+        .iter()
+        .map(|s| self.stage(s))
+        .sum();
+        self.stage("total") - self.stage("queue") - engines
+    }
+
+    fn overhead_strict(&self) -> f64 {
+        self.overhead() + self.stage("inspect_engine") + self.stage("probe_engine")
+    }
+
+    fn share_001(&self) -> f64 {
+        let walls: f64 = ["convert", "inspect", "render"]
+            .iter()
+            .map(|s| self.stage(s))
+            .sum();
+        self.stage("total") - walls
+    }
+
+    fn share_002(&self) -> f64 {
+        let convert = self.stage("convert") - self.stage("convert_engine");
+        let inspect =
+            self.stage("inspect") - self.stage("inspect_engine") - self.stage("probe_engine");
+        let render = self.stage("render") - self.stage("render_engine");
+        convert + inspect + render - self.stage("queue")
+    }
 }
 
 /// One keep-alive connection that reads each answer into a fixed buffer.
 struct Client {
-    stream: TcpStream,
+    stream: BufReader<TcpStream>,
     buf: Box<[u8; 64 * 1024]>,
 }
 
@@ -222,82 +383,199 @@ impl Client {
     fn connect(addr: SocketAddr) -> Self {
         let stream = TcpStream::connect(addr).expect("connect");
         stream.set_nodelay(true).expect("nodelay");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(300)))
+            .expect("read timeout");
         Self {
-            stream,
+            stream: BufReader::with_capacity(64 * 1024, stream),
             buf: Box::new([0u8; 64 * 1024]),
+        }
+    }
+
+    fn line(&mut self) -> String {
+        let mut line = String::new();
+        let n = self.stream.read_line(&mut line).expect("read a line");
+        assert!(n > 0, "closed in the answer");
+        line
+    }
+
+    /// Reads exactly `length` bytes into the fixed buffer, discarding them.
+    fn discard(&mut self, mut length: u64) {
+        while length > 0 {
+            let want = length.min(self.buf.len() as u64) as usize;
+            let n = self
+                .stream
+                .read(&mut self.buf[..want])
+                .expect("read the body");
+            assert!(n > 0, "closed in the body");
+            length -= n as u64;
         }
     }
 
     fn run(&mut self, request: &[u8]) -> Sample {
         let started = Instant::now();
-        self.stream.write_all(request).expect("send");
-        let mut head = Vec::with_capacity(1024);
-        let mut byte = [0u8; 1];
-        while !head.ends_with(b"\r\n\r\n") {
-            let n = self.stream.read(&mut byte).expect("read the head");
-            assert_eq!(n, 1, "closed before the head");
-            head.push(byte[0]);
+        self.stream.get_mut().write_all(request).expect("send");
+        let status = self.line();
+        let mut head = Vec::new();
+        loop {
+            let line = self.line();
+            if line == "\r\n" {
+                break;
+            }
+            head.push(line.trim_end().to_owned());
         }
-        let head = String::from_utf8_lossy(&head).into_owned();
-        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
         let header = |name: &str| {
-            head.split("\r\n")
-                .find_map(|line| line.strip_prefix(name))
-                .map(str::to_owned)
+            head.iter().find_map(|line| {
+                let (n, v) = line.split_once(": ")?;
+                n.eq_ignore_ascii_case(name).then(|| v.to_owned())
+            })
         };
-        let length: usize = header("content-length: ")
-            .and_then(|v| v.parse().ok())
-            .expect("a PDF answer has Content-Length");
-        let mut read = 0;
-        while read < length {
-            let n = self.stream.read(&mut self.buf[..]).expect("read the body");
-            assert!(n > 0, "closed in the body");
-            read += n;
+        let body_bytes = if let Some(length) = header("content-length") {
+            let length: u64 = length.parse().expect("Content-Length");
+            self.discard(length);
+            length
+        } else {
+            assert_eq!(
+                header("transfer-encoding").as_deref(),
+                Some("chunked"),
+                "{status}"
+            );
+            let mut total = 0;
+            loop {
+                let size_line = self.line();
+                let size =
+                    u64::from_str_radix(size_line.trim_end().split(';').next().unwrap_or("0"), 16)
+                        .expect("chunk size");
+                if size == 0 {
+                    // Trailers, then the blank line.
+                    while self.line() != "\r\n" {}
+                    break;
+                }
+                self.discard(size);
+                assert_eq!(self.line(), "\r\n", "chunk end");
+                total += size;
+            }
+            total
+        };
+        let client = started.elapsed().as_secs_f64() * 1000.0;
+        assert!(status.starts_with("HTTP/1.1 200"), "{status} {head:?}");
+        let timing = header("server-timing").expect("Server-Timing");
+        let mut stages = [None; 18];
+        for entry in timing.split(", ") {
+            let Some((name, dur)) = entry.split_once(";dur=") else {
+                continue;
+            };
+            if let (Some(i), Ok(ms)) = (STAGES.iter().position(|s| *s == name), dur.parse()) {
+                stages[i] = Some(ms);
+            }
         }
-        let client = started.elapsed();
-        let timing = header("server-timing: ").expect("Server-Timing");
-        let stage = |name: &str| -> Duration {
-            timing
-                .split(", ")
-                .find_map(|entry| {
-                    let (entry_name, dur) = entry.split_once(";dur=")?;
-                    (entry_name == name).then(|| dur.parse::<f64>().ok())?
-                })
-                .map_or(Duration::ZERO, |ms| Duration::from_secs_f64(ms / 1000.0))
-        };
-        let total = stage("total");
-        let engines = [
-            "convert_engine",
-            "inspect_engine",
-            "probe_engine",
-            "render_engine",
-        ]
-        .into_iter()
-        .map(stage)
-        .sum::<Duration>();
-        let walls = ["convert", "inspect", "render"]
-            .into_iter()
-            .map(stage)
-            .sum::<Duration>();
         Sample {
             client,
-            overhead: total.saturating_sub(stage("queue")).saturating_sub(engines),
-            share_001: total.saturating_sub(walls),
+            body_bytes,
+            stages,
         }
     }
 }
 
-fn report(name: &str, values: impl Iterator<Item = Duration>) {
-    let mut values: Vec<Duration> = values.collect();
-    values.sort_unstable();
-    let at = |p: f64| {
-        let index = ((values.len() as f64 - 1.0) * p).round() as usize;
-        values[index].as_secs_f64() * 1000.0
-    };
-    println!(
-        "  {name:<10} p50 {:7.3} ms   p95 {:7.3} ms   p99 {:7.3} ms",
-        at(0.50),
-        at(0.95),
-        at(0.99)
+/// count, p50, p95, p99 and mean of `values`, in milliseconds.
+fn stats(mut values: Vec<f64>) -> Option<(usize, f64, f64, f64, f64)> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(f64::total_cmp);
+    let at = |p: f64| values[((values.len() as f64 - 1.0) * p).round() as usize];
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    Some((values.len(), at(0.50), at(0.95), at(0.99), mean))
+}
+
+fn table(samples: &[Sample], client_note: Option<&str>) -> String {
+    let mut out = String::from(
+        "| Figure | n | p50 ms | p95 ms | p99 ms | mean ms |\n| --- | ---: | ---: | ---: | ---: | ---: |\n",
     );
+    let mut row = |name: &str, values: Vec<f64>| {
+        if let Some((n, p50, p95, p99, mean)) = stats(values) {
+            let _ = writeln!(
+                out,
+                "| {name} | {n} | {p50:.3} | {p95:.3} | {p99:.3} | {mean:.3} |"
+            );
+        }
+    };
+    for (i, name) in STAGES.iter().enumerate() {
+        row(
+            &format!("`{name}`"),
+            samples.iter().filter_map(|s| s.stages[i]).collect(),
+        );
+    }
+    row(
+        "**overhead** (gate)",
+        samples.iter().map(Sample::overhead).collect(),
+    );
+    row(
+        "overhead_strict",
+        samples.iter().map(Sample::overhead_strict).collect(),
+    );
+    row("share_001", samples.iter().map(Sample::share_001).collect());
+    row("share_002", samples.iter().map(Sample::share_002).collect());
+    let client = match client_note {
+        Some(note) => format!("client ({note})"),
+        None => "client".to_owned(),
+    };
+    row(&client, samples.iter().map(|s| s.client).collect());
+    out
+}
+
+/// Reads a `--samples` file back.
+fn read_samples(path: &Path) -> Vec<Sample> {
+    let text = std::fs::read_to_string(path).expect("read --report file");
+    text.lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).expect("a JSON line");
+            let ms = |key: &str| {
+                value
+                    .get(key)
+                    .and_then(serde_json::Value::as_f64)
+                    .map(|us| us / 1000.0)
+            };
+            let mut stages = [None; 18];
+            for (i, name) in STAGES.iter().enumerate() {
+                stages[i] = ms(&format!("{name}_us"));
+            }
+            Sample {
+                client: ms("client_us").unwrap_or(0.0),
+                body_bytes: value
+                    .get("body_bytes")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+                stages,
+            }
+        })
+        .collect()
+}
+
+/// One JSON line per sample: every stage sent, in microseconds.
+fn write_samples(path: &Path, samples: &[Sample]) {
+    let mut out = String::new();
+    for sample in samples {
+        out.push('{');
+        let _ = write!(
+            out,
+            "\"client_us\":{},\"body_bytes\":{}",
+            (sample.client * 1000.0).round(),
+            sample.body_bytes
+        );
+        for (i, name) in STAGES.iter().enumerate() {
+            if let Some(ms) = sample.stages[i] {
+                let _ = write!(out, ",\"{name}_us\":{}", (ms * 1000.0).round());
+            }
+        }
+        let _ = write!(
+            out,
+            ",\"overhead_us\":{},\"overhead_strict_us\":{}",
+            (sample.overhead() * 1000.0).round(),
+            (sample.overhead_strict() * 1000.0).round()
+        );
+        out.push_str("}\n");
+    }
+    std::fs::write(path, out).expect("write --samples");
 }
