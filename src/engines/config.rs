@@ -16,6 +16,33 @@ pub enum Paper {
     Letter,
 }
 
+impl Paper {
+    /// The `LC_PAPER` that gives a worker this paper. LibreOffice reads it
+    /// for a document that leaves the paper to the system, such as a sheet
+    /// without a page setup.
+    pub const fn lc_paper(self) -> &'static str {
+        match self {
+            Paper::A4 => "en_GB.UTF-8",
+            Paper::Letter => "en_US.UTF-8",
+        }
+    }
+
+    /// The paper of a worker's `LC_PAPER`, as [`Paper::lc_paper`] sets it.
+    pub fn from_lc_paper(value: &str) -> Option<Self> {
+        [Paper::A4, Paper::Letter]
+            .into_iter()
+            .find(|paper| paper.lc_paper() == value)
+    }
+
+    /// Width and height in twips (1/1440 inch), as `w:pgSz` takes them.
+    pub const fn twips(self) -> (u32, u32) {
+        match self {
+            Paper::A4 => (11906, 16838),
+            Paper::Letter => (12240, 15840),
+        }
+    }
+}
+
 impl FromStr for Paper {
     type Err = &'static str;
 
