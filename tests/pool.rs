@@ -1093,56 +1093,129 @@ async fn a_sigkill_with_a_cgroup_oom_kill_is_too_big() {
     .await;
 }
 
-/// The handoff race: a replacement becomes `Ready` while its incumbent is
-/// leased, and the incumbent's lease ends while the manager places the
-/// replacement. The replacement must still become leasable, so a pool of one
-/// keeps serving. The manager's hook at the start of its critical section
-/// ends the incumbent's lease itself, so the interleaving is exact.
+type Held = Arc<Mutex<Option<convertd::engines::pool::Lease>>>;
+
+/// A pool of one named `name` whose worker has asked for a replacement, and
+/// its incumbent (generation 1) leased into `held`. The replacement takes
+/// 1.5 s to start, so the caller arms its hook before it is placed.
+async fn incumbent_leased(name: &'static str, held: &Held, recycle_after: bool) -> Pool {
+    let mut spec = spec(name, 1);
+    spec.name = name;
+    spec.max_jobs = 2;
+    spec.init.test.ready_delay_ms = 1500;
+    let pool = ready(spec).await;
+    for _ in 0..2 {
+        let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+        lease
+            .call(test_op(TestOp::Sleep { ms: 0 }), after(5000))
+            .await
+            .unwrap();
+    }
+    let mut incumbent = pool.lease(after(5000), Admission::Queue).await.unwrap();
+    assert_eq!(incumbent.worker_ref().unwrap().generation, 1);
+    if recycle_after {
+        incumbent.recycle_after();
+    }
+    *held.lock().unwrap() = Some(incumbent);
+    pool
+}
+
+/// The next lease must get the replacement (generation 2) within 3 s.
+async fn replacement_is_leasable(pool: &Pool) {
+    let lease = pool
+        .lease(after(3000), Admission::Queue)
+        .await
+        .expect("the replacement was stranded: no worker is leasable");
+    assert_eq!(lease.worker_ref().unwrap().generation, 2);
+}
+
+/// The handoff race: the incumbent's lease returns while the manager
+/// retires it and places its replacement. A thread returns the lease at the
+/// moment of the retire; the manager waits up to 300 ms for it. A handoff
+/// that is atomic under the idle lock makes the return wait for the lock,
+/// see the replacement in `waiting` and release it. A handoff that retires
+/// outside the lock lets the return see a retired worker with nobody
+/// waiting, which strands the replacement.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_lease_that_ends_while_its_replacement_is_placed_does_not_strand_it() {
+async fn a_lease_that_returns_during_the_handoff_does_not_strand_the_replacement() {
     within(
         TEST,
-        "a_lease_that_ends_while_its_replacement_is_placed_does_not_strand_it",
+        "a_lease_that_returns_during_the_handoff_does_not_strand_the_replacement",
         async {
-            let held: Arc<Mutex<Option<convertd::engines::pool::Lease>>> =
-                Arc::new(Mutex::new(None));
-            let ended = Arc::new(AtomicBool::new(false));
-            let (hook_held, hook_ended) = (Arc::clone(&held), Arc::clone(&ended));
-            convertd::engines::pool::set_place_ready_hook("race", move || {
-                if let Some(lease) = hook_held.lock().unwrap().take() {
-                    drop(lease);
-                    hook_ended.store(true, Ordering::Release);
+            let held: Held = Arc::new(Mutex::new(None));
+            let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+            let (ack_tx, ack_rx) = std::sync::mpsc::channel::<()>();
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let returner = {
+                let held = Arc::clone(&held);
+                std::thread::spawn(move || {
+                    if go_rx.recv_timeout(Duration::from_secs(30)).is_ok() {
+                        drop(held.lock().unwrap().take());
+                        let _ = ack_tx.send(());
+                        let _ = done_tx.send(());
+                    }
+                })
+            };
+            let fired = Arc::new(AtomicBool::new(false));
+            let (go_tx, ack_rx) = (Mutex::new(go_tx), Mutex::new(ack_rx));
+            let hook_fired = Arc::clone(&fired);
+            convertd::engines::pool::set_place_ready_hook("race-return", move |stage| {
+                if stage == convertd::engines::pool::PlaceStage::Retired
+                    && !hook_fired.swap(true, Ordering::AcqRel)
+                {
+                    let _ = go_tx.lock().unwrap().send(());
+                    let _ = ack_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_millis(300));
                 }
             });
-            let mut spec = spec("race", 1);
-            spec.name = "race";
-            spec.max_jobs = 2;
-            spec.init.test.ready_delay_ms = 300;
-            let pool = ready(spec).await;
-            for _ in 0..2 {
-                let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
-                lease
-                    .call(test_op(TestOp::Sleep { ms: 0 }), after(5000))
-                    .await
-                    .unwrap();
-            }
-            // The second return asked for a replacement. Hold the incumbent
-            // where the hook ends it, when the replacement is placed.
-            let incumbent = pool.lease(after(5000), Admission::Queue).await.unwrap();
-            assert_eq!(incumbent.worker_ref().unwrap().generation, 1);
-            *held.lock().unwrap() = Some(incumbent);
-            let until = Instant::now() + Duration::from_secs(5);
-            while !ended.load(Ordering::Acquire) {
-                assert!(Instant::now() < until, "the replacement never became ready");
+            let pool = incumbent_leased("race-return", &held, false).await;
+            let until = Instant::now() + Duration::from_secs(10);
+            while done_rx.try_recv().is_err() {
+                assert!(Instant::now() < until, "the lease never returned");
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            let lease = pool
-                .lease(after(3000), Admission::Queue)
-                .await
-                .expect("the replacement was stranded: no worker is leasable");
-            assert_eq!(lease.worker_ref().unwrap().generation, 2);
-            drop(lease);
-            finish(pool, "race").await;
+            assert!(fired.load(Ordering::Acquire), "the hook did not run");
+            returner.join().unwrap();
+            replacement_is_leasable(&pool).await;
+            finish(pool, "race-return").await;
+        },
+    )
+    .await;
+}
+
+/// The incumbent's lease is discarded (a failed or cancelled call) just
+/// before the manager places its replacement, while it is still only being
+/// replaced: nobody waits to be released, and its exit reaches the manager
+/// after the placement. The replacement must then take a new permit, not
+/// wait for an incumbent that is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_discarded_incumbent_does_not_strand_its_replacement() {
+    within(
+        TEST,
+        "a_discarded_incumbent_does_not_strand_its_replacement",
+        async {
+            let held: Held = Arc::new(Mutex::new(None));
+            let fired = Arc::new(AtomicBool::new(false));
+            let (hook_held, hook_fired) = (Arc::clone(&held), Arc::clone(&fired));
+            convertd::engines::pool::set_place_ready_hook("race-discard", move |stage| {
+                if stage == convertd::engines::pool::PlaceStage::BeforeLock
+                    && let Some(lease) = hook_held.lock().unwrap().take()
+                {
+                    // recycle_after: the lease ends through discard.
+                    drop(lease);
+                    hook_fired.store(true, Ordering::Release);
+                }
+            });
+            let pool = incumbent_leased("race-discard", &held, true).await;
+            let until = Instant::now() + Duration::from_secs(10);
+            while !fired.load(Ordering::Acquire) {
+                assert!(Instant::now() < until, "the hook did not run");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            replacement_is_leasable(&pool).await;
+            finish(pool, "race-discard").await;
         },
     )
     .await;

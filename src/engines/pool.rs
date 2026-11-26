@@ -89,20 +89,30 @@ pub fn read_oom_kills(path: &std::path::Path) -> Option<u64> {
         .find_map(|line| line.strip_prefix("oom_kill ")?.trim().parse().ok())
 }
 
+/// Where the manager is in `place_ready`, for a test hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceStage {
+    /// Before the idle lock is taken.
+    BeforeLock,
+    /// Under the idle lock, just after the incumbent is retired. A hook
+    /// here must not take the idle lock.
+    Retired,
+}
+
 /// Test hooks: a function the manager calls in `place_ready` for the pool of
-/// that name, at the start of its critical section (to drive a race).
+/// that name, at each [`PlaceStage`] (to drive a race).
 #[cfg(feature = "test-hooks")]
-type ReadyHook = Arc<dyn Fn() + Send + Sync>;
+type ReadyHook = Arc<dyn Fn(PlaceStage) + Send + Sync>;
 #[cfg(feature = "test-hooks")]
 static PLACE_READY_HOOKS: Mutex<Vec<(&'static str, ReadyHook)>> = Mutex::new(Vec::new());
 
 /// Registers `hook` for the pool named `pool` (test hooks only).
 #[cfg(feature = "test-hooks")]
-pub fn set_place_ready_hook(pool: &'static str, hook: impl Fn() + Send + Sync + 'static) {
+pub fn set_place_ready_hook(pool: &'static str, hook: impl Fn(PlaceStage) + Send + Sync + 'static) {
     lock(&PLACE_READY_HOOKS).push((pool, Arc::new(hook)));
 }
 
-fn place_ready_hook(_pool: &str) {
+fn place_ready_hook(_pool: &str, _stage: PlaceStage) {
     #[cfg(feature = "test-hooks")]
     {
         let hook = lock(&PLACE_READY_HOOKS)
@@ -110,7 +120,7 @@ fn place_ready_hook(_pool: &str) {
             .find(|(name, _)| *name == _pool)
             .map(|(_, hook)| Arc::clone(hook));
         if let Some(hook) = hook {
-            hook();
+            hook(_stage);
         }
     }
 }
@@ -437,12 +447,25 @@ struct Idle {
     /// can take them: each waits until a busy incumbent it replaces has
     /// left.
     waiting: Vec<Worker>,
+    /// `(slot, generation)` of every leased worker. A worker that is in
+    /// neither `workers` nor here is gone (discarded or exited).
+    leased: Vec<(u16, u32)>,
 }
 
 impl Idle {
     /// Workers a lease can take now.
     fn leasable(&self) -> usize {
         self.workers.len()
+    }
+
+    fn lease_one(&mut self, worker: &Worker) {
+        self.busy += 1;
+        self.leased.push((worker.slot, worker.generation));
+    }
+
+    fn unlease(&mut self, worker: &Worker) {
+        let id = (worker.slot, worker.generation);
+        self.leased.retain(|&leased| leased != id);
     }
 
     /// A retired incumbent left: one waiting replacement becomes leasable.
@@ -573,8 +596,8 @@ impl Pool {
             let worker = {
                 let mut idle = lock(&inner.idle);
                 let worker = idle.workers.pop();
-                if worker.is_some() {
-                    idle.busy += 1;
+                if let Some(worker) = &worker {
+                    idle.lease_one(worker);
                     inner.publish_counts(&idle);
                 }
                 worker
@@ -668,8 +691,8 @@ impl Pool {
             let worker = {
                 let mut idle = lock(&inner.idle);
                 let worker = idle.workers.pop();
-                if worker.is_some() {
-                    idle.busy += 1;
+                if let Some(worker) = &worker {
+                    idle.lease_one(worker);
                     inner.publish_counts(&idle);
                 }
                 worker
@@ -849,6 +872,7 @@ impl PoolInner {
         let release = {
             let mut idle = lock(&self.idle);
             idle.busy -= 1;
+            idle.unlease(&worker);
             let release = worker.retiring() && idle.release_one();
             self.publish_counts(&idle);
             release
@@ -866,6 +890,7 @@ impl PoolInner {
         let retire = {
             let mut idle = lock(&self.idle);
             idle.busy -= 1;
+            idle.unlease(&worker);
             let retire = if worker.retiring() {
                 // Its replacement waited for this: it gets the permit.
                 release = idle.release_one();
@@ -1371,7 +1396,7 @@ impl Manager {
     /// ended between the retire and the lock saw its worker retired with
     /// no replacement waiting yet, so nobody released the replacement.
     fn place_ready(&mut self, pool: &PoolInner, worker: Worker) {
-        place_ready_hook(self.spec.name);
+        place_ready_hook(self.spec.name, PlaceStage::BeforeLock);
         let (gone, new_permit) = {
             let mut idle = lock(&pool.idle);
             // Retire under the idle lock: `give_back` and `discard` read
@@ -1387,6 +1412,9 @@ impl Manager {
                     member.fate.retire();
                     (slot, member.generation, member.fate.reason())
                 });
+            if replaced.is_some() {
+                place_ready_hook(self.spec.name, PlaceStage::Retired);
+            }
             let (gone, new_permit) = match replaced {
                 None => {
                     idle.workers.push(worker);
@@ -1403,9 +1431,16 @@ impl Manager {
                             old.reason = reason;
                             (Some(old), false)
                         }
-                        None => {
+                        // Leased: the replacement waits for its return.
+                        None if idle.leased.contains(&(slot, generation)) => {
                             idle.waiting.push(worker);
                             (None, false)
+                        }
+                        // Gone (discarded, its exit not yet seen): nobody
+                        // will release a waiter, so it takes a new permit.
+                        None => {
+                            idle.workers.push(worker);
+                            (None, true)
                         }
                     }
                 }
