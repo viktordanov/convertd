@@ -81,7 +81,7 @@ impl Encoder {
             )));
         }
         let row_bytes = width as usize * 4;
-        if bgra.len() != row_bytes * height as usize {
+        if (row_bytes as u128) * u128::from(height) != bgra.len() as u128 {
             return Err(EncodeError::Failed(format!(
                 "the bitmap holds {} bytes, not {width} x {height} x 4",
                 bgra.len()
@@ -357,110 +357,106 @@ mod tests {
             .collect()
     }
 
-    /// A small PNG page keeps the bytes of the whole-page encoder. A large
-    /// one streams with zlib: the same pixels, channels in RGB order, but
-    /// other bytes. No page grows by more than 0.2 %: blank and text pages
-    /// come out smaller than before, and noise within a few bytes of it.
-    #[test]
-    fn png_keeps_the_pixels_and_the_size_of_the_whole_page_encoder() {
+    /// Encodes each page twice, with the new encoder and with the old one,
+    /// and gives both outputs. The second new encode reuses the buffers and
+    /// must give the same bytes.
+    fn both(pages: Vec<(&str, u32, u32, Vec<u8>)>) -> Vec<(String, Vec<u8>, Vec<u8>)> {
         let mut encoder = Encoder::new();
-        for (name, w, h, bgra, same_bytes) in [
-            ("gradient", 300, 200, gradient(300, 200), true),
-            (
-                "narrow",
-                5,
-                1000,
-                bitmap(5, 1000, [255, 255, 255, 255]),
-                true,
-            ),
-            ("tiny", 8, 4, bitmap(8, 4, [255, 255, 255, 255]), true),
-            ("noise", 256, 256, noise(256, 256), true),
-            ("large gradient", 1200, 1000, gradient(1200, 1000), false),
-            ("large noise", 1024, 1024, noise(1024, 1024), false),
-            (
-                "large white",
-                1240,
-                1754,
-                bitmap(1240, 1754, [255, 255, 255, 255]),
-                false,
-            ),
+        pages
+            .into_iter()
+            .map(|(name, w, h, bgra)| {
+                let new = encoder
+                    .encode(ImageFormat::Png, &bgra, w, h, 85)
+                    .unwrap()
+                    .to_vec();
+                let again = encoder.encode(ImageFormat::Png, &bgra, w, h, 85).unwrap();
+                assert_eq!(again, &new[..], "{name}: the second page differs");
+                let old = png_before(&bgra, w, h);
+                eprintln!(
+                    "png {name} {w}x{h}: new {} B, old {} B",
+                    new.len(),
+                    old.len()
+                );
+                (name.to_owned(), new, old)
+            })
+            .collect()
+    }
+
+    /// A page whose stored PNG is at most 1 MiB keeps the bytes of the
+    /// whole-page encoder, and its channels in RGB order.
+    #[test]
+    fn small_png_pages_keep_their_bytes() {
+        for (name, new, old) in both(vec![
+            ("gradient", 300, 200, gradient(300, 200)),
+            ("narrow", 5, 1000, bitmap(5, 1000, [255, 255, 255, 255])),
+            ("tiny", 8, 4, bitmap(8, 4, [255, 255, 255, 255])),
+            ("noise", 256, 256, noise(256, 256)),
+        ]) {
+            assert_eq!(new, old, "{name}: the bytes changed");
+        }
+        let mut encoder = Encoder::new();
+        let png = encoder
+            .encode(ImageFormat::Png, &gradient(300, 200), 300, 200, 85)
+            .unwrap();
+        let pixel = image::load_from_memory(png)
+            .unwrap()
+            .to_rgb8()
+            .get_pixel(10, 20)
+            .0;
+        assert_eq!(pixel, [200, 20, 10], "R and B swapped");
+    }
+
+    /// A larger page streams with zlib: the same pixels, channels in RGB
+    /// order, but other bytes. No page grows by more than 0.2 %: blank and
+    /// text pages come out smaller than before, and noise within a few
+    /// bytes. The pages are just past 1 MiB stored, so the test stays in
+    /// the push suite.
+    #[test]
+    fn large_png_pages_keep_their_pixels_and_their_size() {
+        for (name, new, old) in both(vec![
+            ("noise", 600, 600, noise(600, 600)),
+            ("text", 640, 600, text(640, 600)),
             // The widths at which fdeflate streaming grew by 16 % and 43 %,
             // and those at which zlib level 1 grew by 18 % and 15 %.
+            (
+                "white 597",
+                597,
+                842,
+                bitmap(597, 842, [255, 255, 255, 255]),
+            ),
+            ("white 93", 93, 3777, bitmap(93, 3777, [255, 255, 255, 255])),
             (
                 "white 400",
                 400,
                 900,
                 bitmap(400, 900, [255, 255, 255, 255]),
-                false,
             ),
             (
                 "white 600",
                 600,
                 600,
                 bitmap(600, 600, [255, 255, 255, 255]),
-                false,
             ),
-            (
-                "white 597",
-                597,
-                842,
-                bitmap(597, 842, [255, 255, 255, 255]),
-                false,
-            ),
-            (
-                "white 93",
-                93,
-                3777,
-                bitmap(93, 3777, [255, 255, 255, 255]),
-                false,
-            ),
-            ("text", 1240, 1754, text(1240, 1754), false),
-        ] {
-            let streamed = encoder
-                .encode(ImageFormat::Png, &bgra, w, h, 85)
-                .unwrap()
-                .to_vec();
-            let before = png_before(&bgra, w, h);
-            eprintln!(
-                "png {name} {w}x{h}: new {} B, whole page {} B",
-                streamed.len(),
-                before.len()
+        ]) {
+            let pixels = |png: &[u8]| image::load_from_memory(png).unwrap().to_rgb8().into_raw();
+            assert_eq!(pixels(&new), pixels(&old), "{name}: the pixels changed");
+            assert!(
+                new.len() * 1000 <= old.len() * 1002,
+                "{name}: {} B against {} B",
+                new.len(),
+                old.len()
             );
-            if same_bytes {
-                assert_eq!(streamed, before, "{name}: the bytes changed");
-            } else {
-                let pixels =
-                    |png: &[u8]| image::load_from_memory(png).unwrap().to_rgb8().into_raw();
-                assert_eq!(
-                    pixels(&streamed),
-                    pixels(&before),
-                    "{name}: the pixels changed"
-                );
-                assert!(
-                    streamed.len() * 1000 <= before.len() * 1002,
-                    "{name}: {} B against {} B",
-                    streamed.len(),
-                    before.len()
-                );
-            }
-            // A second page reuses the buffers and gives the same bytes.
-            let again = encoder.encode(ImageFormat::Png, &bgra, w, h, 85).unwrap();
-            assert_eq!(again, &streamed[..], "{name}: the second page differs");
         }
-        for (w, h) in [(300, 200), (1200, 1000)] {
-            let image = image::load_from_memory(
-                encoder
-                    .encode(ImageFormat::Png, &gradient(w, h), w, h, 85)
-                    .unwrap(),
-            )
+        let mut encoder = Encoder::new();
+        let png = encoder
+            .encode(ImageFormat::Png, &gradient(640, 600), 640, 600, 85)
+            .unwrap();
+        let pixel = image::load_from_memory(png)
             .unwrap()
-            .to_rgb8();
-            assert_eq!(
-                image.get_pixel(10, 20).0,
-                [200, 20, 10],
-                "{w}x{h}: R and B swapped"
-            );
-        }
+            .to_rgb8()
+            .get_pixel(10, 20)
+            .0;
+        assert_eq!(pixel, [200, 20, 10], "R and B swapped");
     }
 
     /// The peak heap of encoding one page, before and after this change.

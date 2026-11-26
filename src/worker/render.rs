@@ -389,12 +389,14 @@ fn render_into(
         .checked_mul(4)
         .and_then(|stride| stride.checked_mul(height))
         .ok_or(PdfiumError::ImageSizeOutOfBounds)? as usize;
-    // Same-size pages leave the buffer as it is; a larger page grows it. A
-    // size the allocator refuses is an error, as PDFium's own bitmap
-    // allocation was, not an abort of the worker.
-    if let Some(more) = len.checked_sub(bitmap.len()).filter(|&more| more > 0) {
+    // A page that fits the allocation reuses it. A larger page frees the
+    // old buffer first, so growing never holds two pages: PDFium clears
+    // the bitmap anyway. A size the allocator refuses is an error, as
+    // PDFium's own bitmap allocation was, not an abort of the worker.
+    if len > bitmap.capacity() {
+        *bitmap = Vec::new();
         bitmap
-            .try_reserve_exact(more)
+            .try_reserve_exact(len)
             .map_err(|_| PdfiumError::ImageSizeOutOfBounds)?;
     }
     bitmap.resize(len, 0);
