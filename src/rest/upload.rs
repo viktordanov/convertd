@@ -15,6 +15,7 @@
 //! parsed and validated as soon as it arrives, so a bad option fails
 //! before the upload is stored.
 
+use super::framing::{FramingBody, FramingTooLarge, framing_too_large};
 use super::throughput::{MeteredBody, MinRate, too_slow};
 use std::error::Error as StdError;
 use std::fs::{File, OpenOptions};
@@ -83,6 +84,9 @@ pub enum UploadError {
     /// No data for `IO_IDLE_TIMEOUT_SECONDS`.
     #[error("upload stalled")]
     Stalled,
+    /// The preamble or one part's headers passed `FRAMING_LIMIT`.
+    #[error("{0}")]
+    FramingTooLarge(FramingTooLarge),
     /// Less than `UPLOAD_MIN_BYTES_PER_SECOND` over one window.
     #[error("upload too slow: {observed} bytes/s, below the minimum of {min} bytes/s")]
     TooSlow { observed: u64, min: u64 },
@@ -162,9 +166,11 @@ pub async fn receive(
                 .for_field("file", max_upload)
                 .for_field("options", OPTIONS_PART_MAX),
         );
-    // The floor meters the whole body, not only the file part.
-    let body =
-        axum::body::Body::new(MeteredBody::new(request.into_body(), rate)).into_data_stream();
+    // The floor meters the whole body, not only the file part, and the
+    // framing guard bounds what multer would buffer while it looks for a
+    // boundary or the end of a part's headers.
+    let metered = axum::body::Body::new(MeteredBody::new(request.into_body(), rate));
+    let body = axum::body::Body::new(FramingBody::new(metered, &boundary)).into_data_stream();
     let mut multipart = Multipart::with_constraints(body, boundary, constraints);
 
     let mut options: Option<ConversionRequest> = None;
@@ -279,7 +285,9 @@ fn map_multer(err: multer::Error, max_upload: u64) -> UploadError {
             UploadError::TooLarge { limit: max_upload }
         }
         multer::Error::StreamReadFailed(inner) => {
-            if let Some(slow) = too_slow(inner.as_ref()) {
+            if let Some(framing) = framing_too_large(inner.as_ref()) {
+                UploadError::FramingTooLarge(framing)
+            } else if let Some(slow) = too_slow(inner.as_ref()) {
                 UploadError::TooSlow {
                     observed: slow.observed,
                     min: slow.min,

@@ -68,7 +68,7 @@ The dependency rule keeps the domain at the center. `domain/` uses no other modu
 `domain/engine.rs` is the seam between the two sides. The conversion service calls the `OfficeEngine` and `PdfEngine` traits. Lane 002's adapters `OfficeLok` and `PdfPdfium` in `engines/` implement them over the pools. `worker/` is the only place with engine calls, and it holds the `unsafe` code, with one exception. The reaper in `engines/process.rs` peeks at an exited child with `libc::waitid(P_ALL, WNOWAIT)` in two `unsafe` blocks. rustix 1.1.6 has `waitid`, but its result exposes no `si_pid`, so it cannot name the child (checked on 2026-11-26). Changes to `domain/engine.rs` go through the lead.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="usage" files="detect/ole2.rs rest/server.rs rest/convert_handlers.rs rest/upload.rs rest/body.rs rest/timing.rs rest/throughput.rs rest/middleware/linger.rs domain/conversion_service.rs detect/mod.rs jobs/job_dir.rs jobs/disk_budget.rs bundle/tar_zst.rs rest/serialization/manifest.rs" -->
+<!-- memoria:section id="usage" files="detect/ole2.rs rest/server.rs rest/convert_handlers.rs rest/upload.rs rest/body.rs rest/timing.rs rest/throughput.rs rest/framing.rs rest/middleware/linger.rs domain/conversion_service.rs detect/mod.rs jobs/job_dir.rs jobs/disk_budget.rs bundle/tar_zst.rs rest/serialization/manifest.rs" -->
 ## Request path
 
 One `POST /v1/convert` goes through these files:
@@ -102,7 +102,7 @@ An encrypted OOXML package is an OLE2 file whose type is inside the encryption. 
 
 An encrypted PDF that needs a password to open answers 422 `PASSWORD_REQUIRED` without one and `INVALID_PASSWORD` with a wrong one. With the right one, the render worker writes a decrypted copy that the rest of the request reads. A PDF with only an owner password opens without one, so with no password it passes through unchanged. If a password is given for it, the worker checks it as the owner password: right, the PDF is decrypted; wrong, 422 `INVALID_PASSWORD`. Every decrypt keeps owner restrictions that the password did not unlock. When only the user password of a restricted PDF is given, the worker writes no copy. The original encrypted PDF then goes on: it is the `pdf` output, and the render opens it with the password.
 
-The upload never sits whole in memory. The handler sends the chunks of the file part through a queue of four to one blocking sink. The sink computes SHA-256 and CRC-32 while it writes, then runs detection while the file is still in the page cache.
+The upload never sits whole in memory. multer buffers the bytes before the first boundary and each part's headers until it finds their end, so `rest/framing.rs` bounds both at 16 KiB and answers 400 past that. The handler sends the chunks of the file part through a queue of four to one blocking sink. The sink computes SHA-256 and CRC-32 while it writes, then runs detection while the file is still in the page cache.
 
 Some answers come while the client is still uploading: 401, 413, 415, 429 and 503. If the server then closed the socket with unread bytes, the kernel would send a reset. A client such as Go's `http.Transport` would then often report a broken pipe instead of the answer. So `middleware/linger.rs` wraps every request body. When a body is dropped before its end, a task of its own reads and discards the rest. The task stops at the end of the body, after 256 MiB, after 10 s, or after 2 s without data. At most 32 bodies drain at once, and the task holds no permit and no job directory.
 

@@ -341,3 +341,48 @@ fn hostile_ole2_detection_stays_bounded() {
     );
     assert!(peak < 4 * MIB, "peak {peak} bytes");
 }
+
+/// A part header that never ends: multer would buffer it toward the
+/// upload cap. With the framing bound the server answers 400 after 16 KiB,
+/// and the request's peak heap stays far below the bytes sent
+/// (performance review, lane 001 item 1).
+#[test]
+fn unterminated_part_headers_stay_bounded() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let server = server("framing");
+    let total = 32 * MIB;
+    let head = format!(
+        "POST /v1/convert HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer {KEY}\r\n\
+         Content-Type: multipart/form-data; boundary={BOUNDARY}\r\nContent-Length: {total}\r\n\r\n\
+         --{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"\r\nX-Pad: "
+    )
+    .into_bytes();
+    let mut stream = TcpStream::connect(server.addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let chunk = Box::new([b'a'; 64 * 1024]);
+    settle();
+    let baseline = LIVE.load(Ordering::Relaxed);
+    PEAK.store(baseline, Ordering::Relaxed);
+    writer.write_all(&head).unwrap();
+    let filler = std::thread::spawn(move || {
+        let mut sent = 0;
+        while sent < total {
+            if writer.write_all(&chunk[..]).is_err() {
+                return;
+            }
+            sent += chunk.len();
+        }
+    });
+    let mut status = [0u8; 12];
+    stream.read_exact(&mut status).unwrap();
+    let peak = PEAK.load(Ordering::Relaxed).saturating_sub(baseline);
+    drop(stream);
+    let _ = filler.join();
+    assert_eq!(&status[9..12], b"400");
+    eprintln!("unterminated headers: peak {peak} bytes above baseline");
+    assert!(peak < 4 * MIB, "peak {peak} bytes");
+    drop(server.runtime);
+}

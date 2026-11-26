@@ -712,3 +712,59 @@ async fn a_client_that_closes_mid_upload_releases_everything_at_once() {
     assert_eq!(status, 200);
     app.assert_no_jobs().await;
 }
+
+/// Sends `prefix`, then filler bytes that never end the part headers (or
+/// never reach a boundary), and reads the answer while the filler goes on.
+fn unterminated(addr: SocketAddr, prefix: &[u8]) -> (u16, String, Duration) {
+    let total = 64 << 20;
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream.write_all(&head(total)).unwrap();
+    stream.write_all(prefix).unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let started = Instant::now();
+    let filler = std::thread::spawn(move || {
+        let chunk = vec![b'a'; 64 * 1024];
+        let mut sent = 0;
+        while sent < total {
+            if writer.write_all(&chunk).is_err() {
+                return;
+            }
+            sent += chunk.len();
+        }
+    });
+    let (status, text) = read_response(&mut stream);
+    let elapsed = started.elapsed();
+    drop(stream);
+    drop(filler);
+    (status, text, elapsed)
+}
+
+/// multer buffers a part's headers until it finds their blank line, and
+/// the bytes before the first boundary until it finds that. Without a bound
+/// a request that never sends either grows the buffer toward the upload cap
+/// and rescans it on every read. The framing is bounded at 16 KiB: past
+/// it, 400 at once (performance review, lane 001 item 1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unterminated_multipart_framing_is_400_at_once() {
+    let app = App::new("framing", &[]);
+    let addr = app.serve().await;
+    for (name, prefix) in [
+        (
+            "part headers",
+            format!("--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.pdf\"\r\nX-Pad: ").into_bytes(),
+        ),
+        ("preamble", b"no boundary here ".to_vec()),
+    ] {
+        let (status, text, elapsed) =
+            tokio::task::spawn_blocking(move || unterminated(addr, &prefix))
+                .await
+                .unwrap();
+        assert_eq!(status, 400, "{name}: {text}");
+        assert!(text.contains("16384"), "{name}: {text}");
+        assert!(elapsed < Duration::from_secs(3), "{name}: {elapsed:?}");
+    }
+    app.assert_no_jobs().await;
+}

@@ -4,6 +4,7 @@
 pub mod body;
 pub mod capabilities_handlers;
 pub mod convert_handlers;
+pub mod framing;
 pub mod healthcheck;
 pub mod middleware;
 pub mod openapi;

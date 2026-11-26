@@ -234,6 +234,7 @@ impl ApiError {
             | UploadError::OptionsTooLarge
             | UploadError::Stalled
             | UploadError::TooSlow { .. }
+            | UploadError::FramingTooLarge(_)
             | UploadError::Incomplete(_)
             | UploadError::Options(OptionsError::Syntax(_)) => Self::bad_request(err.to_string()),
             UploadError::Options(OptionsError::Invalid(message)) => {
