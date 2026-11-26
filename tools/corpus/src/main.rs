@@ -51,6 +51,18 @@ enum Command {
         #[command(flatten)]
         corpus: CorpusArgs,
     },
+    /// Wait for connections on the canary listener address: the positive
+    /// control for the canaries (plan 005 step 13). Exits 0 once it has
+    /// counted --expect connections, 1 at the timeout.
+    Listen {
+        #[arg(long, default_value = "127.0.0.1:47123")]
+        addr: String,
+        #[arg(long, default_value_t = 1)]
+        expect: u64,
+        /// Seconds to wait.
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+    },
     /// Run every case against a service, with the canary listener up.
     Check {
         #[command(flatten)]
@@ -76,6 +88,11 @@ enum Command {
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Validate { corpus } => validate_command(&corpus.paths()),
+        Command::Listen {
+            addr,
+            expect,
+            timeout,
+        } => listen_command(&addr, expect, timeout),
         Command::Check {
             corpus,
             target,
@@ -91,6 +108,30 @@ fn main() -> ExitCode {
             ids,
             report,
         }),
+    }
+}
+
+fn listen_command(addr: &str, expect: u64, timeout: u64) -> ExitCode {
+    let listener = match check::listener::Listener::start(addr) {
+        Ok(listener) => listener,
+        Err(err) => {
+            eprintln!("listen: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!("listen: listening on {}", listener.addr());
+    let count = listener.wait_for(expect, std::time::Duration::from_secs(timeout));
+    // Let the thread store the line of the last connection.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    for line in listener.seen() {
+        println!("listen: connection from {line}");
+    }
+    if count >= expect {
+        println!("listen: {count} connection(s), expected at least {expect}");
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("listen: {count} connection(s) in {timeout} s, expected at least {expect}");
+        ExitCode::FAILURE
     }
 }
 
