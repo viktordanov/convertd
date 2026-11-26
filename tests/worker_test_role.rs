@@ -412,17 +412,6 @@ fn fake_operations_write_valid_outputs() {
         assert!(bytes.starts_with(b"\xFF\xD8"));
     }
 
-    let assembled_pdf = dir.join("assembled.pdf");
-    let Output::Assembled(assembled) = w.ok(Op::Assemble(AssembleArgs {
-        images: vec![pages.join("0001.jpg")],
-        output: assembled_pdf.clone(),
-        max_output_bytes: 1 << 20,
-    })) else {
-        panic!("expected assembled");
-    };
-    assert_eq!(assembled.page_count, 1);
-    assert!(assembled_pdf.exists());
-
     let decrypted_pdf = dir.join("decrypted.pdf");
     let Output::Decrypted(decrypted) = w.ok(Op::Decrypt(DecryptArgs {
         pdf: pdf.clone(),

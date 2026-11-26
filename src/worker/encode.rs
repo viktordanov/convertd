@@ -32,17 +32,13 @@ fn bgra_to_rgb(bgra: &[u8]) -> Vec<u8> {
 }
 
 /// The longest edge, in pixels, that each format can encode: JPEG stores
-/// 16-bit sizes, libwebp refuses more than 16383.
+/// 16-bit sizes.
 pub fn max_edge(format: ImageFormat) -> u32 {
     match format {
         ImageFormat::Jpeg => u32::from(u16::MAX),
-        ImageFormat::Webp => WEBP_MAX_EDGE,
         ImageFormat::Png => u32::MAX,
     }
 }
-
-/// libwebp's `WEBP_MAX_DIMENSION`.
-pub const WEBP_MAX_EDGE: u32 = 16_383;
 
 /// Why a page did not encode.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +50,7 @@ pub enum EncodeError {
 }
 
 /// Encodes a `width` × `height` BGRA bitmap. JPEG takes BGRA directly; PNG
-/// and WebP need one pass to RGB. A page over [`max_edge`] is `TooLarge`,
+/// needs one pass to RGB. A page over [`max_edge`] is `TooLarge`,
 /// found before any encoder runs.
 pub fn encode(
     format: ImageFormat,
@@ -88,14 +84,6 @@ pub fn encode(
                 .write_image(&rgb, width, height, image::ExtendedColorType::Rgb8)
                 .map_err(|err| failed(err.to_string()))?;
         }
-        ImageFormat::Webp => {
-            let rgb = bgra_to_rgb(bgra);
-            // encode_simple returns the error that Encoder::encode unwraps.
-            let memory = webp::Encoder::from_rgb(&rgb, width, height)
-                .encode_simple(false, f32::from(quality.clamp(1, 100)))
-                .map_err(|err| failed(format!("{err:?}")))?;
-            out.extend_from_slice(&memory);
-        }
     }
     Ok(out)
 }
@@ -123,11 +111,9 @@ mod tests {
     #[test]
     fn a_page_over_the_format_limit_is_too_large_before_encoding() {
         // No bitmap is needed: the size is checked first.
-        let err = encode(ImageFormat::Webp, &[], 16_384, 10, 85).unwrap_err();
-        assert!(matches!(err, EncodeError::TooLarge(_)), "{err:?}");
         let err = encode(ImageFormat::Jpeg, &[], 10, 70_000, 85).unwrap_err();
         assert!(matches!(err, EncodeError::TooLarge(_)), "{err:?}");
-        assert_eq!(max_edge(ImageFormat::Webp), 16_383);
+        assert_eq!(max_edge(ImageFormat::Jpeg), 65_535);
     }
 
     #[test]
@@ -136,7 +122,6 @@ mod tests {
         for (format, magic) in [
             (ImageFormat::Jpeg, &b"\xFF\xD8"[..]),
             (ImageFormat::Png, &b"\x89PNG"[..]),
-            (ImageFormat::Webp, &b"RIFF"[..]),
         ] {
             let bytes = encode(format, &bgra, 16, 8, 85).unwrap();
             assert!(bytes.starts_with(magic), "{format:?}");

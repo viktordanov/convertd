@@ -8,8 +8,8 @@ use super::conversion::{ConversionRequest, ConversionResult, Output, PdfOrigin, 
 use super::detection::Detection;
 use super::document::{DocType, Family, Format};
 use super::engine::{
-    Admission, AssembleJob, DecryptJob, EngineError, InspectJob, Inspection, OfficeEngine,
-    OfficeJob, PageSize, PdfEngine, RenderJob, RenderedPage,
+    Admission, DecryptJob, EngineError, InspectJob, Inspection, OfficeEngine, OfficeJob, PageSize,
+    PdfEngine, RenderJob, RenderedPage,
 };
 use super::limits::Limits;
 use super::pages::PageSelection;
@@ -66,7 +66,7 @@ pub trait OutputBudget: Send + Sync {
 }
 
 /// Routes by family: office files to the office engine, PDFs to inspect
-/// (and decrypt), images to assemble.
+/// (and decrypt). Image inputs never reach it (415 at detection).
 pub struct ConversionService {
     pub(super) office: Arc<dyn OfficeEngine>,
     pub(super) pdf: Arc<dyn PdfEngine>,
@@ -303,45 +303,12 @@ impl ConversionService {
                     )
                 }
             }
+            // Image inputs are out of v1: detection refuses them with 415,
+            // so the service never sees one.
             Family::Image => {
-                let max_output_bytes = self.reserve(
-                    job.budget,
-                    self.limits.pdf_output_bytes(job.upload.size_bytes),
-                )?;
-                let assembled = self
-                    .pdf
-                    .assemble(
-                        AssembleJob {
-                            images: vec![paths.source.clone()],
-                            output: paths.document_pdf.clone(),
-                            max_output_bytes,
-                        },
-                        Admission::Queue,
-                        job.deadline,
-                    )
-                    .await
-                    .map_err(engine_error)?;
-                timings.add_call(&assembled.timing);
-                timings.convert = Some(assembled.timing.wall);
-                timings.convert_engine = Some(assembled.timing.engine);
-                check_deadline()?;
-                let inspection = self
-                    .inspect(
-                        &paths.document_pdf,
-                        None,
-                        Admission::Continue,
-                        job.deadline,
-                        probe,
-                        timings,
-                    )
-                    .await
-                    .map_err(engine_error)?;
-                (
-                    paths.document_pdf.clone(),
-                    PdfOrigin::Assembled,
-                    inspection,
-                    None,
-                )
+                return Err(ConversionError::Engine(EngineError::Failed(
+                    "image inputs are not supported".into(),
+                )));
             }
         };
         if inspection.page_count == 0 {
@@ -565,7 +532,7 @@ mod tests {
     use crate::domain::conversion::{Output, RawOptions};
     use crate::domain::document::{DocType, Format};
     use crate::domain::engine::{
-        Assembled, Converted, Decrypted, EngineTiming, PageSize, RenderJob, Rendered, WorkerRef,
+        Converted, Decrypted, EngineTiming, PageSize, RenderJob, Rendered, WorkerRef,
     };
     use crate::domain::limits::test_limits;
 
@@ -733,20 +700,6 @@ mod tests {
                 pages,
                 timing: timing(7),
                 workers: vec![WORKER],
-            })
-        }
-        async fn assemble(
-            &self,
-            _: AssembleJob,
-            adm: Admission,
-            _: Instant,
-        ) -> Result<Assembled, EngineError> {
-            self.record("assemble", adm);
-            Ok(Assembled {
-                page_count: 1,
-                pdf_bytes: 10,
-                timing: timing(6),
-                worker: WORKER,
             })
         }
     }
@@ -970,19 +923,14 @@ mod tests {
     }
 
     #[test]
-    fn image_is_assembled() {
+    fn an_image_never_reaches_an_engine() {
         let script = Arc::new(Script::default());
-        let result = run(script.clone(), Format::Png, RawOptions::default(), u64::MAX)
-            .result
-            .unwrap();
-        assert_eq!(result.origin, PdfOrigin::Assembled);
-        assert_eq!(
-            script.calls(),
-            [
-                ("assemble", Admission::Queue),
-                ("inspect", Admission::Continue)
-            ]
-        );
+        let result = run(script.clone(), Format::Png, RawOptions::default(), u64::MAX).result;
+        assert!(matches!(
+            result,
+            Err(ConversionError::Engine(EngineError::Failed(_)))
+        ));
+        assert!(script.calls().is_empty());
     }
 
     #[test]

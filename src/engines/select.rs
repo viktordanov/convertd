@@ -5,7 +5,7 @@
 //!
 //! - `TEST_ENGINE` unset: the office pool runs `convertd worker office`
 //!   (LibreOfficeKit) and the render pool `convertd worker render`
-//!   (PDFium). `PDFIUM_BUILD` must be set.
+//!   (PDFium).
 //! - `TEST_ENGINE=worker` (level B, feature `test-hooks`): both pools run
 //!   `convertd worker test` behind the same pools, queue and kills.
 //! - `TEST_ENGINE=fake` (level A): lane 001's in-process fakes, no pools.
@@ -139,9 +139,6 @@ pub async fn start(config: &Config) -> Result<Selected, String> {
         });
     }
     let level_b = config.test_engine.is_some();
-    if !level_b && config.engines.pdfium_build.is_none() {
-        return Err("failed to start the engines: PDFIUM_BUILD is not set".into());
-    }
     let (office_role, render_role) = roles(level_b)?;
 
     let workers_dir = config.server.tmp_dir.join("workers");

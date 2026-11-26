@@ -46,9 +46,6 @@ pub struct EngineConfig {
     pub lo_program_dir: PathBuf,
     pub lo_profile_template: Option<PathBuf>,
     pub pdfium_lib_dir: PathBuf,
-    /// Set in the image from the pinned build. `serve` with the real
-    /// engines refuses to start without it (`engines::select`).
-    pub pdfium_build: Option<String>,
     /// Zero turns poison memory off.
     pub poison_ttl: Duration,
     pub default_paper: Paper,
@@ -71,7 +68,6 @@ impl EngineConfig {
             lo_program_dir: env.path("LO_PROGRAM_DIR", "/opt/libreoffice/program")?,
             lo_profile_template: env.get("LO_PROFILE_TEMPLATE")?.map(PathBuf::from),
             pdfium_lib_dir: env.path("PDFIUM_LIB_DIR", "/opt/pdfium/lib")?,
-            pdfium_build: env.get("PDFIUM_BUILD")?.map(str::to_owned),
             poison_ttl: env.seconds("POISON_TTL_SECONDS", 600)?,
             default_paper: env.parse("DEFAULT_PAPER", Paper::A4)?,
         })

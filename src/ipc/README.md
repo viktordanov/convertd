@@ -25,7 +25,7 @@ The worker uses the blocking `read_frame` and `write_frame`. The supervisor uses
 One call is in flight for each worker at a time, and the reply echoes the call's `id`. The messages are these:
 
 - **`Request::Init`**: the first frame after the spawn. It carries `PROTOCOL_VERSION` (1), the engine paths, the warm-up flag and the start faults of the `test` role.
-- **`Request::Call`**: one operation with its `id`. The operations are `Ping`, `Convert`, `Inspect`, `Render`, `Assemble`, `Decrypt`, and `Test` for the `test` role only.
+- **`Request::Call`**: one operation with its `id`. The operations are `Ping`, `Convert`, `Inspect`, `Render`, `Decrypt`, and `Test` for the `test` role only.
 - **`Response::Ready`** or **`Response::Fatal`**: the answer to `Init`. `Ready` carries the PID, the engine version, `bind_us` and the RSS.
 - **`Response::Reply`**: the answer to a call. It carries the call count of the process (`job`), the engine times, the RSS, and the result or a `WorkerError`.
 

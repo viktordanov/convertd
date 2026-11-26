@@ -88,7 +88,7 @@ At level A, a `429` comes from a marker or from the service's own permit. A `504
 
 ### Level B
 
-Level B (`TEST_ENGINE=worker`) runs `convertd worker test` as a real worker process behind the real pool. The test worker answers `Convert`, `Inspect`, `Render`, `Assemble` and `Decrypt` with small valid files, driven by the markers. The queue, the deadline and the kill are real. The test worker also acts out the faults that the pool tests need.
+Level B (`TEST_ENGINE=worker`) runs `convertd worker test` as a real worker process behind the real pool. The test worker answers `Convert`, `Inspect`, `Render` and `Decrypt` with small valid files, driven by the markers. The queue, the deadline and the kill are real. The test worker also acts out the faults that the pool tests need.
 
 `pool.rs` and `process.rs` drive the test worker directly, through the pool and the spawner. `engines_poison.rs` drives it through the engine adapters. `convertd serve` with `TEST_ENGINE=worker` runs both pools with test workers. `ops.rs` starts it that way in `slow_sigterm_at_level_b_finishes_office_then_render`.
 
@@ -110,7 +110,7 @@ A fixture that must get to the office queue is a DOCX with the marker in a store
 `test-hooks` is the one cargo feature for test code in the crate. It is off by default, and the image build never turns it on. It controls three things:
 
 - The `TEST_ENGINE` variable. If `TEST_ENGINE` is set in a build without the feature, `convertd serve` stops at start-up with `failed to parse TEST_ENGINE: test engines need a build with cargo feature test-hooks`.
-- The `convertd worker test` subcommand, and the `test` role of `convertd engine`.
+- The `convertd worker test` subcommand.
 - The `FAKE:` marker parsers. Without the feature, no code reads markers.
 
 ## nextest profiles

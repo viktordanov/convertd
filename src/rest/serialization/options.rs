@@ -96,7 +96,7 @@ pub struct ImageOptions {
     #[schema(nullable = false, minimum = 36, maximum = 600, default = 150)]
     #[serde(default)]
     pub dpi: Option<u32>,
-    /// Encoder quality for `jpeg` and `webp`. Ignored for `png`.
+    /// Encoder quality for `jpeg`. Ignored for `png`.
     #[schema(nullable = false, minimum = 1, maximum = 100, default = 85)]
     #[serde(default)]
     pub quality: Option<u32>,
@@ -112,14 +112,12 @@ pub struct ImageOptions {
 ///
 /// - `jpeg`: smallest and fastest. Best for photos, slides and model input.
 /// - `png`: lossless. Larger and slower to encode.
-/// - `webp`: smaller than JPEG at similar quality. Slower to encode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 #[schema(as = ImageFormat)]
 pub enum ImageFormatDto {
     Jpeg,
     Png,
-    Webp,
 }
 
 /// Options that only affect presentations.
@@ -222,7 +220,6 @@ impl From<ImageFormatDto> for ImageFormat {
         match format {
             ImageFormatDto::Jpeg => ImageFormat::Jpeg,
             ImageFormatDto::Png => ImageFormat::Png,
-            ImageFormatDto::Webp => ImageFormat::Webp,
         }
     }
 }
@@ -232,7 +229,6 @@ impl From<ImageFormat> for ImageFormatDto {
         match format {
             ImageFormat::Jpeg => ImageFormatDto::Jpeg,
             ImageFormat::Png => ImageFormatDto::Png,
-            ImageFormat::Webp => ImageFormatDto::Webp,
         }
     }
 }
@@ -280,7 +276,7 @@ mod tests {
     fn every_field_reaches_the_domain() {
         let dto = parse(
             r#"{"output":"bundle","pages":"1-3","password":"pw","timeout_seconds":30,
-               "images":{"format":"webp","dpi":72,"quality":50,"max_edge":320},
+               "images":{"format":"png","dpi":72,"quality":50,"max_edge":320},
                "slides":{"include_hidden":true,"notes":"append"},
                "sheets":{"one_page_per_sheet":true}}"#,
         )
@@ -290,7 +286,7 @@ mod tests {
         assert_eq!(raw.pages.as_deref(), Some("1-3"));
         assert_eq!(raw.password.as_deref(), Some("pw"));
         assert_eq!(raw.timeout_seconds, Some(30));
-        assert_eq!(raw.image_format, Some(ImageFormat::Webp));
+        assert_eq!(raw.image_format, Some(ImageFormat::Png));
         assert_eq!(
             (raw.dpi, raw.quality, raw.max_edge),
             (Some(72), Some(50), Some(320))

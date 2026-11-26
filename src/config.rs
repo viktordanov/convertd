@@ -192,27 +192,6 @@ impl FromStr for LogMode {
     }
 }
 
-/// `SANDBOX` (item 006, deferred). Nothing depends on it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Sandbox {
-    Off,
-    Auto,
-}
-
-impl FromStr for Sandbox {
-    type Err = &'static str;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "off" => Ok(Sandbox::Off),
-            "auto" => Ok(Sandbox::Auto),
-            // `required` refuses to start without a sandbox, and there is none yet.
-            "required" => Err("required cannot be met: no sandbox is built yet (item 006)"),
-            _ => Err("expected off, auto or required"),
-        }
-    }
-}
-
 /// `TEST_ENGINE`, accepted only in builds with cargo feature `test-hooks`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TestEngine {
@@ -240,7 +219,6 @@ pub struct Config {
     pub server: ServerConfig,
     pub limits: Limits,
     pub engines: EngineConfig,
-    pub sandbox: Sandbox,
     /// `None` means the real engines.
     pub test_engine: Option<TestEngine>,
 }
@@ -301,7 +279,6 @@ impl Config {
             server,
             limits,
             engines: EngineConfig::from_env(env)?,
-            sandbox: env.parse("SANDBOX", Sandbox::Off)?,
             test_engine: test_engine(env)?,
         })
     }
@@ -452,11 +429,9 @@ mod tests {
         assert_eq!(e.lo_program_dir, PathBuf::from("/opt/libreoffice/program"));
         assert_eq!(e.lo_profile_template, None);
         assert_eq!(e.pdfium_lib_dir, PathBuf::from("/opt/pdfium/lib"));
-        assert_eq!(e.pdfium_build, None);
         assert_eq!(e.poison_ttl, Duration::from_secs(600));
         assert_eq!(e.default_paper, Paper::A4);
 
-        assert_eq!(config.sandbox, Sandbox::Off);
         assert_eq!(config.test_engine, None);
     }
 
@@ -481,9 +456,7 @@ mod tests {
             ("PORT", "18080"),
             ("LOG_MODE", "debug"),
             ("TMP_MAX_BYTES", "68719476736"),
-            ("SANDBOX", "auto"),
             ("DEFAULT_PAPER", "Letter"),
-            ("PDFIUM_BUILD", "8179"),
         ])
         .unwrap();
         assert_eq!(config.server.host, IpAddr::from([127, 0, 0, 1]));
@@ -494,9 +467,7 @@ mod tests {
             Some("old")
         );
         assert_eq!(config.server.max_output_bytes(), MAX_OUTPUT_BYTES_CAP);
-        assert_eq!(config.sandbox, Sandbox::Auto);
         assert_eq!(config.engines.default_paper, Paper::Letter);
-        assert_eq!(config.engines.pdfium_build.as_deref(), Some("8179"));
     }
 
     #[test]
@@ -527,7 +498,6 @@ mod tests {
             ("TOKIO_WORKER_THREADS", "0"),
             ("METRICS_ENABLED", "yes"),
             ("LOG_MODE", "verbose"),
-            ("SANDBOX", "required"),
             ("DEFAULT_PAPER", "A3"),
         ] {
             let err = parse(&[("API_KEY", "k"), (name, value)]).unwrap_err();

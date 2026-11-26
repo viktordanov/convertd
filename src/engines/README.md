@@ -164,7 +164,7 @@ After a load, export, empty-document, limit or internal error, `OfficeLok` recyc
 
 `PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`, so the files on disk stay within the job's reservation. The chunks run together. A crashed chunk is retried once on a fresh lease, if at least 1 s is left. A chunk that goes over its share runs again on one lease, with the cap minus the bytes of the finished chunks, if at least 1 s is left. A job thus fails on its cap exactly when one worker fails, and the cap never adds a poison strike. The pages come back in order. `engine` is the longest chunk, plus the rerun. The most severe chunk error wins: a timeout, then a crash, then a password error.
 
-`PdfPdfium::assemble` returns `Failed("image inputs are not supported yet")`, which gives 422 `CONVERSION_FAILED`. A 500 tells callers to retry. Image inputs are out of v1 (the owner's decision).
+There is no image assembly: image inputs are out of v1 (the owner's decision), and detection refuses them with 415 before any engine call.
 
 Poison memory (`poison.rs`) protects the workers from documents that hang or crash them. It is keyed by the upload's SHA-256 and shared by both pools, and it works like this:
 
@@ -182,7 +182,7 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 
 `select::start` reads `TEST_ENGINE` and starts the engines that `convertd serve` uses:
 
-- **Unset**: the office pool runs `convertd worker office` and the render pool runs `convertd worker render`. Both warm up before `Ready`. `PDFIUM_BUILD` must be set, or `serve` does not start.
+- **Unset**: the office pool runs `convertd worker office` and the render pool runs `convertd worker render`. Both warm up before `Ready`.
 - **`worker`** (level B, feature `test-hooks`): both pools run `convertd worker test`, behind the same pools, queue and kills.
 - **`fake`** (level A): lane 001's in-process fakes, with no pool.
 
@@ -213,34 +213,15 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 <!-- memoria:section id="setup" files="config.rs" -->
 ## Configuration
 
-`EngineConfig::from_env` parses the engine variables, and `select.rs` builds the two `PoolSpec`s from them. The defaults are these:
-
-| Variable | Default |
-| --- | --- |
-| `OFFICE_WORKERS` | half of the CPUs, at least 1 |
-| `RENDER_WORKERS` | all of the CPUs |
-| `QUEUE_CAPACITY` | 2 × `OFFICE_WORKERS` |
-| `QUEUE_WAIT_SECONDS` | 10 |
-| `WORKER_MAX_JOBS` | 50 |
-| `WORKER_MAX_RSS_MB` | 1024 |
-| `WORKER_MAX_AGE_SECONDS` | 3600 |
-| `WORKER_KILL_RSS_MB` | 2048 |
-| `LO_PROGRAM_DIR` | `/opt/libreoffice/program` |
-| `LO_PROFILE_TEMPLATE` | unset |
-| `PDFIUM_LIB_DIR` | `/opt/pdfium/lib` |
-| `PDFIUM_BUILD` | unset; `convertd serve` with the real engines needs it |
-| `POISON_TTL_SECONDS` | 600 (0 turns poison memory off) |
-| `DEFAULT_PAPER` | `A4` (or `Letter`) |
+`EngineConfig::from_env` parses the engine variables, and `select.rs` builds the two `PoolSpec`s from them. [The configuration table in src/README.md](../README.md#configuration) lists them with their defaults, next to the supervisor's variables.
 
 The worker counts, the job, RSS and age limits, and `WORKER_KILL_RSS_MB` must be at least 1. The defaults give a 14-CPU machine 7 office and 14 render workers. An office worker holds about 250 MB at `Ready`, so a container with little memory needs explicit values.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="measurement" files="cli.rs" -->
+<!-- memoria:section id="measurement" files="pool.rs process.rs" -->
 ## Measurement
 
-`convertd engine bench --role test|office|render` measures the cost of the pool. It times lease, `Ping` and return through a real pool, and spawn to `Ready` through the pool's own start path, warm-up included. With `--file`, it also times three real jobs on that file, so the first job shows against the third. It prints a table on stderr and one JSON summary line on stdout. The flags are `--n` (10000), `--concurrency` (1), `--spawns` (50) and `--warmup` (500). The `test` role needs a build with `--features test-hooks`.
-
-`convertd engine convert`, `inspect`, `render` and `decrypt` run one engine call through a pool and the adapter, with no HTTP. Each call prints one JSON line with the wall, engine, overhead and queue times, the workers and their job numbers. A password comes from the variable that `--password-env` names, never from the command line. These pools have no job or RSS limit and no poison memory. `engine assemble` and `engine soak` are not built yet.
+The numbers below come from `convertd engine bench`, a hidden command that timed lease, `Ping` and return through a real pool, and spawn to `Ready` through the pool's own start path. The owner removed the `convertd engine` commands on 2026-11-26, so these tables are history. The overhead of the request path is now measured over HTTP: [src/README.md](../README.md#measurement) and [bench/results/](../../bench/results/) give those numbers.
 
 One measurement, made on 2026-11-25 at commit `1eaf917`, on macOS (Darwin 27.3.0), Apple M4 Max with 14 cores. It used a release build with `--features test-hooks`, `--n 10000` and `--spawns 50`. Other jobs kept the load average at 6 to 10, so the tails are noisy:
 
@@ -314,6 +295,6 @@ The tails come from the single office worker. Of the 757 conversions of files un
 
 These parts of plan 002 do not exist yet:
 
-- `engine soak` and the fault run of step 13. The soak run of step 13 used HTTP instead ([Soak, 2026-11-26](#soak-2026-11-26)).
+- The fault run of step 13. The soak run of step 13 used HTTP ([Soak, 2026-11-26](#soak-2026-11-26)).
 
-Image assembly (step 11) is out of v1, so `PdfPdfium::assemble` returns `Failed`.
+Image assembly (step 11) is out of v1, and the seam for it is removed.

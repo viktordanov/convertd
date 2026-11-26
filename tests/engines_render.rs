@@ -266,12 +266,8 @@ async fn a_corpus_pdf_inspects_and_renders_in_every_format() {
                 "text3.pdf: page 1 {} x {} pt, probe {:?}, inspect engine {:?}",
                 page.width_pt, page.height_pt, inspection.probe_engine, inspection.timing.engine
             );
-            // JPEG at 150 DPI; PNG and WebP at 72 DPI, so a debug build stays fast.
-            for (format, dpi) in [
-                (ImageFormat::Jpeg, 150u16),
-                (ImageFormat::Png, 72),
-                (ImageFormat::Webp, 72),
-            ] {
+            // JPEG at 150 DPI; PNG at 72 DPI, so a debug build stays fast.
+            for (format, dpi) in [(ImageFormat::Jpeg, 150u16), (ImageFormat::Png, 72)] {
                 let out = dir.join(format.extension());
                 let rendered = pdf
                     .render(
@@ -656,7 +652,6 @@ async fn a_coloured_page_keeps_its_channels() {
         for (format, tolerance) in [
             (ImageFormat::Png, 0u8),
             (ImageFormat::Jpeg, 8),
-            (ImageFormat::Webp, 8),
         ] {
             let out = dir.join(format.extension());
             let rendered = pdf

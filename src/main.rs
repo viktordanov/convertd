@@ -1,17 +1,15 @@
 //! `convertd`: the command line and the wiring (lane 001; lane 002's
 //! dispatch goes through the lead).
 
-use std::ffi::OsString;
 use std::io::Write;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use convertd::config::{self, Config, Env};
-use convertd::engines::cli::EngineCommand;
 use convertd::rest::state::{AppState, Engines};
 use convertd::rest::{healthcheck, openapi, server};
 use convertd::worker::Role;
-use convertd::{engines, jobs, logging, runtime, worker};
+use convertd::{jobs, logging, runtime, worker};
 
 #[derive(Parser)]
 #[command(name = "convertd", version, about = "Document conversion service")]
@@ -34,15 +32,6 @@ enum Command {
         #[arg(value_enum)]
         role: WorkerRole,
     },
-    /// Run an engine without HTTP (debugging and benchmarks).
-    #[command(hide = true)]
-    Engine {
-        #[arg(value_enum)]
-        command: EngineArg,
-        /// Passed unparsed to the engine command.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<OsString>,
-    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -64,37 +53,11 @@ impl From<WorkerRole> for Role {
     }
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-enum EngineArg {
-    Convert,
-    Inspect,
-    Render,
-    Assemble,
-    Decrypt,
-    Bench,
-    Soak,
-}
-
-impl From<EngineArg> for EngineCommand {
-    fn from(arg: EngineArg) -> Self {
-        match arg {
-            EngineArg::Convert => EngineCommand::Convert,
-            EngineArg::Inspect => EngineCommand::Inspect,
-            EngineArg::Render => EngineCommand::Render,
-            EngineArg::Assemble => EngineCommand::Assemble,
-            EngineArg::Decrypt => EngineCommand::Decrypt,
-            EngineArg::Bench => EngineCommand::Bench,
-            EngineArg::Soak => EngineCommand::Soak,
-        }
-    }
-}
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         // First, and alone: a worker gets no runtime, logging or configuration.
         Command::Worker { role } => worker::run(role.into()),
-        Command::Engine { command, args } => engines::cli::run(command.into(), args),
         Command::Openapi => openapi(),
         Command::Healthcheck => healthcheck(),
         Command::Serve => match serve() {

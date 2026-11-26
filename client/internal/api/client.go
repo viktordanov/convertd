@@ -114,7 +114,6 @@ func (e HealthStatus) Valid() bool {
 const (
 	Jpeg ImageFormat = "jpeg"
 	Png  ImageFormat = "png"
-	Webp ImageFormat = "webp"
 )
 
 // Valid indicates whether the value is a known member of the ImageFormat enum.
@@ -123,8 +122,6 @@ func (e ImageFormat) Valid() bool {
 	case Jpeg:
 		return true
 	case Png:
-		return true
-	case Webp:
 		return true
 	default:
 		return false
@@ -190,7 +187,6 @@ func (e OutputKind) Valid() bool {
 
 // Defines values for PdfInfoOrigin.
 const (
-	Assembled   PdfInfoOrigin = "assembled"
 	Converted   PdfInfoOrigin = "converted"
 	Passthrough PdfInfoOrigin = "passthrough"
 )
@@ -198,8 +194,6 @@ const (
 // Valid indicates whether the value is a known member of the PdfInfoOrigin enum.
 func (e PdfInfoOrigin) Valid() bool {
 	switch e {
-	case Assembled:
-		return true
 	case Converted:
 		return true
 	case Passthrough:
@@ -405,7 +399,6 @@ type HealthStatus string
 //
 // - `jpeg`: smallest and fastest. Best for photos, slides and model input.
 // - `png`: lossless. Larger and slower to encode.
-// - `webp`: smaller than JPEG at similar quality. Slower to encode.
 type ImageFormat string
 
 // ImageOptions How pages are rendered to images. Used by `images` and `bundle`.
@@ -418,7 +411,6 @@ type ImageOptions struct {
 	//
 	// - `jpeg`: smallest and fastest. Best for photos, slides and model input.
 	// - `png`: lossless. Larger and slower to encode.
-	// - `webp`: smaller than JPEG at similar quality. Slower to encode.
 	Format *ImageFormat `json:"format,omitempty"`
 
 	// MaxEdge Longest allowed edge of an image, in pixels. A page that would be
@@ -426,7 +418,7 @@ type ImageOptions struct {
 	// its aspect ratio. Unset means no clamp beyond `limits.max_edge_px`.
 	MaxEdge *int32 `json:"max_edge,omitempty"`
 
-	// Quality Encoder quality for `jpeg` and `webp`. Ignored for `png`.
+	// Quality Encoder quality for `jpeg`. Ignored for `png`.
 	Quality *int32 `json:"quality,omitempty"`
 }
 
@@ -438,7 +430,6 @@ type ImageSettings struct {
 	//
 	// - `jpeg`: smallest and fastest. Best for photos, slides and model input.
 	// - `png`: lossless. Larger and slower to encode.
-	// - `webp`: smaller than JPEG at similar quality. Slower to encode.
 	Format  ImageFormat `json:"format"`
 	MaxEdge *int32      `json:"max_edge,omitempty"`
 	Quality *int32      `json:"quality,omitempty"`
@@ -566,7 +557,6 @@ type PdfInfo struct {
 	//
 	// - `converted`: produced by LibreOffice from an office file.
 	// - `passthrough`: the upload was already a PDF and is returned unchanged, or decrypted when it was encrypted.
-	// - `assembled`: built from an uploaded image.
 	Origin PdfInfoOrigin `json:"origin"`
 
 	// Path Path of the PDF inside the archive.
@@ -580,7 +570,6 @@ type PdfInfo struct {
 //
 // - `converted`: produced by LibreOffice from an office file.
 // - `passthrough`: the upload was already a PDF and is returned unchanged, or decrypted when it was encrypted.
-// - `assembled`: built from an uploaded image.
 type PdfInfoOrigin string
 
 // PoolStatus defines model for PoolStatus.

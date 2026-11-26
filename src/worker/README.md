@@ -10,7 +10,7 @@ Four duties apply to every change in this folder:
 - **Call PDFium from one thread only.** PDFium is not thread safe. A worker has no tokio runtime and no thread of its own besides the main thread.
 - **Keep every `unsafe` block and every engine call in this folder.** No other folder of the crate holds them.
 
-`convertd worker office` runs LibreOffice through LibreOfficeKit, `convertd worker render` runs PDFium, and `convertd worker test` answers with fake results. The `test` role exists only in builds with the cargo feature `test-hooks`. Image assembly is out of v1. [Not built yet](#not-built-yet) lists what is missing.
+`convertd worker office` runs LibreOffice through LibreOfficeKit, `convertd worker render` runs PDFium, and `convertd worker test` answers with fake results. The `test` role exists only in builds with the cargo feature `test-hooks`. Image inputs are out of v1, so no worker assembles images. [Not built yet](#not-built-yet) lists what is missing.
 
 The supervisor side is in [`src/engines/`](../engines/README.md), and the frames are in [`src/ipc/`](../ipc/README.md).
 
@@ -117,7 +117,7 @@ A password with a NUL byte is `InvalidPassword` before any engine call, in both 
 The operations do this:
 
 - **Inspect** reads the page count and the page sizes without loading the pages. `encrypted` comes from the security handler revision. `needs_password` comes from a second open without the password. With `probe_dpi`, it renders the pages that `probe_pages` names in grayscale and reports the object count and the flat check, timed apart as `probe_us`. `Only` names the pages of a selection, and numbers past the page count drop out. `All { max }` takes the first `max` pages and reports the others as `probe_skipped`.
-- **Render** scales each page by `min(dpi / 72, max_edge / longer edge)` into a BGRA bitmap. pdfium-render reverses the byte order to RGBA by default, so every render in the worker turns the reversal off. JPEG takes the BGRA bytes directly. PNG (fast, adaptive filter) and lossy WebP take one pass to RGB. Before PDFium allocates the bitmap, a page whose long edge passes the format's limit is `LimitExceeded`: 65535 px for JPEG and 16383 px for WebP. Each file gets its CRC-32. The output budget covers all pages, and an error removes every file of the job.
+- **Render** scales each page by `min(dpi / 72, max_edge / longer edge)` into a BGRA bitmap. pdfium-render reverses the byte order to RGBA by default, so every render in the worker turns the reversal off. JPEG takes the BGRA bytes directly. PNG (fast, adaptive filter) takes one pass to RGB. Before PDFium allocates the bitmap, a page whose long edge passes the format's limit is `LimitExceeded`: 65535 px for JPEG. Each file gets its CRC-32. The output budget covers all pages, and an error removes every file of the job.
 - **Decrypt** calls `FPDF_SaveAsCopy` with `FPDF_NO_INCREMENTAL | FPDF_REMOVE_SECURITY` through the raw bindings, into a buffer under the output cap. The crate's own save cannot remove security. On PDFium 8179 the copy opens without a password and has no security handler (tested in the dev image). The worker also opens the copy again without a password. If the copy still has a security handler, the job is `ExportFailed`. With `check_owner`, the worker never drops owner restrictions that the caller did not unlock. It writes the copy only when the user permissions already grant everything or the password unlocked the owner. Otherwise it writes nothing. A password that opened the file is the user password, and the answer is `Restricted`. Without a password, the file is owner-only, and the answer is `InvalidPassword`. PDFium unlocks the owner only for a non-empty password that passes the owner check. Then `FPDF_GetDocPermissions` grants every bit except bits 1 and 2, which the Standard handler clears (0xFFFFFFFC), and it differs from `FPDF_GetDocUserPermissions`, which keeps the file's restricted P. The chromium/8179 source shows this, and the engine test checks it.
 
 A missing password is `PasswordRequired`, and a wrong one is `InvalidPassword`. The flat check (`encode::flat`) is true when every pixel is within 4 levels per channel of pixel (0,0).
@@ -126,9 +126,9 @@ A missing password is `PasswordRequired`, and a wrong one is `InvalidPassword`. 
 <!-- memoria:section id="test-role" files="test_worker.rs" -->
 ## Test role
 
-`convertd worker test` has no engine. It serves the pool tests, the `engine bench` command and level B (`TEST_ENGINE=worker`). `Init.test` can make its start fail (`fatal`) or slow (`ready_delay_ms`, which counts as `bind_us`).
+`convertd worker test` has no engine. It serves the pool tests and level B (`TEST_ENGINE=worker`). `Init.test` can make its start fail (`fatal`) or slow (`ready_delay_ms`, which counts as `bind_us`).
 
-It answers `Convert`, `Inspect`, `Render`, `Assemble` and `Decrypt` with small valid files. The `FAKE:` markers in the first 1 MiB of the input file control the answer, and the first marker wins:
+It answers `Convert`, `Inspect`, `Render` and `Decrypt` with small valid files. The `FAKE:` markers in the first 1 MiB of the input file control the answer, and the first marker wins:
 
 - `FAKE:DELAY_MS=<n>` sleeps, then succeeds. The pool's deadline turns a long delay into a timeout.
 - `FAKE:PAGES=<n>` succeeds with `n` pages. `FAKE:HANG` never answers. `FAKE:PANIC` ends the worker with status 101.
@@ -159,4 +159,3 @@ These parts of plan 002 do not exist yet:
 
 - The font list of `Inspect` with `collect_fonts`. It is always empty.
 
-Image assembly is out of v1, so the render worker answers `Assemble` with `Unsupported`.

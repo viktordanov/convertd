@@ -2,7 +2,7 @@
 
 `src/` is the `convertd` crate: one binary that runs as the supervisor (`convertd serve`) or as a worker (`convertd worker <role>`).
 
-`convertd serve` runs LibreOffice and PDFium in worker pools, unless `TEST_ENGINE` selects a test fake. Without `PDFIUM_BUILD`, `convertd serve` does not start. [Engine selection](#engine-selection) gives the details.
+`convertd serve` runs LibreOffice and PDFium in worker pools, unless `TEST_ENGINE` selects a test fake. [Engine selection](#engine-selection) gives the details.
 
 ## Contents
 
@@ -65,7 +65,7 @@ The dependency rule keeps the domain at the center. `domain/` uses no other modu
 
 `detect/` and `jobs/` depend on `domain/` only. `preflight/` depends on `domain/`, on the ZIP reader in `detect/zip_scan.rs` and on the OLE2 reader in `detect/ole2.rs`. `rest/` depends on `domain/`, `detect/`, `jobs/`, `bundle/`, `observability/` and `config.rs`, and it imports `engines/` only in its tests. `rest/response.rs` is the only place that maps an error to an HTTP status. `rest/serialization/` holds the only serde types of the supervisor's request path.
 
-`domain/engine.rs` is the seam between the two sides. The conversion service calls the `OfficeEngine` and `PdfEngine` traits. Lane 002's adapters `OfficeLok` and `PdfPdfium` in `engines/` implement them over the pools. `worker/` is the only place with `unsafe` code and engine calls. Changes to `domain/engine.rs` go through the lead.
+`domain/engine.rs` is the seam between the two sides. The conversion service calls the `OfficeEngine` and `PdfEngine` traits. Lane 002's adapters `OfficeLok` and `PdfPdfium` in `engines/` implement them over the pools. `worker/` is the only place with engine calls, and it holds the `unsafe` code, with one exception. The reaper in `engines/process.rs` peeks at an exited child with `libc::waitid(P_ALL, WNOWAIT)` in two `unsafe` blocks. rustix 1.1.6 has `waitid`, but its result exposes no `si_pid`, so it cannot name the child (checked on 2026-11-26). Changes to `domain/engine.rs` go through the lead.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="usage" files="detect/ole2.rs rest/server.rs rest/convert_handlers.rs rest/upload.rs rest/body.rs rest/timing.rs rest/throughput.rs rest/middleware/linger.rs domain/conversion_service.rs detect/mod.rs jobs/job_dir.rs jobs/disk_budget.rs bundle/tar_zst.rs rest/serialization/manifest.rs" -->
@@ -110,7 +110,7 @@ The deadline is the end of the upload plus `timeout_seconds`. The engines enforc
 
 For `images` and `bundle`, the response is a ustar archive in one zstd frame at level 1: `application/zstd`, named `<stem>.tar.zst`. Its entries come in this order: `manifest.json`, then `document.pdf` for a bundle, then `pages/NNNN.<ext>` in page order. Each entry is a regular file with mode 0644, mtime 0 and uid and gid 0, so the bytes depend only on the content. The sizes in the headers come from `fstat`. The compressed length is not known in advance, so the response is chunked, without `Content-Length`. The disk budget and `max_output_bytes` bound its size.
 
-Each engine call that writes reserves its cap of the disk budget first. The render reserves what its selected pages can write, from their size in the inspection. Per page, that is the raw 4-byte-per-pixel bitmap at the request's DPI and edge cap, plus an eighth and 64 KiB. Each render adds 1 MiB. It is at most `max_output_bytes`, 768 MiB by default. The engine gets this estimate as its hard limit, so a render that writes more fails with 422 `LIMIT_EXCEEDED`. PNG, JPEG and WebP stay under 4 bytes per pixel in practice, but no real-engine run has measured the margin yet. After the last engine call, the handler measures the job directory with `fstat` and gives back the rest of the reservation. So a download that is still open holds only its files, and slow clients do not spend the budget of the next requests.
+Each engine call that writes reserves its cap of the disk budget first. The render reserves what its selected pages can write, from their size in the inspection. Per page, that is the raw 4-byte-per-pixel bitmap at the request's DPI and edge cap, plus an eighth and 64 KiB. Each render adds 1 MiB. It is at most `max_output_bytes`, 768 MiB by default. The engine gets this estimate as its hard limit, so a render that writes more fails with 422 `LIMIT_EXCEEDED`. PNG and JPEG stay under 4 bytes per pixel in practice, but no real-engine run has measured the margin yet. After the last engine call, the handler measures the job directory with `fstat` and gives back the rest of the reservation. So a download that is still open holds only its files, and slow clients do not spend the budget of the next requests.
 
 The response pump is one blocking task. It reads the PDF, or writes the tar.zst, in 64 KiB chunks and sends them to the response body through a queue of four. The pump, not the body, owns the job directory and the permit. The body ends cleanly only when the pump sends its completion marker. A pump that stops early for any reason, a panic included, leaves the body with an error. Then hyper drops the connection instead of sending the chunked terminator. So a cut tar.zst never looks complete, and the access log records `complete=false`. If the client stops reading for `IO_IDLE_TIMEOUT_SECONDS`, the pump stops, logs `RESPONSE_STALLED` and releases both.
 
@@ -152,7 +152,7 @@ The deadline is set once, at the signal: `SHUTDOWN_GRACE_SECONDS` from then. Ste
 <!-- memoria:section id="contract" files="main.rs" -->
 ## Engine selection
 
-`main.rs` calls `engines::select::start` once, after it binds the listener and before it builds the application state. `TEST_ENGINE` picks the real pools, the level-B test worker or the level-A fakes. `config.rs` accepts `TEST_ENGINE` only in a build with the `test-hooks` feature. If `PDFIUM_BUILD` is not set, `convertd serve` stops with an error. [Selection](engines/README.md#selection) gives the three modes and the readiness states.
+`main.rs` calls `engines::select::start` once, after it binds the listener and before it builds the application state. `TEST_ENGINE` picks the real pools, the level-B test worker or the level-A fakes. `config.rs` accepts `TEST_ENGINE` only in a build with the `test-hooks` feature. [Selection](engines/README.md#selection) gives the three modes and the readiness states.
 
 Image inputs are out of v1 (owner, 2026-11-26). Detection still names a PNG, JPEG, TIFF, GIF, BMP or WebP file by its signature. So an image is never taken for a PDF inside it. Then it answers 415 `UNSUPPORTED_FORMAT`, and `/v1/capabilities` does not list image inputs. [Not built yet](engines/README.md#not-built-yet) lists the parts of the engines that are missing.
 <!-- /memoria:section -->
@@ -193,7 +193,51 @@ For a DOCX, most of `overhead` is the office worker's pre-flight scan, 0.73 ms a
 <!-- memoria:section id="setup" files="config.rs" -->
 ## Configuration
 
-`config.rs` parses every environment variable by hand when `convertd serve` starts. A bad value stops `convertd serve` before it listens, and the error names the variable. Lane 002's engine and pool variables are parsed in [engines/config.rs](engines/config.rs). The two parsers hold the names, the defaults and the checks. `convertd openapi`, `convertd worker` and `convertd engine` do not parse this configuration.
+`config.rs` parses every environment variable by hand when `convertd serve` starts. A bad value stops `convertd serve` before it listens, and the error names the variable. Lane 002's engine and pool variables are parsed in [engines/config.rs](engines/config.rs). The two parsers hold the names, the defaults and the checks. `convertd openapi` and `convertd worker` do not parse this configuration.
+
+This is every variable that an operator can set. An empty value counts as unset.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `API_KEY` | required | The bearer key for every `/v1` route |
+| `API_KEY_PREVIOUS` | unset | A second accepted key, for key rotation |
+| `HOST` | `0.0.0.0` | The listen address |
+| `PORT` | `8080` | The listen port; `convertd healthcheck` reads it too |
+| `LOG_MODE` | `prod` | `prod` (JSON) or `debug` |
+| `MAX_CONCURRENT_REQUESTS` | `16` | Conversions admitted at once; beyond it, 429 before the body is read |
+| `MAX_UPLOAD_BYTES` | `125829120` (120 MiB) | The largest upload; beyond it, 413 |
+| `TIMEOUT_DEFAULT_SECONDS` | `120` | The deadline when a request sets no `timeout_seconds` |
+| `TIMEOUT_MAX_SECONDS` | `210` | The largest `timeout_seconds`; at most 210 |
+| `MAX_RENDER_PAGES` | `500` | The most pages one request renders as images |
+| `MAX_DPI` | `300` | Higher DPI is lowered to it, with `RENDER_CLAMPED` |
+| `MAX_EDGE_PX` | `4096` | The longest page-image edge |
+| `VERIFY_PROBE_RENDER` | `true` | The blank-page probe for `BLANK_PAGE` |
+| `VERIFY_PROBE_MAX_PAGES` | `200` | The most pages the probe looks at |
+| `IO_IDLE_TIMEOUT_SECONDS` | `30` | An upload or a response that moves nothing this long ends |
+| `UPLOAD_MIN_BYTES_PER_SECOND` | `16384` | The upload floor over each idle window; `0` turns it off |
+| `RESPONSE_MIN_BYTES_PER_SECOND` | `16384` | The response floor over each idle window; `0` turns it off |
+| `SHUTDOWN_GRACE_SECONDS` | `30` | How long SIGTERM waits for requests in flight |
+| `TMP_DIR` | `/tmp/convert` | Job directories and worker slots |
+| `TMP_MAX_BYTES` | `3221225472` (3 GiB) | The disk budget under `TMP_DIR`; one job writes at most a quarter of it |
+| `TOKIO_WORKER_THREADS` | `2` | The supervisor's async threads |
+| `METRICS_ENABLED` | `true` | `false` makes `/metrics` answer 404 |
+| `SWAGGER_ENABLED` | `true` | Serves the spec at `/swagger/doc.json` |
+| `BUILD_INFO_PATH` | `/opt/convertd/build-info.json` | Engine versions and fonts, written at image build |
+| `FONTS_PATH` | `/etc/convertd/fonts.json` | The metric-compatible font table |
+| `OFFICE_WORKERS` | half of the CPUs, at least 1 | Office worker processes |
+| `RENDER_WORKERS` | all of the CPUs | Render worker processes |
+| `QUEUE_CAPACITY` | 2 × `OFFICE_WORKERS` | Requests that may wait for an office worker |
+| `QUEUE_WAIT_SECONDS` | `10` | The longest wait in that queue; beyond it, 429 |
+| `WORKER_MAX_JOBS` | `50` | Jobs before a worker is replaced |
+| `WORKER_MAX_RSS_MB` | `1024` | Memory above which a worker is replaced after its job |
+| `WORKER_MAX_AGE_SECONDS` | `3600` | Age at which an idle worker is replaced |
+| `WORKER_KILL_RSS_MB` | `2048` | Memory at which a worker is killed during a job |
+| `LO_PROGRAM_DIR` | `/opt/libreoffice/program` | The LibreOffice program folder |
+| `LO_PROFILE_TEMPLATE` | unset | A read-only LibreOffice profile, copied per worker |
+| `PDFIUM_LIB_DIR` | `/opt/pdfium/lib` | The folder of `libpdfium.so` |
+| `POISON_TTL_SECONDS` | `600` | How long a file that crashed a worker is refused; `0` turns it off |
+| `DEFAULT_PAPER` | `A4` | `A4` or `Letter`, for documents without a page size |
+| `TEST_ENGINE` | unset | `fake` or `worker`; only in a build with `test-hooks` |
 
 `FONTS_PATH` (default `/etc/convertd/fonts.json`) names the `{family: metric_compatible}` table for `FONT_SUBSTITUTED`. A missing file only logs a warning, and then no family counts as metric-compatible.
 <!-- /memoria:section -->

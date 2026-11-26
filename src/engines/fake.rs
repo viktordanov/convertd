@@ -17,7 +17,7 @@
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -26,9 +26,9 @@ use tokio::io::AsyncReadExt;
 use crate::domain::conversion::ImageFormat;
 use crate::domain::document::{DocType, Family};
 use crate::domain::engine::{
-    Admission, AssembleJob, Assembled, Converted, DecryptJob, Decrypted, EngineError, EngineTiming,
-    InspectJob, Inspection, OfficeEngine, OfficeJob, PageSize, PdfEngine, ProbedPage, RenderJob,
-    Rendered, RenderedPage, WorkerRef,
+    Admission, Converted, DecryptJob, Decrypted, EngineError, EngineTiming, InspectJob, Inspection,
+    OfficeEngine, OfficeJob, PageSize, PdfEngine, ProbedPage, RenderJob, Rendered, RenderedPage,
+    WorkerRef,
 };
 use crate::domain::readiness::{PoolStatus, Readiness, ReadinessSnapshot, ReadinessStatus};
 
@@ -348,7 +348,7 @@ impl OfficeEngine for FakeOffice {
     }
 }
 
-/// Inspect, decrypt, render and assemble on fake PDFs.
+/// Inspect, decrypt and render on fake PDFs.
 #[derive(Debug)]
 pub struct FakePdf {
     settings: Settings,
@@ -576,33 +576,6 @@ impl PdfEngine for FakePdf {
             workers: vec![self.settings.worker("fake-render")],
         })
     }
-
-    async fn assemble(
-        &self,
-        job: AssembleJob,
-        _adm: Admission,
-        deadline: Instant,
-    ) -> Result<Assembled, EngineError> {
-        let started = Instant::now();
-        let input = job
-            .images
-            .first()
-            .ok_or_else(|| EngineError::Failed("no image to assemble".into()))?;
-        let behavior = self.settings.behavior_for(input).await?;
-        let played = self.settings.play(behavior, deadline).await?;
-        let pdf_bytes = write_capped(
-            &job.output,
-            &pdf_with_pages(played.pages),
-            job.max_output_bytes,
-        )
-        .await?;
-        Ok(Assembled {
-            page_count: played.pages.unwrap_or(1),
-            pdf_bytes,
-            timing: self.settings.timing(started, played.engine),
-            worker: self.settings.worker("fake-render"),
-        })
-    }
 }
 
 /// A white 1×1 image in `format`.
@@ -611,7 +584,6 @@ fn tiny_image(format: ImageFormat, quality: u8) -> Result<Vec<u8>, EngineError> 
     let mut out = Cursor::new(Vec::new());
     let result = match format {
         ImageFormat::Png => pixel.write_to(&mut out, image::ImageFormat::Png),
-        ImageFormat::Webp => pixel.write_to(&mut out, image::ImageFormat::WebP),
         ImageFormat::Jpeg => {
             image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.max(1))
                 .encode_image(&pixel)
@@ -624,18 +596,12 @@ fn tiny_image(format: ImageFormat, quality: u8) -> Result<Vec<u8>, EngineError> 
 /// Readiness for the fakes: ready unless switched off.
 #[derive(Debug)]
 pub struct FakeReadiness {
-    healthy: AtomicBool,
+    healthy: bool,
 }
 
 impl FakeReadiness {
     pub fn new(healthy: bool) -> Self {
-        Self {
-            healthy: AtomicBool::new(healthy),
-        }
-    }
-
-    pub fn set_healthy(&self, healthy: bool) {
-        self.healthy.store(healthy, Ordering::Relaxed);
+        Self { healthy }
     }
 }
 
@@ -647,7 +613,7 @@ impl Readiness for FakeReadiness {
             busy: 0,
         };
         ReadinessSnapshot {
-            status: if self.healthy.load(Ordering::Relaxed) {
+            status: if self.healthy {
                 ReadinessStatus::Ready
             } else {
                 ReadinessStatus::Starting
@@ -701,14 +667,6 @@ impl PdfEngine for Unwired {
     ) -> Result<Rendered, EngineError> {
         Err(EngineError::Unavailable)
     }
-    async fn assemble(
-        &self,
-        _: AssembleJob,
-        _: Admission,
-        _: Instant,
-    ) -> Result<Assembled, EngineError> {
-        Err(EngineError::Unavailable)
-    }
 }
 
 impl Readiness for Unwired {
@@ -736,10 +694,9 @@ mod tests {
         let pdf = dir.join("document.pdf");
         std::fs::write(&pdf, ONE_PAGE_PDF).unwrap();
         let fake = FakePdf::new(FakeBehavior::Succeed);
-        let magic: [(ImageFormat, &[u8]); 3] = [
+        let magic: [(ImageFormat, &[u8]); 2] = [
             (ImageFormat::Png, b"\x89PNG"),
             (ImageFormat::Jpeg, b"\xFF\xD8\xFF"),
-            (ImageFormat::Webp, b"RIFF"),
         ];
         for (format, magic) in magic {
             let job = RenderJob {

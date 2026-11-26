@@ -33,7 +33,7 @@ curl -sS -H "Authorization: Bearer $CONVERT_API_KEY" \
 # First page of an existing PDF as a small thumbnail
 curl -sS -H "Authorization: Bearer $CONVERT_API_KEY" \
   -F file=@report.pdf \
-  -F 'options={"output":"images","pages":"1","images":{"format":"webp","dpi":72,"max_edge":320}};type=application/json' \
+  -F 'options={"output":"images","pages":"1","images":{"format":"jpeg","dpi":72,"max_edge":320}};type=application/json' \
   -o thumb.tar.zst \
   "$CONVERT_HOST/v1/convert"
 ```

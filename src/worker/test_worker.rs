@@ -1,6 +1,6 @@
 //! The `test` role (feature `test-hooks`): no engine, fake results.
 //!
-//! It answers `Convert`, `Inspect`, `Render`, `Assemble` and `Decrypt` with
+//! It answers `Convert`, `Inspect`, `Render` and `Decrypt` with
 //! small valid files, driven by the `FAKE:` markers of INTERFACES.md §10
 //! in the input file, so level B (`TEST_ENGINE=worker`) runs the real pool,
 //! queue, deadline and kill. `TestOp`s act out the faults the pool tests
@@ -13,9 +13,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::ipc::{
-    AssembleArgs, AssembledOut, ConvertArgs, ConvertedOut, DecryptArgs, DecryptedOut, Family,
-    ImageFormat, Init, InspectArgs, InspectedOut, Op, Output, PageGeometry, ProbedPage, RenderArgs,
-    RenderedOut, RenderedPage, TestOp, TestOutput, WorkerError, WorkerErrorKind,
+    ConvertArgs, ConvertedOut, DecryptArgs, DecryptedOut, Family, ImageFormat, Init, InspectArgs,
+    InspectedOut, Op, Output, PageGeometry, ProbedPage, RenderArgs, RenderedOut, RenderedPage,
+    TestOp, TestOutput, WorkerError, WorkerErrorKind,
 };
 use crate::worker::output::{OutputBudget, io_error};
 use crate::worker::sys::{self, RssReader};
@@ -155,9 +155,6 @@ pub fn fake_image(format: ImageFormat) -> Result<Vec<u8>, String> {
             .encode(&rgb, edge, edge, jpeg_encoder::ColorType::Rgb)
             .map_err(|err| err.to_string())?,
         ImageFormat::Png => image::codecs::png::PngEncoder::new(&mut out)
-            .write_image(&rgb, IMAGE_EDGE, IMAGE_EDGE, image::ExtendedColorType::Rgb8)
-            .map_err(|err| err.to_string())?,
-        ImageFormat::Webp => image::codecs::webp::WebPEncoder::new_lossless(&mut out)
             .write_image(&rgb, IMAGE_EDGE, IMAGE_EDGE, image::ExtendedColorType::Rgb8)
             .map_err(|err| err.to_string())?,
     }
@@ -352,24 +349,6 @@ impl TestEngine {
         })
     }
 
-    fn assemble(args: AssembleArgs) -> Result<Output, WorkerError> {
-        let Some(first) = args.images.first() else {
-            return Err(WorkerError::new(
-                WorkerErrorKind::EmptyDocument,
-                "failed to assemble pages: no images",
-            ));
-        };
-        let count = u32::try_from(args.images.len()).unwrap_or(u32::MAX);
-        Self::fake(first, |_| {
-            let mut budget = OutputBudget::new(args.max_output_bytes);
-            let pdf_bytes = budget.write_file(&args.output, &fake_pdf(count))?;
-            Ok(Output::Assembled(AssembledOut {
-                page_count: count,
-                pdf_bytes,
-            }))
-        })
-    }
-
     fn decrypt(args: DecryptArgs) -> Result<Output, WorkerError> {
         Self::fake(&args.pdf, |pages| {
             let mut budget = OutputBudget::new(args.max_output_bytes);
@@ -392,7 +371,6 @@ impl Engine for TestEngine {
             Op::Convert(args) => (Self::convert(args), |t, us| t.convert_us = us),
             Op::Inspect(args) => (Self::inspect(args), |t, us| t.inspect_us = us),
             Op::Render(args) => (Self::render(args), |t, us| t.render_us = us),
-            Op::Assemble(args) => (Self::assemble(args), |t, us| t.render_us = us),
             Op::Decrypt(args) => (Self::decrypt(args), |t, us| t.decrypt_us = us),
         };
         let us = micros(started.elapsed());
@@ -496,7 +474,6 @@ mod tests {
         for (format, magic) in [
             (ImageFormat::Jpeg, &b"\xFF\xD8"[..]),
             (ImageFormat::Png, &b"\x89PNG"[..]),
-            (ImageFormat::Webp, &b"RIFF"[..]),
         ] {
             let bytes = fake_image(format).unwrap();
             assert!(bytes.starts_with(magic), "{format:?}");

@@ -5,7 +5,7 @@
 //!
 //! - upload: `Content-Length` (or `MAX_UPLOAD_BYTES`), trued up to the
 //!   real size afterwards;
-//! - office PDF or image assembly: `min(cap, max(64 MiB, 8 × source))`;
+//! - office PDF: `min(cap, max(64 MiB, 8 × source))`;
 //! - decrypt: source size + 1 MiB;
 //! - pages: the cap, `min(TMP_MAX_BYTES / 4, 4 GiB − 1 MiB)`.
 //!
