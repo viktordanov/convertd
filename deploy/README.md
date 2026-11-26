@@ -14,7 +14,8 @@ Know two facts before you use these files. First, the `runtime` image is proved 
 4. [Deployment](#deployment)
 5. [Shutdown and rollout](#shutdown-and-rollout)
 6. [Worker isolation](#worker-isolation)
-7. [What is verified](#what-is-verified)
+7. [Observability](#observability)
+8. [What is verified](#what-is-verified)
 
 <!-- memoria:section id="contract" files="k8s/base/deployment.yaml k8s/base/service.yaml k8s/base/networkpolicy.yaml k8s/overlays/gvisor/kustomization.yaml" -->
 ## Pod
@@ -122,6 +123,48 @@ The service needs no outbound connection, not even DNS. The deployment must bloc
 - **Plain Docker:** a container with a published port is on a network with egress. Block its egress with a host firewall, or put it on an internal network behind a proxy that you control.
 
 The pod security settings limit what a worker can do on the node: a non-root user, a read-only root, no capabilities, no privilege escalation, `RuntimeDefault` seccomp and no service-account token. They do not separate the workers from each other.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="observability" files="observability/grafana-dashboard.json observability/prometheusrule.yaml" -->
+## Observability
+
+convertd serves Prometheus metrics on `GET /metrics` on the `http` port, without the API key. `deploy/observability/` holds two examples that read them:
+
+- **`grafana-dashboard.json`**: a Grafana dashboard. It shows requests by status and error code, and p50 and p99 per stage. It also shows the queue, workers and restarts of each pool, supervisor memory, the disk budget and the warnings.
+- **`prometheusrule.yaml`**: a `PrometheusRule` for the Prometheus Operator with four alerts. They fire on 429, on 422 `LIMIT_EXCEEDED`, on a full queue and on a disk budget that is 90 % reserved. A comment above each alert gives the reason for its threshold.
+
+The dashboard computes rates over `$__rate_interval`, which is at least four scrape intervals. A scrape interval of 15 s keeps a burst of a few seconds visible. The "Conversions in flight" and "Time in each stage" panels show the mean concurrency from the stage time sums. Thus a burst between two scrapes still counts.
+
+The scrape configuration belongs to the deployment, not to this repository. With the Prometheus Operator, a `ServiceMonitor` like this one selects the Service of the base:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: convertd
+  labels:
+    release: kube-prometheus-stack   # must match the serviceMonitorSelector of your Prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: convertd
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+```
+
+To use the examples:
+
+1. Apply the `ServiceMonitor` in the namespace of convertd.
+2. In Grafana, open **Dashboards**, then **New**, then **Import**.
+3. Upload `grafana-dashboard.json` and select your Prometheus data source.
+4. Set the `release` label in `prometheusrule.yaml` to the value that the `ruleSelector` of your Prometheus selects.
+5. Apply `prometheusrule.yaml` in the same namespace.
+
+convertd does not export the queue capacity, so the queue alert has a fixed threshold of 4 for each pool. If an overlay changes `OFFICE_WORKERS`, `RENDER_WORKERS` or `QUEUE_CAPACITY`, change the thresholds too.
+
+`tests/observability.rs` keeps the files and the code in sync. It starts convertd at level B, sends requests until the metric families exist, and reads `/metrics`. If a file names a `convert_*` metric that the scrape does not have, the test fails. Two cases are exceptions: `convert_responses_cut_total`, and the supervisor gauges on a host that is not Linux. For these, the test looks for the name in `src/observability/metrics.rs`. The test runs in the CI test job, with `test-hooks`. It checks metric names only, not label values, PromQL syntax or a Grafana import.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="verification" files="k8s/base/deployment.yaml k8s/overlays/gvisor/kustomization.yaml k8s/overlays/gvisor/runtimeclass.yaml" -->
