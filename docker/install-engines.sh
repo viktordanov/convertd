@@ -74,8 +74,12 @@ for fam in "Liberation Sans" "Liberation Serif" "Liberation Mono" Carlito Calade
 done
 # Coverage gate: some installed font must have each of these letters, or text in that script
 # renders blank (docs/ledger/fonts-study). One letter per script: Devanagari, Thai, Ethiopic,
-# Han, hiragana, katakana, Hangul, Arabic, Hebrew.
-for cp in 0939 0E01 12A0 4E2D 306E 30AB D55C 0639 05D0; do
+# Han, hiragana, katakana, Hangul, Arabic, Hebrew, then Bengali, Gujarati, Gurmukhi, Kannada,
+# Malayalam, Oriya, Tamil, Telugu, Sinhala, Khmer, Myanmar, Tibetan, Thaana, Syriac,
+# Mongolian, Cherokee, Yi and Ol Chiki.
+for cp in 0939 0E01 12A0 4E2D 306E 30AB D55C 0639 05D0 \
+          09AC 0A95 0A15 0C95 0D15 0B15 0BA4 0C24 0D9A 1797 1019 0F40 0780 0710 \
+          1820 13A0 A000 1C5A; do
   fc-list ":charset=${cp}" family | grep . >/dev/null || { echo "no font has U+${cp}" >&2; exit 1; }
 done
 

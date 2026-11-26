@@ -93,10 +93,10 @@ The font set covers Latin, Greek, Cyrillic, symbols, math and emoji, and the scr
 - Liberation Sans, Serif and Mono, Carlito and Caladea: metric-compatible with Arial, Times New Roman, Courier New, Calibri and Cambria.
 - DejaVu, and the Noto families Sans, Serif, Sans Mono, Sans Symbols, Sans Symbols2, Sans Math and Color Emoji.
 - The fonts that LibreOffice bundles, OpenSymbol among them. They also cover Arabic, Hebrew, Armenian, Georgian and Lao. Their Noto Sans also covers Devanagari.
-- Noto Sans Thai and Noto Sans Ethiopic, from `fonts-noto-core`.
+- From `fonts-noto-core`, one Noto family for each of these scripts: Thai, Ethiopic, Bengali, Gujarati, Gurmukhi, Kannada, Malayalam, Oriya, Tamil, Telugu, Sinhala, Khmer, Myanmar, Tibetan, Thaana, Syriac, Mongolian, Cherokee, Yi and Ol Chiki.
 - WenQuanYi Micro Hei, a fallback for Chinese, Japanese and Korean. It has one glyph form for all three. `FONTS_CJK=1` adds Noto CJK, with the correct glyph forms for each region.
 
-A script with no font renders blank, or as wrong glyphs. The PDF text layer still holds the text, and no warning tells the client. Thus the build also fails if no font has a letter of Devanagari, Thai, Ethiopic, Han, kana, Hangul, Arabic or Hebrew. Other scripts, for example Bengali, Tamil, Khmer and Myanmar, still have no font. `docs/ledger/fonts-study/` gives the measurements.
+A script with no font renders blank, or as wrong glyphs. The PDF text layer still holds the text, and no warning tells the client. Thus the build also fails if no font has a letter of each script in this list, or of Devanagari, Arabic or Hebrew. Rare and historic scripts still have no font, for example Javanese, Balinese and Adlam. `docs/ledger/fonts-study/` gives the measurements.
 
 LibreOffice bundles its own copies of Liberation, Carlito, Caladea, DejaVu, Noto Sans and Noto Serif, and Debian packages install them too. The image keeps one copy of each family: the copy that fontconfig picked when both were present. That is Debian's Carlito and LibreOffice's copy of the others, the same version or a newer one. `dpkg/fonts.cfg` and `dpkg/libreoffice.cfg` drop the other copy, and `build-info.json` stays the same. A new LibreOffice release can change these versions, so the pin procedure checks them again.
 
