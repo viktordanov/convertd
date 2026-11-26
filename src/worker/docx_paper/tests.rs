@@ -362,14 +362,27 @@ fn a_deflated_main_part_is_rewritten_and_every_other_entry_kept_byte_for_byte() 
     // The time, the date and the extra block stay.
     assert_eq!(&record[10..14], &[0x21, 0x43, 0x65, 0x57]);
     assert_eq!(&record[30 + 17..30 + 21], &[0xCA, 0xFE, 0, 0]);
-    // The pre-flight reads the copy.
+    // The copy names its main part as the source did.
     let dir = Scratch::new();
     let path = dir.path().join("copy.docx");
     std::fs::write(&path, &copy).unwrap();
+    let mut file = File::open(&path).unwrap();
     assert_eq!(
-        crate::preflight::word_main_part(&path).as_deref(),
+        main_part(&mut file, &entries(&copy)).as_deref(),
         Some("word/document.xml")
     );
+}
+
+#[test]
+fn relationship_targets_resolve() {
+    assert_eq!(normalize("/word/document.xml"), "word/document.xml");
+    assert_eq!(normalize("./word/../word/main.xml"), "word/main.xml");
+}
+
+#[test]
+fn only_markup_compatibility_counts_as_a_branch() {
+    let xml = doc(r#"<w:sectPr><v:AlternateContent xmlns:v="vendor"/></w:sectPr>"#);
+    assert!(fixed(&xml, Paper::A4).unwrap().contains(A4));
 }
 
 #[test]

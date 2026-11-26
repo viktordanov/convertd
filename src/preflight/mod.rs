@@ -71,14 +71,6 @@ pub fn scan(source: &Path, family: Family) -> SourceFacts {
     facts
 }
 
-/// The main part of a Word package, from `_rels/.rels`, or
-/// `word/document.xml` when it names none. `None` when `source` is not a
-/// readable ZIP package. For the office worker's paper fix.
-pub fn word_main_part(source: &Path) -> Option<String> {
-    let mut package = Package::open(File::open(source).ok()?)?;
-    Some(docx::main_part(&mut package).unwrap_or_else(|| "word/document.xml".to_owned()))
-}
-
 fn read_head(file: &mut File, head: &mut [u8]) -> usize {
     let mut read = 0;
     while read < head.len() {

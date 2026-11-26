@@ -46,6 +46,7 @@ use crate::engines::config::Paper;
 
 const W_NS: &[u8] = b"http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const W_STRICT_NS: &[u8] = b"http://purl.oclc.org/ooxml/wordprocessingml/main";
+const MC_NS: &[u8] = b"http://schemas.openxmlformats.org/markup-compatibility/2006";
 
 /// Inflated bytes of the main part that are read, the pre-flight's
 /// per-request cap.
@@ -291,6 +292,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
         let (ns, event) = xml
             .read_resolved_event_into(&mut buf)
             .map_err(|_| Skip::Unreadable)?;
+        let mc = matches!(ns, ResolveResult::Bound(Namespace(n)) if n == MC_NS);
         let ns = word_ns(&ns);
         let after = skipped + xml.buffer_position();
         if after > cap {
@@ -312,12 +314,12 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     (Some(_), b"pPr") => Tag::PPr,
                     (Some(_), b"sectPr") => Tag::SectPr,
                     (Some(_), b"sectPrChange") => Tag::SectPrChange,
-                    (_, b"AlternateContent") => Tag::Alternate,
+                    _ if mc && local == b"AlternateContent" => Tag::Alternate,
                     _ => Tag::Other,
                 };
                 let depth = stack.len();
                 if let Some(s) = open.as_mut() {
-                    if local == b"AlternateContent" {
+                    if tag == Tag::Alternate {
                         return Err(Skip::Unsupported);
                     }
                     if depth == s.depth + 1 {
@@ -456,6 +458,53 @@ pub fn fix_part(xml: &[u8], paper: Paper) -> Result<Option<Vec<u8>>, Skip> {
     let mut out = Vec::with_capacity(xml.len() + 256);
     apply(xml, &plan, &mut out).map_err(|_| Skip::Unreadable)?;
     Ok(Some(out))
+}
+
+/// The main part that `_rels/.rels` names, or `word/document.xml` when it
+/// names none, as the pre-flight finds it.
+pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Option<String> {
+    let Some((_, rels)) = entries.iter().find(|(name, _)| name == "_rels/.rels") else {
+        return Some("word/document.xml".to_owned());
+    };
+    let bytes = zip_scan::read_entry(file, rels, crate::preflight::PART_CAP as usize).ok()??;
+    let mut xml = quick_xml::Reader::from_reader(bytes.as_slice());
+    let mut buf = Vec::new();
+    loop {
+        match xml.read_event_into(&mut buf).ok()? {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Relationship" => {
+                let attr = |key: &[u8]| {
+                    e.attributes()
+                        .flatten()
+                        .find(|a| a.key.local_name().as_ref() == key)
+                        .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok())
+                        .map(|v| v.into_owned())
+                };
+                if attr(b"Type").is_some_and(|t| t.ends_with("/officeDocument"))
+                    && let Some(target) = attr(b"Target")
+                {
+                    return Some(normalize(&target));
+                }
+            }
+            Event::Eof => return Some("word/document.xml".to_owned()),
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+/// A package-relative target with `.` and `..` resolved.
+fn normalize(target: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for segment in target.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out.join("/")
 }
 
 /// One central-directory record, as found in the directory bytes.
@@ -606,8 +655,8 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
     if cd_size > DIRECTORY_CAP || cd_offset > u64::from(u32::MAX) {
         return Err(Skip::Unsupported);
     }
-    let main = crate::preflight::word_main_part(source).ok_or(Skip::Unsupported)?;
     let entries = zip_scan::list(&mut file, size).map_err(|_| Skip::Unsupported)?;
+    let main = main_part(&mut file, &entries).ok_or(Skip::Unsupported)?;
     let entry = entries
         .iter()
         .find(|(name, _)| *name == main)
