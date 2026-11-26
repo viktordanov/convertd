@@ -177,7 +177,7 @@ The dashboard computes rates over `$__rate_interval`, which is at least four scr
 
 The "Conversions in flight" and "Time in each stage" panels estimate the concurrency from the stage time sums. Thus a burst between two scrapes still counts. Each request adds its time when it finishes, so the estimate is exact only under steady load. An upload that fails records no stage time. A stage and family series starts at its first request, so the first burst of a new pod or family has no rate.
 
-The "CPU per job" row reads `convert_worker_cpu_seconds`, the user and system CPU time of each worker call. "Cores per pool" is the rate of its sum, the cores that each pool used. Each call adds all of its CPU time when its reply arrives. Thus a call longer than the rate window shows as idle while it runs, and above its real cores when it ends. The panel also shows a 5 m series, which smooths long calls. A call that times out, crashes or passes its kill RSS records nothing.
+The "CPU per job" row reads `convert_worker_cpu_seconds`, the user and system CPU time of each worker call. "Cores per pool" is the rate of its sum, the cores that each pool used. Each call adds all of its CPU time when its reply arrives. Thus a call longer than the rate window shows as idle while it runs, and above its real cores when it ends. The panel also shows a series over the `cpu_window` variable, 5 m by default, which smooths long calls. Keep `cpu_window` at least four scrape intervals. A "CPU seconds since the process started" panel shows the first call of a new pod or operation, which a rate misses. A call that times out, crashes or passes its kill RSS records nothing.
 
 ### Alerts
 
