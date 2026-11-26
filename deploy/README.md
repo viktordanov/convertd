@@ -135,6 +135,8 @@ convertd serves Prometheus metrics on `GET /metrics` on the `http` port, without
 
 The dashboard computes rates over `$__rate_interval`, which is at least four scrape intervals. Each query takes its minimum step from the dashboard variable `scrape_interval`, 15 s by default, the interval of the `ServiceMonitor` that follows. Grafana then uses it as the scrape interval, whatever the data source says. With 15 s, a rate window can be as short as 1 minute. If your scrape interval is longer, type it in the variable. The "Conversions in flight" and "Time in each stage" panels estimate the concurrency from the stage time sums. Thus a burst between two scrapes still counts. Each request adds its time when it finishes, so the estimate is exact only under steady load. An upload that fails records no stage time, so stalled uploads that hold permits do not show there. A stage and family series starts at its first request. Thus the first burst of a new pod or family has no rate.
 
+The dashboard tells processes apart by their `namespace` and `pod` labels, which a `ServiceMonitor` adds. A scrape without them merges the counters of all processes.
+
 The scrape configuration belongs to the deployment, not to this repository. With the Prometheus Operator, a `ServiceMonitor` like this one selects the Service of the base:
 
 ```yaml
