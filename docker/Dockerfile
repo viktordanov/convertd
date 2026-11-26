@@ -228,10 +228,13 @@ COPY --from=engines /out/pdfium /opt/pdfium
 COPY --from=paper-locales /out/ /usr/lib/locale/
 # Gate: LC_PAPER must load without a diagnostic and give the paper that DEFAULT_PAPER promises
 # (glibc stores mm). The C locale is A4 too, so a missing en_GB would still print 297 210.
-# The install layer must also keep ooSetupSystemLocale empty (rs-convert-paper.xcd), and the
-# gate checks that too.
-RUN grep -q 'oor:name="ooSetupSystemLocale" oor:finalized="true"' \
-      /opt/libreoffice/share/registry/rs-convert-paper.xcd; \
+# The install layer must also keep ooSetupSystemLocale finalized and empty, after main.xcd
+# (rs-convert-paper.xcd). The gate compares the file without white space.
+RUN xcd="$(tr -d ' \t\n' </opt/libreoffice/share/registry/rs-convert-paper.xcd)"; \
+    for want in '<dependencyfile="main"/>' \
+      '<oor:component-dataoor:package="org.openoffice"oor:name="Setup"><nodeoor:name="L10N"><propoor:name="ooSetupSystemLocale"oor:finalized="true"><value></value></prop></node></oor:component-data>'; do \
+      [[ "${xcd}" == *"${want}"* ]] || { echo "rs-convert-paper.xcd lacks ${want}" >&2; exit 1; }; \
+    done; \
     for spec in "en_GB.UTF-8 en_GB.utf8 297 210" "en_US.UTF-8 en_US.utf8 279 216"; do \
       read -r name dir height width <<<"${spec}"; \
       locale -a | grep -qxF "${dir}" || { echo "locale ${dir} is not installed" >&2; exit 1; }; \
