@@ -54,6 +54,7 @@ The integration tests:
 | `detect.rs` | Format detection from the bytes, with ZIP and OLE2 files that the test builds, hostile OLE2 directories included | No |
 | `errors.rs` | Errors over HTTP: auth, request IDs, fallbacks and the panic layer | No |
 | `ops.rs` | The probes, `/v1/capabilities`, `/metrics`, `convertd healthcheck` and the drain | Two tests, for `SIGTERM` on the binary at level A and level B |
+| `observability.rs` | Every metric that `deploy/observability/` names is on `/metrics`: the scan of the files, and a scrape of the binary at level B after a few requests | The scrape only |
 | `openapi_spec.rs` | The cheap invariants of the spec that `convertd openapi` emits | No |
 | `upload.rs` | The streamed upload: digests, part rules, caps, the disk budget, and stalled, slow and vanished clients | No |
 | `pool.rs` | The worker pool with `test` workers (level B), including the RSS kill of a worker during its call | Yes |
@@ -66,7 +67,6 @@ The integration tests:
 | `engines_render.rs` | The render worker with the real PDFium, through the pool and the `PdfEngine` adapter | No |
 | `peak_heap.rs` | Heap per request with a counting allocator: the peak does not grow from 16 MiB to 100 MiB uploads, a small request stays under 408 allocations, and a hostile OLE2 upload stays bounded during detection | No |
 | `rss_linux.rs` | The idle RSS of the supervisor on Linux, at most 30 MB. The measurement is `#[ignore]`, so only its parsers run by default | The measurement only |
-| `observability.rs` | Every metric that `deploy/observability/` names is on `/metrics`: the scan of the files, and a scrape of the binary at level B after a few requests | The scrape only |
 
 The engine tests need `LO_PROGRAM_DIR` with `soffice.bin`, `PDFIUM_LIB_DIR` with `libpdfium.so`, or both. Some also need `CONVERTD_CORPUS_DIR`, the output folder of `corpus/generate.py`. If a variable is not set, or its folder does not hold that file, the test prints `skipped` and passes without a check. One exception: when `CONVERTD_CORPUS_DIR` is set, a missing corpus file fails the encrypted-file test in `engines_office.rs`, so a renamed corpus file cannot hide. Thus a pass on a host without the engines proves nothing about the engines.
 
