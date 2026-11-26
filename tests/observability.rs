@@ -507,6 +507,7 @@ mod level_b {
     pub struct Served {
         child: std::process::Child,
         port: u16,
+        dir: std::path::PathBuf,
     }
 
     #[allow(
@@ -515,7 +516,8 @@ mod level_b {
     )]
     impl Served {
         pub fn start() -> Self {
-            let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("observability");
+            let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+                .join(format!("observability-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_convertd"))
@@ -538,7 +540,11 @@ mod level_b {
             // The server binds port 0 and logs its address on stdout; the
             // reader drains the log to the end so the child never blocks.
             let stdout = child.stdout.take().unwrap();
-            let mut served = Self { child, port: 0 };
+            let mut served = Self {
+                child,
+                port: 0,
+                dir: dir.clone(),
+            };
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 use std::io::BufRead;
@@ -625,6 +631,7 @@ mod level_b {
                 let _ = self.child.kill();
                 let _ = self.child.wait();
             }
+            let _ = std::fs::remove_dir_all(&self.dir);
         }
     }
 
