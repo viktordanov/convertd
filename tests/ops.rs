@@ -754,3 +754,54 @@ fn slow_a_queue_timeout_reports_its_wait_as_queue() {
     );
     assert_eq!(status_line(&busy.join().unwrap()), 200);
 }
+
+/// Item 010: at level B the pools record each worker call's CPU time,
+/// with its own buckets from 1 ms to 60 s, by pool and operation.
+#[cfg(feature = "test-hooks")]
+#[test]
+fn level_b_metrics_show_worker_cpu() {
+    let served = Served::start(
+        "worker-cpu",
+        &[
+            ("TEST_ENGINE", "worker"),
+            ("OFFICE_WORKERS", "1"),
+            ("RENDER_WORKERS", "1"),
+        ],
+    );
+    let answer = exchange(
+        &mut served.connect(),
+        &raw_convert(&docx(), Some(r#"{"output":"images"}"#)),
+    );
+    let head = String::from_utf8_lossy(&answer[..answer.len().min(600)]).into_owned();
+    assert_eq!(status_line(&answer), 200, "{head}");
+    let text = served.get("/metrics");
+    assert!(
+        text.contains("# TYPE convert_worker_cpu_seconds histogram"),
+        "{text}"
+    );
+    let buckets: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("convert_worker_cpu_seconds_bucket{"))
+        .collect();
+    for (pool, op) in [("office", "convert"), ("render", "inspect"), ("render", "render")] {
+        let pool = format!(r#"pool="{pool}""#);
+        let op = format!(r#"op="{op}""#);
+        let series: Vec<&&str> = buckets
+            .iter()
+            .filter(|l| l.contains(&pool) && l.contains(&op))
+            .collect();
+        assert!(!series.is_empty(), "no {pool} {op} buckets:\n{text}");
+        assert!(
+            series.iter().any(|l| l.contains(r#"le="0.001""#))
+                && series.iter().any(|l| l.contains(r#"le="60""#)),
+            "{pool} {op} lacks the 1 ms to 60 s buckets:\n{text}"
+        );
+        assert!(
+            !series.iter().any(|l| l.contains(r#"le="0.0005""#)),
+            "{pool} {op} has the generic seconds buckets:\n{text}"
+        );
+    }
+    assert!(!text.contains(r#"op="ping""#), "{text}");
+    served.sigterm();
+    assert!(served.wait_exit().success());
+}

@@ -971,6 +971,7 @@ impl Lease {
         let id = worker.next_id;
         worker.next_id += 1;
         self.in_flight = true;
+        let op_name = op.name();
         let request = Request::Call(Call { id, op });
         let at = tokio::time::Instant::from_std(deadline);
         let pid = worker.child.pid();
@@ -1006,6 +1007,14 @@ impl Lease {
             Ok(Exchange::Reply(reply)) => {
                 worker.jobs = reply.job;
                 worker.rss = reply.rss_bytes;
+                // Every reply, an engine error included: the CPU was spent.
+                if op_name != "ping" {
+                    crate::observability::metrics::worker_cpu(
+                        self.pool.spec.name,
+                        op_name,
+                        Duration::from_micros(reply.engine.cpu_us),
+                    );
+                }
                 Ok(*reply)
             }
             Err(_) => {

@@ -4,7 +4,8 @@
 //!
 //! Names follow `PLAN.md` and INTERFACES §11-12. Lane 002 records its own
 //! pool metrics (`convert_workers`, `convert_worker_*`, `convert_queue_depth`)
-//! through the same recorder.
+//! through the same recorder; the pool records a worker call's CPU time
+//! through [`worker_cpu`].
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -16,6 +17,10 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 const SECONDS_BUCKETS: &[f64] = &[
     0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
     60.0, 120.0, 210.0,
+];
+/// Bucket bounds in seconds for `convert_worker_cpu_seconds`: 1 ms to 60 s.
+const CPU_BUCKETS: &[f64] = &[
+    0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
 ];
 /// Bucket bounds in bytes for `convert_input_bytes`.
 const BYTES_BUCKETS: &[f64] = &[1e4, 1e5, 1e6, 5e6, 1e7, 2.5e7, 5e7, 1e8, 1.25e8];
@@ -35,6 +40,13 @@ pub fn handle() -> &'static PrometheusHandle {
                 b.set_buckets_for_metric(
                     metrics_exporter_prometheus::Matcher::Full("convert_input_bytes".into()),
                     BYTES_BUCKETS,
+                )
+            })
+            // A full match wins over the `_seconds` suffix.
+            .and_then(|b| {
+                b.set_buckets_for_metric(
+                    metrics_exporter_prometheus::Matcher::Full("convert_worker_cpu_seconds".into()),
+                    CPU_BUCKETS,
                 )
             })
             .unwrap_or_else(|_| PrometheusBuilder::new());
@@ -122,6 +134,15 @@ pub fn pages_rendered(format: &'static str, pages: u64) {
 /// `convert_requests_total`, which counted the request at its head.
 pub fn response_cut(code: &'static str) {
     counter!("convert_responses_cut_total", "code" => code).increment(1);
+}
+
+/// One worker call's CPU time, user plus system, as the worker reported it:
+/// `convert_worker_cpu_seconds{pool,op}`. The pool records every reply,
+/// an engine error included; a call that times out, crashes or is killed
+/// sends no reply and records nothing.
+pub fn worker_cpu(pool: &'static str, op: &'static str, cpu: Duration) {
+    histogram!("convert_worker_cpu_seconds", "pool" => pool, "op" => op)
+        .record(cpu.as_secs_f64());
 }
 
 /// The four supervisor gauges of INTERFACES §11, from `/proc/self`
