@@ -516,6 +516,7 @@ fn content_types(main: &str) -> String {
 }
 
 const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const PML: &str = "http://schemas.openxmlformats.org/presentationml/2006/main";
 
 fn rels(entries: &[(&str, &str, &str)]) -> String {
     let mut out = String::from(
@@ -638,7 +639,7 @@ fn deck(hidden: &[bool]) -> Vec<u8> {
         (
             "ppt/presentation.xml".to_owned(),
             format!(
-                r#"<p:presentation xmlns:p="p" xmlns:r="{REL}"><p:sldIdLst>{list}</p:sldIdLst></p:presentation>"#
+                r#"<p:presentation xmlns:p="{PML}" xmlns:r="{REL}"><p:sldIdLst>{list}</p:sldIdLst></p:presentation>"#
             ),
         ),
     ];
@@ -646,7 +647,7 @@ fn deck(hidden: &[bool]) -> Vec<u8> {
         let show = if is_hidden { r#" show="0""# } else { "" };
         entries.push((
             format!("ppt/slides/slide{}.xml", i + 1),
-            format!(r#"<p:sld xmlns:p="p"{show}/>"#),
+            format!(r#"<p:sld xmlns:p="{PML}"{show}/>"#),
         ));
     }
     let entries: Vec<(&str, String)> = entries

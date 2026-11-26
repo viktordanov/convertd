@@ -998,16 +998,60 @@ fn pptx_with_a_compatibility_block_in_the_slide_list_skips_the_list() {
         &pptx_custom(&slides, Some(Some(list)), ""),
         Family::Presentation,
     );
+    assert_unknown_slides(&facts);
+}
+
+/// No slide list, no declared count, and both checks that read the slides
+/// skipped: a partial list would give wrong marks or miss a font warning.
+fn assert_unknown_slides(facts: &SourceFacts) {
     assert_eq!(facts.slides, None);
     assert_eq!(facts.declared_pages, None);
-    assert!(
-        facts
-            .skipped
-            .iter()
-            .any(|(check, _)| *check == Check::PageCount),
-        "{:?}",
-        facts.skipped
+    for check in [Check::PageCount, Check::Fonts] {
+        assert!(
+            facts.skipped.iter().any(|(c, _)| *c == check),
+            "{check:?} not skipped: {:?}",
+            facts.skipped
+        );
+    }
+}
+
+#[test]
+fn pptx_with_an_unreadable_slide_list_entry_skips_the_list() {
+    let slides = [("p:sld", ""), ("p:sld show=\"0\"", "")];
+    let cases = [
+        // Another vocabulary's sldId in the list.
+        concat!(
+            r#"<p:sldId id="256" r:id="rId2"/>"#,
+            r#"<ext:sldId xmlns:ext="urn:example:ext" id="257" r:id="rId3"/>"#,
+        ),
+        // A slide entry without a relationship id.
+        r#"<p:sldId id="256" r:id="rId2"/><p:sldId id="257"/>"#,
+    ];
+    for list in cases {
+        let facts = scan_bytes(
+            "entry.pptx",
+            &pptx_custom(&slides, Some(Some(list)), ""),
+            Family::Presentation,
+        );
+        assert_unknown_slides(&facts);
+    }
+}
+
+#[test]
+fn pptx_with_too_many_namespace_declarations_skips_the_list() {
+    // Each slide entry would search every declaration: past the cap, the
+    // slides are unknown.
+    let slides = [("p:sld", "")];
+    let decls: String = (0..300)
+        .map(|i| format!(r#" xmlns:n{i}="urn:example:{i}""#))
+        .collect();
+    let list = format!(r#"<p:sldId{decls} id="256" r:id="rId2"/>"#);
+    let facts = scan_bytes(
+        "decls.pptx",
+        &pptx_custom(&slides, Some(Some(&list)), ""),
+        Family::Presentation,
     );
+    assert_unknown_slides(&facts);
 }
 
 #[test]

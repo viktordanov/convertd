@@ -9,10 +9,13 @@
 //! the manifest can mark the pages of hidden slides.
 //!
 //! Only the `p:sldId` children of the root's `p:sldIdLst` count, and each
-//! one's `id` in the relationship namespace (transitional or strict), under
-//! any prefix. Another child of the list, such as `mc:AlternateContent`,
-//! leaves the slides unknown: V1 is skipped as malformed, and there is no
-//! slide list.
+//! one's `id` in the relationship namespace. Both match by namespace URI,
+//! transitional or strict, under any prefix. The slides are unknown when
+//! the list holds another element (an extension's `sldId`,
+//! `mc:AlternateContent`), an entry has no relationship `id`, or an element
+//! declares more than 64 namespaces. Then V1 and V2 are skipped as
+//! malformed, and there is no slide list: a partial list gives wrong marks
+//! and misses font warnings.
 //!
 //! V2 reads `a:latin@typeface` from the slides, and from only the layouts
 //! and masters that a slide reaches (slide to layout to master).
@@ -21,6 +24,8 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::docx::{ThemeFonts, main_part, theme_fonts};
+use quick_xml::events::BytesStart;
+
 use super::package::{Package, XmlEvent, attr};
 use super::{FONT_SCAN_CAP, PART_CAP, add_font};
 use crate::domain::verification::{Check, DeclaredPages, SkipReason, Slides, SourceFacts};
@@ -48,68 +53,25 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
             return;
         }
     };
-    let mut ids = Vec::new();
-    let mut too_many = false;
-    // Only `p:sldId` children of the root's `p:sldIdLst` are slides; an
-    // extension can refer to a slide too. Their `id` is the one in the
-    // relationship namespace, whatever its prefix.
-    let mut depth = 0usize;
-    let mut in_list = false;
-    // Another element in the list, such as `mc:AlternateContent`: which
-    // slides an exporter takes is unknown.
-    let mut foreign = false;
-    // The prefixes that the root and the list declare.
-    let mut scopes: Vec<Vec<(Vec<u8>, bool)>> = Vec::new();
-    if let Err(reason) = package.xml_events(&main, PART_CAP, |event| {
-        match event {
-            XmlEvent::Start(e) | XmlEvent::Empty(e) => {
-                let local = e.local_name();
-                let opens = matches!(event, XmlEvent::Start(_));
-                if depth == 1 && local.as_ref() == b"sldIdLst" {
-                    in_list = opens;
-                } else if depth == 2 && in_list {
-                    if local.as_ref() != b"sldId" {
-                        foreign = true;
-                    } else if let Some(id) = relationship_id(e, &scopes) {
-                        if ids.len() >= MAX_SLIDES {
-                            too_many = true;
-                            return false;
-                        }
-                        ids.push(id);
-                    }
-                }
-                if opens {
-                    if depth < 2 {
-                        scopes.push(declarations(e));
-                    }
-                    depth += 1;
-                }
-            }
-            XmlEvent::End => {
-                depth = depth.saturating_sub(1);
-                if depth < 2 {
-                    scopes.truncate(depth);
-                }
-                if depth == 1 {
-                    in_list = false;
-                }
-            }
-            XmlEvent::Text => {}
-        }
-        true
-    }) {
+    let mut list = SlideList::default();
+    if let Err(reason) = package.xml_events(&main, PART_CAP, |event| list.on_event(&event)) {
         facts.skipped.push((Check::PageCount, reason));
         facts.skipped.push((Check::Fonts, reason));
         return;
     }
+    if list.unknown {
+        // A partial list gives wrong marks and misses font warnings.
+        facts
+            .skipped
+            .push((Check::PageCount, SkipReason::MalformedXml));
+        facts.skipped.push((Check::Fonts, SkipReason::MalformedXml));
+        return;
+    }
+    let SlideList { ids, too_many, .. } = list;
 
     // V1: the visible slides, from each slide's root start tag.
     let mut slides = Vec::with_capacity(ids.len());
-    let mut page_skip = if too_many {
-        Some(SkipReason::CapReached)
-    } else {
-        foreign.then_some(SkipReason::MalformedXml)
-    };
+    let mut page_skip = too_many.then_some(SkipReason::CapReached);
     let mut visible = 0u32;
     let mut hidden_at = Vec::new();
     for (position, id) in (1u32..).zip(&ids) {
@@ -204,49 +166,167 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
     fonts.extend(found);
 }
 
+/// The PresentationML namespaces of transitional and strict OOXML.
+const PRESENTATIONML: [&[u8]; 2] = [
+    b"http://schemas.openxmlformats.org/presentationml/2006/main",
+    b"http://purl.oclc.org/ooxml/presentationml/main",
+];
 /// The relationship namespaces of transitional and strict OOXML.
 const RELATIONSHIPS: [&[u8]; 2] = [
     b"http://schemas.openxmlformats.org/officeDocument/2006/relationships",
     b"http://purl.oclc.org/ooxml/officeDocument/relationships",
 ];
+/// The namespace declarations kept for the root and the slide list, and
+/// for one slide entry. Past them the slide list is unknown, so a lookup
+/// stays bounded.
+const MAX_DECLARATIONS: usize = 256;
+const MAX_OWN_DECLARATIONS: usize = 64;
 
-/// The prefixes that `e` declares, each with whether it names the
-/// relationship namespace.
-fn declarations(e: &quick_xml::events::BytesStart<'_>) -> Vec<(Vec<u8>, bool)> {
-    e.attributes()
-        .flatten()
-        .filter(|a| a.key.prefix().map(|p| p.into_inner()) == Some(b"xmlns".as_slice()))
-        .map(|a| {
-            let rel = RELATIONSHIPS.contains(&a.value.as_ref());
-            (a.key.local_name().as_ref().to_vec(), rel)
-        })
-        .collect()
+/// The namespaces the slide list reads, classified once per declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ns {
+    PresentationMl,
+    Relationships,
+    Other,
 }
 
-/// The relationship-namespace `id` of a `p:sldId`: the prefix resolves
-/// through the element's own declarations, then the list's, then the root's.
-fn relationship_id(
-    e: &quick_xml::events::BytesStart<'_>,
-    scopes: &[Vec<(Vec<u8>, bool)>],
-) -> Option<String> {
-    let own = declarations(e);
-    e.attributes().flatten().find_map(|a| {
-        let prefix = a.key.prefix()?;
-        if a.key.local_name().as_ref() != b"id" {
+impl Ns {
+    fn of(uri: &[u8]) -> Ns {
+        if PRESENTATIONML.contains(&uri) {
+            Ns::PresentationMl
+        } else if RELATIONSHIPS.contains(&uri) {
+            Ns::Relationships
+        } else {
+            Ns::Other
+        }
+    }
+}
+
+/// The `p:sldId` entries of the root's `p:sldIdLst`, in order. Anything the
+/// scan cannot read for sure makes the list unknown: another element in the
+/// list (an extension's `sldId`, `mc:AlternateContent`), an entry without a
+/// relationship `id`, or too many namespace declarations.
+#[derive(Debug, Default)]
+struct SlideList {
+    ids: Vec<String>,
+    too_many: bool,
+    unknown: bool,
+    depth: usize,
+    in_list: bool,
+    /// The prefixes in scope at the root, and inside the list.
+    root: HashMap<Vec<u8>, Ns>,
+    list: HashMap<Vec<u8>, Ns>,
+}
+
+/// The prefixes that `e` declares, or `None` past `cap`.
+fn declarations(e: &BytesStart<'_>, cap: usize) -> Option<Vec<(Vec<u8>, Ns)>> {
+    let mut out = Vec::new();
+    for a in e.attributes().flatten() {
+        let prefix = if a.key.as_ref() == b"xmlns" {
+            Vec::new()
+        } else if a.key.prefix().map(|p| p.into_inner()) == Some(b"xmlns".as_slice()) {
+            a.key.local_name().as_ref().to_vec()
+        } else {
+            continue;
+        };
+        if out.len() >= cap {
             return None;
         }
-        let rel = own
-            .iter()
-            .chain(scopes.iter().rev().flatten())
-            .find(|(p, _)| p.as_slice() == prefix.as_ref())
-            .is_some_and(|&(_, rel)| rel);
-        if !rel {
-            return None;
+        out.push((prefix, Ns::of(&a.value)));
+    }
+    Some(out)
+}
+
+impl SlideList {
+    fn on_event(&mut self, event: &XmlEvent<'_, '_>) -> bool {
+        match event {
+            XmlEvent::Start(e) | XmlEvent::Empty(e) => {
+                let opens = matches!(event, XmlEvent::Start(_));
+                if self.depth <= 2 && !self.on_element(e, opens) {
+                    return false;
+                }
+                if opens {
+                    self.depth += 1;
+                }
+            }
+            XmlEvent::End => {
+                self.depth = self.depth.saturating_sub(1);
+                if self.depth == 1 {
+                    self.in_list = false;
+                }
+            }
+            XmlEvent::Text => {}
         }
-        a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
-            .ok()
-            .map(|v| v.into_owned())
-    })
+        true
+    }
+
+    /// Reads an element at depth 0 to 2. `false` stops the scan.
+    fn on_element(&mut self, e: &BytesStart<'_>, opens: bool) -> bool {
+        let Some(own) = declarations(e, MAX_OWN_DECLARATIONS) else {
+            self.unknown = true;
+            return false;
+        };
+        let scope = if self.in_list { &self.list } else { &self.root };
+        let resolve = |prefix: &[u8]| {
+            own.iter()
+                .find(|(p, _)| p == prefix)
+                .map(|&(_, ns)| ns)
+                .or_else(|| scope.get(prefix).copied())
+                .unwrap_or(Ns::Other)
+        };
+        let name = e.name();
+        let element_ns = resolve(name.prefix().map(|p| p.into_inner()).unwrap_or(b""));
+        let local = e.local_name();
+        match self.depth {
+            0 => {
+                self.root = own.into_iter().collect();
+            }
+            1 if local.as_ref() == b"sldIdLst" && element_ns == Ns::PresentationMl => {
+                if !opens {
+                    return true;
+                }
+                let mut list = self.root.clone();
+                list.extend(own);
+                self.list = list;
+                self.in_list = true;
+            }
+            2 if self.in_list => {
+                if local.as_ref() != b"sldId" || element_ns != Ns::PresentationMl {
+                    self.unknown = true;
+                    return false;
+                }
+                let id = e.attributes().flatten().find_map(|a| {
+                    let prefix = a.key.prefix()?;
+                    if a.key.local_name().as_ref() != b"id"
+                        || resolve(prefix.as_ref()) != Ns::Relationships
+                    {
+                        return None;
+                    }
+                    a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                        .ok()
+                        .map(|v| v.into_owned())
+                });
+                let Some(id) = id else {
+                    self.unknown = true;
+                    return false;
+                };
+                if self.ids.len() >= MAX_SLIDES {
+                    self.too_many = true;
+                    return false;
+                }
+                self.ids.push(id);
+            }
+            _ => {}
+        }
+        if self.root.len() + self.list.len() > 2 * MAX_DECLARATIONS
+            || self.root.len() > MAX_DECLARATIONS
+            || self.list.len() > MAX_DECLARATIONS
+        {
+            self.unknown = true;
+            return false;
+        }
+        true
+    }
 }
 
 /// The first target of `part`'s relationships whose type ends with `kind`.

@@ -319,29 +319,76 @@ impl Deck {
     }
 
     /// Whether the slide style `name` hides its page; `None` when a style
-    /// in the chain is not defined.
-    fn hides(&self, name: &str) -> Option<bool> {
-        let mut style = self.automatic.get(name).or_else(|| self.common.get(name))?;
+    /// in the chain is not defined. `common` caches the common styles that
+    /// were resolved.
+    fn hides<'a>(
+        &'a self,
+        name: &'a str,
+        common: &mut HashMap<&'a str, Option<bool>>,
+    ) -> Option<bool> {
+        let (style, from_common) = match self.automatic.get(name) {
+            Some(style) => (style, false),
+            None => (self.common.get(name)?, true),
+        };
+        if from_common {
+            return self.common_hides(name, common);
+        }
+        match (style.hidden, &style.parent) {
+            (Some(hidden), _) => Some(hidden),
+            (None, Some(parent)) => self.common_hides(parent, common),
+            (None, None) => Some(false),
+        }
+    }
+
+    /// `hides` for a common style, once per name.
+    fn common_hides<'a>(
+        &'a self,
+        name: &'a str,
+        cache: &mut HashMap<&'a str, Option<bool>>,
+    ) -> Option<bool> {
+        if let Some(&known) = cache.get(name) {
+            return known;
+        }
+        let mut result = None;
+        let mut at = name;
         for _ in 0..MAX_STYLE_DEPTH {
+            let Some(style) = self.common.get(at) else {
+                break;
+            };
             if let Some(hidden) = style.hidden {
-                return Some(hidden);
+                result = Some(hidden);
+                break;
             }
             match &style.parent {
-                Some(parent) => style = self.common.get(parent)?,
-                None => return Some(false),
+                Some(parent) => at = parent,
+                None => {
+                    result = Some(false);
+                    break;
+                }
             }
         }
-        None
+        cache.insert(name, result);
+        result
     }
 
     fn slides(&self) -> Option<Slides> {
         if self.unknown {
             return None;
         }
+        // Each page style is resolved once, whatever the number of pages.
+        let mut pages: HashMap<&str, Option<bool>> = HashMap::new();
+        let mut common = HashMap::new();
         let mut hidden = Vec::new();
         for (position, style) in (1u32..).zip(&self.pages) {
             let is_hidden = match style {
-                Some(name) => self.hides(name)?,
+                Some(name) => match pages.get(name.as_str()) {
+                    Some(&known) => known?,
+                    None => {
+                        let known = self.hides(name, &mut common);
+                        pages.insert(name, known);
+                        known?
+                    }
+                },
                 None => false,
             };
             if is_hidden {
