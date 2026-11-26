@@ -79,7 +79,7 @@ mod measured {
         Fake,
     }
 
-    /// The engines to run, or `None` with the reason to skip.
+    /// The engines to run, or why none can run.
     fn engines() -> Result<Engines, String> {
         if std::env::var("RSS_ENGINE").as_deref() == Ok("fake") {
             return if cfg!(feature = "test-hooks") {
@@ -104,16 +104,23 @@ mod measured {
         Ok(Engines::Real)
     }
 
+    /// The content stream of the page in [`pdf_of_size`].
+    const CONTENT: &str = "BT /F1 24 Tf 72 760 Td (rss_linux page) Tj ET";
+
     /// A valid one-page PDF of `size` bytes: the padding is a comment line
     /// after the header, and the xref offsets account for it, so PDFium
     /// opens it without a repair.
     fn pdf_of_size(size: usize) -> Vec<u8> {
+        let stream = format!(
+            "<< /Length {} >>\nstream\n{CONTENT}\nendstream",
+            CONTENT.len()
+        );
         let objects = [
             "<< /Type /Catalog /Pages 2 0 R >>",
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R \
              /Resources << /Font << /F1 5 0 R >> >> >>",
-            "<< /Length 44 >>\nstream\nBT /F1 24 Tf 72 760 Td (rss_linux page) Tj ET\nendstream",
+            stream.as_str(),
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
         ];
         let build = |padding: usize| {
@@ -214,13 +221,9 @@ mod measured {
             eprintln!("not Linux: /proc is not available; skipped");
             return;
         }
-        let engines = match engines() {
-            Ok(engines) => engines,
-            Err(why) => {
-                eprintln!("skipped: {why}");
-                return;
-            }
-        };
+        // The run is asked for with --ignored, so a run that cannot measure
+        // fails rather than passing without a reading.
+        let engines = engines().unwrap_or_else(|why| panic!("cannot measure: {why}"));
         let tmp = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("rss_linux");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
@@ -281,9 +284,10 @@ mod measured {
         // 20 MB. The first round warms the supervisor: it faults in the code
         // of the request paths and the malloc arenas of the runtime threads
         // (7.3 MB after start, 13 to 16 MB after each round, in the dev
-        // image). Growth is judged from round to round, against that warm
-        // reading, so a leak shows and the warm-up does not. RSS_ROUNDS sets
-        // the count, at least 2.
+        // image). Two checks: plan 001's target, the first round against
+        // the reading after start, and a plateau check, the last round
+        // against the first, which shows a leak. RSS_ROUNDS sets the count,
+        // at least 2.
         let files = [15_000, 1 << 20, 20 << 20].map(pdf_of_size);
         let outputs = ["pdf", "images", "bundle"];
         let rounds: usize = std::env::var("RSS_ROUNDS")
@@ -367,7 +371,13 @@ mod measured {
         }
         assert!(
             second * 2 <= warm * 3,
-            "{second} after the last round is more than 1.5 x {warm} after the first"
+            "a leak: {second} after the last round is more than 1.5 x {warm} after the first"
+        );
+        // Plan 001, Verification 2: the reading after the requests is at
+        // most 1.5 x the reading after start.
+        assert!(
+            warm * 2 <= first * 3,
+            "{warm} after the first round is more than 1.5 x {first} after start"
         );
         for library in ["libmergedlo", "libpdfium"] {
             assert!(mapped(&maps, library).is_empty(), "{library} is mapped");
@@ -380,6 +390,11 @@ mod measured {
             let pdf = pdf_of_size(size);
             assert_eq!(pdf.len(), size);
             let text = String::from_utf8_lossy(&pdf);
+            let stream = format!(
+                "<< /Length {} >>\nstream\n{CONTENT}\nendstream",
+                CONTENT.len()
+            );
+            assert!(text.contains(&stream), "{size}: the stream length");
             let xref: usize = text
                 .rsplit("startxref\n")
                 .next()
