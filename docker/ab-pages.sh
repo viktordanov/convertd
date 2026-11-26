@@ -7,14 +7,24 @@
 # request (as in smoke.sh), so a corpus file that links outside reaches nothing. Every file under
 # <corpus-dir> goes to POST /v1/convert with output=images, PNG at 72 dpi. For each file the
 # script records the HTTP status and, on 200, the SHA-256 of every page. PDF bytes differ
-# between runs (IDs, dates), rendered pixels must not. It exits 1 if any line differs.
+# between runs (IDs, dates), rendered pixels must not. It exits 1 if any line differs, or if
+# any request failed in curl.
 # Needs tar, zstd and sha256sum or shasum on the host, and CURL_IMAGE (tag@sha256:...).
 set -euo pipefail
 
-image_a="${1:?image a}"; image_b="${2:?image b}"; corpus="$(cd "${3:?corpus dir}" && pwd)"
+image_a="${1:?image a}"; image_b="${2:?image b}"; source_dir="$(cd "${3:?corpus dir}" && pwd)"
 out="${4:-$(mktemp -d)}"
 mkdir -p "${out}/x"
 out="$(cd "${out}" && pwd)"
+# The curl container runs as its own user. A checkout or a corpus written under umask 077 has
+# 0600 files that it cannot read (curl exit 26), so it reads a copy with fixed modes.
+corpus="${out}/corpus"
+rm -rf "${out:?}/corpus"
+cp -R "${source_dir}" "${corpus}"
+chmod -R a+rX "${corpus}"
+chmod 0755 "${out}"
+# A reused out-dir must not carry the curl errors of an earlier run.
+rm -f "${out:?}/errors.txt"
 # The curl container runs as its own user and writes the response bodies here.
 chmod 0777 "${out}/x"
 curl_image="${CURL_IMAGE:?set CURL_IMAGE to a pinned curl image, tag@sha256:...}"
@@ -89,6 +99,13 @@ run "${name_b}" b
 files="$(cut -f1 "${out}/a.txt" | LC_ALL=C sort -u | wc -l | tr -d ' ')"
 pages="$(awk -F'\t' '$2 ~ /^pages\// {n++} END {print n + 0}' "${out}/a.txt")"
 echo "ab-pages: ${files} files, ${pages} pages with ${image_a}; lists in ${out}"
+# A request that curl could not make proves nothing about either image, even when both sides
+# fail the same way, so any curl error fails the run.
+if [[ -s "${out}/errors.txt" ]]; then
+  echo "ab-pages: $(wc -l < "${out}/errors.txt" | tr -d ' ') requests failed in curl:" >&2
+  head -n 20 "${out}/errors.txt" >&2
+  exit 1
+fi
 if diff -u "${out}/a.txt" "${out}/b.txt" > "${out}/diff.txt"; then
   echo "ab-pages: identical: every status, page count and page hash matches"
 else
