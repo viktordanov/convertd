@@ -262,6 +262,18 @@ mod measured {
             .local_addr()
             .unwrap()
             .port();
+        // RSS_ROUNDS, checked before the server starts: a malformed or too
+        // small count fails rather than running a shorter measurement.
+        let rounds: usize = match std::env::var("RSS_ROUNDS") {
+            Err(_) => 3,
+            Ok(value) => match value.parse() {
+                Ok(n) if n >= 2 => n,
+                _ => panic!("RSS_ROUNDS={value:?}: give a whole number of at least 2"),
+            },
+        };
+        // The server's output goes to a file, so a failed start shows why.
+        let log_path = tmp.join("server.log");
+        let log = std::fs::File::create(&log_path).unwrap();
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_convertd"));
         command
             .arg("serve")
@@ -271,8 +283,8 @@ mod measured {
             .env("API_KEY", KEY)
             .env("TMP_DIR", &tmp)
             .env("SHUTDOWN_GRACE_SECONDS", "10")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+            .stdout(log.try_clone().unwrap())
+            .stderr(log);
         match engines {
             Engines::Fake => {
                 command
@@ -291,6 +303,7 @@ mod measured {
                     "LANG",
                     "LD_LIBRARY_PATH",
                     "BUILD_INFO_PATH",
+                    "FONTS_PATH",
                 ] {
                     if let Some(value) = std::env::var_os(name) {
                         command.env(name, value);
@@ -305,11 +318,26 @@ mod measured {
         if let Some(arenas) = std::env::var_os("MALLOC_ARENA_MAX") {
             command.env("MALLOC_ARENA_MAX", arenas);
         }
-        let server = Server(command.spawn().unwrap());
+        let mut server = Server(command.spawn().unwrap());
         let pid = server.0.id();
+        let tail = || {
+            let text = std::fs::read_to_string(&log_path).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().collect();
+            lines[lines.len().saturating_sub(30)..].join("\n")
+        };
         let deadline = Instant::now() + Duration::from_secs(60);
         while !ready(port) {
-            assert!(Instant::now() < deadline, "the server never became ready");
+            if let Ok(Some(status)) = server.0.try_wait() {
+                panic!(
+                    "the server exited before it was ready ({status}):\n{}",
+                    tail()
+                );
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the server never became ready:\n{}",
+                tail()
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
         std::thread::sleep(Duration::from_secs(2));
@@ -329,11 +357,6 @@ mod measured {
         let docx = convertd::worker::warmup::docx("rss_linux office page");
         let files = [small, docx, medium, large];
         let outputs = ["pdf", "images", "bundle"];
-        let rounds: usize = std::env::var("RSS_ROUNDS")
-            .ok()
-            .and_then(|n| n.parse().ok())
-            .unwrap_or(3)
-            .max(2);
         let mut readings = Vec::new();
         for round in 0..rounds {
             for i in 0..1000 {
