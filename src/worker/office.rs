@@ -9,6 +9,9 @@
 //! - The password callback is registered once. It shares a counter with
 //!   the job loop, which tells "required" (no password, one prompt) from
 //!   "invalid" (a password, a second prompt).
+//! - A DOCX, DOCM or DOTX whose sections name no page size is loaded from
+//!   a copy that names the `DEFAULT_PAPER` size (`docx_paper`). The worker
+//!   learns the paper from its `LC_PAPER`, which the supervisor sets.
 
 use std::cell::RefCell;
 use std::mem::ManuallyDrop;
@@ -19,10 +22,12 @@ use std::time::Instant;
 use libreofficekit::{CallbackType, DocUrl, DocumentType, Office, OfficeOptionalFeatures};
 
 use crate::domain::document::Family as DomainFamily;
+use crate::engines::config::Paper;
 use crate::ipc::{
     ConvertArgs, ConvertedOut, EngineTimes, ExportOptions, Family, Init, Op, Output, SlideNotes,
     SourceFactsWire, WorkerError, WorkerErrorKind,
 };
+use crate::worker::docx_paper;
 use crate::worker::output::io_error;
 use crate::worker::sys;
 use crate::worker::{Engine, Handled, micros};
@@ -72,6 +77,9 @@ pub struct OfficeWorker {
     office: ManuallyDrop<Office>,
     state: Rc<RefCell<PasswordState>>,
     version: String,
+    /// `DEFAULT_PAPER`, from `LC_PAPER`; `None` leaves Word packages as
+    /// they came.
+    paper: Option<Paper>,
 }
 
 impl OfficeWorker {
@@ -138,10 +146,14 @@ impl OfficeWorker {
                 )
             })
             .unwrap_or_default();
+        let paper = std::env::var("LC_PAPER")
+            .ok()
+            .and_then(|value| Paper::from_lc_paper(&value));
         let mut worker = Self {
             office,
             state,
             version,
+            paper,
         };
         if init.warmup {
             worker.warm_up();
@@ -196,9 +208,60 @@ impl OfficeWorker {
     ) -> Result<Output, WorkerError> {
         let preflight = Instant::now();
         let facts = crate::preflight::scan(&args.input, domain_family(args.family));
+        // The copy with page sizes counts as pre-flight: it reads the source
+        // before LibreOffice does.
+        let copy = self.paper_copy(args);
         times.preflight_us = micros(preflight.elapsed());
+        let result = self.convert_from(copy.as_deref().unwrap_or(&args.input), args, times);
+        if let Some(copy) = &copy {
+            let _ = std::fs::remove_file(copy);
+            if let Some(dir) = copy.parent() {
+                let _ = std::fs::remove_dir(dir);
+            }
+        }
+        let doc_type = result?;
+        let pdf_bytes = std::fs::metadata(&args.output)
+            .map_err(|err| io_error("read the converted PDF", &err))?
+            .len();
+        if pdf_bytes > args.max_output_bytes {
+            let _ = std::fs::remove_file(&args.output);
+            return Err(limit_exceeded());
+        }
+        Ok(Output::Converted(ConvertedOut {
+            pdf_bytes,
+            doc_type: doc_type.into(),
+            facts: Some(SourceFactsWire::from(&facts)),
+        }))
+    }
 
-        let input = doc_url(&args.input)?;
+    /// The copy of a Word package that names the page size of every
+    /// section, or `None` to load the source as it came.
+    fn paper_copy(&self, args: &ConvertArgs) -> Option<std::path::PathBuf> {
+        let paper = self.paper?;
+        if args.family != Family::Document || !docx_paper::is_word_package(&args.input) {
+            return None;
+        }
+        let copy = docx_paper::copy_path(&args.input)?;
+        std::fs::create_dir(copy.parent()?).ok()?;
+        match docx_paper::repack(&args.input, &copy, paper) {
+            Ok(true) => Some(copy),
+            Ok(false) | Err(_) => {
+                if let Some(dir) = copy.parent() {
+                    let _ = std::fs::remove_dir(dir);
+                }
+                None
+            }
+        }
+    }
+
+    /// Loads `source` (the job's input or its copy) and exports the PDF.
+    fn convert_from(
+        &mut self,
+        source: &Path,
+        args: &ConvertArgs,
+        times: &mut EngineTimes,
+    ) -> Result<&'static str, WorkerError> {
+        let input = doc_url(source)?;
         let output = doc_url(&args.output)?;
         let password = args
             .password
@@ -225,25 +288,9 @@ impl OfficeWorker {
             state.url = None;
         }
 
-        let doc_type = match result {
-            Ok(doc_type) => doc_type,
-            Err(err) => {
-                let _ = std::fs::remove_file(&args.output);
-                return Err(err);
-            }
-        };
-        let pdf_bytes = std::fs::metadata(&args.output)
-            .map_err(|err| io_error("read the converted PDF", &err))?
-            .len();
-        if pdf_bytes > args.max_output_bytes {
+        result.inspect_err(|_| {
             let _ = std::fs::remove_file(&args.output);
-            return Err(limit_exceeded());
-        }
-        Ok(Output::Converted(ConvertedOut {
-            pdf_bytes,
-            doc_type: doc_type.into(),
-            facts: Some(SourceFactsWire::from(&facts)),
-        }))
+        })
     }
 
     fn load_and_export(
