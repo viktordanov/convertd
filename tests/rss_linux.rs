@@ -116,12 +116,14 @@ mod measured {
                 Err("RSS_ENGINE=fake needs --features test-hooks".into())
             };
         }
-        let lo = std::env::var_os("LO_PROGRAM_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/opt/libreoffice/program"));
-        let pdfium = std::env::var_os("PDFIUM_LIB_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/opt/pdfium/lib"));
+        // As the supervisor reads them: an empty value is unset.
+        let dir = |name: &str, default: &str| {
+            std::env::var_os(name)
+                .filter(|value| !value.is_empty())
+                .map_or_else(|| PathBuf::from(default), PathBuf::from)
+        };
+        let lo = dir("LO_PROGRAM_DIR", "/opt/libreoffice/program");
+        let pdfium = dir("PDFIUM_LIB_DIR", "/opt/pdfium/lib");
         if !lo.join("soffice.bin").exists() || !pdfium.join("libpdfium.so").exists() {
             return Err(format!(
                 "no engines in {} and {}; set RSS_ENGINE=fake for the fake",
@@ -288,6 +290,7 @@ mod measured {
                     "PATH",
                     "LANG",
                     "LD_LIBRARY_PATH",
+                    "BUILD_INFO_PATH",
                 ] {
                     if let Some(value) = std::env::var_os(name) {
                         command.env(name, value);
