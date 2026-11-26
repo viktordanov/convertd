@@ -2,7 +2,7 @@
 
 `src/` is the `convertd` crate: one binary that runs as the supervisor (`convertd serve`) or as a worker (`convertd worker <role>`).
 
-`convertd serve` runs LibreOffice and PDFium in worker pools, unless `TEST_ENGINE` selects a test fake. Without `PDFIUM_BUILD`, `convertd serve` does not start. [Engine selection](#engine-selection) gives the details.
+`convertd serve` runs LibreOffice and PDFium in worker pools, unless `TEST_ENGINE` selects a test fake. [Engine selection](#engine-selection) gives the details.
 
 ## Contents
 
@@ -152,7 +152,7 @@ The deadline is set once, at the signal: `SHUTDOWN_GRACE_SECONDS` from then. Ste
 <!-- memoria:section id="contract" files="main.rs" -->
 ## Engine selection
 
-`main.rs` calls `engines::select::start` once, after it binds the listener and before it builds the application state. `TEST_ENGINE` picks the real pools, the level-B test worker or the level-A fakes. `config.rs` accepts `TEST_ENGINE` only in a build with the `test-hooks` feature. If `PDFIUM_BUILD` is not set, `convertd serve` stops with an error. [Selection](engines/README.md#selection) gives the three modes and the readiness states.
+`main.rs` calls `engines::select::start` once, after it binds the listener and before it builds the application state. `TEST_ENGINE` picks the real pools, the level-B test worker or the level-A fakes. `config.rs` accepts `TEST_ENGINE` only in a build with the `test-hooks` feature. [Selection](engines/README.md#selection) gives the three modes and the readiness states.
 
 Image inputs are out of v1 (owner, 2026-11-26). Detection still names a PNG, JPEG, TIFF, GIF, BMP or WebP file by its signature. So an image is never taken for a PDF inside it. Then it answers 415 `UNSUPPORTED_FORMAT`, and `/v1/capabilities` does not list image inputs. [Not built yet](engines/README.md#not-built-yet) lists the parts of the engines that are missing.
 <!-- /memoria:section -->

@@ -54,7 +54,6 @@ spec:
             # with the maximum: an overlay that lowers the maximum below 120 lowers this too.
             - {name: TIMEOUT_DEFAULT_SECONDS, value: "120"}
             - {name: SHUTDOWN_GRACE_SECONDS, value: "210"}
-            - {name: SANDBOX, value: "off"}
             # The run-time disk budget for everything under TMP_DIR (lane 001). It MUST stay
             # below sizeLimit minus the headroom (1 GiB for worker slots, profiles and logs):
             # TMP_MAX_BYTES <= 4Gi - 1Gi. Change them together, or a full volume evicts the pod.

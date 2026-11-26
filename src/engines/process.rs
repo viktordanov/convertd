@@ -246,12 +246,6 @@ impl Spawner {
             .map_err(|_| io::Error::other("the spawner thread dropped the request"))?
     }
 
-    /// Runs the reaper once, now. The reaper task does this on every
-    /// SIGCHLD and every [`REAP_TICK`].
-    pub fn reap_now(&self) {
-        self.inner.reap();
-    }
-
     /// A spawner with no reaper task, for tests that drive the reaper by
     /// hand. It does not become a subreaper.
     #[cfg(feature = "test-hooks")]
@@ -275,14 +269,6 @@ impl Spawner {
     /// The registered children that have not been reaped.
     pub fn live_children(&self) -> usize {
         lock(&self.inner.registry).children.len()
-    }
-
-    /// SIGKILLs every registered child's group (shutdown).
-    pub fn kill_all(&self) {
-        let registry = lock(&self.inner.registry);
-        for &pid in registry.children.keys() {
-            signal_group(pid);
-        }
     }
 
     /// Runs a one-off child to the end: stdin from `/dev/null`, stdout and

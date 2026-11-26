@@ -19,7 +19,7 @@ Know two facts before you use these files. First, the `runtime` image is proved 
 <!-- memoria:section id="contract" files="k8s/base/deployment.yaml k8s/base/service.yaml k8s/base/networkpolicy.yaml k8s/overlays/gvisor/kustomization.yaml" -->
 ## Pod
 
-The base runs one container with 2 CPU and 4 GiB, `OFFICE_WORKERS=1`, `RENDER_WORKERS=2`, `SANDBOX=off` and the API key from a Secret. Its settings:
+The base runs one container with 2 CPU and 4 GiB, `OFFICE_WORKERS=1`, `RENDER_WORKERS=2` and the API key from a Secret. Its settings:
 
 | Topic | Value in `k8s/base/deployment.yaml` |
 | --- | --- |

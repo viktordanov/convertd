@@ -182,7 +182,7 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 
 `select::start` reads `TEST_ENGINE` and starts the engines that `convertd serve` uses:
 
-- **Unset**: the office pool runs `convertd worker office` and the render pool runs `convertd worker render`. Both warm up before `Ready`. `PDFIUM_BUILD` must be set, or `serve` does not start.
+- **Unset**: the office pool runs `convertd worker office` and the render pool runs `convertd worker render`. Both warm up before `Ready`.
 - **`worker`** (level B, feature `test-hooks`): both pools run `convertd worker test`, behind the same pools, queue and kills.
 - **`fake`** (level A): lane 001's in-process fakes, with no pool.
 
@@ -228,7 +228,6 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 | `LO_PROGRAM_DIR` | `/opt/libreoffice/program` |
 | `LO_PROFILE_TEMPLATE` | unset |
 | `PDFIUM_LIB_DIR` | `/opt/pdfium/lib` |
-| `PDFIUM_BUILD` | unset; `convertd serve` with the real engines needs it |
 | `POISON_TTL_SECONDS` | 600 (0 turns poison memory off) |
 | `DEFAULT_PAPER` | `A4` (or `Letter`) |
 

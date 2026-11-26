@@ -17,7 +17,7 @@
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -596,18 +596,12 @@ fn tiny_image(format: ImageFormat, quality: u8) -> Result<Vec<u8>, EngineError> 
 /// Readiness for the fakes: ready unless switched off.
 #[derive(Debug)]
 pub struct FakeReadiness {
-    healthy: AtomicBool,
+    healthy: bool,
 }
 
 impl FakeReadiness {
     pub fn new(healthy: bool) -> Self {
-        Self {
-            healthy: AtomicBool::new(healthy),
-        }
-    }
-
-    pub fn set_healthy(&self, healthy: bool) {
-        self.healthy.store(healthy, Ordering::Relaxed);
+        Self { healthy }
     }
 }
 
@@ -619,7 +613,7 @@ impl Readiness for FakeReadiness {
             busy: 0,
         };
         ReadinessSnapshot {
-            status: if self.healthy.load(Ordering::Relaxed) {
+            status: if self.healthy {
                 ReadinessStatus::Ready
             } else {
                 ReadinessStatus::Starting
