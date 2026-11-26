@@ -154,6 +154,18 @@ mod tests {
     }
 
     #[test]
+    fn decoding_keeps_at_most_max_code_points() {
+        let many: Vec<u32> = (0x4E00..0x4E00 + 3 * MAX_CODE_POINTS as u32).collect();
+        let json = serde_json::json!({
+            "declared_pages": null, "requested_fonts": [], "macros": null, "skipped": [],
+            "text_code_points": many,
+        });
+        let wire: SourceFactsWire = serde_json::from_value(json).unwrap();
+        assert_eq!(wire.text_code_points.len(), MAX_CODE_POINTS);
+        assert_eq!(wire.text_code_points[0], 0x4E00);
+    }
+
+    #[test]
     fn the_supervisor_bounds_the_code_points_it_receives() {
         // A compromised worker can send anything; the supervisor sorts,
         // dedups and caps.
