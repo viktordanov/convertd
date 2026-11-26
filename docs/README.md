@@ -16,4 +16,4 @@ Some of these documents are records of past decisions. When two documents disagr
 
 ## Outside this folder
 
-`spikes/` holds the frozen spike code that `m0-spikes.md` reports on. `research/` holds the study behind the engine choices. Both are records, and Memoria does not read them.
+`research/` holds the study behind the engine choices. It is a record, and Memoria does not read it. The spike code that `m0-spikes.md` reports on was deleted on 2026-11-26. It stays in the git history.

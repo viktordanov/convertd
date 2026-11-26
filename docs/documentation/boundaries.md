@@ -21,7 +21,7 @@ README.md                  the service, the quick start, the catalog       lead
 
 The last column names the owner. Only the owner's lane edits a README; a lane that needs a change in another README asks the lead. The root README links each top-level README, and `src/README.md` links the three folders that lane 002 owns, so each link hands its folder to that README.
 
-Memoria does not read `docs/ledger/`, `spikes/` or `research/`. The ledger is a working record, the spikes are frozen evidence, and the research study is a source. Generated files and lockfiles are not inputs either. `memoria.toml` lists the exact ignores.
+Memoria does not read `docs/ledger/` or `research/`. The ledger is a working record, and the research study is a source. Generated files and lockfiles are not inputs either. `memoria.toml` lists the exact ignores.
 
 Add a nested README only for a folder with its own contract. Link it from its parent, so that the parent hands the folder over.
 
