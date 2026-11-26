@@ -12,10 +12,6 @@ Usage (Python 3.13, in a virtualenv made from requirements.txt, run with -I):
     python -I corpus/generate.py --write-hashes
         The same generation, then write the SHA-256 values and the
         "unhashed" reasons into corpus/expected.json.
-    python -I corpus/generate.py --spike-layout DIR
-        Write the seven M0 spike files under their old flat names
-        (small.docx, long.docx, aptos.docx, deck.pptx, sheet.xlsx,
-        encrypted.docx, photos.pptx). spikes/corpus/make_corpus.py calls this.
 
 Every run checks its own output (`self_check`): each file opens in its
 library, and the facts the expectations rely on are read back from the
@@ -355,11 +351,6 @@ def docx_remote_image_canary(_ctx):
         '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>')
     d.add_paragraph()._p.append(drawing)
     return docx_bytes(d)
-
-
-def spike_aptos(_ctx):
-    """The spike's aptos.docx: Aptos as a literal Normal font (real files take it from the theme)."""
-    return docx_bytes(spike_document(4, font="Aptos"))
 
 
 # --- PPTX -----------------------------------------------------------------------
@@ -904,13 +895,7 @@ ENTRIES = [
     ("truncated", "hostile/truncated.docx", truncated, True),
     ("html-as-doc", "hostile/html-as.doc", html_as_doc, True),
 ]
-BUILDERS = {entry_id: builder for entry_id, _, builder, _ in ENTRIES}
 NEVER_PARSED = {"zip-ratio", "xml-entities", "png-bomb", "truncated", "html-as-doc"}
-SPIKE_LAYOUT = [
-    ("small.docx", "docx-small"), ("long.docx", "docx-long"), ("aptos.docx", None),
-    ("deck.pptx", "pptx-deck20"), ("sheet.xlsx", "xlsx-sheet3"),
-    ("encrypted.docx", "docx-encrypted"), ("photos.pptx", "pptx-photos10"),
-]
 
 
 def sha256(data):
@@ -1150,26 +1135,12 @@ def write_hashes(built, doc):
     EXPECTED.write_text(json.dumps(ordered, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def spike_layout(out):
-    out.mkdir(parents=True, exist_ok=True)
-    ctx = {}
-    for name, entry_id in SPIKE_LAYOUT:
-        if entry_id is None:
-            data = spike_aptos(ctx)
-        else:
-            data = BUILDERS[entry_id](ctx)
-            ctx[entry_id] = data
-        (out / name).write_bytes(data)
-        print(name)
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Generates the rs-convert test corpus.")
     parser.add_argument("out", nargs="?", type=Path, help="output directory, normally corpus/out")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="compare a fresh run with expected.json")
     mode.add_argument("--write-hashes", action="store_true", help="write the hashes into expected.json")
-    mode.add_argument("--spike-layout", action="store_true", help="write the M0 spike file names")
     parser.add_argument("--hostile", action="store_true", help="also write hostile files and canaries")
     args = parser.parse_args(argv)
 
@@ -1196,10 +1167,7 @@ def main(argv=None):
         return 0
     if args.out is None:
         parser.error("an output directory is required")
-    if args.spike_layout:
-        spike_layout(args.out)
-    else:
-        generate(args.out, hostile=args.hostile)
+    generate(args.out, hostile=args.hostile)
     return 0
 
 

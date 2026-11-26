@@ -104,11 +104,10 @@ Each run checks its own output. Every file must open in its Python library, with
 
 `corpus/check.sh` runs `--check` with nothing but a Python 3.13: it installs the pins into a temporary virtual environment, checks, and removes the environment. The `corpus` workflow (`.github/workflows/corpus.yml`) runs `corpus/check.sh python` after `actions/setup-python` with Python 3.13. It runs on a push to `main` or a pull request that changes `corpus/` or the workflow, and on a manual dispatch. Run it from any directory as `corpus/check.sh`, or give the interpreter as its argument. On an Apple-silicon Mac with a warm pip cache it took about 14 s.
 
-`generate.py` has three other modes:
+`generate.py` has two other modes:
 
 - **`--check`** generates everything into a temporary directory and compares the ids, paths and hashes with `expected.json`. It exits 1 on a difference. It first prints any difference between the recorded environment and the current one.
 - **`--write-hashes`** does the same generation and writes the hashes, the `unhashed` reasons and the `generator` block into `expected.json`. It rewrites the whole file with two-space JSON indentation.
-- **`--spike-layout DIR`** writes the seven M0 spike files under their old flat names, such as `small.docx` and `deck.pptx`. `spikes/corpus/make_corpus.py` calls this mode, because older plans cite that path.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="usage" files="generate.py expected.json expected.schema.json" -->
