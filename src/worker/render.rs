@@ -64,7 +64,12 @@ impl RenderWorker {
             font,
             PdfPoints::new(12.0),
         )?;
-        let bitmap = page.render_with_config(&PdfRenderConfig::new().scale_page_by_factor(1.0))?;
+        let bitmap = page.render_with_config(
+            &PdfRenderConfig::new()
+                .scale_page_by_factor(1.0)
+                .set_format(PdfBitmapFormat::BGRA)
+                .set_reverse_byte_order(false),
+        )?;
         let bytes = bitmap.as_raw_bytes();
         let _ = encode(
             crate::ipc::ImageFormat::Jpeg,
@@ -119,6 +124,8 @@ impl RenderWorker {
             let probed = Instant::now();
             let config = PdfRenderConfig::new()
                 .scale_page_by_factor(f32::from(dpi) / 72.0)
+                .set_format(PdfBitmapFormat::BGRA)
+                .set_reverse_byte_order(false)
                 .use_grayscale_rendering(true)
                 .render_form_data(true);
             for (index, page) in pages.iter().enumerate() {
@@ -183,6 +190,7 @@ impl RenderWorker {
                         &PdfRenderConfig::new()
                             .scale_page_by_factor(scale)
                             .set_format(PdfBitmapFormat::BGRA)
+                            .set_reverse_byte_order(false)
                             .render_form_data(true),
                     )
                     .map_err(|err| render_failed(&err))?;

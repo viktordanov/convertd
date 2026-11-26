@@ -588,3 +588,98 @@ async fn slow_a_long_render_splits_over_two_workers_and_survives_a_kill() {
     )
     .await;
 }
+
+/// A PDF written by hand: one page of `size` × `size` pt for each content
+/// stream, with a correct cross-reference table.
+fn handmade_pdf(size: u32, contents: &[String]) -> Vec<u8> {
+    let n = contents.len();
+    // Objects: 1 catalog, 2 pages, then a page and its content per entry.
+    let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", 3 + 2 * i)).collect();
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!("<< /Type /Pages /Kids [{}] /Count {n} >>", kids.join(" ")),
+    ];
+    for (i, content) in contents.iter().enumerate() {
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {size} {size}] /Contents {} 0 R /Resources << >> >>",
+            4 + 2 * i
+        ));
+        objects.push(format!(
+            "<< /Length {} >>\nstream\n{content}\nendstream",
+            content.len() + 1
+        ));
+    }
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::with_capacity(objects.len());
+    for (i, object) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for offset in offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+/// A page with R ≠ B keeps its channels in every format: PDFium's byte
+/// order reversal is off, so the encoders get BGRA as they expect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_coloured_page_keeps_its_channels() {
+    let Some(pdfium) = pdfium() else {
+        return;
+    };
+    within(TEST, "a_coloured_page_keeps_its_channels", async {
+        let dir = Scratch::new("render-colour");
+        // #3333B2: 0.2, 0.2, 0.698 in DeviceRGB.
+        let source = dir.join("blue.pdf");
+        std::fs::write(
+            &source,
+            handmade_pdf(72, &["0.2 0.2 0.698 rg 0 0 72 72 re f".to_string()]),
+        )
+        .unwrap();
+        let pool = ready(render_spec(dir.path(), &pdfium, 1)).await;
+        let pdf = PdfPdfium::new(pool.clone());
+        let expected = [0x33u8, 0x33, 0xB2];
+        for (format, tolerance) in [
+            (ImageFormat::Png, 0u8),
+            (ImageFormat::Jpeg, 8),
+            (ImageFormat::Webp, 8),
+        ] {
+            let out = dir.join(format.extension());
+            let rendered = pdf
+                .render(
+                    render_job(&source, vec![1], format, 72, &out),
+                    Admission::Continue,
+                    deadline(),
+                )
+                .await
+                .unwrap();
+            let page = &rendered.pages[0];
+            assert!(page.flat, "{format:?}: {page:?}");
+            assert_eq!(page.colour, expected, "{format:?}: the flat colour");
+            let bytes = std::fs::read(out.join(&page.file_name)).unwrap();
+            let image = image::load_from_memory(&bytes).unwrap().to_rgb8();
+            let pixel = image.get_pixel(image.width() / 2, image.height() / 2).0;
+            for (channel, (got, want)) in pixel.iter().zip(expected).enumerate() {
+                assert!(
+                    got.abs_diff(want) <= tolerance,
+                    "{format:?}: channel {channel} is {got}, want {want} ± {tolerance} (pixel {pixel:?})"
+                );
+            }
+            assert!(pixel[2] > pixel[0] + 100, "{format:?}: blue is not blue: {pixel:?}");
+        }
+        pool.shutdown(Duration::from_secs(5)).await;
+    })
+    .await;
+}
