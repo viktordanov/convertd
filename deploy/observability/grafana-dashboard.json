@@ -425,7 +425,7 @@
       "type": "stat",
       "id": 6,
       "title": "Busy workers (mean)",
-      "description": "Mean of the sampled busy worker count over the rate window, all pools. A worker is busy from its lease to its return.",
+      "description": "Mean of the busy worker count of all selected pods and pools together, over the rate window. A worker is busy from its lease to its return.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -471,7 +471,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(avg_over_time(convert_workers{namespace=~\"$namespace\", pod=~\"$pod\", state=\"busy\"}[$__rate_interval]))",
+          "expr": "avg_over_time(sum(convert_workers{namespace=~\"$namespace\", pod=~\"$pod\", state=\"busy\"})[$__rate_interval:])",
           "legendFormat": "",
           "refId": "A",
           "range": false,
@@ -820,8 +820,8 @@
     {
       "type": "timeseries",
       "id": 11,
-      "title": "Responses cut after the head, since the pod started",
-      "description": "200 responses whose body did not complete; convert_requests_total counted them as OK at the head. The counter itself, per pod: its series starts at the first cut with the value 1, so a rate would not show an isolated cut.",
+      "title": "Responses cut after the head, since the process started",
+      "description": "200 responses that convertd cut: RESPONSE_STALLED, RESPONSE_TOO_SLOW and RESPONSE_ABORTED. convert_requests_total counted them as OK at the head. A client that closes the connection itself is not counted. The counter starts again when the convertd process restarts. The counter itself, per pod: its series starts at the first cut with the value 1, so a rate would not show an isolated cut.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1567,7 +1567,7 @@
     {
       "type": "timeseries",
       "id": 24,
-      "title": "Worker restarts since the pod started",
+      "title": "Worker restarts since the process started",
       "description": "The counter itself. Its series starts at the first restart with the value 1, so increase() shows no isolated first restart; this panel does.",
       "datasource": {
         "type": "prometheus",
