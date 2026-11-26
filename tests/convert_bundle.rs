@@ -29,6 +29,10 @@ struct App {
 
 impl App {
     fn new(name: &str, env: &[(&str, &str)], pdf: FakeBehavior) -> Self {
+        Self::with_pdf(name, env, FakePdf::new(pdf))
+    }
+
+    fn with_pdf(name: &str, env: &[(&str, &str)], pdf: FakePdf) -> Self {
         let tmp = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("convert_zip-{name}"));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
@@ -44,7 +48,7 @@ impl App {
             &config,
             Engines {
                 office: Arc::new(FakeOffice::new(FakeBehavior::Succeed)),
-                pdf: Arc::new(FakePdf::new(pdf)),
+                pdf: Arc::new(pdf),
                 readiness: Arc::new(FakeReadiness::new(true)),
             },
         );
@@ -432,6 +436,38 @@ async fn open_downloads_hold_only_their_files() {
         entries.push(read_bundle(&bytes).len());
     }
     assert_eq!(entries, [4; 6], "manifest, PDF and two pages each");
+    app.assert_no_jobs().await;
+    assert_eq!(app.state.disk_budget.used(), 0);
+}
+
+/// The render reserves what its pages can write, from their size, not
+/// the whole per-job cap (768 MiB of the default 3 GiB). So four images
+/// requests whose renders overlap all fit the default budget (review, lane
+/// 001 item 6).
+#[tokio::test]
+async fn four_concurrent_images_requests_fit_the_default_budget() {
+    let app = App::with_pdf(
+        "four-renders",
+        &[],
+        FakePdf::new(FakeBehavior::Pages(3)).with_engine_time(Duration::from_millis(400)),
+    );
+    let upload = pdf();
+    let sends = (0..4).map(|_| {
+        app.send(
+            "a.pdf",
+            &upload,
+            r#"{"output":"images","images":{"format":"png","dpi":150}}"#,
+        )
+    });
+    let answers = futures_util::future::join_all(sends).await;
+    for (response, body) in &answers {
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(body)
+        );
+    }
     app.assert_no_jobs().await;
     assert_eq!(app.state.disk_budget.used(), 0);
 }

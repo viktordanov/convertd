@@ -9,7 +9,7 @@ use super::detection::Detection;
 use super::document::{DocType, Family, Format};
 use super::engine::{
     Admission, AssembleJob, DecryptJob, EngineError, InspectJob, Inspection, OfficeEngine,
-    OfficeJob, PdfEngine, RenderJob, RenderedPage,
+    OfficeJob, PageSize, PdfEngine, RenderJob, RenderedPage,
 };
 use super::limits::Limits;
 use super::secret::Password;
@@ -307,7 +307,7 @@ impl ConversionService {
             Vec::new()
         } else {
             check_deadline()?;
-            self.render(&pdf, &job, inspection.page_count, timings)
+            self.render(&pdf, &job, &inspection, timings)
                 .await
                 .map_err(|err| match err {
                     ConversionError::Engine(engine) => engine_error(engine),
@@ -348,19 +348,28 @@ impl ConversionService {
         &self,
         pdf: &Path,
         job: &ConversionJob<'_>,
-        page_count: u32,
+        inspection: &Inspection,
         timings: &mut StageTimings,
     ) -> Result<Vec<RenderedPage>, ConversionError> {
         let request = job.request;
         let numbers = request
             .pages
-            .resolve(page_count, self.limits.max_render_pages)?;
-        let max_output_bytes = self.reserve(job.budget, self.limits.max_output_bytes)?;
+            .resolve(inspection.page_count, self.limits.max_render_pages)?;
         let max_edge = request
             .images
             .max_edge
             .unwrap_or(self.limits.max_edge_px)
             .min(self.limits.max_edge_px);
+        let max_output_bytes = self.reserve(
+            job.budget,
+            render_reservation(
+                &inspection.pages,
+                &numbers,
+                request.images.dpi,
+                max_edge,
+                self.limits.max_output_bytes,
+            ),
+        )?;
         let wanted = numbers.clone();
         let rendered = self
             .pdf
@@ -437,6 +446,54 @@ impl ConversionService {
             Err(ConversionError::DiskFull)
         }
     }
+}
+
+/// Per-page slack on top of the raw bitmap: format headers, PNG filter
+/// bytes and the odd image that encodes larger than its pixels.
+const RENDER_PAGE_SLACK: u64 = 64 * 1024;
+/// Slack per render.
+const RENDER_SLACK: u64 = 1024 * 1024;
+
+/// What a render of the pages `numbers` may write, so the job reserves that
+/// much of the disk budget rather than the whole per-job cap: per page, the
+/// raw 4-byte-per-pixel bitmap at `dpi` and under `max_edge`, plus an
+/// eighth and [`RENDER_PAGE_SLACK`]; plus [`RENDER_SLACK`]; at most `cap`
+/// (`max_output_bytes`), which the engine still enforces. A page the
+/// inspection did not size counts as `max_edge` square.
+pub fn render_reservation(
+    pages: &[PageSize],
+    numbers: &[u32],
+    dpi: u16,
+    max_edge: u32,
+    cap: u64,
+) -> u64 {
+    let edge = f64::from(max_edge.max(1));
+    let mut total = RENDER_SLACK;
+    for &number in numbers {
+        let (width, height) = match usize::try_from(number)
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|i| pages.get(i))
+        {
+            Some(page) => {
+                let scale = f64::from(dpi) / 72.0;
+                let (w, h) = (
+                    f64::from(page.width_pt.max(0.0)) * scale,
+                    f64::from(page.height_pt.max(0.0)) * scale,
+                );
+                let longest = w.max(h);
+                let fit = if longest > edge { edge / longest } else { 1.0 };
+                ((w * fit).ceil().max(1.0), (h * fit).ceil().max(1.0))
+            }
+            None => (edge, edge),
+        };
+        let raw = (width * height * 4.0) as u64;
+        total = total.saturating_add(raw + raw / 8 + RENDER_PAGE_SLACK);
+        if total >= cap {
+            return cap;
+        }
+    }
+    total.min(cap)
 }
 
 #[cfg(test)]
@@ -672,6 +729,31 @@ mod tests {
     }
 
     #[test]
+    fn render_reservation_follows_the_pages() {
+        let a4 = PageSize {
+            width_pt: 595.0,
+            height_pt: 842.0,
+        };
+        let cap = 768 << 20;
+        // A4 at 150 dpi: 1240 x 1755 px, 8.7 MB raw.
+        let one = render_reservation(&[a4], &[1], 150, 4096, cap);
+        assert!(one > 8_700_000 && one < 12_000_000, "{one}");
+        // Three pages, three times as much, less the per-render slack.
+        let three = render_reservation(&[a4; 3], &[1, 2, 3], 150, 4096, cap);
+        assert_eq!(three - (1 << 20), 3 * (one - (1 << 20)));
+        // max_edge shrinks the page: 600 px long edge.
+        let small = render_reservation(&[a4], &[1], 150, 600, cap);
+        assert!(small < one / 4, "{small}");
+        // Never more than the per-job cap; an unknown page counts as max_edge square.
+        assert_eq!(
+            render_reservation(&[a4; 3], &[1, 2, 3], 600, 4096, 10 << 20),
+            10 << 20
+        );
+        let unknown = render_reservation(&[], &[1], 150, 100, cap);
+        assert_eq!(unknown, (1 << 20) + 40_000 + 5_000 + 64 * 1024);
+    }
+
+    #[test]
     fn office_converts_then_inspects() {
         let script = Arc::new(Script::default());
         let run = run(
@@ -826,7 +908,22 @@ mod tests {
         let job = script.rendered.lock().unwrap().clone().unwrap();
         assert_eq!((job.dpi, job.max_edge), (300, 4096));
         assert_eq!(job.out_dir, PathBuf::from("/job/pages"));
-        assert_eq!(job.max_output_bytes, test_limits().max_output_bytes);
+        // The reservation follows the pages: the script sizes only page 1,
+        // so the five selected pages count as max_edge square.
+        let a4 = PageSize {
+            width_pt: 595.0,
+            height_pt: 842.0,
+        };
+        assert_eq!(
+            job.max_output_bytes,
+            render_reservation(
+                &[a4],
+                &[2, 3, 10, 11, 12],
+                300,
+                4096,
+                test_limits().max_output_bytes
+            )
+        );
         assert_eq!(run.timings.render_engine, Some(Duration::from_millis(7)));
         // MAX_DPI lowered 600 to 300.
         assert_eq!(result.warnings.len(), 1);
