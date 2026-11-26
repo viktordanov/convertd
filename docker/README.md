@@ -157,13 +157,14 @@ Then prove the new pins:
 <!-- memoria:section id="measurement" files="Dockerfile dpkg/libreoffice.cfg" -->
 ## Size
 
-These sizes are measurements without CJK fonts, on an arm64 Mac (Docker 29.8.2, OrbStack), on 2026-11-26, before and after the LibreOffice trims of `dpkg/libreoffice.cfg`. The amd64 images were built under emulation. The amd64 `runtime` size is `runtime-base` plus the convertd layer, an estimate until the CI image job measures it natively.
+These sizes are measurements without CJK fonts, on an arm64 Mac (Docker 29.8.2, OrbStack), on 2026-11-26, before and after the LibreOffice trims of `dpkg/libreoffice.cfg`. The amd64 images were built under emulation. The amd64 `runtime` estimate is `runtime-base` plus the convertd layer. The CI image job then measured both `runtime` images natively on GitHub runners: 578 MB on amd64 and 604 MB on arm64, after the trims.
 
 | Image | Before the trims | After the trims | Compressed after (`docker save \| gzip -6`) |
 | --- | --- | --- | --- |
 | `runtime`, arm64 | 733.0 MB | 605.0 MB | 215 MB (303 MB before) |
 | `runtime-base`, amd64 | 699.3 MB | 571.3 MB | not measured |
 | `runtime`, amd64 (estimate) | 705.7 MB | 577.7 MB | not measured |
+| `runtime`, amd64 (CI, native) | 706 MB | 578 MB | not measured |
 | `dev`, arm64 | 2.78 GB | 2.65 GB | not measured |
 
 Uncompressed sizes come from `docker image inspect`. The working target for the product image is at most 600 MB uncompressed, on amd64, the production architecture. The trims save 128 MB on each architecture. The largest savings are the icon themes (72 MB), the gallery (14 MB), the offline help (11 MB of content in 5334 files), the duplicate fonts and the templates (8 MB). The spike image of `docs/m0-spikes.md` was 708 MB, without the Noto fonts.
@@ -213,7 +214,7 @@ On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a basel
 - **Engine tests:** in the trimmed `dev` image, `engines_office`, `engines_render` and `engines_poison` passed (20 tests, one ignored). Two tests skipped: one needs `CONVERTD_SMALL_DISK`, and one finds no `encrypted/deck20.pptx` in the corpus.
 - **Build and smoke:** `build-info.json` is the same, `lib-check` passes, and `smoke.sh` passes.
 
-The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs only by hand and monthly. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The command:
+The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs only by hand and monthly. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The run after the trims (45796989297) measured 578 MB on amd64 and 604 MB on arm64. The amd64 image was ready after 764 ms and converted the DOCX in 61 ms. The command:
 
 ```sh
 docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
