@@ -1,8 +1,7 @@
 //! `POST /v1/convert`.
 
-use std::collections::HashMap;
 use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -120,12 +119,16 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
         return ApiError::busy().into_response();
     };
     // mkdir can block on a slow disk: off the runtime, as every file call.
+    // The task holds the permit, so a client that leaves meanwhile does
+    // not free its slot while the mkdir still runs.
     let (tmp_dir, disk_budget) = (state.tmp_dir.clone(), state.disk_budget.clone());
-    let created = tokio::task::spawn_blocking(move || JobDir::create(&tmp_dir, &disk_budget))
-        .await
-        .unwrap_or_else(|err| Err(std::io::Error::other(err)));
-    let job = match created {
-        Ok(job) => job,
+    let created = tokio::task::spawn_blocking(move || {
+        JobDir::create(&tmp_dir, &disk_budget).map(|job| (job, permit))
+    })
+    .await
+    .unwrap_or_else(|err| Err(std::io::Error::other(err)));
+    let (job, permit) = match created {
+        Ok(created) => created,
         Err(err) => {
             return ApiError::from_upload(&upload::map_io(err), state.queue_wait_seconds)
                 .into_response();
@@ -423,16 +426,24 @@ fn settle(job: &JobDir) {
     }
 }
 
-/// [`settle`], which also returns the size of every file it measured,
-/// empty on an error.
-fn settle_with_sizes(job: &JobDir) -> HashMap<PathBuf, u64> {
-    match job.settle_budget_with_sizes() {
+/// [`settle`], which also returns the size of each of `wanted` that the
+/// walk measured. The others, and all on an error, get their own stat.
+fn settle_with_sizes(job: &JobDir, wanted: &[&Path]) -> std::io::Result<Vec<u64>> {
+    let measured = match job.settle_budget_with_sizes(wanted) {
         Ok(settled) => settled.sizes,
         Err(err) => {
             settle_failed(&err);
-            HashMap::new()
+            vec![None; wanted.len()]
         }
-    }
+    };
+    wanted
+        .iter()
+        .zip(measured)
+        .map(|(path, size)| match size {
+            Some(len) => Ok(len),
+            None => std::fs::metadata(path).map(|m| m.len()),
+        })
+        .collect()
 }
 
 fn settle_failed(err: &std::io::Error) {
@@ -456,11 +467,6 @@ fn plan_tar(
             std::thread::sleep(Duration::from_millis(ms));
         }
     }
-    let sizes = settle_with_sizes(job);
-    let size_of = |path: &Path| match sizes.get(path) {
-        Some(&len) => Ok(len),
-        None => std::fs::metadata(path).map(|m| m.len()),
-    };
     let format = input.request.images.format;
     let io = |err: std::io::Error| ApiError::internal(format!("failed to plan the bundle: {err}"));
     let pages: Vec<(String, std::path::PathBuf)> = result
@@ -472,17 +478,13 @@ fn plan_tar(
             (name, path)
         })
         .collect();
-    let page_sizes = pages
-        .iter()
-        .map(|(_, path)| size_of(path))
-        .collect::<Result<Vec<u64>, _>>()
-        .map_err(io)?;
     let bundle = input.request.output == Output::Bundle;
-    let pdf_size = if bundle {
-        Some(size_of(&result.pdf).map_err(io)?)
-    } else {
-        None
-    };
+    let mut wanted: Vec<&Path> = pages.iter().map(|(_, path)| path.as_path()).collect();
+    if bundle {
+        wanted.push(&result.pdf);
+    }
+    let mut page_sizes = settle_with_sizes(job, &wanted).map_err(io)?;
+    let pdf_size = if bundle { page_sizes.pop() } else { None };
     let manifest = Manifest::new(ManifestParts {
         request_id: &input.request_id,
         upload: &input.upload,

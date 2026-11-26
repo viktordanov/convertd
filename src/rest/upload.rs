@@ -236,23 +236,35 @@ pub async fn receive(
 
 /// Sends the file part's chunks to the sink, then the end marker. Stops
 /// early when the sink is gone (it failed; its error is the answer).
-async fn forward(
-    field: &mut multer::Field<'_>,
+async fn forward<S>(
+    field: &mut S,
     tx: &mpsc::Sender<SinkMessage>,
     max_upload: u64,
-) -> Result<(), UploadError> {
+) -> Result<(), UploadError>
+where
+    S: futures_util::Stream<Item = Result<Bytes, multer::Error>> + Unpin,
+{
+    use futures_util::StreamExt;
     loop {
-        match field.chunk().await {
-            Ok(Some(chunk)) => {
+        // A sink that stopped (its open or a write failed) drops its
+        // receiver: stop now, not when the client sends the next chunk,
+        // so the sink's error answers at once.
+        let next = tokio::select! {
+            biased;
+            () = tx.closed() => return Ok(()),
+            next = field.next() => next,
+        };
+        match next {
+            Some(Ok(chunk)) => {
                 if tx.send(SinkMessage::Chunk(chunk)).await.is_err() {
                     return Ok(());
                 }
             }
-            Ok(None) => {
+            None => {
                 let _ = tx.send(SinkMessage::Done).await;
                 return Ok(());
             }
-            Err(err) => return Err(map_multer(err, max_upload)),
+            Some(Err(err)) => return Err(map_multer(err, max_upload)),
         }
     }
 }
@@ -351,8 +363,7 @@ pub struct Written {
 /// open runs on the runtime. Owns a clone of the `Arc<JobDir>`, so the
 /// directory outlives it even if the handler future is dropped (hyper
 /// drops it on peer EOF mid-request). If the open fails, the receiver
-/// drops, `forward` stops at the next chunk of the part, and the open's
-/// error is the result.
+/// drops, `forward` stops at once, and the open's error is the result.
 fn sink(job: &JobDir, mut rx: mpsc::Receiver<SinkMessage>) -> Result<SinkResult, UploadError> {
     let mut file = OpenOptions::new()
         .read(true)
@@ -426,6 +437,21 @@ mod tests {
         }
         queue.reverse();
         move || queue.pop()
+    }
+
+    /// A sink that is gone stops the forwarding while it waits for the
+    /// client's next chunk.
+    #[tokio::test]
+    async fn forward_stops_when_the_sink_is_gone() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut silent = futures_util::stream::pending::<Result<Bytes, multer::Error>>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(rx);
+        });
+        let forwarded =
+            tokio::time::timeout(Duration::from_secs(2), forward(&mut silent, &tx, 10)).await;
+        assert!(matches!(forwarded, Ok(Ok(()))), "{forwarded:?}");
     }
 
     #[test]
