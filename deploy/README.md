@@ -155,9 +155,9 @@ spec:
 To use the examples:
 
 1. Apply the `ServiceMonitor` in the namespace of convertd.
-2. In Grafana, open **Dashboards**, then **New**, then **Import**.
-3. Upload `grafana-dashboard.json` and select your Prometheus data source.
-4. If your scrape interval is not 15 s, type it in the `scrape_interval` variable of the dashboard.
+2. In Grafana, open **Dashboards**, then **New**, then **Import**. Upload `grafana-dashboard.json`.
+3. Open the dashboard and select the Prometheus data source of convertd in the **Prometheus** list.
+4. If your scrape interval is not 15 s, type it in the **Scrape interval** box.
 5. Adapt `prometheusrule.yaml` with the list that follows. Then apply it in the same namespace.
 
 Adapt the rules to the deployment:
