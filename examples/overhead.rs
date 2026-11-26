@@ -17,7 +17,11 @@
 //! - `overhead`: 005's formula, `total − queue − Σ *_engine`, from
 //!   `Server-Timing`;
 //! - `share_001`: `total − Σ engine-stage walls` (convert, inspect,
-//!   render), which is 001's share. With `--engine-ms 0` the two agree.
+//!   render), which is 001's share, the figure for 001's 1 ms target.
+//!
+//! The two differ even at `--engine-ms 0`: a fake call's wall holds more
+//! than its engine time, such as `FakeOffice`'s pre-flight scan and the
+//! PDF it writes, as a worker call does.
 //!
 //! The scenarios of the plan:
 //!

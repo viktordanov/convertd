@@ -172,7 +172,7 @@ The numbers that follow come from macOS on arm64 (release build for the example,
 | Peak heap per upload, 1 MiB / 16 MiB / 100 MiB | 3.1 MB / 3.6 to 4.1 MB / 3.6 to 4.1 MB |
 | Allocations per 15 KB `output=pdf` request | 340 |
 
-The peak stops growing once hyper's read buffer reaches its full size, at about 496 KiB per read. Up to four such chunks wait in the upload queue.
+hyper reads up to about 496 KiB at a time, and up to four such chunks wait in the upload queue. A 1 MiB upload never fills the queue, so its peak is lower. With a queue of one chunk, every size peaks at 3.06 MB.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="setup" files="config.rs" -->
