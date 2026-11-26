@@ -62,6 +62,10 @@ pub struct UploadFacts {
 pub trait OutputBudget: Send + Sync {
     /// `false` when other jobs hold the budget.
     fn reserve(&self, bytes: u64) -> bool;
+
+    /// Gives back up to `bytes` of what this job reserved, for a file that
+    /// is already gone.
+    fn release(&self, bytes: u64);
 }
 
 /// Routes by family: office files to the office engine, PDFs to inspect
@@ -224,6 +228,9 @@ impl ConversionService {
                     .await
                     .inspect_err(|err| charge_queue(timings, called, err))
                     .map_err(engine_error)?;
+                // The worker removed its copy before it answered: the render
+                // must not be charged for it.
+                job.budget.release(copy);
                 timings.add_call(&converted.timing);
                 if job.detection.encrypted {
                     format = match converted.doc_type {
@@ -762,6 +769,10 @@ mod tests {
                     left.checked_sub(bytes)
                 })
                 .is_ok()
+        }
+
+        fn release(&self, bytes: u64) {
+            self.left.fetch_add(bytes, Ordering::Relaxed);
         }
     }
 
