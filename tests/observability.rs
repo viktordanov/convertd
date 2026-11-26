@@ -23,7 +23,7 @@ const PREFIX: &str = "convert_";
 /// check cannot verify.
 const NAME_MATCHER: &str = "a {...} selector without a metric name before it";
 /// Stands for a `$variable` outside a label matcher or a range.
-const VARIABLE: &str = "a $variable outside {...} and [...]";
+const VARIABLE: &str = "a $variable or [[variable]] outside {...} and [...]";
 
 /// Every `convert_*` identifier in `text`. An identifier starts at a
 /// character that cannot continue a name, so `rs_convert_x` is not one.
@@ -109,14 +109,10 @@ fn quoted_name(group: &[u8]) -> bool {
 /// `{...}` or `by (...)`, or part of a string, a number or a `[...]` range.
 /// A `# comment` is skipped. A `__name__` matcher gives [`NAME_MATCHER`].
 fn query_metrics(expr: &str) -> BTreeSet<String> {
-    const KEYWORDS: &[&str] = &[
-        "and",
-        "or",
-        "unless",
-        "bool",
-        "offset",
-        "inf",
-        "nan",
+    const KEYWORDS: &[&str] = &["and", "or", "unless", "bool", "offset", "inf", "nan"];
+    // An aggregation only when `(`, `by` or `without` follows; otherwise
+    // the word is a metric name, as PromQL reads it.
+    const AGGREGATIONS: &[&str] = &[
         "sum",
         "min",
         "max",
@@ -172,6 +168,11 @@ fn query_metrics(expr: &str) -> BTreeSet<String> {
                 }
                 i = end;
             }
+            // `[[name]]` is the older Grafana variable syntax, not a range.
+            b'[' if b.get(i + 1) == Some(&b'[') => {
+                names.insert(VARIABLE.to_owned());
+                i = skip_group(b, i, b']');
+            }
             b'[' => i = skip_group(b, i, b']'),
             // A dashboard variable outside `{...}` and `[...]` can stand for
             // a metric name that the check cannot see.
@@ -199,10 +200,16 @@ fn query_metrics(expr: &str) -> BTreeSet<String> {
                     next += 1;
                 }
                 let call = next < b.len() && b[next] == b'(';
+                let grouped = ["by", "without"].iter().any(|g| {
+                    expr[next..].starts_with(g)
+                        && !expr[next + g.len()..]
+                            .starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                });
                 if LABEL_LISTS.contains(&word) {
                     if call {
                         i = skip_group(b, next, b')');
                     }
+                } else if AGGREGATIONS.contains(&word) && (call || grouped) {
                 } else if !call && !KEYWORDS.contains(&word) {
                     names.insert(word.to_owned());
                     after_metric = true;
@@ -447,6 +454,17 @@ fn the_name_scan_reports_a_misspelled_metric() {
     assert_eq!(
         names,
         ["convert_workers", VARIABLE].map(String::from).into()
+    );
+    let names = query_metrics("convert_workers or [[worker_metric]]");
+    assert_eq!(
+        names,
+        ["convert_workers", VARIABLE].map(String::from).into()
+    );
+    // An aggregation name without `(`, `by` or `without` is a metric.
+    let names = query_metrics("sum by (pool) (convert_workers) or sum without (pod) (x) or count");
+    assert_eq!(
+        names,
+        ["convert_workers", "count", "x"].map(String::from).into()
     );
 }
 
