@@ -19,8 +19,8 @@ const NOT_PRINTED: &[&[u8]] = &[
     b"annotation",
     b"tracked-changes",
     b"notes",
-    b"title",
-    b"desc",
+    b"svg:title",
+    b"svg:desc",
 ];
 
 pub(super) fn scan(package: &mut Package, text: &mut TextCollector, facts: &mut SourceFacts) {

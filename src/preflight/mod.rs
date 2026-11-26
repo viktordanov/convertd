@@ -157,8 +157,18 @@ impl TextCollector {
     }
 
     /// Moves the code points into `facts`, sorted; past the cap the glyph
-    /// check runs on what was kept and records `cap_reached`.
+    /// check runs on what was kept and records `cap_reached`. When a text
+    /// part could not be read, the scanner has recorded a glyphs skip and
+    /// nothing is kept: the check does not run on a failed scan.
     fn finish(self, facts: &mut SourceFacts) {
+        if facts
+            .skipped
+            .iter()
+            .any(|(check, _)| *check == Check::Glyphs)
+        {
+            facts.text_code_points.clear();
+            return;
+        }
         let mut kept = self.kept;
         kept.sort_unstable();
         facts.text_code_points = kept;
@@ -170,7 +180,9 @@ impl TextCollector {
 
 /// Picks the drawn text out of one part's events: the text of an element
 /// named in `text` (by local name), or with `text` empty of any element
-/// inside `within`, and never inside an element named in `skip`.
+/// inside `within`, and never inside an element named in `skip`. A `skip`
+/// name with a `:` matches the element's qualified name, so `svg:title`
+/// leaves `text:title` alone; the others match the local name.
 struct TextScope {
     text: &'static [&'static [u8]],
     within: Option<&'static [u8]>,
@@ -205,7 +217,15 @@ impl TextScope {
                 let name = e.local_name();
                 let name = name.as_ref();
                 let depth = self.depth;
-                if self.skip.contains(&name) {
+                let qualified = e.name();
+                let skipped = self.skip.iter().any(|skip| {
+                    if skip.contains(&b':') {
+                        *skip == qualified.as_ref()
+                    } else {
+                        *skip == name
+                    }
+                });
+                if skipped {
                     self.skip_at.get_or_insert(depth);
                 }
                 if self.within == Some(name) {

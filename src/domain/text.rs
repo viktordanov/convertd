@@ -91,5 +91,6 @@ mod tests {
         assert_eq!(script_name(0x0300), "Inherited");
         assert_eq!(script_name(0x1F600), "Common");
         assert_eq!(script_name(0x0378), "Unknown");
+        assert_eq!(script_name(0x2840), "Braille");
     }
 }

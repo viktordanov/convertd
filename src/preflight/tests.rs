@@ -1205,9 +1205,9 @@ fn xlsx_text_code_points_from_shared_and_inline_strings() {
         ("rId1", "sharedStrings", "sharedStrings.xml"),
         ("rId2", "worksheet", "worksheets/sheet1.xml"),
     ]);
-    let shared =
-        "<sst><si><t>\u{0E01}</t></si><si><r><t>b</t></r><rPh><t>\u{30A2}</t></rPh></si></sst>";
-    let sheet = "<worksheet><sheetData><row><c t=\"inlineStr\"><is><t>\u{1200}</t></is></c><c><v>42</v></c></row></sheetData></worksheet>";
+    // Strings 0, 1 and 4 are referenced; 3 is left over and not drawn.
+    let shared = "<sst><si><t>\u{0E01}</t></si><si><r><t>b</t></r><rPh><t>\u{30A2}</t></rPh></si><si/><si><t>\u{0416}</t></si><si><t>\u{05E9}</t></si></sst>";
+    let sheet = "<worksheet><sheetData><row><c t=\"inlineStr\"><is><t>\u{1200}</t></is></c><c><v>3</v></c><c t=\"s\"><v>0</v></c><c r=\"D1\" t=\"s\"><v>1</v></c><c t=\"s\"><v> 4 </v></c></row></sheetData></worksheet>";
     let content_types = types("");
     let bytes = zip(&[
         ("[Content_Types].xml", content_types.as_bytes()),
@@ -1218,14 +1218,15 @@ fn xlsx_text_code_points_from_shared_and_inline_strings() {
         ("xl/worksheets/sheet1.xml", sheet.as_bytes()),
     ]);
     let facts = scan_bytes("text.xlsx", &bytes, Family::Spreadsheet);
-    assert_eq!(facts.text_code_points, cps("b\u{0E01}\u{1200}"));
+    assert_eq!(facts.text_code_points, cps("b\u{05E9}\u{0E01}\u{1200}"));
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
 }
 
 #[test]
 fn odf_text_code_points_from_the_body_and_the_master_pages() {
     // Text in the body and in a footer of styles.xml counts; annotations,
     // tracked deletions and alternative text are not printed.
-    let content = r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><office:automatic-styles/><office:body><office:text><text:tracked-changes><text:changed-region><text:deletion><text:p>Ж</text:p></text:deletion></text:changed-region></text:tracked-changes><text:p>a<text:span>ก</text:span><office:annotation><dc:creator>中</dc:creator><text:p>中</text:p></office:annotation></text:p><draw:frame><svg:title>Ж</svg:title><svg:desc>Ж</svg:desc></draw:frame></office:text></office:body></office:document-content>"#;
+    let content = r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><office:automatic-styles/><office:body><office:text><text:tracked-changes><text:changed-region><text:deletion><text:p>Ж</text:p></text:deletion></text:changed-region></text:tracked-changes><text:p>a<text:span>ก</text:span><office:annotation><dc:creator>中</dc:creator><text:p>中</text:p></office:annotation></text:p><draw:frame><svg:title>Ж</svg:title><svg:desc>Ж</svg:desc></draw:frame><text:p><text:title>ש</text:title></text:p></office:text></office:body></office:document-content>"#;
     let styles = r#"<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:styles><style:style style:name="x"/></office:styles><office:master-styles><style:master-page style:name="Standard"><style:footer><text:p>ሀ</text:p></style:footer></style:master-page></office:master-styles></office:document-styles>"#;
     let bytes = zip(&[
         ("mimetype", b"application/vnd.oasis.opendocument.text"),
@@ -1233,7 +1234,8 @@ fn odf_text_code_points_from_the_body_and_the_master_pages() {
         ("styles.xml", styles.as_bytes()),
     ]);
     let facts = scan_bytes("text.odt", &bytes, Family::Document);
-    assert_eq!(facts.text_code_points, cps("a\u{0E01}\u{1200}"));
+    // A printed text:title field counts; svg:title is alternative text.
+    assert_eq!(facts.text_code_points, cps("a\u{05E9}\u{0E01}\u{1200}"));
     assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
 }
 
@@ -1241,6 +1243,36 @@ fn odf_text_code_points_from_the_body_and_the_master_pages() {
 fn malformed_text_part_skips_the_glyph_check() {
     let document = body("<w:p><w:r><w:t>\u{0E01}</w:t></w:r></w:p>").replace("</w:body>", "");
     let facts = scan_bytes("bad.docx", &docx(&[], &document), Family::Document);
+    assert!(
+        facts
+            .skipped
+            .contains(&(Check::Glyphs, SkipReason::MalformedXml)),
+        "{:?}",
+        facts.skipped
+    );
+    // The text read before the error is not used.
+    assert!(
+        facts.text_code_points.is_empty(),
+        "{:?}",
+        facts.text_code_points
+    );
+}
+
+#[test]
+fn xlsx_unreadable_workbook_relationships_skip_the_glyph_check() {
+    // Without the complete list of worksheets, inline strings can be missed.
+    let root = rels(&[("rId1", "officeDocument", "xl/workbook.xml")]);
+    let content_types = types("");
+    let bytes = zip(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", root.as_bytes()),
+        ("xl/workbook.xml", b"<workbook/>"),
+        (
+            "xl/_rels/workbook.xml.rels",
+            b"<Relationships><Relationship",
+        ),
+    ]);
+    let facts = scan_bytes("cut.xlsx", &bytes, Family::Spreadsheet);
     assert!(
         facts
             .skipped
