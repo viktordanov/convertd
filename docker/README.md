@@ -14,12 +14,12 @@ The product image converts documents on arm64. On 2026-11-26 the `runtime` image
 6. [Size](#size)
 7. [What is verified](#what-is-verified)
 
-<!-- memoria:section id="overview" files="Dockerfile install-engines.sh dpkg/docs.cfg dpkg/fonts.cfg" -->
+<!-- memoria:section id="overview" files="Dockerfile install-engines.sh dpkg/docs.cfg dpkg/fonts.cfg dpkg/libreoffice.cfg" -->
 ## What the image holds
 
 The image is `debian:trixie-slim` with only what convertd uses. Each part has a reason:
 
-- **LibreOffice 26.8.3** from the `.deb` tarball of The Document Foundation (TDF). The image installs 13 of its packages, which the `engines` stage names. The full set does not install, because `postgresql-sdbc` needs Base. Java, Base, Python, help and other UI languages are not installed. The build fails if `java` or `python3` is present.
+- **LibreOffice 26.8.3** from the `.deb` tarball of The Document Foundation (TDF). The image installs 13 of its packages, which the `engines` stage names. The full set does not install, because `postgresql-sdbc` needs Base. Java, Base, Python, help and other UI languages are not installed. The build fails if `java` or `python3` is present. `dpkg/libreoffice.cfg` also drops the parts that a headless conversion never reads: the icon themes except colibre, the offline help, the gallery, the templates, the Basic wizards and the credits document.
 - **PDFium `chromium/8179`** from `bblanchon/pdfium-binaries`, with its `LICENSE` and the third-party licenses in `/opt/pdfium`.
 - **Fonts** that replace the common Office families with metric-compatible free fonts. [Fonts and build-info.json](#fonts-and-build-infojson) gives the set.
 - **No network tools.** curl, ca-certificates and procps are not in the product image. All downloads happen in the `engines` build stage.
@@ -85,16 +85,18 @@ The build arguments:
 | `CONVERTD_VERSION`, `CONVERTD_COMMIT`, `CONVERTD_BUILD_DATE` | the OCI version, revision and created labels. convertd also compiles in `CONVERTD_COMMIT` for `/v1/capabilities` and the engine fingerprint. `convertd --version` prints the version from `Cargo.toml` |
 <!-- /memoria:section -->
 
-<!-- memoria:section id="contract" files="fonts/fonts.json fonts/10-libreoffice-fonts.conf fonts/35-rs-convert-aliases.conf fonts/probe-families.txt dpkg/fonts.cfg write-build-info.sh install-engines.sh cache-fonts.sh" -->
+<!-- memoria:section id="contract" files="fonts/fonts.json fonts/10-libreoffice-fonts.conf fonts/35-rs-convert-aliases.conf fonts/probe-families.txt dpkg/fonts.cfg dpkg/libreoffice.cfg write-build-info.sh install-engines.sh cache-fonts.sh" -->
 ## Fonts and build-info.json
 
 The font set covers Latin, Greek, Cyrillic, symbols, math and emoji. These families are installed, and the build fails if `fc-list` does not find one of them:
 
 - Liberation Sans, Serif and Mono, Carlito and Caladea: metric-compatible with Arial, Times New Roman, Courier New, Calibri and Cambria.
-- DejaVu (core), and the Noto subset in `dpkg/fonts.cfg`: Sans, Serif, Sans Mono, Sans Symbols, Sans Symbols2, Sans Math and Color Emoji.
+- DejaVu, and the Noto families Sans, Serif, Sans Mono, Sans Symbols, Sans Symbols2, Sans Math and Color Emoji.
 - The fonts that LibreOffice bundles, OpenSymbol among them. They also cover Arabic, Hebrew, Armenian, Georgian and Lao.
 
 Devanagari, Thai, Ethiopic and CJK have no font. Text in these scripts renders as empty boxes. `FONTS_CJK=1` adds Noto CJK.
+
+LibreOffice bundles its own copies of Liberation, Carlito, Caladea, DejaVu, Noto Sans and Noto Serif, and Debian packages install them too. The image keeps one copy of each family: the copy that fontconfig picked when both were present. That is Debian's Carlito and LibreOffice's copy of the others, the same version or a newer one. `dpkg/fonts.cfg` and `dpkg/libreoffice.cfg` drop the other copy, and `build-info.json` stays the same. A new LibreOffice release can change these versions, so the pin procedure checks them again.
 
 `fonts/35-rs-convert-aliases.conf` maps Aptos, Aptos Display and Calibri Light to Carlito. These Office families have no metric-compatible free font, so `fonts.json` marks them `false`. Debian already maps the other Office families.
 
@@ -148,25 +150,26 @@ Then prove the new pins:
 1. Build `engine-check` for `linux/arm64` and for `linux/amd64`.
 2. If `lib-check` fails, read the lines that it prints. Add a line to `libreoffice/ldd-allow.txt` only for a plugin that conversion never loads, with the reason.
 3. Run both spike binaries in each image, as [What is verified](#what-is-verified) shows.
-4. Compare `/opt/convertd/build-info.json` with the old one. A changed font list changes the `FONT_SUBSTITUTED` warnings.
+4. Compare `/opt/convertd/build-info.json` with the old one. A changed font list changes the `FONT_SUBSTITUTED` warnings. For each duplicate family in `dpkg/fonts.cfg`, make sure that `fc-list` shows the kept copy with the higher or the same version.
+5. Run `docker/ab-pages.sh <old image> <new image> corpus/out` with `CURL_IMAGE` set. Every page must have the same hash, unless the release notes explain the change.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="measurement" files="Dockerfile" -->
+<!-- memoria:section id="measurement" files="Dockerfile dpkg/libreoffice.cfg" -->
 ## Size
 
-These sizes are measurements without CJK fonts, on an arm64 Mac (Docker 29.8.2, OrbStack). The `runtime-base` sizes are from 2026-11-25, and the amd64 image was built under emulation. The `runtime` size is from 2026-11-26, with the real engines in convertd.
+These sizes are measurements without CJK fonts, on an arm64 Mac (Docker 29.8.2, OrbStack), on 2026-11-26, before and after the LibreOffice trims of `dpkg/libreoffice.cfg`. The amd64 images were built under emulation. The amd64 `runtime` size is `runtime-base` plus the convertd layer, an estimate until the CI image job measures it natively.
 
-| Image | Uncompressed (`docker image inspect`) | Compressed (`docker save \| gzip -6`) |
-| --- | --- | --- |
-| `runtime`, arm64 | 733 MB | 303 MB |
-| `runtime-base`, arm64 | 727 MB | 300 MB |
-| `runtime-base`, amd64 | 699 MB | 306 MB |
-| `dev`, arm64 | 2.78 GB | not measured |
+| Image | Before the trims | After the trims | Compressed after (`docker save \| gzip -6`) |
+| --- | --- | --- | --- |
+| `runtime`, arm64 | 733.0 MB | 605.0 MB | 215 MB (303 MB before) |
+| `runtime-base`, amd64 | 699.3 MB | 571.3 MB | not measured |
+| `runtime`, amd64 (estimate) | 705.7 MB | 577.7 MB | not measured |
+| `dev`, arm64 | 2.78 GB | 2.65 GB | not measured |
 
-The working target for the product image is at most 600 MB uncompressed. The largest parts are LibreOffice core (333 MB installed), the icon themes in `images` (73 MB), the bundled fonts (53 MB) and URE (52 MB). Plan 003 step 4 tries the image without `images`. The spike image of `docs/m0-spikes.md` was 708 MB, without the Noto fonts.
+Uncompressed sizes come from `docker image inspect`. The working target for the product image is at most 600 MB uncompressed, on amd64, the production architecture. The trims save 128 MB on each architecture. The largest parts are the icon themes (72 MB), the gallery (14 MB), the offline help (11 MB of content in 5334 files), the duplicate fonts and the templates (8 MB). The spike image of `docs/m0-spikes.md` was 708 MB, without the Noto fonts.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="verification" files="Dockerfile smoke.sh" -->
+<!-- memoria:section id="verification" files="Dockerfile smoke.sh ab-pages.sh" -->
 ## What is verified
 
 The `engine-check` image proves the engines under the production limits. Each run uses a read-only root, a tmpfs on `/tmp`, user `10001:10001`, no capabilities, `no-new-privileges` and no network:
@@ -203,6 +206,13 @@ An earlier `runtime` build of the same day, with no real engines in convertd, ga
 
 These results prove conversion on arm64 under Docker only. They do not prove amd64, Kubernetes, Container Apps or gVisor.
 
+On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a baseline image built from the same `main` without them:
+
+- **Pages:** `ab-pages.sh` converted the 42 files of `corpus/out` to PNG pages at 72 dpi with both images. All 42 statuses and all 192 page hashes are the same, 160 of them distinct. That includes `canary/remote-image.docx`, which shows the missing-image icon.
+- **Corpus:** `corpus-bench check` passed 59 of 59 cases on both images, with the same results apart from timings. The listener control passed, and the service log had no error.
+- **Engine tests:** in the trimmed `dev` image, `engines_office`, `engines_render` and `engines_poison` passed (20 tests, one ignored). Two tests skipped: one needs `CONVERTD_SMALL_DISK`, and one finds no `encrypted/deck20.pptx` in the corpus.
+- **Build and smoke:** `build-info.json` is the same, `lib-check` passes, and `smoke.sh` passes.
+
 The amd64 proof at native speed needs the CI image job on the amd64 runners of GitHub. The job runs only by hand and monthly. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`:
 
 ```sh
@@ -211,7 +221,7 @@ docker/smoke.sh rs-convert:ci docker/smoke/small.docx 770
 
 `smoke.sh` runs the image with the production limits and checks five things:
 
-- The image size against the budget. The job uses 770 MB, the measured 733 MB of the arm64 `runtime` image plus 5 %, or the `IMAGE_MAX_MB` variable.
+- The image size against the budget. The job uses 635 MB, the measured 605 MB of the arm64 `runtime` image plus 5 %, or the `IMAGE_MAX_MB` variable.
 - The time to ready.
 - One DOCX to PDF over HTTP, with the conversion time and the `Server-Timing` header.
 - That no job directory is left after the response.
