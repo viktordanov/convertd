@@ -173,6 +173,10 @@ impl ApiError {
                 ErrorCode::InvalidPassword,
                 "the password does not open the document",
             ),
+            // The service turns it into a pass-through; reaching here is a bug.
+            EngineError::Restricted => {
+                Self::internal("decrypt kept the owner restrictions".to_owned())
+            }
             EngineError::LimitExceeded(message) => {
                 Self::unprocessable(ErrorCode::LimitExceeded, message.clone())
             }
@@ -229,6 +233,7 @@ impl ApiError {
             | UploadError::EmptyFile
             | UploadError::OptionsTooLarge
             | UploadError::Stalled
+            | UploadError::TooSlow { .. }
             | UploadError::Incomplete(_)
             | UploadError::Options(OptionsError::Syntax(_)) => Self::bad_request(err.to_string()),
             UploadError::Options(OptionsError::Invalid(message)) => {

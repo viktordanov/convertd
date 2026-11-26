@@ -453,3 +453,70 @@ fn broken_ole2_is_refused_not_a_panic() {
         let _ = detect(&flipped);
     }
 }
+
+/// The bounded reader follows version 3 (512-byte sectors) as well as 4,
+/// and looks only at the root's own children: a `WordDocument` embedded in
+/// a sub-storage of a workbook does not make it a `doc`.
+#[test]
+fn ole2_version_3_and_nested_names() {
+    let mut v3 =
+        cfb::CompoundFile::create_with_version(cfb::Version::V3, Cursor::new(Vec::new())).unwrap();
+    v3.create_stream("/WordDocument")
+        .unwrap()
+        .write_all(&vec![7u8; 6000])
+        .unwrap();
+    let v3 = v3.into_inner().into_inner();
+    assert_eq!(
+        detect_file(&mut Cursor::new(&v3), v3.len() as u64)
+            .unwrap()
+            .format,
+        Format::Doc
+    );
+
+    let mut nested = cfb::CompoundFile::create(Cursor::new(Vec::new())).unwrap();
+    nested
+        .create_stream("/Workbook")
+        .unwrap()
+        .write_all(b"book")
+        .unwrap();
+    nested.create_storage("/MBD0001").unwrap();
+    nested
+        .create_stream("/MBD0001/WordDocument")
+        .unwrap()
+        .write_all(b"embedded")
+        .unwrap();
+    let nested = nested.into_inner().into_inner();
+    assert_eq!(
+        detect_file(&mut Cursor::new(&nested), nested.len() as u64)
+            .unwrap()
+            .format,
+        Format::Xls
+    );
+}
+
+/// The bounded reader against `cfb` on compound files that Office wrote,
+/// not ones `cfb` made: both must give the same root names.
+#[test]
+fn ole2_root_names_match_cfb_on_real_files() {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus/fixtures");
+    let mut checked = 0;
+    for name in [
+        "vbaProject-word.bin",
+        "vbaProject-xl.bin",
+        "vbaProject-ppt.bin",
+    ] {
+        let bytes = std::fs::read(fixtures.join(name)).unwrap();
+        let mut ours = convertd::detect::ole2::root_names(&mut Cursor::new(&bytes))
+            .unwrap_or_else(|| panic!("{name}: the reader could not follow it"));
+        let compound = cfb::CompoundFile::open(Cursor::new(&bytes)).unwrap();
+        let mut theirs: Vec<String> = compound
+            .read_root_storage()
+            .map(|entry| entry.name().to_owned())
+            .collect();
+        ours.sort();
+        theirs.sort();
+        assert_eq!(ours, theirs, "{name}");
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+}

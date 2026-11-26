@@ -151,7 +151,7 @@
           "conversion"
         ],
         "summary": "Convert one document to PDF, page images, or both",
-        "description": "Uploads one file and returns it as a PDF, as page images, or as a\nbundle of both.\n\n**Routing.** The file type is detected from the bytes, never from the\nfile name or the part's content type. Office and OpenDocument files go\nthrough LibreOffice. PDFs skip conversion and go straight to rendering.\nImage files (PNG, JPEG, TIFF, GIF, BMP, WebP) are not accepted as\ninput and answer 415 `UNSUPPORTED_FORMAT`.\n\n**Options.** Send them as a JSON object in the `options` part. Leave\nthe part out to get a PDF with default settings. Unknown properties\nare rejected with `VALIDATION_ERROR` so that typos never pass silently.\n\n**Timing.** The call is synchronous. `timeout_seconds` is the whole\nbudget for queueing, conversion, rendering and packaging. When it runs\nout the engine process is killed and the call returns\n`CONVERSION_TIMEOUT`.\n\n**Safety.** Macros never run, external links are never fetched and the\nengine has no network access. A document that relies on any of those\nstill converts, without that content.",
+        "description": "Uploads one file and returns it as a PDF, as page images, or as a\nbundle of both.\n\n**Routing.** The file type is detected from the bytes, never from the\nfile name or the part's content type. Office and OpenDocument files go\nthrough LibreOffice. PDFs skip conversion and go straight to rendering.\nImage files (PNG, JPEG, TIFF, GIF, BMP, WebP) are not accepted as\ninput and answer 415 `UNSUPPORTED_FORMAT`.\n\n**Options.** Send them as a JSON object in the `options` part. Leave\nthe part out to get a PDF with default settings. Unknown properties\nare rejected with `VALIDATION_ERROR` so that typos never pass silently.\n\n**Timing.** The call is synchronous. `timeout_seconds` is the whole\nbudget from the end of the upload to the response headers: queueing,\nconversion, rendering and packaging. When it runs out the engine\nprocess is killed and the call returns `CONVERSION_TIMEOUT`. Streaming\nthe body comes after it and is not part of that budget. The server cuts\na body that the client stops reading, or reads below the deployment's\nminimum rate; the same holds for an upload that stalls or trickles.\n\n**Safety.** Macros never run, external links are never fetched and the\nengine has no network access. A document that relies on any of those\nstill converts, without that content.",
         "operationId": "convertDocument",
         "parameters": [
           {
@@ -199,7 +199,7 @@
                 "schema": {
                   "type": "string"
                 },
-                "description": "Identifies the exact engine build: service version, LibreOffice\nversion, PDFium version and installed font set. Use it in cache keys.\n",
+                "description": "Identifies everything that decides the output bytes: service version,\nLibreOffice version, PDFium version, installed font set, and the\ndeployment settings that change the output (render caps, default paper\nsize, the blank-page probe). Use it in cache keys.\n",
                 "example": "sha256:5b0f6e1c9a2d"
               },
               "Convert-Page-Count": {
@@ -1121,7 +1121,7 @@
       },
       "WarningCode": {
         "type": "string",
-        "description": "- `FONT_SUBSTITUTED`: a font the document asks for is not installed.\n  Text may reflow. `detail` has `requested` and `substitute`.\n- `PAGE_COUNT_MISMATCH`: the PDF has a different number of pages than\n  the source declares. `detail` has `expected` and `actual`.\n- `BLANK_PAGE`: a page that contains content rendered as a flat colour.\n- `MACROS_IGNORED`: the document contains macros. They were not run.\n- `RENDER_CLAMPED`: a server limit reduced the requested resolution.\n  `detail` has `requested_dpi` and `effective_dpi`.",
+        "description": "- `FONT_SUBSTITUTED`: a font the document asks for is not installed.\n  `detail.substitute` is the font that the image's fontconfig picked\n  for it when the image was built, not one read from the PDF.\n  Text may reflow. `detail` has `requested` and `substitute`.\n- `PAGE_COUNT_MISMATCH`: the PDF has a different number of pages than\n  the source declares. `detail` has `expected` and `actual`.\n- `BLANK_PAGE`: a page that contains content rendered as a flat colour.\n- `MACROS_IGNORED`: the document contains macros. They were not run.\n- `RENDER_CLAMPED`: a server limit reduced the requested resolution.\n  `detail` has `requested_dpi` and `effective_dpi`.",
         "enum": [
           "FONT_SUBSTITUTED",
           "PAGE_COUNT_MISMATCH",

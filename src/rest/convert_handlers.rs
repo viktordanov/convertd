@@ -45,9 +45,12 @@ use super::state::AppState;
 /// are rejected with `VALIDATION_ERROR` so that typos never pass silently.
 ///
 /// **Timing.** The call is synchronous. `timeout_seconds` is the whole
-/// budget for queueing, conversion, rendering and packaging. When it runs
-/// out the engine process is killed and the call returns
-/// `CONVERSION_TIMEOUT`.
+/// budget from the end of the upload to the response headers: queueing,
+/// conversion, rendering and packaging. When it runs out the engine
+/// process is killed and the call returns `CONVERSION_TIMEOUT`. Streaming
+/// the body comes after it and is not part of that budget. The server cuts
+/// a body that the client stops reading, or reads below the deployment's
+/// minimum rate; the same holds for an upload that stalls or trickles.
 ///
 /// **Safety.** Macros never run, external links are never fetched and the
 /// engine has no network access. A document that relies on any of those
@@ -75,7 +78,7 @@ use super::state::AppState;
                 ("Convert-Source-Format" = String, description = "The detected input format, as listed by `/v1/capabilities`."),
                 ("Convert-Page-Count" = u32, description = "Number of pages in the resulting PDF."),
                 ("Convert-Warning-Count" = u32, description = "Number of warnings raised for this conversion. The warnings\nthemselves are in `manifest.json`; ask for `bundle` to read them.\n"),
-                ("Convert-Engine-Fingerprint" = String, description = "Identifies the exact engine build: service version, LibreOffice\nversion, PDFium version and installed font set. Use it in cache keys.\n"),
+                ("Convert-Engine-Fingerprint" = String, description = "Identifies everything that decides the output bytes: service version,\nLibreOffice version, PDFium version, installed font set, and the\ndeployment settings that change the output (render caps, default paper\nsize, the blank-page probe). Use it in cache keys.\n"),
                 ("Server-Timing" = String, description = "Where the time of this request went, in the W3C Server-Timing form\n`name;dur=<milliseconds>`, comma-separated, with 3 decimals. It is\nsent on every response produced after the file type was detected,\nincluding the error responses that follow detection. It is meant for\ndiagnosis and benchmarks.\n\n| Name | Stage |\n| --- | --- |\n| `recv` | Receiving the upload. Outside `total`. |\n| `detect` | Detecting the file type. |\n| `preflight` | The office worker's scan of an office source, inside `convert` before the engine opens the file. Counted as overhead. |\n| `queue` | Waiting for a free worker. |\n| `lease` | Taking the worker from its pool. |\n| `spawn` | Starting a worker on this request's path. 0 when a warm worker was used. |\n| `bind` | Loading the engine library in that worker. 0 when a warm worker was used. |\n| `convert`, `convert_engine` | Producing the PDF: wall time, then time inside the engine. |\n| `inspect`, `inspect_engine` | Reading the PDF's facts: wall time, then engine time. |\n| `probe`, `probe_engine` | The blank-page probe: wall time, then engine time. |\n| `render`, `render_engine` | Rendering page images: wall time, then engine time (the longest chunk). |\n| `verify` | The quality checks that raise warnings. |\n| `package` | Building the manifest and the bundle plan before the headers are sent. |\n| `total` | From the end of the upload to the start of the response. |\n\nStages that did not run are left out, except `spawn` and `bind`.\n"),
             ),
             content(
@@ -122,7 +125,14 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
         }
     };
     let mut detected = None;
-    let received = match upload::receive(request, &job, state.service.limits(), &mut detected).await
+    let received = match upload::receive(
+        request,
+        &job,
+        state.service.limits(),
+        state.upload_rate,
+        &mut detected,
+    )
+    .await
     {
         Ok(received) => received,
         Err(err) => {
@@ -244,7 +254,16 @@ async fn success(
     package_started: Instant,
 ) -> Response {
     let output = received.request.output;
+    // The deadline covers everything up to the headers, packaging
+    // included: planning a bundle reads every page's size.
+    let deadline = received.upload_done + received.request.timeout;
     let prepared = match output {
+        _ if Instant::now() >= deadline => Err(ApiError::from_conversion(
+            &ConversionError::Timeout {
+                seconds: received.request.timeout.as_secs(),
+            },
+            state.queue_wait_seconds,
+        )),
         Output::Pdf => {
             // A few entries: cheap enough on this thread.
             settle(&job);
@@ -287,6 +306,7 @@ async fn success(
         job,
         permit,
         idle: state.io_idle_timeout,
+        rate: state.response_rate,
         request_id: request_id.to_owned(),
     };
     let (body, content_type, extension) = match prepared {
@@ -530,6 +550,9 @@ fn record_metrics(
     let Some(result) = result else { return };
     for warning in &result.warnings {
         metrics::warning(warning.code.as_str());
+    }
+    if result.probe_skipped_pages > 0 {
+        metrics::verify_skipped_by("blank_page", "pages", u64::from(result.probe_skipped_pages));
     }
     for (check, reason) in &result.skipped {
         metrics::verify_skipped(check.as_str(), reason);

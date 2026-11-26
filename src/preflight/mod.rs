@@ -169,15 +169,11 @@ fn scan_ole2(mut file: File, facts: &mut SourceFacts) {
         skip_all(facts, SkipReason::MissingPart);
         return;
     }
-    let Ok(compound) = cfb::CompoundFile::open(file) else {
+    // The supervisor's bounded reader: a hostile FAT costs the worker nothing.
+    let Some(names) = crate::detect::ole2::root_names(&mut file) else {
         skip_all(facts, SkipReason::MalformedXml);
         return;
     };
-    let names: Vec<String> = compound
-        .read_root_storage()
-        .take(crate::detect::ole2::MAX_ROOT_ENTRIES)
-        .map(|entry| entry.name().to_owned())
-        .collect();
     if names.iter().any(|name| name == "EncryptedPackage") {
         skip_all(facts, SkipReason::MissingPart);
         return;

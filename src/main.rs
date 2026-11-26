@@ -13,10 +13,6 @@ use convertd::rest::{healthcheck, openapi, server};
 use convertd::worker::Role;
 use convertd::{engines, jobs, logging, runtime, worker};
 
-#[cfg(feature = "mimalloc")]
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
 #[derive(Parser)]
 #[command(name = "convertd", version, about = "Document conversion service")]
 struct Cli {
@@ -144,7 +140,10 @@ fn healthcheck() -> ExitCode {
 fn serve() -> Result<(), String> {
     let config = Config::from_process().map_err(|err| err.to_string())?;
     logging::init(config.server.log_mode).map_err(|err| err.to_string())?;
-    prepare_tmp_dir(&config)?;
+    // Held until serve returns: before the sweep below and before the
+    // engines clear their worker slots, so a second server on the same
+    // TMP_DIR stops here instead of sweeping this one's files.
+    let _tmp_lock = prepare_tmp_dir(&config)?;
     let runtime = runtime::serve(config.server.tokio_worker_threads)
         .map_err(|err| format!("failed to build the runtime: {err}"))?;
 
@@ -184,6 +183,9 @@ fn serve() -> Result<(), String> {
             Ok(served) => served.map_err(|err| format!("failed to serve: {err}")),
             Err(err) => Err(format!("failed to serve: {err}")),
         };
+        // The one shutdown deadline, set at SIGTERM. Without a signal
+        // (the server failed), the pools get the whole grace.
+        let mut stop_by: Option<tokio::time::Instant> = None;
         let served = tokio::select! {
             result = &mut serving => joined(result),
             () = shutdown => {
@@ -194,6 +196,8 @@ fn serve() -> Result<(), String> {
                 // leasing: a request in flight still needs its later engine
                 // calls (the render after an office convert).
                 let grace = config.server.shutdown_grace;
+                let deadline = tokio::time::Instant::now() + grace;
+                stop_by = Some(deadline);
                 server::begin_drain(&state);
                 if !server::wait_idle(&state, grace).await {
                     tracing::warn!(grace_seconds = grace.as_secs(), "requests still in flight after the grace period");
@@ -211,7 +215,11 @@ fn serve() -> Result<(), String> {
                 }
             }
         };
-        selected.handle.shutdown(config.server.shutdown_grace).await;
+        // The pools get what is left of the deadline, or nothing.
+        let left = stop_by.map_or(config.server.shutdown_grace, |deadline| {
+            deadline.saturating_duration_since(tokio::time::Instant::now())
+        });
+        selected.handle.shutdown(left).await;
         served?;
         tracing::info!("server stopped");
         Ok(())
@@ -224,15 +232,17 @@ const METRICS_UPKEEP: std::time::Duration = std::time::Duration::from_secs(5);
 /// How long open connections get after the listener closes.
 const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Creates `TMP_DIR` and removes the job directories a crash left.
-fn prepare_tmp_dir(config: &Config) -> Result<(), String> {
+/// Creates `TMP_DIR`, takes its lock, and removes the job directories a
+/// crash left. Returns the lock, to hold for the life of the process.
+fn prepare_tmp_dir(config: &Config) -> Result<std::fs::File, String> {
     let dir = &config.server.tmp_dir;
     std::fs::create_dir_all(dir)
         .map_err(|err| format!("failed to create TMP_DIR {}: {err}", dir.display()))?;
+    let lock = jobs::job_dir::lock_tmp_dir(dir)?;
     match jobs::job_dir::sweep_stale(dir) {
         Ok(0) => {}
         Ok(removed) => tracing::info!(removed, "removed stale job directories"),
         Err(err) => tracing::warn!(error = %err, "failed to sweep TMP_DIR"),
     }
-    Ok(())
+    Ok(lock)
 }

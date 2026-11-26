@@ -358,6 +358,7 @@ pub mod ops {
             password,
             probe_dpi,
             collect_fonts: false,
+            probe_max_pages: u32::MAX,
         }
     }
 
@@ -516,6 +517,7 @@ pub mod ops {
                     password,
                     output,
                     max_output_bytes: 1 << 30,
+                    check_owner: false,
                 },
                 Admission::Queue,
                 Instant::now() + CALL,

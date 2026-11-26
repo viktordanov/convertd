@@ -169,6 +169,35 @@ pub fn remove_with_retry_using(
     }
 }
 
+/// The lock file that marks a `TMP_DIR` as in use.
+pub const LOCK_FILE: &str = ".lock";
+
+/// Takes the exclusive advisory lock on `$TMP_DIR/.lock`, creating the
+/// file if needed. Hold the returned file for the life of the process: the
+/// lock goes with it. `Err` names why, including when another process holds
+/// it, so two servers never sweep each other's job directories or worker
+/// slots.
+pub fn lock_tmp_dir(tmp_root: &Path) -> Result<std::fs::File, String> {
+    let path = tmp_root.join(LOCK_FILE);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|err| format!("failed to open {}: {err}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(format!(
+            "TMP_DIR {} is in use by another convertd serve (it holds {})",
+            tmp_root.display(),
+            path.display()
+        )),
+        Err(std::fs::TryLockError::Error(err)) => {
+            Err(format!("failed to lock {}: {err}", path.display()))
+        }
+    }
+}
+
 /// At start-up: removes the `job-*` children of `tmp_root` that a crash
 /// left behind, and nothing else. Returns how many it removed.
 pub fn sweep_stale(tmp_root: &Path) -> io::Result<usize> {
@@ -225,6 +254,26 @@ mod tests {
         drop(job);
         assert!(!root.exists(), "removed inline without a runtime");
         assert_eq!(budget.used(), 0);
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn the_tmp_dir_lock_is_exclusive() {
+        let tmp = scratch("lock");
+        let held = lock_tmp_dir(&tmp).unwrap();
+        let err = lock_tmp_dir(&tmp).unwrap_err();
+        assert!(err.contains("in use by another convertd serve"), "{err}");
+        drop(held);
+        // A child that another test forks shares the open file until it
+        // execs, so the lock can outlive the drop by a moment.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while lock_tmp_dir(&tmp).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "free again after the holder ends"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         std::fs::remove_dir_all(tmp).unwrap();
     }
 

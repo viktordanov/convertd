@@ -537,6 +537,113 @@ async fn encrypted_pdf_needs_the_password_and_is_decrypted() {
     app.assert_no_jobs().await;
 }
 
+/// An owner-password PDF opens without a password, so with none it passes
+/// through. A password given for it is checked as the owner password: the
+/// right one decrypts, a wrong one is 422 INVALID_PASSWORD (review, lane
+/// 001 item 9). The fake marks such a PDF with `/OwnerOnly`.
+#[tokio::test]
+async fn an_owner_password_is_verified_when_given() {
+    let app = App::with_pdf(
+        "owner-only",
+        &[],
+        FakePdf::new(FakeBehavior::Succeed).with_password("owner"),
+    );
+    let upload = pdf("/Encrypt 5 0 R /OwnerOnly");
+
+    let (response, body) = send(&app, file("perms.pdf", &upload)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body, upload, "no password: passed through unchanged");
+
+    // An empty password is no password: the original, restrictions and
+    // all, never a decrypted copy.
+    let (response, body) = send(
+        &app,
+        with_options("perms.pdf", &upload, r#"{"password":""}"#),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body, upload, "empty password: passed through unchanged");
+
+    let (response, body) = send(
+        &app,
+        with_options("perms.pdf", &upload, r#"{"password":"wrong"}"#),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(error_code(&body), "INVALID_PASSWORD");
+
+    let (response, body) = send(
+        &app,
+        with_options("perms.pdf", &upload, r#"{"password":"owner"}"#),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        memchr::memmem::find(&body, b"/Encrypt").is_none(),
+        "decrypted"
+    );
+    app.assert_no_jobs().await;
+}
+
+/// A user-password PDF with owner restrictions, opened with the user
+/// password only: decrypt keeps the restrictions, so the original
+/// encrypted PDF is the answer, unchanged. The owner password gives the
+/// decrypted copy (review, lane 001 item 9). The fake marks such a PDF
+/// with `/Restricted`.
+#[tokio::test]
+async fn a_restricted_pdf_with_the_user_password_passes_through() {
+    let app = App::with_pdf(
+        "restricted",
+        &[],
+        FakePdf::new(FakeBehavior::Succeed)
+            .with_password("user")
+            .with_owner_password("owner"),
+    );
+    let upload = pdf("/Encrypt 5 0 R /Restricted");
+
+    let (response, body) = send(
+        &app,
+        with_options("locked.pdf", &upload, r#"{"password":"user"}"#),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(body, upload, "the original, restrictions kept");
+
+    let (response, body) = send(
+        &app,
+        with_options(
+            "locked.pdf",
+            &upload,
+            r#"{"password":"user","output":"images"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "images still render");
+    drop(body);
+
+    let (response, body) = send(
+        &app,
+        with_options("locked.pdf", &upload, r#"{"password":"owner"}"#),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        memchr::memmem::find(&body, b"/Encrypt").is_none(),
+        "decrypted"
+    );
+    app.assert_no_jobs().await;
+}
+
 /// An encrypted OOXML package: an OLE2 file with the two streams.
 fn encrypted_ooxml() -> Vec<u8> {
     let mut compound = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).unwrap();
@@ -841,6 +948,183 @@ async fn a_client_that_stops_reading_releases_the_permit_after_the_idle_timeout(
     );
     app.assert_no_jobs().await;
     drop(stream);
+}
+
+/// `timeout_seconds` covers everything up to the headers. A render that
+/// returns only at the deadline lands after the service's last check but
+/// inside the backstop's grace, so the handler's check before packaging is
+/// what answers 504, not a stream.
+#[tokio::test]
+async fn slow_a_bundle_past_its_deadline_is_504_not_a_stream() {
+    let app = App::with_pdf(
+        "deadline-package",
+        &[],
+        FakePdf::new(FakeBehavior::Succeed).with_render_until_deadline(),
+    );
+    let (response, body) = send(
+        &app,
+        with_options(
+            "a.pdf",
+            &pdf("x"),
+            r#"{"output":"bundle","timeout_seconds":5}"#,
+        ),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::GATEWAY_TIMEOUT,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(error_code(&body), "CONVERSION_TIMEOUT");
+    app.assert_no_jobs().await;
+}
+
+/// A bundle whose client stops reading is cut by the pump. Over a real
+/// socket the cut must show: no chunked terminator after the last bytes
+/// the client gets, and `complete=false` in the access log (review, lane
+/// 001 item 5).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_a_cut_bundle_has_no_chunked_terminator() {
+    let app = App::new(
+        "cut-bundle",
+        &[
+            ("MAX_CONCURRENT_REQUESTS", "1"),
+            ("IO_IDLE_TIMEOUT_SECONDS", "1"),
+        ],
+    );
+    let addr = app.serve().await;
+    // Bytes that zstd cannot shrink, so the bundle outgrows the socket
+    // buffers (big_pdf's filler compresses to almost nothing).
+    let mut upload = pdf("big");
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    upload.extend((0..24 << 20).map(|_| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state as u8
+    }));
+    let body = with_options("big.pdf", &upload, r#"{"output":"bundle"}"#);
+    let (head_text, rest) = tokio::task::spawn_blocking(move || {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(15)))
+            .unwrap();
+        stream
+            .write_all(&head(body.len(), &format!("Bearer {KEY}")))
+            .unwrap();
+        stream.write_all(&body).unwrap();
+        let mut head_bytes = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head_bytes.ends_with(b"\r\n\r\n") {
+            assert_eq!(stream.read(&mut byte).unwrap(), 1);
+            head_bytes.push(byte[0]);
+        }
+        // Stop reading well past the idle timeout: the socket buffers fill
+        // and the pump's next send waits more than 1 s, so it cuts the body.
+        std::thread::sleep(Duration::from_millis(5000));
+        let mut rest = Vec::new();
+        let _ = stream.read_to_end(&mut rest);
+        (String::from_utf8_lossy(&head_bytes).into_owned(), rest)
+    })
+    .await
+    .unwrap();
+    assert!(head_text.starts_with("HTTP/1.1 200"), "{head_text}");
+    assert!(
+        head_text.contains("transfer-encoding: chunked"),
+        "{head_text}"
+    );
+    assert!(
+        !rest.ends_with(b"0\r\n\r\n"),
+        "a cut bundle ended with the chunked terminator"
+    );
+    let request_id = head_text
+        .lines()
+        .find_map(|line| line.strip_prefix("x-request-id: "))
+        .unwrap()
+        .trim()
+        .to_owned();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let access = loop {
+        let lines = log_lines(&request_id);
+        if let Some(line) = lines.into_iter().find(|l| l["message"] == "http request") {
+            break line;
+        }
+        assert!(Instant::now() < deadline, "no access log line");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(access["complete"], false, "{access}");
+    app.assert_no_jobs().await;
+}
+
+/// A client that keeps reading, but slowly, never trips the pump's idle
+/// timeout. The minimum-throughput floor ends the response after a window
+/// below it and frees the permit (review, lane 001 item 3). The floor is set
+/// high so that the reader can stay fast enough for the idle timer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_a_reader_below_the_floor_releases_the_permit() {
+    let app = App::new(
+        "response-slow",
+        &[
+            ("MAX_CONCURRENT_REQUESTS", "1"),
+            ("IO_IDLE_TIMEOUT_SECONDS", "2"),
+            ("RESPONSE_MIN_BYTES_PER_SECOND", "67108864"),
+        ],
+    );
+    let addr = app.serve().await;
+    let upload = big_pdf(96 * 1024 * 1024);
+    let body = file("big.pdf", &upload);
+    let small = file("small.pdf", &pdf("small"));
+
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = std::thread::spawn({
+        let stop = stop.clone();
+        move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            stream
+                .write_all(&head(body.len(), &format!("Bearer {KEY}")))
+                .unwrap();
+            stream.write_all(&body).unwrap();
+            let status = read_status(&mut stream);
+            // 256 KiB every 50 ms, about 5 MB/s: the pump never waits near
+            // the 2 s idle timeout, but stays below the 64 MiB/s floor.
+            let mut buf = vec![0u8; 256 * 1024];
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => std::thread::sleep(Duration::from_millis(50)),
+                }
+            }
+            status
+        }
+    });
+    // The upload, conversion and headers take a moment.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(8);
+    loop {
+        let small = small.clone();
+        let status = tokio::task::spawn_blocking(move || round_trip(addr, &small))
+            .await
+            .unwrap();
+        if status == 200 {
+            break;
+        }
+        assert_eq!(status, 429);
+        assert!(Instant::now() < deadline, "the slow reader kept the permit");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(reader.join().unwrap(), 200);
+    let cuts = log_lines("RESPONSE_TOO_SLOW");
+    assert!(
+        cuts.iter().any(|l| l["message"] == "response too slow"),
+        "{cuts:?}"
+    );
+    app.assert_no_jobs().await;
 }
 
 /// Streams `total` bytes of body after `head`, in 64 KiB writes, until the

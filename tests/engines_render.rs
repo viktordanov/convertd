@@ -144,6 +144,7 @@ fn inspect_job(pdf: &Path, password: Option<&str>, probe_dpi: Option<u16>) -> In
         password: password.map(Password::new),
         probe_dpi,
         collect_fonts: false,
+        probe_max_pages: u32::MAX,
     }
 }
 
@@ -378,6 +379,7 @@ async fn slow_encrypted_pdfs_inspect_and_decrypt() {
                     password: Password::new(pw),
                     output,
                     max_output_bytes: cap,
+                    check_owner: false,
                 },
                 Admission::Queue,
                 deadline(),

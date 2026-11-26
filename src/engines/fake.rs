@@ -355,6 +355,11 @@ pub struct FakePdf {
     /// The password an encrypted PDF (one containing `/Encrypt`) opens
     /// with; `None` accepts any non-empty password.
     password: Option<String>,
+    /// The owner password of a `/Restricted` PDF.
+    owner_password: Option<String>,
+    /// render returns only at the deadline, with success: an engine that
+    /// used up the whole budget.
+    render_until_deadline: bool,
 }
 
 impl FakePdf {
@@ -362,6 +367,8 @@ impl FakePdf {
         Self {
             settings: Settings::new(behavior, false),
             password: None,
+            owner_password: None,
+            render_until_deadline: false,
         }
     }
 
@@ -371,6 +378,8 @@ impl FakePdf {
         Self {
             settings: Settings::new(FakeBehavior::Succeed, true),
             password: None,
+            owner_password: None,
+            render_until_deadline: false,
         }
     }
 
@@ -379,9 +388,23 @@ impl FakePdf {
         self
     }
 
-    /// The only password that opens an encrypted PDF.
+    /// The only password that opens an encrypted PDF, and the owner
+    /// password of an owner-only one (`/OwnerOnly`).
     pub fn with_password(mut self, password: impl Into<String>) -> Self {
         self.password = Some(password.into());
+        self
+    }
+
+    /// render succeeds, but only once the deadline has passed.
+    pub fn with_render_until_deadline(mut self) -> Self {
+        self.render_until_deadline = true;
+        self
+    }
+
+    /// The owner password of a `/Restricted` PDF: it opens the file too,
+    /// and only it lifts the restrictions.
+    pub fn with_owner_password(mut self, password: impl Into<String>) -> Self {
+        self.owner_password = Some(password.into());
         self
     }
 
@@ -392,6 +415,9 @@ impl FakePdf {
     }
 
     fn opens(&self, password: &str) -> bool {
+        if self.owner_password.as_deref() == Some(password) {
+            return true;
+        }
         match &self.password {
             Some(expected) => expected == password,
             None => !password.is_empty(),
@@ -422,7 +448,9 @@ impl PdfEngine for FakePdf {
         let played = self.settings.play(behavior, deadline).await?;
         let pages = played.pages.unwrap_or(1);
         let encrypted = memchr::memmem::find(&head, b"/Encrypt").is_some();
-        if encrypted {
+        // `/OwnerOnly`: an owner-password PDF, which opens without one.
+        let owner_only = encrypted && memchr::memmem::find(&head, b"/OwnerOnly").is_some();
+        if encrypted && !owner_only {
             match &job.password {
                 None => return Err(EngineError::PasswordRequired),
                 Some(password) if !self.opens(password.expose()) => {
@@ -434,10 +462,14 @@ impl PdfEngine for FakePdf {
         Ok(Inspection {
             page_count: pages,
             encrypted,
-            needs_password: encrypted,
+            needs_password: encrypted && !owner_only,
             pages: vec![A4; pages as usize],
+            probe_skipped: match job.probe_dpi {
+                Some(_) => pages.saturating_sub(job.probe_max_pages),
+                None => 0,
+            },
             probe: match job.probe_dpi {
-                Some(_) => (1..=pages)
+                Some(_) => (1..=pages.min(job.probe_max_pages))
                     .map(|number| ProbedPage {
                         number,
                         objects: 1,
@@ -467,9 +499,17 @@ impl PdfEngine for FakePdf {
         if !self.opens(job.password.expose()) {
             return Err(EngineError::InvalidPassword);
         }
+        // check_owner on a `/Restricted` PDF that only the user password
+        // opened: keep the restrictions, write nothing.
+        let bytes = tokio::fs::read(&job.pdf).await.map_err(io_error)?;
+        if job.check_owner
+            && memchr::memmem::find(&bytes, b"/Restricted").is_some()
+            && self.owner_password.as_deref() != Some(job.password.expose())
+        {
+            return Err(EngineError::Restricted);
+        }
         // A copy without the /Encrypt marker stands in for PDFium's
         // save-as-copy without security.
-        let bytes = tokio::fs::read(&job.pdf).await.map_err(io_error)?;
         let plain: Vec<u8> = match memchr::memmem::find(&bytes, b"/Encrypt") {
             Some(at) => [&bytes[..at], b"/Decrypt", &bytes[at + 8..]].concat(),
             None => bytes,
@@ -489,8 +529,17 @@ impl PdfEngine for FakePdf {
         deadline: Instant,
     ) -> Result<Rendered, EngineError> {
         let started = Instant::now();
-        let behavior = self.settings.behavior_for(&job.pdf).await?;
-        let played = self.settings.play(behavior, deadline).await?;
+        let played = if self.render_until_deadline {
+            // Succeeds, but only once the deadline has passed.
+            tokio::time::sleep_until(deadline.into()).await;
+            Played {
+                pages: None,
+                engine: started.elapsed(),
+            }
+        } else {
+            let behavior = self.settings.behavior_for(&job.pdf).await?;
+            self.settings.play(behavior, deadline).await?
+        };
         let image = tiny_image(job.format, job.quality)?;
         let mut written = 0u64;
         let mut pages = Vec::with_capacity(job.pages.len());

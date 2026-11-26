@@ -15,6 +15,7 @@
 //! parsed and validated as soon as it arrives, so a bad option fails
 //! before the upload is stored.
 
+use super::throughput::{MeteredBody, MinRate, too_slow};
 use std::error::Error as StdError;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
@@ -82,6 +83,9 @@ pub enum UploadError {
     /// No data for `IO_IDLE_TIMEOUT_SECONDS`.
     #[error("upload stalled")]
     Stalled,
+    /// Less than `UPLOAD_MIN_BYTES_PER_SECOND` over one window.
+    #[error("upload too slow: {observed} bytes/s, below the minimum of {min} bytes/s")]
+    TooSlow { observed: u64, min: u64 },
     /// The body ended or failed before the multipart did.
     #[error("the upload ended early: {0}")]
     Incomplete(String),
@@ -126,6 +130,7 @@ pub async fn receive(
     request: Request,
     job: &Arc<JobDir>,
     limits: &Limits,
+    rate: MinRate,
     detected: &mut Option<Duration>,
 ) -> Result<Received, UploadError> {
     let max_upload = limits.max_upload_bytes;
@@ -157,7 +162,9 @@ pub async fn receive(
                 .for_field("file", max_upload)
                 .for_field("options", OPTIONS_PART_MAX),
         );
-    let body = request.into_body().into_data_stream();
+    // The floor meters the whole body, not only the file part.
+    let body =
+        axum::body::Body::new(MeteredBody::new(request.into_body(), rate)).into_data_stream();
     let mut multipart = Multipart::with_constraints(body, boundary, constraints);
 
     let mut options: Option<ConversionRequest> = None;
@@ -272,7 +279,12 @@ fn map_multer(err: multer::Error, max_upload: u64) -> UploadError {
             UploadError::TooLarge { limit: max_upload }
         }
         multer::Error::StreamReadFailed(inner) => {
-            if is_stall(inner.as_ref()) {
+            if let Some(slow) = too_slow(inner.as_ref()) {
+                UploadError::TooSlow {
+                    observed: slow.observed,
+                    min: slow.min,
+                }
+            } else if is_stall(inner.as_ref()) {
                 UploadError::Stalled
             } else {
                 UploadError::Incomplete(inner.to_string())

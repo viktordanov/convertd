@@ -17,6 +17,7 @@ use super::openapi;
 use super::serialization::build_info::{BuildInfo, FontsFile};
 use super::serialization::capabilities::{Capabilities, ServiceInfo};
 use super::serialization::manifest::EngineInfo;
+use super::throughput::MinRate;
 use crate::config::Config;
 use crate::domain::conversion_service::ConversionService;
 use crate::domain::engine::{OfficeEngine, PdfEngine};
@@ -60,6 +61,9 @@ pub struct Shared {
     pub tmp_dir: PathBuf,
     /// `IO_IDLE_TIMEOUT_SECONDS`: upload stall and response stall.
     pub io_idle_timeout: Duration,
+    /// The minimum-throughput floors, over windows of `io_idle_timeout`.
+    pub upload_rate: MinRate,
+    pub response_rate: MinRate,
     pub api_keys: ApiKeys,
     /// `QUEUE_WAIT_SECONDS`, the `Retry-After` of a queue timeout.
     pub queue_wait_seconds: u32,
@@ -100,13 +104,15 @@ impl AppState {
         fonts.dedup();
         let libreoffice = build_info.libreoffice.clone().unwrap_or_else(unknown);
         let pdfium = build_info.pdfium.clone().unwrap_or_else(unknown);
-        let fingerprint = fingerprint(
-            SERVICE_VERSION,
-            service.commit.as_deref().unwrap_or(""),
-            &libreoffice,
-            &pdfium,
-            &fonts,
-        );
+        let settings = output_settings(config);
+        let fingerprint = fingerprint(&FingerprintParts {
+            version: SERVICE_VERSION,
+            commit: service.commit.as_deref().unwrap_or(""),
+            libreoffice: &libreoffice,
+            pdfium: &pdfium,
+            fonts: &fonts,
+            settings: &settings,
+        });
         let engine_info = EngineInfo {
             service_version: SERVICE_VERSION.to_owned(),
             libreoffice: Some(libreoffice),
@@ -132,6 +138,7 @@ impl AppState {
                 config.limits.clone(),
                 config.server.verify_probe_render,
             )
+            .with_probe_max_pages(config.server.verify_probe_max_pages)
             .with_fonts(catalog),
             inflight: Arc::new(Semaphore::new(config.server.max_concurrent_requests)),
             max_inflight: config.server.max_concurrent_requests,
@@ -139,6 +146,14 @@ impl AppState {
             disk_budget: DiskBudget::new(config.server.tmp_max_bytes),
             tmp_dir: config.server.tmp_dir.clone(),
             io_idle_timeout: config.server.io_idle_timeout,
+            upload_rate: MinRate {
+                min_per_second: config.server.upload_min_bytes_per_second,
+                window: config.server.io_idle_timeout,
+            },
+            response_rate: MinRate {
+                min_per_second: config.server.response_min_bytes_per_second,
+                window: config.server.io_idle_timeout,
+            },
             api_keys: ApiKeys::new(
                 &config.server.api_key,
                 config.server.api_key_previous.as_ref(),
@@ -191,23 +206,57 @@ pub fn load_fonts_file(path: &Path) -> FontsFile {
     }
 }
 
+/// What the fingerprint covers: the build, the engines, the fonts, and every
+/// setting that changes the output bytes for the same input.
+pub struct FingerprintParts<'a> {
+    pub version: &'a str,
+    pub commit: &'a str,
+    pub libreoffice: &'a str,
+    pub pdfium: &'a str,
+    pub fonts: &'a [String],
+    pub settings: &'a [(&'static str, String)],
+}
+
+/// The settings that change the output bytes, as `NAME` and value: the
+/// render caps, the default page size, and the blank-page probe that
+/// decides `BLANK_PAGE` warnings.
+pub fn output_settings(config: &Config) -> Vec<(&'static str, String)> {
+    vec![
+        ("MAX_DPI", config.limits.max_dpi.to_string()),
+        ("MAX_EDGE_PX", config.limits.max_edge_px.to_string()),
+        (
+            "DEFAULT_PAPER",
+            format!("{:?}", config.engines.default_paper),
+        ),
+        (
+            "VERIFY_PROBE_RENDER",
+            config.server.verify_probe_render.to_string(),
+        ),
+        (
+            "VERIFY_PROBE_MAX_PAGES",
+            config.server.verify_probe_max_pages.to_string(),
+        ),
+    ]
+}
+
 /// `sha256:` plus the first 12 hex characters of SHA-256 over the service
-/// version, commit, LibreOffice version, PDFium version and the sorted
-/// fonts, each separated by `\n`.
-pub fn fingerprint(
-    version: &str,
-    commit: &str,
-    libreoffice: &str,
-    pdfium: &str,
-    fonts: &[String],
-) -> String {
+/// version, commit, LibreOffice version, PDFium version, the sorted fonts
+/// and each [`output_settings`] entry as `NAME=value`, each followed by
+/// `\n`.
+pub fn fingerprint(parts: &FingerprintParts<'_>) -> String {
     let mut hasher = Sha256::new();
-    for part in [version, commit, libreoffice, pdfium] {
+    for part in [parts.version, parts.commit, parts.libreoffice, parts.pdfium] {
         hasher.update(part.as_bytes());
         hasher.update(b"\n");
     }
-    for font in fonts {
+    for font in parts.fonts {
         hasher.update(font.as_bytes());
+        hasher.update(b"\n");
+    }
+    for (name, value) in parts.settings {
+        hasher.update(name.as_bytes());
+        hasher.update(b"=");
+        hasher.update(value.as_bytes());
         hasher.update(b"\n");
     }
     let digest: [u8; 32] = hasher.finalize().into();
@@ -228,15 +277,45 @@ pub fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Env;
+
+    fn parts<'a>(
+        fonts: &'a [String],
+        settings: &'a [(&'static str, String)],
+    ) -> FingerprintParts<'a> {
+        FingerprintParts {
+            version: "1.0.0",
+            commit: "",
+            libreoffice: "unknown",
+            pdfium: "unknown",
+            fonts,
+            settings,
+        }
+    }
 
     #[test]
     fn fingerprint_shape_and_inputs() {
-        let a = fingerprint("1.0.0", "", "unknown", "unknown", &[]);
+        let defaults =
+            output_settings(&Config::from_env(&Env::from_pairs([("API_KEY", "k")], 2)).unwrap());
+        let a = fingerprint(&parts(&[], &defaults));
         assert!(a.starts_with("sha256:") && a.len() == 19, "{a}");
         assert!(a[7..].bytes().all(|b| b.is_ascii_hexdigit()));
-        let b = fingerprint("1.0.0", "", "unknown", "unknown", &["Carlito".into()]);
+        let b = fingerprint(&parts(&["Carlito".into()], &defaults));
         assert_ne!(a, b);
-        assert_eq!(a, fingerprint("1.0.0", "", "unknown", "unknown", &[]));
+        assert_eq!(a, fingerprint(&parts(&[], &defaults)));
+        // Every setting that changes the output bytes changes it too.
+        for (name, value) in [
+            ("MAX_DPI", "200"),
+            ("MAX_EDGE_PX", "2048"),
+            ("DEFAULT_PAPER", "Letter"),
+            ("VERIFY_PROBE_RENDER", "false"),
+            ("VERIFY_PROBE_MAX_PAGES", "50"),
+        ] {
+            let config =
+                Config::from_env(&Env::from_pairs([("API_KEY", "k"), (name, value)], 2)).unwrap();
+            let changed = output_settings(&config);
+            assert_ne!(a, fingerprint(&parts(&[], &changed)), "{name}");
+        }
     }
 
     #[test]

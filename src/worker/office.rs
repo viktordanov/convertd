@@ -127,9 +127,8 @@ impl OfficeWorker {
             })
             .map_err(|err| format!("failed to register the password callback: {err}"))?;
         // The crate frees the version string that LibreOffice allocated with
-        // CString::from_raw, which is wrong under another global allocator;
-        // with mimalloc the version comes from build-info.json only.
-        #[cfg(not(feature = "mimalloc"))]
+        // CString::from_raw, which is right only under the system allocator,
+        // the only one convertd uses (the mimalloc option was dropped).
         let version = office
             .get_version_info()
             .map(|v| {
@@ -139,8 +138,6 @@ impl OfficeWorker {
                 )
             })
             .unwrap_or_default();
-        #[cfg(feature = "mimalloc")]
-        let version = String::new();
         let mut worker = Self {
             office,
             state,

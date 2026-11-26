@@ -750,6 +750,25 @@ mod tests {
         assert!(pdf.verdict().warnings.is_empty());
     }
 
+    /// With a page selection and page images the service sends no probe:
+    /// a rendered page carries its own object count and flatness, so V3
+    /// still fires for it with an empty probe (review, lane 001 item 9).
+    #[test]
+    fn v3_needs_no_probe_for_rendered_pages() {
+        let fonts = FontCatalog::default();
+        let mut pdf = case(Format::Pdf, SourceFacts::default(), 10, &fonts);
+        pdf.facts = None;
+        pdf.probe = Vec::new();
+        let mut flat = page(4, 150.0);
+        flat.objects = 3;
+        flat.flat = true;
+        pdf.rendered = vec![flat];
+        let verdict = pdf.verdict();
+        assert_eq!(verdict.warnings.len(), 1);
+        assert_eq!(verdict.warnings[0].code, WarningCode::BlankPage);
+        assert_eq!(verdict.warnings[0].page, Some(4));
+    }
+
     #[test]
     fn v4_macros_ignored_and_missing_facts() {
         let fonts = FontCatalog::default();

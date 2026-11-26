@@ -103,7 +103,13 @@ pub fn warning(code: &'static str) {
 
 /// `convert_verify_skipped_total{check,reason}`.
 pub fn verify_skipped(check: &'static str, reason: &'static str) {
-    counter!("convert_verify_skipped_total", "check" => check, "reason" => reason).increment(1);
+    verify_skipped_by(check, reason, 1);
+}
+
+/// `convert_verify_skipped_total{check,reason}`, by `count`: the pages a
+/// per-page check skipped.
+pub fn verify_skipped_by(check: &'static str, reason: &'static str, count: u64) {
+    counter!("convert_verify_skipped_total", "check" => check, "reason" => reason).increment(count);
 }
 
 /// `convert_pages_rendered_total{format}`.

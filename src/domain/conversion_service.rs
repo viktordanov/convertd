@@ -9,9 +9,10 @@ use super::detection::Detection;
 use super::document::{DocType, Family, Format};
 use super::engine::{
     Admission, AssembleJob, DecryptJob, EngineError, InspectJob, Inspection, OfficeEngine,
-    OfficeJob, PdfEngine, RenderJob, RenderedPage,
+    OfficeJob, PageSize, PdfEngine, RenderJob, RenderedPage,
 };
 use super::limits::Limits;
+use super::pages::PageSelection;
 use super::secret::Password;
 use super::verification::{self, FontCatalog, VerifyInput};
 
@@ -72,12 +73,17 @@ pub struct ConversionService {
     pub(super) limits: Limits,
     /// `Some(18)` with `VERIFY_PROBE_RENDER`.
     pub(super) probe_dpi: Option<u16>,
+    /// `VERIFY_PROBE_MAX_PAGES`: the probed pages that count.
+    pub(super) probe_max_pages: u32,
     /// For `FONT_SUBSTITUTED`; empty until [`ConversionService::with_fonts`].
     pub(super) fonts: FontCatalog,
 }
 
 /// The DPI of the probe render for `BLANK_PAGE` (V3).
 pub const PROBE_DPI: u16 = 18;
+
+/// `VERIFY_PROBE_MAX_PAGES` by default.
+pub const DEFAULT_PROBE_MAX_PAGES: u32 = 200;
 
 impl ConversionService {
     pub fn new(
@@ -91,8 +97,15 @@ impl ConversionService {
             pdf,
             limits,
             probe_dpi: verify_probe_render.then_some(PROBE_DPI),
+            probe_max_pages: DEFAULT_PROBE_MAX_PAGES,
             fonts: FontCatalog::default(),
         }
+    }
+
+    /// At most `pages` probed pages count for V3 (`VERIFY_PROBE_MAX_PAGES`).
+    pub fn with_probe_max_pages(mut self, pages: u32) -> Self {
+        self.probe_max_pages = pages;
+        self
     }
 
     /// The installed families and their substitutes, for V2.
@@ -147,6 +160,14 @@ impl ConversionService {
         // Encrypted OOXML: provisional until the engine reports its type.
         let mut format = job.detection.format;
 
+        // The blank-page probe, unless page images of a selection will be
+        // rendered: those decide BLANK_PAGE for the pages they show.
+        let probe = self.probe_dpi.is_some()
+            && (job.request.output == Output::Pdf
+                || matches!(job.request.pages, PageSelection::All));
+        // Set when the original encrypted PDF goes on (decrypt answered
+        // Restricted): the render opens it with the password.
+        let mut render_password: Option<Password> = None;
         let (pdf, origin, inspection, facts) = match family {
             Family::Document | Family::Presentation | Family::Spreadsheet => {
                 // Fail fast: an encrypted package cannot open without one.
@@ -192,6 +213,7 @@ impl ConversionService {
                         None,
                         Admission::Continue,
                         job.deadline,
+                        probe,
                         timings,
                     )
                     .await
@@ -210,11 +232,17 @@ impl ConversionService {
                         job.request.password.clone(),
                         Admission::Queue,
                         job.deadline,
+                        probe,
                         timings,
                     )
                     .await
                     .map_err(engine_error)?;
-                if inspection.needs_password {
+                // A user-password PDF needs its password. An owner-password
+                // PDF opens without one and passes through, but a password
+                // given for it is checked: decrypt verifies it as the owner
+                // password, and a wrong one is InvalidPassword.
+                let owner_password_given = inspection.encrypted && job.request.password.is_some();
+                if inspection.needs_password || owner_password_given {
                     let password = job
                         .request
                         .password
@@ -230,24 +258,42 @@ impl ConversionService {
                         .decrypt(
                             DecryptJob {
                                 pdf: paths.source.clone(),
-                                password,
+                                password: password.clone(),
                                 output: paths.document_pdf.clone(),
                                 max_output_bytes,
+                                check_owner: true,
                             },
                             Admission::Continue,
                             job.deadline,
                         )
-                        .await
-                        .map_err(engine_error)?;
-                    timings.add_call(&decrypted.timing);
-                    timings.decrypt = Some(decrypted.timing.wall);
-                    timings.decrypt_engine = Some(decrypted.timing.engine);
-                    (
-                        paths.document_pdf.clone(),
-                        PdfOrigin::Passthrough,
-                        inspection,
-                        None,
-                    )
+                        .await;
+                    match decrypted {
+                        Ok(decrypted) => {
+                            timings.add_call(&decrypted.timing);
+                            timings.decrypt = Some(decrypted.timing.wall);
+                            timings.decrypt_engine = Some(decrypted.timing.engine);
+                            (
+                                paths.document_pdf.clone(),
+                                PdfOrigin::Passthrough,
+                                inspection,
+                                None,
+                            )
+                        }
+                        // Only the user password was given and the owner
+                        // restricts the file: no copy without the
+                        // restrictions. The original goes on, and the
+                        // render opens it with the password.
+                        Err(EngineError::Restricted) => {
+                            render_password = Some(password);
+                            (
+                                paths.source.clone(),
+                                PdfOrigin::Passthrough,
+                                inspection,
+                                None,
+                            )
+                        }
+                        Err(err) => return Err(engine_error(err)),
+                    }
                 } else {
                     (
                         paths.source.clone(),
@@ -285,6 +331,7 @@ impl ConversionService {
                         None,
                         Admission::Continue,
                         job.deadline,
+                        probe,
                         timings,
                     )
                     .await
@@ -302,12 +349,15 @@ impl ConversionService {
                 "the PDF has no pages".into(),
             )));
         }
+        // The worker probes at most VERIFY_PROBE_MAX_PAGES pages and says
+        // how many it left out.
+        let probe_skipped_pages = if probe { inspection.probe_skipped } else { 0 };
 
         let pages = if job.request.output == Output::Pdf {
             Vec::new()
         } else {
             check_deadline()?;
-            self.render(&pdf, &job, inspection.page_count, timings)
+            self.render(&pdf, &job, &inspection, render_password, timings)
                 .await
                 .map_err(|err| match err {
                     ConversionError::Engine(engine) => engine_error(engine),
@@ -338,6 +388,7 @@ impl ConversionService {
             pages,
             warnings: verdict.warnings,
             skipped: verdict.skipped,
+            probe_skipped_pages,
         })
     }
 
@@ -348,26 +399,36 @@ impl ConversionService {
         &self,
         pdf: &Path,
         job: &ConversionJob<'_>,
-        page_count: u32,
+        inspection: &Inspection,
+        password: Option<Password>,
         timings: &mut StageTimings,
     ) -> Result<Vec<RenderedPage>, ConversionError> {
         let request = job.request;
         let numbers = request
             .pages
-            .resolve(page_count, self.limits.max_render_pages)?;
-        let max_output_bytes = self.reserve(job.budget, self.limits.max_output_bytes)?;
+            .resolve(inspection.page_count, self.limits.max_render_pages)?;
         let max_edge = request
             .images
             .max_edge
             .unwrap_or(self.limits.max_edge_px)
             .min(self.limits.max_edge_px);
+        let max_output_bytes = self.reserve(
+            job.budget,
+            render_reservation(
+                &inspection.pages,
+                &numbers,
+                request.images.dpi,
+                max_edge,
+                self.limits.max_output_bytes,
+            ),
+        )?;
         let wanted = numbers.clone();
         let rendered = self
             .pdf
             .render(
                 RenderJob {
                     pdf: pdf.to_path_buf(),
-                    password: None,
+                    password,
                     pages: numbers,
                     format: request.images.format,
                     dpi: request.images.dpi,
@@ -400,16 +461,19 @@ impl ConversionService {
         password: Option<Password>,
         adm: Admission,
         deadline: Instant,
+        probe: bool,
         timings: &mut StageTimings,
     ) -> Result<Inspection, EngineError> {
+        let probe_dpi = if probe { self.probe_dpi } else { None };
         let inspection = self
             .pdf
             .inspect(
                 InspectJob {
                     pdf: pdf.to_path_buf(),
                     password,
-                    probe_dpi: self.probe_dpi,
+                    probe_dpi,
                     collect_fonts: false,
+                    probe_max_pages: self.probe_max_pages,
                 },
                 adm,
                 deadline,
@@ -417,7 +481,7 @@ impl ConversionService {
             .await?;
         timings.add_call(&inspection.timing);
         timings.inspect = Some(inspection.timing.wall);
-        let probe = self.probe_dpi.map(|_| inspection.probe_engine);
+        let probe = probe_dpi.map(|_| inspection.probe_engine);
         timings.inspect_engine = Some(
             inspection
                 .timing
@@ -437,6 +501,56 @@ impl ConversionService {
             Err(ConversionError::DiskFull)
         }
     }
+}
+
+/// Per-page slack on top of the raw bitmap: format headers, PNG filter
+/// bytes and the odd image that encodes larger than its pixels.
+const RENDER_PAGE_SLACK: u64 = 64 * 1024;
+/// Slack per render.
+const RENDER_SLACK: u64 = 1024 * 1024;
+
+/// What a render of the pages `numbers` may write, so the job reserves that
+/// much of the disk budget rather than the whole per-job cap: per page, the
+/// raw 4-byte-per-pixel bitmap at `dpi` and under `max_edge`, plus an
+/// eighth and [`RENDER_PAGE_SLACK`]; plus [`RENDER_SLACK`]; at most `cap`
+/// (`max_output_bytes`). The render job gets this as its `max_output_bytes`,
+/// so it is the engine's hard limit: an encoder that writes more fails the
+/// request with `LimitExceeded`. A page the inspection did not size counts
+/// as `max_edge` square.
+pub fn render_reservation(
+    pages: &[PageSize],
+    numbers: &[u32],
+    dpi: u16,
+    max_edge: u32,
+    cap: u64,
+) -> u64 {
+    let edge = f64::from(max_edge.max(1));
+    let mut total = RENDER_SLACK;
+    for &number in numbers {
+        let (width, height) = match usize::try_from(number)
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|i| pages.get(i))
+        {
+            Some(page) => {
+                let scale = f64::from(dpi) / 72.0;
+                let (w, h) = (
+                    f64::from(page.width_pt.max(0.0)) * scale,
+                    f64::from(page.height_pt.max(0.0)) * scale,
+                );
+                let longest = w.max(h);
+                let fit = if longest > edge { edge / longest } else { 1.0 };
+                ((w * fit).ceil().max(1.0), (h * fit).ceil().max(1.0))
+            }
+            None => (edge, edge),
+        };
+        let raw = (width * height * 4.0) as u64;
+        total = total.saturating_add(raw + raw / 8 + RENDER_PAGE_SLACK);
+        if total >= cap {
+            return cap;
+        }
+    }
+    total.min(cap)
 }
 
 #[cfg(test)]
@@ -486,6 +600,10 @@ mod tests {
         drop_a_page: bool,
         doc_type: Option<DocType>,
         rendered: Mutex<Option<RenderJob>>,
+        inspected: Mutex<Option<InspectJob>>,
+        decrypted: Mutex<Option<DecryptJob>>,
+        /// decrypt answers `Restricted`: only the user password was given.
+        restricted: bool,
     }
 
     impl Script {
@@ -528,18 +646,35 @@ mod tests {
             _: Instant,
         ) -> Result<Inspection, EngineError> {
             self.record("inspect", adm);
+            *self.inspected.lock().unwrap() = Some(job.clone());
             if let Some(err) = &self.inspect_error {
                 return Err(err.clone());
             }
+            let page_count = self.page_count.unwrap_or(1);
             Ok(Inspection {
-                page_count: self.page_count.unwrap_or(1),
+                page_count,
                 encrypted: self.needs_password,
                 needs_password: self.needs_password,
                 pages: vec![PageSize {
                     width_pt: 595.0,
                     height_pt: 842.0,
                 }],
-                probe: Vec::new(),
+                // As the worker does: the first probe_max_pages pages.
+                probe_skipped: match job.probe_dpi {
+                    Some(_) => page_count.saturating_sub(job.probe_max_pages),
+                    None => 0,
+                },
+                probe: match job.probe_dpi {
+                    Some(_) => (1..=page_count.min(job.probe_max_pages))
+                        .map(|number| crate::domain::engine::ProbedPage {
+                            number,
+                            objects: 1,
+                            flat: false,
+                            colour: [255, 255, 255],
+                        })
+                        .collect(),
+                    None => Vec::new(),
+                },
                 probe_engine: job
                     .probe_dpi
                     .map_or(Duration::ZERO, |_| Duration::from_millis(2)),
@@ -550,11 +685,15 @@ mod tests {
         }
         async fn decrypt(
             &self,
-            _: DecryptJob,
+            job: DecryptJob,
             adm: Admission,
             _: Instant,
         ) -> Result<Decrypted, EngineError> {
             self.record("decrypt", adm);
+            *self.decrypted.lock().unwrap() = Some(job);
+            if self.restricted {
+                return Err(EngineError::Restricted);
+            }
             Ok(Decrypted {
                 pdf_bytes: 10,
                 timing: timing(4),
@@ -669,6 +808,99 @@ mod tests {
         };
         let result = service.convert(job, &mut timings).now_or_never().unwrap();
         Run { result, timings }
+    }
+
+    /// Without a page selection the probe covers at most
+    /// VERIFY_PROBE_MAX_PAGES pages, and the rest are counted as skipped.
+    /// With a selection and page images, the rendered pages decide
+    /// BLANK_PAGE, so nothing is probed (review, lane 001 item 9).
+    /// Every decrypt asks the worker to keep owner restrictions. When it
+    /// answers `Restricted` (only the user password was given), the
+    /// original encrypted PDF goes on: it is the PDF output, and the render
+    /// opens it with the password (review, lane 001 item 9).
+    #[test]
+    fn a_restricted_pdf_passes_through_and_renders_with_the_password() {
+        let script = Arc::new(Script {
+            needs_password: true,
+            restricted: true,
+            page_count: Some(2),
+            ..Default::default()
+        });
+        let raw = RawOptions {
+            output: Some(Output::Images),
+            password: Some("user".into()),
+            ..Default::default()
+        };
+        let result = run(script.clone(), Format::Pdf, raw, u64::MAX)
+            .result
+            .unwrap();
+        let decrypt = script.decrypted.lock().unwrap().clone().unwrap();
+        assert!(
+            decrypt.check_owner,
+            "every decrypt keeps owner restrictions"
+        );
+        assert_eq!(result.pdf, PathBuf::from("/job/source.pdf"), "the original");
+        let render = script.rendered.lock().unwrap().clone().unwrap();
+        assert_eq!(render.pdf, PathBuf::from("/job/source.pdf"));
+        assert_eq!(
+            render.password.map(|p| p.expose().to_owned()).as_deref(),
+            Some("user")
+        );
+    }
+
+    #[test]
+    fn the_probe_is_bounded_and_the_rest_counted() {
+        let script = Arc::new(Script {
+            page_count: Some(300),
+            ..Default::default()
+        });
+        let result = run(script.clone(), Format::Pdf, RawOptions::default(), u64::MAX)
+            .result
+            .unwrap();
+        let job = script.inspected.lock().unwrap().clone().unwrap();
+        assert_eq!(job.probe_dpi, Some(PROBE_DPI));
+        assert_eq!(result.probe_skipped_pages, 100);
+
+        let script = Arc::new(Script {
+            page_count: Some(300),
+            ..Default::default()
+        });
+        let raw = RawOptions {
+            output: Some(Output::Images),
+            pages: Some("1-3".into()),
+            ..Default::default()
+        };
+        let result = run(script.clone(), Format::Pdf, raw, u64::MAX)
+            .result
+            .unwrap();
+        let job = script.inspected.lock().unwrap().clone().unwrap();
+        assert_eq!(job.probe_dpi, None, "the rendered pages decide");
+        assert_eq!(result.probe_skipped_pages, 0);
+    }
+
+    #[test]
+    fn render_reservation_follows_the_pages() {
+        let a4 = PageSize {
+            width_pt: 595.0,
+            height_pt: 842.0,
+        };
+        let cap = 768 << 20;
+        // A4 at 150 dpi: 1240 x 1755 px, 8.7 MB raw.
+        let one = render_reservation(&[a4], &[1], 150, 4096, cap);
+        assert!(one > 8_700_000 && one < 12_000_000, "{one}");
+        // Three pages, three times as much, less the per-render slack.
+        let three = render_reservation(&[a4; 3], &[1, 2, 3], 150, 4096, cap);
+        assert_eq!(three - (1 << 20), 3 * (one - (1 << 20)));
+        // max_edge shrinks the page: 600 px long edge.
+        let small = render_reservation(&[a4], &[1], 150, 600, cap);
+        assert!(small < one / 4, "{small}");
+        // Never more than the per-job cap; an unknown page counts as max_edge square.
+        assert_eq!(
+            render_reservation(&[a4; 3], &[1, 2, 3], 600, 4096, 10 << 20),
+            10 << 20
+        );
+        let unknown = render_reservation(&[], &[1], 150, 100, cap);
+        assert_eq!(unknown, (1 << 20) + 40_000 + 5_000 + 64 * 1024);
     }
 
     #[test]
@@ -826,7 +1058,22 @@ mod tests {
         let job = script.rendered.lock().unwrap().clone().unwrap();
         assert_eq!((job.dpi, job.max_edge), (300, 4096));
         assert_eq!(job.out_dir, PathBuf::from("/job/pages"));
-        assert_eq!(job.max_output_bytes, test_limits().max_output_bytes);
+        // The reservation follows the pages: the script sizes only page 1,
+        // so the five selected pages count as max_edge square.
+        let a4 = PageSize {
+            width_pt: 595.0,
+            height_pt: 842.0,
+        };
+        assert_eq!(
+            job.max_output_bytes,
+            render_reservation(
+                &[a4],
+                &[2, 3, 10, 11, 12],
+                300,
+                4096,
+                test_limits().max_output_bytes
+            )
+        );
         assert_eq!(run.timings.render_engine, Some(Duration::from_millis(7)));
         // MAX_DPI lowered 600 to 300.
         assert_eq!(result.warnings.len(), 1);

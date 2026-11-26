@@ -229,8 +229,10 @@ impl PdfEngine for PdfPdfium {
             pdf: job.pdf,
             password: job.password.map(|p| Secret::new(p.expose())),
             probe_dpi: job.probe_dpi,
-            // Every page until the domain names the pages (lane 001).
-            probe_pages: ProbePages::default(),
+            // The first VERIFY_PROBE_MAX_PAGES pages (lane 001).
+            probe_pages: ProbePages::All {
+                max: Some(job.probe_max_pages),
+            },
             collect_fonts: job.collect_fonts,
         });
         let called = call(&self.pool, op, admission(adm), deadline, recycles).await?;
@@ -259,6 +261,7 @@ impl PdfEngine for PdfPdfium {
                     colour: p.colour,
                 })
                 .collect(),
+            probe_skipped: out.probe_skipped,
             probe_engine: Duration::from_micros(called.reply.engine.probe_us),
             fonts: out.fonts,
             timing: called.timing,
@@ -277,8 +280,7 @@ impl PdfEngine for PdfPdfium {
             password: Secret::new(job.password.expose()),
             output: job.output,
             max_output_bytes: job.max_output_bytes,
-            // Lane 001 sets it for an owner-only PDF with a password.
-            check_owner: false,
+            check_owner: job.check_owner,
         });
         let called = call(&self.pool, op, admission(adm), deadline, recycles).await?;
         let Output::Decrypted(out) = called.output else {

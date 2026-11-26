@@ -81,6 +81,11 @@ pub enum EngineError {
     PasswordRequired,
     #[error("document password is wrong")]
     InvalidPassword,
+    /// Decrypt with `check_owner`: the password opened the file but did not
+    /// unlock the owner, and the owner restricts it. Nothing was written;
+    /// the service passes the original encrypted PDF on.
+    #[error("the document keeps its owner restrictions")]
+    Restricted,
     /// This job's own cap: `max_output_bytes`, EFBIG from its own
     /// `RLIMIT_FSIZE`, the RSS kill, a pixel or zip bomb. The message names
     /// the limit and never holds a path.
@@ -174,6 +179,9 @@ pub struct InspectJob {
     pub probe_dpi: Option<u16>,
     /// Unused in v1.
     pub collect_fonts: bool,
+    /// With `probe_dpi`: probe pages `1..=min(page_count, probe_max_pages)`
+    /// only (`VERIFY_PROBE_MAX_PAGES`); `u32::MAX` probes every page.
+    pub probe_max_pages: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -194,9 +202,18 @@ pub struct ProbedPage {
 /// An encrypted PDF without a password gives `Err(PasswordRequired)`;
 /// with a wrong one `Err(InvalidPassword)`; with the right one `Ok` with
 /// `encrypted` and `needs_password`. When `needs_password`, the service
-/// calls `decrypt` before anything else reads the file. An
-/// owner-password-only PDF (`encrypted`, not `needs_password`) passes
-/// through unchanged.
+/// calls `decrypt` before anything else reads the file.
+///
+/// An owner-password-only PDF (`encrypted`, not `needs_password`) opens
+/// without a password. With none given it passes through unchanged. With
+/// one given, the service calls `decrypt`, which verifies it as the owner
+/// password: verified, it writes the decrypted copy; not verified,
+/// `Err(InvalidPassword)`.
+///
+/// Every decrypt carries `check_owner`. A user-password PDF opened with
+/// its user password, whose owner restricts it, gives `Err(Restricted)`:
+/// the service then passes the original encrypted PDF on, and inspect and
+/// render keep opening it with the password.
 #[derive(Debug, Clone)]
 pub struct Inspection {
     pub page_count: u32,
@@ -206,6 +223,8 @@ pub struct Inspection {
     pub pages: Vec<PageSize>,
     /// Only with `probe_dpi`.
     pub probe: Vec<ProbedPage>,
+    /// The pages that `probe_max_pages` left unprobed.
+    pub probe_skipped: u32,
     /// Probe render time inside the worker, part of `timing.engine`;
     /// reported apart as `Server-Timing` `probe_engine`.
     pub probe_engine: Duration,
@@ -224,6 +243,10 @@ pub struct DecryptJob {
     /// `<job>/document.pdf`.
     pub output: PathBuf,
     pub max_output_bytes: u64,
+    /// Keep owner restrictions the password did not unlock: answer
+    /// `Restricted` instead of writing a copy without them. The service
+    /// sets it on every decrypt.
+    pub check_owner: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -235,7 +258,8 @@ pub struct Decrypted {
 
 #[derive(Debug, Clone)]
 pub struct RenderJob {
-    /// Never needs a password: the service decrypts first.
+    /// Needs a password only when decrypt answered `Restricted` and the
+    /// original encrypted PDF goes on; otherwise the service decrypted first.
     pub pdf: PathBuf,
     pub password: Option<Password>,
     /// Resolved, sorted, de-duplicated, 1-based, at most `page_count` and
@@ -391,6 +415,7 @@ mod tests {
                     height_pt: 842.0,
                 }],
                 probe: Vec::new(),
+                probe_skipped: 0,
                 probe_engine: Duration::ZERO,
                 fonts: Vec::new(),
                 timing: EngineTiming::default(),
@@ -433,6 +458,7 @@ mod tests {
             password: None,
             probe_dpi: None,
             collect_fonts: false,
+            probe_max_pages: u32::MAX,
         };
         let inspection =
             futures_util::FutureExt::now_or_never(pdf.inspect(job, Admission::Queue, deadline))

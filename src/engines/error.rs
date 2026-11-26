@@ -173,9 +173,8 @@ impl From<EngineFailure> for crate::domain::engine::EngineError {
             EngineFailure::Failed(m) => E::Failed(m),
             EngineFailure::Crashed => E::Crashed,
             EngineFailure::Poisoned => E::Poisoned,
-            // Only `check_owner` gives it, which lane 001 sets together
-            // with its own `EngineError::Restricted`; until then, never.
-            EngineFailure::Restricted => E::Internal("decrypt kept the owner restrictions".into()),
+            // Only `check_owner` gives it; the service passes the original on.
+            EngineFailure::Restricted => E::Restricted,
             EngineFailure::Internal(m) => E::Internal(m),
         }
     }

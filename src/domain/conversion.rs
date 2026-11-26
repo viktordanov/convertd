@@ -295,6 +295,10 @@ pub struct ConversionResult {
     pub warnings: Vec<Warning>,
     /// The checks that could not run, for the metrics.
     pub skipped: Vec<(Check, &'static str)>,
+    /// Pages past `VERIFY_PROBE_MAX_PAGES` that the blank-page probe did
+    /// not look at, for `convert_verify_skipped_total{check="blank_page",
+    /// reason="pages"}`.
+    pub probe_skipped_pages: u32,
 }
 
 #[cfg(test)]

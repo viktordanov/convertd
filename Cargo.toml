@@ -20,8 +20,6 @@ default = []
 # The one gate for every test hook (INTERFACES.md §10): TEST_ENGINE,
 # `convertd worker test` and the FAKE: marker parser. Never in the image.
 test-hooks = []
-# mimalloc as #[global_allocator], for the allocator A/B (plan 001 step 13).
-mimalloc = ["dep:mimalloc"]
 
 [dependencies]
 # HTTP server (001). No http2, no multipart: multer is used directly.
@@ -56,7 +54,6 @@ crc32fast = "1.5.6"
 flate2 = "1.1.11"
 memchr = "2.8.3"
 quick-xml = "0.41.0"
-cfb = "0.16.0"
 # tar.zst bundles (001 step 8, owner 2026-11-26): one zstd frame at level 1.
 zstd = "0.14.5"
 async-trait = "0.1.92"
@@ -64,9 +61,6 @@ async-trait = "0.1.92"
 # Metrics (001), rendered by our own handler: no HTTP listener.
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
-
-# Allocator A/B (001 step 13), off by default.
-mimalloc = { version = "0.1.52", optional = true }
 
 # Engine workers and process control (002).
 rustix = { version = "1.1.5", features = ["process", "stdio", "pipe"] }
@@ -81,6 +75,9 @@ webp = "0.3.1"
 # Tests and the overhead example read and write OOXML packages, which are
 # ZIP files (the warm-up tests unpack the warm-up documents).
 zip = { version = "9.8.2", default-features = false }
+# Tests build OLE2 files and check the bounded reader against it; the
+# supervisor and the workers read OLE2 with detect/ole2.rs.
+cfb = "0.16.0"
 
 [profile.release]
 lto = "thin"
