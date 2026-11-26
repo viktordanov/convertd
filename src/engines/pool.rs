@@ -106,10 +106,29 @@ type ReadyHook = Arc<dyn Fn(PlaceStage) + Send + Sync>;
 #[cfg(feature = "test-hooks")]
 static PLACE_READY_HOOKS: Mutex<Vec<(&'static str, ReadyHook)>> = Mutex::new(Vec::new());
 
-/// Registers `hook` for the pool named `pool` (test hooks only).
+/// Registers `hook` for the pool named `pool`, in place of any earlier one
+/// (test hooks only). It stays registered while the returned guard lives.
 #[cfg(feature = "test-hooks")]
-pub fn set_place_ready_hook(pool: &'static str, hook: impl Fn(PlaceStage) + Send + Sync + 'static) {
-    lock(&PLACE_READY_HOOKS).push((pool, Arc::new(hook)));
+#[must_use = "the hook is removed when the guard is dropped"]
+pub fn set_place_ready_hook(
+    pool: &'static str,
+    hook: impl Fn(PlaceStage) + Send + Sync + 'static,
+) -> PlaceReadyHook {
+    let mut hooks = lock(&PLACE_READY_HOOKS);
+    hooks.retain(|(name, _)| *name != pool);
+    hooks.push((pool, Arc::new(hook)));
+    PlaceReadyHook(pool)
+}
+
+/// Removes its pool's place_ready hook when dropped.
+#[cfg(feature = "test-hooks")]
+pub struct PlaceReadyHook(&'static str);
+
+#[cfg(feature = "test-hooks")]
+impl Drop for PlaceReadyHook {
+    fn drop(&mut self) {
+        lock(&PLACE_READY_HOOKS).retain(|(name, _)| *name != self.0);
+    }
 }
 
 fn place_ready_hook(_pool: &str, _stage: PlaceStage) {
