@@ -425,7 +425,7 @@
       "type": "stat",
       "id": 6,
       "title": "Busy workers (mean)",
-      "description": "Mean of the busy worker count of all selected pods and pools together, over the rate window. A worker is busy from its lease to its return.",
+      "description": "Mean of the busy worker count of all selected pods and pools together, over the rate window, sampled every 15 s (the scrape interval of the ServiceMonitor in deploy/README.md). A worker is busy from its lease to its return.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -471,7 +471,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "avg_over_time(sum(convert_workers{namespace=~\"$namespace\", pod=~\"$pod\", state=\"busy\"})[$__rate_interval:])",
+          "expr": "avg_over_time(sum(convert_workers{namespace=~\"$namespace\", pod=~\"$pod\", state=\"busy\"})[$__rate_interval:15s])",
           "legendFormat": "",
           "refId": "A",
           "range": false,
