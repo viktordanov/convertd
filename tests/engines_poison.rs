@@ -71,6 +71,7 @@ fn spec(dir: &Path) -> PoolSpec {
         queue_capacity: 4,
         queue_wait: Duration::from_secs(10),
         start_timeout: Duration::from_secs(10),
+        oom_events: None,
     }
 }
 

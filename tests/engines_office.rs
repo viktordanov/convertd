@@ -107,6 +107,7 @@ fn base_spec(dir: &Path, name: &'static str, role: Role, init: Init) -> PoolSpec
         queue_capacity: 4,
         queue_wait: Duration::from_secs(30),
         start_timeout: Duration::from_secs(90),
+        oom_events: None,
     }
 }
 

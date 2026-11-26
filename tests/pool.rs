@@ -54,6 +54,7 @@ fn spec(name: &str, size: u16) -> PoolSpec {
         queue_capacity: 16,
         queue_wait: Duration::from_secs(10),
         start_timeout: Duration::from_secs(10),
+        oom_events: None,
     }
 }
 
@@ -1024,5 +1025,66 @@ async fn a_sigkill_near_the_memory_limit_is_too_big_not_a_crash() {
             finish(pool, "oom-kill").await;
         },
     )
+    .await;
+}
+
+/// A SIGKILL during a call in which the cgroup's `oom_kill` count rose is
+/// the kernel's OOM killer, whatever the worker's own RSS: `TooBig`. The
+/// same SIGKILL with no rise, at a low RSS, stays a crash.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sigkill_with_a_cgroup_oom_kill_is_too_big() {
+    within(TEST, "a_sigkill_with_a_cgroup_oom_kill_is_too_big", async {
+        let dir = base_dir("oom-events");
+        std::fs::create_dir_all(&dir).unwrap();
+        let events = dir.join("memory.events");
+        let path = events.clone();
+        let write = move |kills: u32| {
+            std::fs::write(
+                &path,
+                format!("low 0\nhigh 0\nmax 7\noom 2\noom_kill {kills}\noom_group_kill 0\n"),
+            )
+            .unwrap()
+        };
+        write(3);
+        let mut spec = spec("oom-events", 1);
+        spec.oom_events = Some(events.clone());
+        let pool = ready(spec).await;
+
+        let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+        let pid = lease.pid().unwrap();
+        let killer = {
+            let write = write.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                write(4);
+                sigkill(pid);
+            })
+        };
+        let err = lease
+            .call(test_op(TestOp::Sleep { ms: 3000 }), after(5000))
+            .await
+            .unwrap_err();
+        killer.await.unwrap();
+        assert!(
+            matches!(err, CallError::TooBig { .. }),
+            "the count rose: {err:?}"
+        );
+        drop(lease);
+
+        let mut lease = pool.lease(after(10_000), Admission::Queue).await.unwrap();
+        let pid = lease.pid().unwrap();
+        let killer = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            sigkill(pid);
+        });
+        let err = lease
+            .call(test_op(TestOp::Sleep { ms: 3000 }), after(5000))
+            .await
+            .unwrap_err();
+        killer.await.unwrap();
+        assert!(matches!(err, CallError::Crashed { .. }), "no rise: {err:?}");
+        drop(lease);
+        finish(pool, "oom-events").await;
+    })
     .await;
 }

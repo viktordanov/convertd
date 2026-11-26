@@ -105,6 +105,7 @@ fn spec(dir: &Path, name: &'static str, role: Role, init: Init, size: u16) -> Po
         queue_capacity: 8,
         queue_wait: Duration::from_secs(30),
         start_timeout: Duration::from_secs(90),
+        oom_events: None,
     }
 }
 
