@@ -65,11 +65,11 @@ The integration tests:
 | `engines_office.rs` | The office worker with the real LibreOffice, through the pool and the `OfficeEngine` adapter | No |
 | `engines_render.rs` | The render worker with the real PDFium, through the pool and the `PdfEngine` adapter | No |
 | `peak_heap.rs` | Heap per request with a counting allocator: the peak does not grow from 16 MiB to 100 MiB uploads, a small request stays under 408 allocations, and a hostile OLE2 upload stays bounded during detection | No |
-| `rss_linux.rs` | The idle RSS of the supervisor on Linux, at most 30 MB. The measurement is `#[ignore]`, so only its parsers run by default | The measurement only |
+| `rss_linux.rs` | The idle RSS of the supervisor on Linux, at most 30 MB, with the real engines (or the fake with `RSS_ENGINE=fake` and `test-hooks`). The measurement is `#[ignore]`, so only its parsers run by default | The measurement only |
 
 The engine tests need `LO_PROGRAM_DIR` with `soffice.bin`, `PDFIUM_LIB_DIR` with `libpdfium.so`, or both. Some also need `CONVERTD_CORPUS_DIR`, the output folder of `corpus/generate.py`. If a variable is not set, or its folder does not hold that file, the test prints `skipped` and passes without a check. One exception: when `CONVERTD_CORPUS_DIR` is set, a missing corpus file fails the encrypted-file test in `engines_office.rs`, so a renamed corpus file cannot hide. Thus a pass on a host without the engines proves nothing about the engines.
 
-The RSS measurement runs only on request, in a Linux container: `cargo test --features test-hooks --test rss_linux -- --ignored --nocapture`. It has no recorded result yet.
+The RSS measurement runs only on request, in the dev image, against a release build with the real pools: `cargo test --release --test rss_linux -- --ignored --nocapture`. On 2026-11-26 (arm64, one office and one render worker) the supervisor's VmRSS was 7.4 MB after start and 14.4 then 14.6 MB after each of two rounds of 1 000 requests and 15 s idle, against the 30 MB target.
 
 `scripts/contract_test.sh` builds `convertd` with `test-hooks`, and the contract tests start it with `TEST_ENGINE=fake`. With `--image REF`, the script runs the tests against a container of that image instead. The contract tests prove that the server, the spec and the Go client agree. They do not prove that a conversion is correct, because the fake engine converts nothing.
 <!-- /memoria:section -->

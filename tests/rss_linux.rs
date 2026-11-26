@@ -277,34 +277,97 @@ mod measured {
         std::thread::sleep(Duration::from_secs(2));
         let first = rss_bytes(pid);
 
-        // 1 000 mixed requests: pdf, images and bundle; 15 KB to 20 MB.
+        // Rounds of 1 000 mixed requests: pdf, images and bundle; 15 KB to
+        // 20 MB. The first round warms the supervisor: it faults in the code
+        // of the request paths and the malloc arenas of the runtime threads
+        // (7.3 MB after start, 13 to 16 MB after each round, in the dev
+        // image). Growth is judged from round to round, against that warm
+        // reading, so a leak shows and the warm-up does not. RSS_ROUNDS sets
+        // the count, at least 2.
         let files = [15_000, 1 << 20, 20 << 20].map(pdf_of_size);
         let outputs = ["pdf", "images", "bundle"];
-        for i in 0..1000 {
-            let status = convert(port, &files[i % 3], outputs[(i / 3) % 3]);
-            if status != 200 {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("request {i} gave {status}");
+        let rounds: usize = std::env::var("RSS_ROUNDS")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(2)
+            .max(2);
+        let mut readings = Vec::new();
+        for round in 0..rounds {
+            for i in 0..1000 {
+                let status = convert(port, &files[i % 3], outputs[(i / 3) % 3]);
+                if status != 200 {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("round {round}, request {i} gave {status}");
+                }
+            }
+            // Blocking threads exit after 10 s of idle.
+            std::thread::sleep(Duration::from_secs(15));
+            readings.push(rss_bytes(pid));
+        }
+        let warm = readings[0];
+        let second = *readings.last().unwrap();
+        if std::env::var_os("RSS_DIAG").is_some() {
+            let smaps = std::fs::read_to_string(format!("/proc/{pid}/smaps")).unwrap();
+            let mut regions: Vec<(u64, String)> = Vec::new();
+            let mut name = String::new();
+            for line in smaps.lines() {
+                if let Some(kib) = line.strip_prefix("Rss:") {
+                    let kib: u64 = kib
+                        .trim()
+                        .trim_end_matches(" kB")
+                        .trim()
+                        .parse()
+                        .unwrap_or(0);
+                    regions.push((kib, name.clone()));
+                } else if line
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|f| f.contains('-'))
+                {
+                    name = line
+                        .split_whitespace()
+                        .nth(5)
+                        .unwrap_or("[anon]")
+                        .to_owned();
+                }
+            }
+            regions.sort_by_key(|region| std::cmp::Reverse(region.0));
+            eprintln!(
+                "largest mappings (KiB): {:?}",
+                &regions[..regions.len().min(12)]
+            );
+            let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+            for line in status.lines().filter(|l| {
+                [
+                    "VmRSS", "RssAnon", "RssFile", "RssShmem", "Threads", "VmHWM",
+                ]
+                .iter()
+                .any(|k| l.starts_with(k))
+            }) {
+                eprintln!("{line}");
             }
         }
-        // Blocking threads exit after 10 s of idle.
-        std::thread::sleep(Duration::from_secs(15));
-        let second = rss_bytes(pid);
         let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).unwrap();
         let _ = child.kill();
         let _ = child.wait();
 
         eprintln!(
-            "{engines:?} engines: VmRSS after start {:.1} MB, after 1 000 requests and 15 s idle {:.1} MB",
+            "{engines:?} engines: VmRSS after start {:.1} MB; after each round of 1 000 requests \
+             and 15 s idle {:?} MB",
             first as f64 / MB as f64,
-            second as f64 / MB as f64
+            readings
+                .iter()
+                .map(|r| (*r as f64 / MB as f64 * 10.0).round() / 10.0)
+                .collect::<Vec<_>>()
         );
         assert!(first <= 30 * MB, "{first} bytes after start");
-        assert!(second <= 30 * MB, "{second} bytes after the requests");
+        for (round, reading) in readings.iter().enumerate() {
+            assert!(*reading <= 30 * MB, "{reading} bytes after round {round}");
+        }
         assert!(
-            second * 2 <= first * 3,
-            "{second} is more than 1.5 x {first}"
+            second * 2 <= warm * 3,
+            "{second} after the last round is more than 1.5 x {warm} after the first"
         );
         for library in ["libmergedlo", "libpdfium"] {
             assert!(mapped(&maps, library).is_empty(), "{library} is mapped");
