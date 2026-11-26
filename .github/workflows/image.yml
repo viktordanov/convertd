@@ -20,10 +20,13 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same branch or pull request cancels the run it supersedes.
+# A newer push to a pull request cancels the run it supersedes. Pushes to main queue instead:
+# the changes job compares each push only with the commit before it, so a cancelled run would
+# lose the image check of its push. GitHub keeps one pending run per group, so a third push
+# while one runs and one waits still replaces the waiting one.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'schedule' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # For the Rust jobs; the image job ignores them.
 env:
