@@ -497,12 +497,16 @@ impl ConversionService {
     }
 }
 
-/// An engine call that failed in the queue (`QueueTimeout`, or `QueueFull`
-/// at once) spent all its time waiting there: charge it to `queue`, so the
-/// error's `Server-Timing` shows the wait. An engine error carries no
-/// timing of its own.
+/// An engine call that failed before it reached a worker spent all its
+/// time waiting: `QueueTimeout`, `QueueFull` at once, and `Poisoned`, which
+/// the poison memory may give after the lease wait. Charge it to `queue`,
+/// so the error's `Server-Timing` shows the wait. An engine error carries
+/// no timing of its own.
 fn charge_queue(timings: &mut StageTimings, called: Instant, err: &EngineError) {
-    if matches!(err, EngineError::QueueTimeout | EngineError::QueueFull) {
+    if matches!(
+        err,
+        EngineError::QueueTimeout | EngineError::QueueFull | EngineError::Poisoned
+    ) {
         timings.queue += called.elapsed();
     }
 }
@@ -653,6 +657,9 @@ mod tests {
         decrypted: Mutex<Option<DecryptJob>>,
         /// decrypt answers `Restricted`: only the user password was given.
         restricted: bool,
+        /// How long `convert` waits before it returns `convert_error`, as
+        /// a pool that refuses after a lease wait does.
+        error_after: Duration,
     }
 
     impl Script {
@@ -674,6 +681,7 @@ mod tests {
         ) -> Result<Converted, EngineError> {
             self.record("convert", adm);
             if let Some(err) = &self.convert_error {
+                std::thread::sleep(self.error_after);
                 return Err(err.clone());
             }
             Ok(Converted {
@@ -1067,6 +1075,32 @@ mod tests {
             script.calls().is_empty(),
             "no engine call without a reservation"
         );
+    }
+
+    /// A refusal that comes after a wait for a worker shows the wait as
+    /// `queue`: `Poisoned` after the lease, as `QueueTimeout`. An error
+    /// from the worker itself charges nothing to `queue`.
+    #[test]
+    fn a_refusal_after_the_lease_wait_charges_the_queue() {
+        let wait = Duration::from_millis(30);
+        for (error, charged) in [
+            (EngineError::Poisoned, true),
+            (EngineError::QueueTimeout, true),
+            (EngineError::Failed("bad".into()), false),
+        ] {
+            let script = Arc::new(Script {
+                convert_error: Some(error.clone()),
+                error_after: wait,
+                ..Default::default()
+            });
+            let run = run(script, Format::Docx, RawOptions::default(), u64::MAX);
+            assert!(run.result.is_err(), "{error:?}");
+            if charged {
+                assert!(run.timings.queue >= wait, "{error:?}: {:?}", run.timings);
+            } else {
+                assert_eq!(run.timings.queue, Duration::ZERO, "{error:?}");
+            }
+        }
     }
 
     #[test]
