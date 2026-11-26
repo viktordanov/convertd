@@ -1,5 +1,6 @@
 //! The emitted OpenAPI 3.1 document (`convertd openapi`,
-//! `/swagger/doc.json`). Names follow `api/openapi.yaml` exactly.
+//! `/swagger/doc.json`). It is the contract; `api/openapi.json` is its
+//! committed copy, which `./generate.sh` keeps in step.
 
 use utoipa::openapi::OpenApi as Spec;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme};

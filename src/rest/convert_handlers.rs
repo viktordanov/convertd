@@ -71,7 +71,7 @@ use super::state::AppState;
     ),
     responses(
         (status = 200,
-            description = "The conversion succeeded. The content type follows the `output`\noption: `application/pdf` for `pdf`, `application/zstd` for\n`images` and `bundle`.\n\nThe `application/zstd` body is a ustar archive in one zstd frame\n(`<stem>.tar.zst`), sent chunked without `Content-Length`. Its entries,\nin this order:\n\n```\nmanifest.json        described by the Manifest schema\ndocument.pdf         only for output=bundle\npages/0001.jpg       one file per rendered page, 1-based, zero-padded\npages/0002.jpg\n```\n\nEvery entry is a regular file, mode 0644, mtime 0, uid and gid 0.\n",
+            description = "The conversion succeeded. The content type follows the `output`\noption: `application/pdf` for `pdf`, `application/zstd` for\n`images` and `bundle`.\n\nThe `application/zstd` body is a ustar archive in one zstd frame\n(`<stem>.tar.zst`), sent chunked without `Content-Length`. Its entries,\nin this order:\n\n```\nmanifest.json        described by the Manifest schema\ndocument.pdf         only for output=bundle\npages/0001.jpg       one file per rendered page, 1-based, zero-padded\npages/0002.jpg\n```\n\nEvery entry is a regular file, mode 0644, mtime 0, uid and gid 0.\n\nRead the body to the end before you use it: a stream that ends early is not a valid archive.\n",
             headers(
                 ("X-Request-ID" = String, description = "The correlation ID of this request."),
                 ("Content-Disposition" = String, description = "`attachment` with a file name derived from the upload, for example `deck.pdf` or `deck.tar.zst`."),

@@ -102,7 +102,7 @@ pub struct RawOptions {
     pub one_page_per_sheet: Option<bool>,
 }
 
-/// The spec's ranges (`api/openapi.yaml`, `ConvertOptions`).
+/// The spec's ranges (`ConvertOptions` in `api/openapi.json`).
 pub const DPI_RANGE: (u32, u32) = (36, 600);
 pub const QUALITY_RANGE: (u32, u32) = (1, 100);
 pub const MAX_EDGE_RANGE: (u32, u32) = (64, 8192);
