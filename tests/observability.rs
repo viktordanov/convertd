@@ -188,21 +188,32 @@ fn observability_files() -> Vec<(PathBuf, String)> {
 }
 
 /// The queries of a dashboard: every `expr`, and the metric of each
-/// `label_values(metric{...}, label)` variable.
+/// `label_values(metric{...}, label)` variable, from both its `definition`
+/// (what Grafana shows) and its `query` (what Grafana runs).
 fn dashboard_queries(value: &serde_json::Value, out: &mut Vec<String>) {
+    let label_values = |text: &str| {
+        text.trim()
+            .strip_prefix("label_values(")
+            .and_then(|rest| rest.rsplit_once(','))
+            .map(|(metric, _)| metric.to_owned())
+            .unwrap_or_else(|| panic!("unknown variable query {text}"))
+    };
     match value {
+        serde_json::Value::Object(map)
+            if map.get("type").and_then(|t| t.as_str()) == Some("query") =>
+        {
+            let definition = map["definition"].as_str().expect("a variable definition");
+            let query = map["query"]
+                .as_str()
+                .or_else(|| map["query"]["query"].as_str())
+                .expect("a variable query");
+            out.push(label_values(definition));
+            out.push(label_values(query));
+        }
         serde_json::Value::Object(map) => {
             for (key, item) in map {
                 match (key.as_str(), item.as_str()) {
                     ("expr", Some(expr)) => out.push(expr.to_owned()),
-                    ("definition", Some(def)) => {
-                        let inner = def
-                            .trim()
-                            .strip_prefix("label_values(")
-                            .and_then(|rest| rest.rsplit_once(','))
-                            .map(|(metric, _)| metric.to_owned());
-                        out.push(inner.unwrap_or_else(|| panic!("unknown variable query {def}")));
-                    }
                     _ => dashboard_queries(item, out),
                 }
             }
@@ -332,11 +343,18 @@ fn the_query_extractors_find_every_query() {
     );
     let dashboard = serde_json::json!({
         "panels": [{"targets": [{"expr": "rate(x_total[1m])"}]}],
-        "templating": {"list": [{"definition": "label_values(y_bytes{n=~\"$n\"}, pod)"}]}
+        "templating": {"list": [{
+            "type": "query",
+            "definition": "label_values(y_bytes{n=~\"$n\"}, pod)",
+            "query": {"query": "label_values(covert_y_bytes, pod)", "refId": "v"}
+        }]}
     });
     let mut out = Vec::new();
     dashboard_queries(&dashboard, &mut out);
-    assert_eq!(out, ["rate(x_total[1m])", "y_bytes{n=~\"$n\"}"]);
+    assert_eq!(
+        out,
+        ["rate(x_total[1m])", "y_bytes{n=~\"$n\"}", "covert_y_bytes"]
+    );
 }
 
 #[test]
