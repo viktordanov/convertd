@@ -152,10 +152,14 @@ fn serve(
         if counts_as_job(&call.op) {
             jobs = jobs.saturating_add(1);
         }
-        let handled = match call.op {
+        // One call at a time: the change in the process's CPU time is this
+        // call's, every engine thread included.
+        let cpu_before = sys::cpu_time();
+        let mut handled = match call.op {
             Op::Ping => Handled::ok(Output::Pong),
             op => engine.handle(op),
         };
+        handled.engine.cpu_us = micros(sys::cpu_time().saturating_sub(cpu_before));
         let rss_bytes = rss.read();
         let reply = Response::Reply(Reply {
             id: call.id,
