@@ -355,6 +355,8 @@ pub struct FakePdf {
     /// The password an encrypted PDF (one containing `/Encrypt`) opens
     /// with; `None` accepts any non-empty password.
     password: Option<String>,
+    /// The owner password of a `/Restricted` PDF.
+    owner_password: Option<String>,
 }
 
 impl FakePdf {
@@ -362,6 +364,7 @@ impl FakePdf {
         Self {
             settings: Settings::new(behavior, false),
             password: None,
+            owner_password: None,
         }
     }
 
@@ -371,6 +374,7 @@ impl FakePdf {
         Self {
             settings: Settings::new(FakeBehavior::Succeed, true),
             password: None,
+            owner_password: None,
         }
     }
 
@@ -386,6 +390,13 @@ impl FakePdf {
         self
     }
 
+    /// The owner password of a `/Restricted` PDF: it opens the file too,
+    /// and only it lifts the restrictions.
+    pub fn with_owner_password(mut self, password: impl Into<String>) -> Self {
+        self.owner_password = Some(password.into());
+        self
+    }
+
     pub fn set_behavior(&self, behavior: FakeBehavior) {
         if let Ok(mut current) = self.settings.behavior.lock() {
             *current = behavior;
@@ -393,6 +404,9 @@ impl FakePdf {
     }
 
     fn opens(&self, password: &str) -> bool {
+        if self.owner_password.as_deref() == Some(password) {
+            return true;
+        }
         match &self.password {
             Some(expected) => expected == password,
             None => !password.is_empty(),
@@ -439,8 +453,12 @@ impl PdfEngine for FakePdf {
             encrypted,
             needs_password: encrypted && !owner_only,
             pages: vec![A4; pages as usize],
+            probe_skipped: match job.probe_dpi {
+                Some(_) => pages.saturating_sub(job.probe_max_pages),
+                None => 0,
+            },
             probe: match job.probe_dpi {
-                Some(_) => (1..=pages)
+                Some(_) => (1..=pages.min(job.probe_max_pages))
                     .map(|number| ProbedPage {
                         number,
                         objects: 1,
@@ -470,9 +488,17 @@ impl PdfEngine for FakePdf {
         if !self.opens(job.password.expose()) {
             return Err(EngineError::InvalidPassword);
         }
+        // check_owner on a `/Restricted` PDF that only the user password
+        // opened: keep the restrictions, write nothing.
+        let bytes = tokio::fs::read(&job.pdf).await.map_err(io_error)?;
+        if job.check_owner
+            && memchr::memmem::find(&bytes, b"/Restricted").is_some()
+            && self.owner_password.as_deref() != Some(job.password.expose())
+        {
+            return Err(EngineError::Restricted);
+        }
         // A copy without the /Encrypt marker stands in for PDFium's
         // save-as-copy without security.
-        let bytes = tokio::fs::read(&job.pdf).await.map_err(io_error)?;
         let plain: Vec<u8> = match memchr::memmem::find(&bytes, b"/Encrypt") {
             Some(at) => [&bytes[..at], b"/Decrypt", &bytes[at + 8..]].concat(),
             None => bytes,

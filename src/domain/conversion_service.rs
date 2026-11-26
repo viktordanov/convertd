@@ -165,7 +165,10 @@ impl ConversionService {
         let probe = self.probe_dpi.is_some()
             && (job.request.output == Output::Pdf
                 || matches!(job.request.pages, PageSelection::All));
-        let (pdf, origin, mut inspection, facts) = match family {
+        // Set when the original encrypted PDF goes on (decrypt answered
+        // Restricted): the render opens it with the password.
+        let mut render_password: Option<Password> = None;
+        let (pdf, origin, inspection, facts) = match family {
             Family::Document | Family::Presentation | Family::Spreadsheet => {
                 // Fail fast: an encrypted package cannot open without one.
                 if job.detection.encrypted && job.request.password.is_none() {
@@ -255,24 +258,42 @@ impl ConversionService {
                         .decrypt(
                             DecryptJob {
                                 pdf: paths.source.clone(),
-                                password,
+                                password: password.clone(),
                                 output: paths.document_pdf.clone(),
                                 max_output_bytes,
+                                check_owner: true,
                             },
                             Admission::Continue,
                             job.deadline,
                         )
-                        .await
-                        .map_err(engine_error)?;
-                    timings.add_call(&decrypted.timing);
-                    timings.decrypt = Some(decrypted.timing.wall);
-                    timings.decrypt_engine = Some(decrypted.timing.engine);
-                    (
-                        paths.document_pdf.clone(),
-                        PdfOrigin::Passthrough,
-                        inspection,
-                        None,
-                    )
+                        .await;
+                    match decrypted {
+                        Ok(decrypted) => {
+                            timings.add_call(&decrypted.timing);
+                            timings.decrypt = Some(decrypted.timing.wall);
+                            timings.decrypt_engine = Some(decrypted.timing.engine);
+                            (
+                                paths.document_pdf.clone(),
+                                PdfOrigin::Passthrough,
+                                inspection,
+                                None,
+                            )
+                        }
+                        // Only the user password was given and the owner
+                        // restricts the file: no copy without the
+                        // restrictions. The original goes on, and the
+                        // render opens it with the password.
+                        Err(EngineError::Restricted) => {
+                            render_password = Some(password);
+                            (
+                                paths.source.clone(),
+                                PdfOrigin::Passthrough,
+                                inspection,
+                                None,
+                            )
+                        }
+                        Err(err) => return Err(engine_error(err)),
+                    }
                 } else {
                     (
                         paths.source.clone(),
@@ -328,21 +349,15 @@ impl ConversionService {
                 "the PDF has no pages".into(),
             )));
         }
-        // At most VERIFY_PROBE_MAX_PAGES probed pages count; the rest of
-        // the document is counted as skipped.
-        let probe_skipped_pages = if probe {
-            let max = self.probe_max_pages;
-            inspection.probe.retain(|page| page.number <= max);
-            inspection.page_count.saturating_sub(max)
-        } else {
-            0
-        };
+        // The worker probes at most VERIFY_PROBE_MAX_PAGES pages and says
+        // how many it left out.
+        let probe_skipped_pages = if probe { inspection.probe_skipped } else { 0 };
 
         let pages = if job.request.output == Output::Pdf {
             Vec::new()
         } else {
             check_deadline()?;
-            self.render(&pdf, &job, &inspection, timings)
+            self.render(&pdf, &job, &inspection, render_password, timings)
                 .await
                 .map_err(|err| match err {
                     ConversionError::Engine(engine) => engine_error(engine),
@@ -385,6 +400,7 @@ impl ConversionService {
         pdf: &Path,
         job: &ConversionJob<'_>,
         inspection: &Inspection,
+        password: Option<Password>,
         timings: &mut StageTimings,
     ) -> Result<Vec<RenderedPage>, ConversionError> {
         let request = job.request;
@@ -412,7 +428,7 @@ impl ConversionService {
             .render(
                 RenderJob {
                     pdf: pdf.to_path_buf(),
-                    password: None,
+                    password,
                     pages: numbers,
                     format: request.images.format,
                     dpi: request.images.dpi,
@@ -457,6 +473,7 @@ impl ConversionService {
                     password,
                     probe_dpi,
                     collect_fonts: false,
+                    probe_max_pages: self.probe_max_pages,
                 },
                 adm,
                 deadline,
@@ -584,6 +601,9 @@ mod tests {
         doc_type: Option<DocType>,
         rendered: Mutex<Option<RenderJob>>,
         inspected: Mutex<Option<InspectJob>>,
+        decrypted: Mutex<Option<DecryptJob>>,
+        /// decrypt answers `Restricted`: only the user password was given.
+        restricted: bool,
     }
 
     impl Script {
@@ -639,9 +659,13 @@ mod tests {
                     width_pt: 595.0,
                     height_pt: 842.0,
                 }],
-                // As the worker does today: every page.
+                // As the worker does: the first probe_max_pages pages.
+                probe_skipped: match job.probe_dpi {
+                    Some(_) => page_count.saturating_sub(job.probe_max_pages),
+                    None => 0,
+                },
                 probe: match job.probe_dpi {
-                    Some(_) => (1..=page_count)
+                    Some(_) => (1..=page_count.min(job.probe_max_pages))
                         .map(|number| crate::domain::engine::ProbedPage {
                             number,
                             objects: 1,
@@ -661,11 +685,15 @@ mod tests {
         }
         async fn decrypt(
             &self,
-            _: DecryptJob,
+            job: DecryptJob,
             adm: Admission,
             _: Instant,
         ) -> Result<Decrypted, EngineError> {
             self.record("decrypt", adm);
+            *self.decrypted.lock().unwrap() = Some(job);
+            if self.restricted {
+                return Err(EngineError::Restricted);
+            }
             Ok(Decrypted {
                 pdf_bytes: 10,
                 timing: timing(4),
@@ -786,6 +814,40 @@ mod tests {
     /// VERIFY_PROBE_MAX_PAGES pages, and the rest are counted as skipped.
     /// With a selection and page images, the rendered pages decide
     /// BLANK_PAGE, so nothing is probed (review, lane 001 item 9).
+    /// Every decrypt asks the worker to keep owner restrictions. When it
+    /// answers `Restricted` (only the user password was given), the
+    /// original encrypted PDF goes on: it is the PDF output, and the render
+    /// opens it with the password (review, lane 001 item 9).
+    #[test]
+    fn a_restricted_pdf_passes_through_and_renders_with_the_password() {
+        let script = Arc::new(Script {
+            needs_password: true,
+            restricted: true,
+            page_count: Some(2),
+            ..Default::default()
+        });
+        let raw = RawOptions {
+            output: Some(Output::Images),
+            password: Some("user".into()),
+            ..Default::default()
+        };
+        let result = run(script.clone(), Format::Pdf, raw, u64::MAX)
+            .result
+            .unwrap();
+        let decrypt = script.decrypted.lock().unwrap().clone().unwrap();
+        assert!(
+            decrypt.check_owner,
+            "every decrypt keeps owner restrictions"
+        );
+        assert_eq!(result.pdf, PathBuf::from("/job/source.pdf"), "the original");
+        let render = script.rendered.lock().unwrap().clone().unwrap();
+        assert_eq!(render.pdf, PathBuf::from("/job/source.pdf"));
+        assert_eq!(
+            render.password.map(|p| p.expose().to_owned()).as_deref(),
+            Some("user")
+        );
+    }
+
     #[test]
     fn the_probe_is_bounded_and_the_rest_counted() {
         let script = Arc::new(Script {

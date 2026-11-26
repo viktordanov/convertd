@@ -580,6 +580,60 @@ async fn an_owner_password_is_verified_when_given() {
     app.assert_no_jobs().await;
 }
 
+/// A user-password PDF with owner restrictions, opened with the user
+/// password only: decrypt keeps the restrictions, so the original
+/// encrypted PDF is the answer, unchanged. The owner password gives the
+/// decrypted copy (review, lane 001 item 9). The fake marks such a PDF
+/// with `/Restricted`.
+#[tokio::test]
+async fn a_restricted_pdf_with_the_user_password_passes_through() {
+    let app = App::with_pdf(
+        "restricted",
+        &[],
+        FakePdf::new(FakeBehavior::Succeed)
+            .with_password("user")
+            .with_owner_password("owner"),
+    );
+    let upload = pdf("/Encrypt 5 0 R /Restricted");
+
+    let (response, body) = send(
+        &app,
+        with_options("locked.pdf", &upload, r#"{"password":"user"}"#),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(body, upload, "the original, restrictions kept");
+
+    let (response, body) = send(
+        &app,
+        with_options(
+            "locked.pdf",
+            &upload,
+            r#"{"password":"user","output":"images"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "images still render");
+    drop(body);
+
+    let (response, body) = send(
+        &app,
+        with_options("locked.pdf", &upload, r#"{"password":"owner"}"#),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        memchr::memmem::find(&body, b"/Encrypt").is_none(),
+        "decrypted"
+    );
+    app.assert_no_jobs().await;
+}
+
 /// An encrypted OOXML package: an OLE2 file with the two streams.
 fn encrypted_ooxml() -> Vec<u8> {
     let mut compound = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).unwrap();
