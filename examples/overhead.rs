@@ -112,6 +112,10 @@ struct Args {
     /// Write one JSON line per measured request to this file.
     #[arg(long)]
     samples: Option<PathBuf>,
+    /// A note for the client row, such as what lies between client and
+    /// server.
+    #[arg(long)]
+    client_note: Option<String>,
     /// Send nothing: print the table pooled over these `--samples` files.
     #[arg(long, num_args = 1..)]
     report: Vec<PathBuf>,
@@ -127,7 +131,7 @@ fn main() {
             samples.len()
         );
         println!();
-        print!("{}", table(&samples));
+        print!("{}", table(&samples, args.client_note.as_deref()));
         return;
     }
     let (name, file) = input(&args.input);
@@ -191,7 +195,7 @@ fn main() {
         if args.cold.is_some() { 1 } else { args.warmup },
     );
     println!();
-    print!("{}", table(&samples));
+    print!("{}", table(&samples, args.client_note.as_deref()));
     let count = |f: &dyn Fn(&Sample) -> bool| samples.iter().filter(|s| f(s)).count();
     println!();
     println!(
@@ -484,7 +488,7 @@ fn stats(mut values: Vec<f64>) -> Option<(usize, f64, f64, f64, f64)> {
     Some((values.len(), at(0.50), at(0.95), at(0.99), mean))
 }
 
-fn table(samples: &[Sample]) -> String {
+fn table(samples: &[Sample], client_note: Option<&str>) -> String {
     let mut out = String::from(
         "| Figure | n | p50 ms | p95 ms | p99 ms | mean ms |\n| --- | ---: | ---: | ---: | ---: | ---: |\n",
     );
@@ -512,7 +516,11 @@ fn table(samples: &[Sample]) -> String {
     );
     row("share_001", samples.iter().map(Sample::share_001).collect());
     row("share_002", samples.iter().map(Sample::share_002).collect());
-    row("client", samples.iter().map(|s| s.client).collect());
+    let client = match client_note {
+        Some(note) => format!("client ({note})"),
+        None => "client".to_owned(),
+    };
+    row(&client, samples.iter().map(|s| s.client).collect());
     out
 }
 
