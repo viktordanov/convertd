@@ -125,6 +125,9 @@ pub struct EngineTiming {
     /// §13). Worker time but not engine time, so it counts as overhead;
     /// zero for calls without pre-flight.
     pub preflight: Duration,
+    /// The worker CPU time, user plus system, of the calls that answered:
+    /// summed over the chunks of a split render, not the longest.
+    pub cpu: Duration,
 }
 
 /// Which worker ran a job, for logs.

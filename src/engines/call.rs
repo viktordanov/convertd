@@ -152,6 +152,7 @@ pub async fn call_with_poison(
                     wall: started.elapsed(),
                     engine: Duration::from_micros(reply.engine.engine_us),
                     preflight: Duration::from_micros(reply.engine.preflight_us),
+                    cpu: Duration::from_micros(reply.engine.cpu_us),
                 };
                 metrics::histogram!(
                     "convert_engine_overhead_seconds",

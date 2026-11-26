@@ -635,6 +635,7 @@ mod tests {
             wall: Duration::from_millis(engine_ms + 3),
             engine: Duration::from_millis(engine_ms),
             preflight: Duration::ZERO,
+            cpu: Duration::ZERO,
         }
     }
 
