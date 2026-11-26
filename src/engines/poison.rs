@@ -39,8 +39,9 @@ pub const BUDGET_SLACK: Duration = Duration::from_millis(500);
 pub enum Work {
     /// An office conversion: always the whole document.
     Convert,
-    /// A PDF inspect: the page sizes and the probe, the whole document.
-    Inspect,
+    /// A PDF inspect of the whole document: the page sizes, and with
+    /// `probe` the blank-page probe renders too (more work).
+    Inspect { probe: bool },
     /// A PDF decrypt: a copy of the whole document.
     Decrypt,
     /// A render of this many pages.
@@ -68,9 +69,10 @@ impl Attempt {
     /// pages.
     pub fn covers(&self, next: &Attempt) -> bool {
         let work = match (self.work, next.work) {
-            (Work::Convert, Work::Convert)
-            | (Work::Inspect, Work::Inspect)
-            | (Work::Decrypt, Work::Decrypt) => true,
+            (Work::Convert, Work::Convert) | (Work::Decrypt, Work::Decrypt) => true,
+            // A probed inspect is more work: its timeout does not cover an
+            // inspect without the probe.
+            (Work::Inspect { probe: timed_out }, Work::Inspect { probe }) => probe >= timed_out,
             (Work::Render { pages: timed_out }, Work::Render { pages }) => pages >= timed_out,
             _ => false,
         };
@@ -357,6 +359,29 @@ mod tests {
         assert!(l.refuses_at(&pages, &render(40, 5_000), now), "more pages");
         assert!(!l.refuses_at(&pages, &render(5, 5_000), now), "fewer pages");
         assert!(!l.refuses_at(&pages, &render(20, 30_000), now), "more time");
+    }
+
+    #[test]
+    fn a_probed_inspect_timeout_does_not_cover_an_unprobed_inspect() {
+        let now = Instant::now();
+        let l = list(600_000);
+        let probed = Attempt {
+            work: Work::Inspect { probe: true },
+            budget: Duration::from_secs(10),
+        };
+        let plain = Attempt {
+            work: Work::Inspect { probe: false },
+            budget: Duration::from_secs(10),
+        };
+        l.strike_at(&KEY, Strike::Timeout, &probed, now);
+        l.strike_at(&KEY, Strike::Timeout, &probed, now);
+        assert!(l.refuses_at(&KEY, &probed, now));
+        assert!(!l.refuses_at(&KEY, &plain, now), "less work");
+        let other = [21; 32];
+        l.strike_at(&other, Strike::Timeout, &plain, now);
+        l.strike_at(&other, Strike::Timeout, &plain, now);
+        assert!(l.refuses_at(&other, &plain, now));
+        assert!(l.refuses_at(&other, &probed, now), "more work");
     }
 
     #[test]

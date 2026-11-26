@@ -233,7 +233,12 @@ impl PdfEngine for PdfPdfium {
         adm: Admission,
         deadline: Instant,
     ) -> Result<Inspection, EngineError> {
-        let poison = self.poison(job.sha256, Work::Inspect);
+        let poison = self.poison(
+            job.sha256,
+            Work::Inspect {
+                probe: job.probe_dpi.is_some(),
+            },
+        );
         let op = Op::Inspect(InspectArgs {
             pdf: job.pdf,
             password: job.password.map(|p| Secret::new(p.expose())),
@@ -352,6 +357,9 @@ impl PdfEngine for PdfPdfium {
             .map_err(|err| EngineError::from(EngineFailure::from(err)))?;
         let queue = first.queued();
         let lease_time = first.leased().saturating_sub(queue);
+        // A timeout strike records the time the chunks had to run, not the
+        // time this request spent waiting for a worker.
+        let ran = Attempt::new(attempt.work, deadline, Instant::now());
         let spawned = first.spawned_on_path();
         let wanted = job.pages.len().div_ceil(RENDER_CHUNK_MIN_PAGES).max(1);
         let mut leases = vec![first];
@@ -438,7 +446,7 @@ impl PdfEngine for PdfPdfium {
             if let Some(list) = &self.poison
                 && let Some(strike) = strike
             {
-                list.strike(&job.sha256, strike, &attempt);
+                list.strike(&job.sha256, strike, &ran);
             }
             return Err(err);
         }
