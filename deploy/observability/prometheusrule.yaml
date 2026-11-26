@@ -11,6 +11,8 @@ metadata:
     # The Prometheus ruleSelector of the cluster must match these labels. kube-prometheus-stack
     # selects `release: <helm release name>` by default; change or add the label for yours.
     release: kube-prometheus-stack
+# The rate windows (5m, 15m) assume a scrape interval of 1 minute or less: a window needs at least
+# four scrapes. Widen them for a slower scrape.
 spec:
   groups:
     - name: convertd
