@@ -60,7 +60,9 @@ if [[ "${mode}" == dev ]]; then
   locale-gen
 fi
 
-fc-cache -s -f
+# The system font cache, with whole-second directory mtimes so that it survives any image
+# export (docker/cache-fonts.sh says why). The Dockerfile copies the script in first.
+bash /opt/convertd/cache-fonts.sh
 # The dpkg excludes must not have dropped a family PLAN.md promises.
 for fam in "Liberation Sans" "Liberation Serif" "Liberation Mono" Carlito Caladea "DejaVu Sans" \
            "Noto Sans" "Noto Serif" "Noto Sans Mono" "Noto Sans Symbols" "Noto Sans Symbols2" \

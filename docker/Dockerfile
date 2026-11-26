@@ -123,11 +123,14 @@ RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharin
     done
 
 # ---- Engine downloads: built on the build platform, never in the runtime ------------------
-# Each download lands in a cache mount under its SHA-256 and is checked before use. TDF removes
-# a point release from /stable/ when the next one ships; the archive keeps it under the
-# four-part build number, which is the fallback. The fallback URL is UNVERIFIED: 26.8.3 is
-# still the current stable release, so it is not archived yet, and the archive host refused
-# connections on 2026-11-25. Prove it once 26.8.3 leaves /stable/.
+# Each download lands in a cache mount under its SHA-256. docker/fetch-verified.sh tries the
+# URLs in order and keeps the first one that gives the pinned SHA-256.
+# LibreOffice comes from LO_STABLE_MIRRORS, then from the TDF archive. The first entry is TDF's
+# redirector, which picks a mirror near the client. On 2026-11-26 the redirector sent a GitHub
+# amd64 runner to a mirror whose chain Debian's curl rejects (error 60), so fixed mirrors in
+# other countries follow it. TDF removes a point release from /stable/ when the next one ships;
+# the archive keeps it under the four-part build number. The archive URL is UNVERIFIED for an
+# archived release: 26.8.3 is still current, and the archive host redirects to the mirrors too.
 FROM --platform=$BUILDPLATFORM ${RUNTIME_BASE} AS engines
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ARG TARGETARCH
@@ -138,9 +141,13 @@ ARG LO_SHA256_AMD64
 ARG PDFIUM_BUILD
 ARG PDFIUM_SHA256_ARM64
 ARG PDFIUM_SHA256_AMD64
+# Base URLs that hold libreoffice/stable/<version>/deb/<dir>/, tried in this order. The fixed
+# mirrors are in Germany, the United States and Denmark (TDF's .mirrorlist gives the paths).
+ARG LO_STABLE_MIRRORS="https://download.documentfoundation.org/libreoffice/stable https://ftp.fau.de/tdf/libreoffice/stable https://ftp.osuosl.org/pub/tdf/libreoffice/stable https://mirrors.dotsrc.org/tdf/libreoffice/stable"
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=cache,id=engine-downloads,target=/downloads,sharing=locked \
+    --mount=type=bind,source=docker/fetch-verified.sh,target=/fetch-verified.sh \
     case "${TARGETARCH}" in \
       amd64) lo_dir=x86_64;  lo_file=x86-64;  lo_sha="${LO_SHA256_AMD64}"; pd_arch=x64;   pd_sha="${PDFIUM_SHA256_AMD64}" ;; \
       arm64) lo_dir=aarch64; lo_file=aarch64; lo_sha="${LO_SHA256_ARM64}"; pd_arch=arm64; pd_sha="${PDFIUM_SHA256_ARM64}" ;; \
@@ -149,17 +156,16 @@ RUN --mount=type=cache,id=engine-downloads,target=/downloads,sharing=locked \
     [[ -n "${lo_sha}" ]] || { echo "LO_SHA256_${TARGETARCH^^} is not pinned" >&2; exit 1; }; \
     [[ -n "${pd_sha}" ]] || { echo "PDFIUM_SHA256_${TARGETARCH^^} is not pinned" >&2; exit 1; }; \
     lo_tgz="/downloads/lo-${lo_sha}.tar.gz"; \
-    if ! echo "${lo_sha}  ${lo_tgz}" | sha256sum -c --status - 2>/dev/null; then \
-      curl -fsSL -o "${lo_tgz}" \
-        "https://download.documentfoundation.org/libreoffice/stable/${LO_VERSION}/deb/${lo_dir}/LibreOffice_${LO_VERSION}_Linux_${lo_file}_deb.tar.gz" \
-      || curl -fsSL -o "${lo_tgz}" \
-        "https://downloadarchive.documentfoundation.org/libreoffice/old/${LO_BUILD}/deb/${lo_dir}/LibreOffice_${LO_BUILD}_Linux_${lo_file}_deb.tar.gz"; \
-    fi; \
+    lo_urls=(); \
+    for m in ${LO_STABLE_MIRRORS}; do \
+      lo_urls+=("${m}/${LO_VERSION}/deb/${lo_dir}/LibreOffice_${LO_VERSION}_Linux_${lo_file}_deb.tar.gz"); \
+    done; \
+    lo_urls+=("https://downloadarchive.documentfoundation.org/libreoffice/old/${LO_BUILD}/deb/${lo_dir}/LibreOffice_${LO_BUILD}_Linux_${lo_file}_deb.tar.gz"); \
+    bash /fetch-verified.sh "${lo_sha}" "${lo_tgz}" "${lo_urls[@]}"; \
     echo "${lo_sha}  ${lo_tgz}" | sha256sum -c -; \
     pd_tgz="/downloads/pdfium-${pd_sha}.tgz"; \
-    if ! echo "${pd_sha}  ${pd_tgz}" | sha256sum -c --status - 2>/dev/null; then \
-      curl -fsSL -o "${pd_tgz}" "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${PDFIUM_BUILD}/pdfium-linux-${pd_arch}.tgz"; \
-    fi; \
+    bash /fetch-verified.sh "${pd_sha}" "${pd_tgz}" \
+      "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium%2F${PDFIUM_BUILD}/pdfium-linux-${pd_arch}.tgz"; \
     echo "${pd_sha}  ${pd_tgz}" | sha256sum -c -; \
     mkdir -p /tmp/lo /tmp/pdfium /out/debs /out/pdfium/lib; \
     tar -xzf "${lo_tgz}" -C /tmp/lo --strip-components=1; \
@@ -197,6 +203,8 @@ COPY docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
 COPY docker/fonts/fonts.json /etc/convertd/fonts.json
 COPY docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
 COPY docker/fonts/35-rs-convert-aliases.conf /etc/fonts/conf.d/35-rs-convert-aliases.conf
+# Builds the font cache so it stays valid after a tar export; kept for derived font images.
+COPY docker/cache-fonts.sh /opt/convertd/cache-fonts.sh
 # docker/install-engines.sh is shared with the dev target, so the two cannot drift. The script
 # and the .debs are bind mounts, so neither becomes a layer.
 RUN --mount=type=bind,from=engines,source=/out/debs,target=/debs \
@@ -277,6 +285,8 @@ COPY docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
 COPY docker/fonts/fonts.json /etc/convertd/fonts.json
 COPY docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
 COPY docker/fonts/35-rs-convert-aliases.conf /etc/fonts/conf.d/35-rs-convert-aliases.conf
+# Builds the font cache so it stays valid after a tar export; kept for derived font images.
+COPY docker/cache-fonts.sh /opt/convertd/cache-fonts.sh
 RUN --mount=type=bind,from=engines,source=/out/debs,target=/debs \
     --mount=type=bind,source=docker/libreoffice,target=/lo-config \
     --mount=type=bind,source=docker/install-engines.sh,target=/install-engines.sh \
