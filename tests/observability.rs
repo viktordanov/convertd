@@ -22,6 +22,8 @@ const PREFIX: &str = "convert_";
 /// `{pool="office"}`, `{__name__="x"}` or the quoted `{"x"}`, which the
 /// check cannot verify.
 const NAME_MATCHER: &str = "a {...} selector without a metric name before it";
+/// Stands for a `$variable` outside a label matcher or a range.
+const VARIABLE: &str = "a $variable outside {...} and [...]";
 
 /// Every `convert_*` identifier in `text`. An identifier starts at a
 /// character that cannot continue a name, so `rs_convert_x` is not one.
@@ -171,7 +173,16 @@ fn query_metrics(expr: &str) -> BTreeSet<String> {
                 i = end;
             }
             b'[' => i = skip_group(b, i, b']'),
-            c if c.is_ascii_digit() || c == b'.' || c == b'$' => {
+            // A dashboard variable outside `{...}` and `[...]` can stand for
+            // a metric name that the check cannot see.
+            b'$' => {
+                names.insert(VARIABLE.to_owned());
+                i += 1;
+                while i < b.len() && continues(b[i]) {
+                    i += 1;
+                }
+            }
+            c if c.is_ascii_digit() || c == b'.' => {
                 i += 1;
                 while i < b.len() && (continues(b[i]) || b[i] == b'.') {
                     i += 1;
@@ -431,6 +442,12 @@ fn the_name_scan_reports_a_misspelled_metric() {
         assert!(names.contains(NAME_MATCHER), "{bare}: {names:?}");
         assert!(missing(&names, &have).contains(&NAME_MATCHER.to_owned()));
     }
+    let names =
+        query_metrics(r#"convert_workers{pod=~"$pod"}[$__rate_interval] or $worker_metric"#);
+    assert_eq!(
+        names,
+        ["convert_workers", VARIABLE].map(String::from).into()
+    );
 }
 
 #[test]
