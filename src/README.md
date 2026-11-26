@@ -12,7 +12,8 @@
 4. [Warnings](#warnings)
 5. [Lifecycle and metrics](#lifecycle-and-metrics)
 6. [Engine selection](#engine-selection)
-7. [Configuration](#configuration)
+7. [Measurement](#measurement)
+8. [Configuration](#configuration)
 
 <!-- memoria:section id="overview" files="main.rs runtime.rs" -->
 ## Process model
@@ -102,7 +103,7 @@ An encrypted OOXML package is an OLE2 file whose type is inside the encryption. 
 
 The upload never sits whole in memory. The handler sends the chunks of the file part through a queue of four to one blocking sink. The sink computes SHA-256 and CRC-32 while it writes, then runs detection while the file is still in the page cache.
 
-Some answers come while the client is still uploading: 401, 413, 415, 429 and 503. If the server then closed the socket with unread bytes, the kernel would send a reset, and a client such as Go's `http.Transport` would often report a broken pipe instead of the answer. So `middleware/linger.rs` wraps every request body. When a body is dropped before its end, a task reads and discards the rest after the answer is sent. The task stops at the end of the body, after 256 MiB, after 10 s, or after 2 s without data. At most 32 bodies drain at once, and the task holds no permit and no job directory.
+Some answers come while the client is still uploading: 401, 413, 415, 429 and 503. If the server then closed the socket with unread bytes, the kernel would send a reset. A client such as Go's `http.Transport` would then often report a broken pipe instead of the answer. So `middleware/linger.rs` wraps every request body. When a body is dropped before its end, a task reads and discards the rest after the answer is sent. The task stops at the end of the body, after 256 MiB, after 10 s, or after 2 s without data. At most 32 bodies drain at once, and the task holds no permit and no job directory.
 
 The deadline is the end of the upload plus `timeout_seconds`. The engines enforce it inside each call, and the service makes sure that it has time left between calls. The handler drops the conversion 250 ms after the deadline and answers 504 `CONVERSION_TIMEOUT`. Dropping the future cancels the engine job.
 
@@ -148,7 +149,30 @@ The scanners stream each part through quick-xml under fixed caps: 4 MiB per part
 
 `main.rs` calls `engines::select::start` once, after it binds the listener and before it builds the application state. `TEST_ENGINE` picks the real pools, the level-B test worker or the level-A fakes. `config.rs` accepts `TEST_ENGINE` only in a build with the `test-hooks` feature. If `PDFIUM_BUILD` is not set, `convertd serve` stops with an error. [Selection](engines/README.md#selection) gives the three modes and the readiness states.
 
-Image inputs are out of v1 (owner, 2026-11-26). Detection still names a PNG, JPEG, TIFF, GIF, BMP or WebP file by its signature, so that an image is never taken for a PDF inside it. Then it answers 415 `UNSUPPORTED_FORMAT`, and `/v1/capabilities` does not list image inputs. [Not built yet](engines/README.md#not-built-yet) lists the parts of the engines that are missing.
+Image inputs are out of v1 (owner, 2026-11-26). Detection still names a PNG, JPEG, TIFF, GIF, BMP or WebP file by its signature. So an image is never taken for a PDF inside it. Then it answers 415 `UNSUPPORTED_FORMAT`, and `/v1/capabilities` does not list image inputs. [Not built yet](engines/README.md#not-built-yet) lists the parts of the engines that are missing.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="measurement" files="rest/timing.rs" -->
+## Measurement
+
+The crate has three targets of its own. They are 1 ms p50 of overhead, 30 MB of idle RSS, and memory per request that does not grow with the file. Three tools measure them with the level-A fakes:
+
+- `examples/overhead.rs` serves in-process and sends keep-alive requests from a raw client. It prints p50, p95 and p99 of three figures: the client time, `overhead` (`total` − `queue` − Σ `*_engine`), and 001's share (`total` − Σ engine-stage walls). Run it with `cargo run --release --example overhead -- --help`.
+- `tests/peak_heap.rs` counts the live heap with its own allocator while it uploads PDFs of 1, 16 and 100 MiB.
+- `tests/rss_linux.rs` reads `VmRSS` of `convertd serve` before and after 1 000 requests. It runs only on Linux, with `--ignored` and `--features test-hooks`.
+
+The numbers that follow come from macOS on arm64 (release build for the example, debug for the heap), measured on 2026-11-26. Linux has not been measured.
+
+| Measurement | Result |
+| --- | --- |
+| 001's share, 15 KB DOCX, engine time 30 ms | 0.15 ms p50, 0.51 ms p99 |
+| 001's share, 15 KB PDF, engine time 30 ms | 0.26 ms p50, 0.61 ms p99 |
+| `overhead`, 15 KB DOCX, engine time 0 | 0.27 ms p50, 0.45 ms p99 |
+| `overhead`, 15 KB PDF, engine time 0 | 0.15 ms p50, 0.28 ms p99 |
+| Peak heap per upload, 1 MiB / 16 MiB / 100 MiB | 3.1 MB / 3.6 to 4.1 MB / 3.6 to 4.1 MB |
+| Allocations per 15 KB `output=pdf` request | 340 |
+
+The peak stops growing once hyper's read buffer reaches its full size, at about 496 KiB per read. Up to four such chunks wait in the upload queue.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="setup" files="config.rs" -->
