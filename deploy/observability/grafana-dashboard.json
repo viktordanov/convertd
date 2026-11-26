@@ -180,7 +180,7 @@
       "type": "stat",
       "id": 2,
       "title": "Requests / s",
-      "description": "Finished POST /v1/convert requests, every status that the handler gives. A 401 from the auth layer is not counted.",
+      "description": "POST /v1/convert outcomes that the handler records. A 401 from the auth layer and a failure to create the job directory are not counted.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -548,7 +548,7 @@
       "type": "timeseries",
       "id": 8,
       "title": "Requests by HTTP status",
-      "description": "Outcomes of POST /v1/convert. convert_requests_total has a code label, not a status label: each series maps codes to the status from src/rest/response.rs. A 401 from the auth layer and a 404 for an unknown route are not counted. \"other\" catches a code that this map does not know.",
+      "description": "Outcomes of POST /v1/convert. convert_requests_total has a code label, not a status label: each series maps codes to the status from src/rest/response.rs. A 401 from the auth layer, a 404 for an unknown route and a failure to create the job directory are not counted. \"other\" catches a code that this map does not know.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
