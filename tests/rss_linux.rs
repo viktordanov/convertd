@@ -176,6 +176,34 @@ mod measured {
         build(padding)
     }
 
+    /// A small one-page DOCX, stored, so each round also runs the office
+    /// path: the supervisor's side of an office conversion.
+    fn docx() -> Vec<u8> {
+        use std::io::Write as _;
+        let parts = [
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#,
+            ),
+            (
+                "_rels/.rels",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#,
+            ),
+            (
+                "word/document.xml",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>rss_linux office page</w:t></w:r></w:p></w:body></w:document>"#,
+            ),
+        ];
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, body) in parts {
+            zip.start_file(name, stored).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
     /// One request with `Connection: close`; the answer is read and
     /// dropped. Returns the status.
     fn convert(port: u16, file: &[u8], output: &str) -> u16 {
@@ -273,6 +301,7 @@ mod measured {
                     "PDFIUM_BUILD",
                     "PATH",
                     "LANG",
+                    "LD_LIBRARY_PATH",
                 ] {
                     if let Some(value) = std::env::var_os(name) {
                         command.env(name, value);
@@ -297,12 +326,13 @@ mod measured {
         std::thread::sleep(Duration::from_secs(2));
         let first = rss_bytes(pid);
 
-        // Rounds of 1 000 mixed requests: pdf, images and bundle; 15 KB to
-        // 20 MB. Two checks: plan 001's target, the first round against the
+        // Rounds of 1 000 mixed requests: pdf, images and bundle; PDFs of
+        // 15 KB to 20 MB and a small DOCX. Two checks: plan 001's target, the first round against the
         // reading after start, and a plateau check, the last round against
         // the first, which a steady leak fails. RSS_ROUNDS sets the count,
         // at least 2.
-        let files = [15_000, 1 << 20, 20 << 20].map(pdf_of_size);
+        let [small, medium, large] = [15_000, 1 << 20, 20 << 20].map(pdf_of_size);
+        let files = [small, docx(), medium, large];
         let outputs = ["pdf", "images", "bundle"];
         let rounds: usize = std::env::var("RSS_ROUNDS")
             .ok()
@@ -312,7 +342,11 @@ mod measured {
         let mut readings = Vec::new();
         for round in 0..rounds {
             for i in 0..1000 {
-                let status = convert(port, &files[i % 3], outputs[(i / 3) % 3]);
+                let status = convert(
+                    port,
+                    &files[i % files.len()],
+                    outputs[(i / files.len()) % 3],
+                );
                 assert_eq!(status, 200, "round {round}, request {i}");
             }
             // Blocking threads exit after 10 s of idle.
