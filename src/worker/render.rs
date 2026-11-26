@@ -4,6 +4,8 @@
 //! thread and holds one document at a time. Every operation opens its
 //! document, works, and closes it before it answers.
 
+use std::fs::{self, File};
+use std::io::{self, BufWriter, Write};
 use std::os::raw::{c_int, c_ulong, c_void};
 use std::path::Path;
 use std::time::Instant;
@@ -16,7 +18,7 @@ use crate::ipc::{
     WorkerError, WorkerErrorKind,
 };
 use crate::worker::encode::{EncodeError, Encoder, flat, max_edge};
-use crate::worker::output::OutputBudget;
+use crate::worker::output::{OutputBudget, io_error};
 use crate::worker::{Engine, Handled, micros};
 
 /// `FPDF_SaveAsCopy` flags (`fpdf_save.h`; the crate keeps them private).
@@ -306,7 +308,15 @@ impl RenderWorker {
                 )
             });
         }
-        let mut writer = CopyWriter::new(args.max_output_bytes);
+        let file = match File::create(&args.output) {
+            Ok(file) => file,
+            Err(err) => {
+                // SAFETY: closes the document opened above, once.
+                unsafe { bindings.FPDF_CloseDocument(document) };
+                return Err(io_error("write the decrypted PDF", &err));
+            }
+        };
+        let mut writer = CopyWriter::new(file, args.max_output_bytes);
         // SAFETY: `document` is open; `writer` starts with the FPDF_FILEWRITE
         // that PDFium calls back through, and outlives the call.
         let saved = unsafe {
@@ -320,23 +330,10 @@ impl RenderWorker {
         unsafe { bindings.FPDF_CloseDocument(document) };
         times.decrypt_us = micros(started.elapsed());
         times.engine_us = times.decrypt_us;
-        if writer.over_limit {
-            return Err(WorkerError::new(
-                WorkerErrorKind::LimitExceeded,
-                "failed to write the decrypted PDF: output exceeds limit",
-            ));
-        }
-        if saved == 0 {
-            return Err(WorkerError::new(
-                WorkerErrorKind::ExportFailed,
-                "failed to write the decrypted PDF",
-            ));
-        }
-        let mut budget = OutputBudget::new(args.max_output_bytes);
-        let pdf_bytes = match budget.write_file(&args.output, &writer.bytes) {
+        let pdf_bytes = match writer.finish(saved != 0) {
             Ok(n) => n,
             Err(err) => {
-                budget.remove_written();
+                let _ = fs::remove_file(&args.output);
                 return Err(err);
             }
         };
@@ -354,7 +351,7 @@ impl RenderWorker {
             })
             .unwrap_or(false);
         if !clean {
-            budget.remove_written();
+            let _ = fs::remove_file(&args.output);
             return Err(WorkerError::new(
                 WorkerErrorKind::ExportFailed,
                 "failed to decrypt the PDF: the copy is still protected",
@@ -416,26 +413,32 @@ pub fn page_scale(dpi: u16, max_edge: u32, w_pt: f32, h_pt: f32) -> f32 {
     by_dpi.min(max_edge as f32 / longest)
 }
 
-/// `FPDF_FILEWRITE` followed by the buffer it fills. `repr(C)` keeps the
-/// PDFium struct first, so the callback can find the rest from its pointer.
+/// `FPDF_FILEWRITE` followed by the file it streams into, under the job's
+/// byte cap. `repr(C)` keeps the PDFium struct first, so the callback can
+/// find the rest from its pointer. Only a buffer of 64 KiB is in memory,
+/// never the whole PDF.
 #[repr(C)]
 struct CopyWriter {
     base: FPDF_FILEWRITE,
-    bytes: Vec<u8>,
+    file: BufWriter<File>,
+    written: u64,
     limit: u64,
     over_limit: bool,
+    error: Option<io::Error>,
 }
 
 impl CopyWriter {
-    fn new(limit: u64) -> Self {
+    fn new(file: File, limit: u64) -> Self {
         Self {
             base: FPDF_FILEWRITE {
                 version: 1,
                 WriteBlock: Some(write_block),
             },
-            bytes: Vec::new(),
+            file: BufWriter::with_capacity(64 * 1024, file),
+            written: 0,
             limit,
             over_limit: false,
+            error: None,
         }
     }
 
@@ -443,6 +446,53 @@ impl CopyWriter {
     /// so the callback may reach past `base`.
     fn as_file_write(&mut self) -> *mut FPDF_FILEWRITE {
         std::ptr::from_mut(self).cast()
+    }
+
+    /// Takes one block from PDFium: refused past the cap or after an error,
+    /// else written through the buffer.
+    fn write(&mut self, chunk: &[u8]) -> bool {
+        if self.over_limit || self.error.is_some() {
+            return false;
+        }
+        if self.written.saturating_add(chunk.len() as u64) > self.limit {
+            self.over_limit = true;
+            return false;
+        }
+        match self.file.write_all(chunk) {
+            Ok(()) => {
+                self.written += chunk.len() as u64;
+                true
+            }
+            Err(err) => {
+                self.error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Flushes the file and gives its size, or the first failure: the cap,
+    /// then an I/O error, then a save that PDFium reported as failed. The
+    /// caller removes the file on an error.
+    fn finish(mut self, saved: bool) -> Result<u64, WorkerError> {
+        if self.over_limit {
+            return Err(WorkerError::new(
+                WorkerErrorKind::LimitExceeded,
+                "failed to write the decrypted PDF: output exceeds limit",
+            ));
+        }
+        if let Some(err) = self.error.take() {
+            return Err(io_error("write the decrypted PDF", &err));
+        }
+        if !saved {
+            return Err(WorkerError::new(
+                WorkerErrorKind::ExportFailed,
+                "failed to write the decrypted PDF",
+            ));
+        }
+        self.file
+            .flush()
+            .map_err(|err| io_error("write the decrypted PDF", &err))?;
+        Ok(self.written)
     }
 }
 
@@ -455,16 +505,13 @@ unsafe extern "C" fn write_block(
     // points at the first field of a live `CopyWriter`.
     let writer = unsafe { &mut *this.cast::<CopyWriter>() };
     let size = size as usize;
-    if writer.bytes.len() as u64 + size as u64 > writer.limit {
-        writer.over_limit = true;
-        return 0;
-    }
-    if size > 0 {
+    let chunk = if size == 0 {
+        &[][..]
+    } else {
         // SAFETY: PDFium gives `size` readable bytes at `data`.
-        let chunk = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) };
-        writer.bytes.extend_from_slice(chunk);
-    }
-    1
+        unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) }
+    };
+    c_int::from(writer.write(chunk))
 }
 
 /// The password to open with, or `None`. A password with a NUL byte is
