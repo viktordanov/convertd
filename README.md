@@ -163,6 +163,7 @@ Each folder in this list has a README for its own readers.
 - [tests/README.md](tests/README.md) covers the test levels, the two fakes, the nextest profiles and the commands that CI runs.
 - [corpus/README.md](corpus/README.md) covers the generated test corpus and the expected result for each file. When a change touches `corpus/`, `.github/workflows/corpus.yml` regenerates the corpus on Linux and compares every file with its pinned hash.
 - [tools/corpus/README.md](tools/corpus/README.md) covers `corpus-bench`, the tool that checks the corpus and its expectations.
+- `tools/ingest/` sends a folder of your own documents through a running image under fixed limits, and samples the memory of every worker. Each script's header gives its usage. Its results stay outside the repository.
 - `generate.sh` emits the spec with `convertd openapi`, regenerates the Go client from it and tests the client. `scripts/contract_test.sh` runs the contract tests against a real `convertd`.
 - Every push and pull request runs `memoria check` (`.github/workflows/memoria.yml`). The check fails while a README waits for review after a change to its sources. [Memoria in this repository](docs/documentation/memoria.md) gives the review steps.
 <!-- /memoria:section -->
