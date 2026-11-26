@@ -85,7 +85,7 @@ The build arguments:
 | `CONVERTD_VERSION`, `CONVERTD_COMMIT`, `CONVERTD_BUILD_DATE` | the OCI version, revision and created labels. convertd also compiles in `CONVERTD_COMMIT` for `/v1/capabilities` and the engine fingerprint. `convertd --version` prints the version from `Cargo.toml` |
 <!-- /memoria:section -->
 
-<!-- memoria:section id="contract" files="fonts/fonts.json fonts/10-libreoffice-fonts.conf fonts/35-rs-convert-aliases.conf fonts/probe-families.txt dpkg/fonts.cfg write-build-info.sh install-engines.sh" -->
+<!-- memoria:section id="contract" files="fonts/fonts.json fonts/10-libreoffice-fonts.conf fonts/35-rs-convert-aliases.conf fonts/probe-families.txt dpkg/fonts.cfg write-build-info.sh install-engines.sh cache-fonts.sh" -->
 ## Fonts and build-info.json
 
 The font set covers Latin, Greek, Cyrillic, symbols, math and emoji. These families are installed, and the build fails if `fc-list` does not find one of them:
@@ -109,7 +109,9 @@ Devanagari, Thai, Ethiopic and CJK have no font. Text in these scripts renders a
 
 The fontconfig cache is built into the image, so no worker writes a user cache at start. This works only if fontconfig and LibreOffice use the same directory names. LibreOffice registers `share/fonts/truetype` and `program/resource/common/fonts` by their real path, `/opt/libreoffice26.8/…`, and fontconfig keys its cache on the path as written. Thus `install-engines.sh` rewrites `fonts/10-libreoffice-fonts.conf` to the real directory before `fc-cache` runs. With the symlink path, each LibreOffice start wrote two cache files under `$HOME/.cache/fontconfig`.
 
-To add licensed fonts, build a derived image. It copies the fonts, runs `fc-cache -s -f`, and runs `/opt/convertd/write-build-info.sh` again as root, so `build-info.json` stays true. The script needs `LO_VERSION` set to the four-part build, such as `26.8.3.1`, because the image does not set it. Private fonts then never enter this repository.
+fontconfig also trusts a cache file only if the modification time of its directory matches in seconds and in nanoseconds. A layer that passes through a tar file keeps whole seconds only. A `docker-container` buildx builder, the GitHub Actions cache and a registry push all do this. Before the fix, an image from such a builder wrote 9 user cache files at start, one for each font directory. `cache-fonts.sh` therefore sets every font directory to a whole-second time, runs `fc-cache`, and fails the build if an unprivileged user still sees a stale cache.
+
+To add licensed fonts, build a derived image. It copies the fonts, runs `/opt/convertd/cache-fonts.sh`, and runs `/opt/convertd/write-build-info.sh` again as root, so `build-info.json` stays true. The script needs `LO_VERSION` set to the four-part build, such as `26.8.3.1`, because the image does not set it. Private fonts then never enter this repository.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="library-check" files="Dockerfile libreoffice/ldd-allow.txt" -->
@@ -120,7 +122,7 @@ The `lib-check` stage runs `readelf -d` on every LibreOffice and PDFium shared o
 `libreoffice/ldd-allow.txt` lists the misses that the check accepts, as exact `<object>: <library>` lines. An allowed plugin thus cannot hide a missing library in another object. On 26.8.3.1, 162 objects pass with 27 allowed lines, the same on both architectures. All of them are in plugins that a headless conversion never loads: the avmedia playback backends (GStreamer, GTK 4, Qt 6), the LibreOfficeKit GTK widget, the Java OfficeBean and the X11 VCL plugin.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="pins" files="Dockerfile install-engines.sh" -->
+<!-- memoria:section id="pins" files="Dockerfile install-engines.sh fetch-verified.sh" -->
 ## Moving to a new LibreOffice or PDFium
 
 Every engine download has an exact version and a SHA-256 check, and an empty hash fails the build. Debian packages are not pinned: a rebuild gets the current trixie packages for the pinned base image. The commit that changes a pin records each new value and where it came from. Do the monthly rebuild the same way: bump the base image digests and the engine pins together.
@@ -135,7 +137,9 @@ For a new LibreOffice release:
 
 The signing key on 26.8.3 was `C2839ECAD9408FBE9531C3E9F434A1EFAFEEAEA3`. This fingerprint is not confirmed against a TDF page, because no readable TDF page shows it. A new series, such as 27.2, needs no other change: the package names and `/opt/libreoffice27.2` come from `LO_VERSION`.
 
-TDF removes a point release from `/stable/` when the next one ships. The `engines` stage then falls back to `downloadarchive.documentfoundation.org/libreoffice/old/<LO_BUILD>/`. This fallback URL is not verified: 26.8.3 is still the current release, and the archive host refused connections when the pins were set. The pinned SHA-256 still checks whatever it serves.
+`fetch-verified.sh` tries a list of URLs in order and keeps the first file that has the pinned SHA-256. For LibreOffice the list is `LO_STABLE_MIRRORS`, then the TDF archive. The first entry is the TDF redirector, which picks a mirror near the build machine. A mirror can send an incomplete certificate chain, which Debian curl rejects with error 60. On 2026-11-26 this stopped the image job on a GitHub amd64 runner. Thus fixed mirrors in Germany, the United States and Denmark come next.
+
+TDF removes a point release from `/stable/` when the next one ships. The `engines` stage then uses `downloadarchive.documentfoundation.org/libreoffice/old/<LO_BUILD>/`. This archive URL is not verified for an archived release, because 26.8.3 is still the current release. The archive host also redirects to the mirrors. The pinned SHA-256 still checks whatever a URL serves.
 
 For a new PDFium build, download `pdfium-linux-x64.tgz` and `pdfium-linux-arm64.tgz` from the `bblanchon/pdfium-binaries` release. Compare their `sha256sum` with the asset digests that the GitHub release gives. Then set `PDFIUM_BUILD` and both `PDFIUM_SHA256_*` values.
 
