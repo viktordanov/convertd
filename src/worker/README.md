@@ -117,7 +117,8 @@ For these packages the worker writes no copy, and LibreOffice loads the original
 - A stored main part with a data descriptor, which LibreOffice refuses (corpus case `docx-stored-descriptor`). The copy would load, so the paper setting would decide whether the document converts.
 - A main part whose local header, data descriptor, CRC or size disagrees with its directory record.
 - A signed package: a signature-origin relationship, or an `_xmlsignatures/` folder.
-- A root relationships part that is truncated or empty, has another or a second root element, a relationship below the root, a branch, an escaped namespace, or more than 8 levels.
+- A root relationships part that is truncated or empty, or has another or a second root element.
+- A root relationships part with a relationship below the root, a branch, an escaped namespace, or more than 8 levels.
 - A main part over 64 MiB inflated, or a copy over the source size plus 1 MiB.
 - A main part that is not UTF-8, by its bytes or its declaration.
 - A main part deeper than 4096 elements, or with more than 512 namespace declarations in scope.
