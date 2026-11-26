@@ -887,7 +887,8 @@ mod tests {
             return;
         }
         let run = |path: &str| -> i64 {
-            let out = std::process::Command::new(std::env::current_exe().unwrap())
+            use std::io::Read;
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--ignored",
                     "--exact",
@@ -896,13 +897,37 @@ mod tests {
                     "--test-threads=1",
                 ])
                 .env("P2_RENDER_PATH", path)
-                .output()
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
                 .unwrap();
-            let text = String::from_utf8_lossy(&out.stdout);
-            text.lines()
+            // Each child gets a deadline, so a stalled PDFium fails the test
+            // with the path that stalled instead of hanging it.
+            let deadline = Instant::now() + std::time::Duration::from_secs(120);
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("the {path} child passed its 120 s deadline");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            };
+            let (mut stdout, mut stderr) = (String::new(), String::new());
+            let _ = child.stdout.take().unwrap().read_to_string(&mut stdout);
+            let _ = child.stderr.take().unwrap().read_to_string(&mut stderr);
+            // A child that measured and then crashed in teardown fails too.
+            assert!(
+                status.success(),
+                "the {path} child failed ({status}): {stderr}"
+            );
+            stdout
+                .lines()
                 .find_map(|line| line.split(&format!("P2 {path} ")).nth(1))
                 .and_then(|kib| kib.trim().parse().ok())
-                .unwrap_or_else(|| panic!("no result from the {path} child: {text}"))
+                .unwrap_or_else(|| panic!("no result from the {path} child: {stdout}"))
         };
         let (old, new) = (run("old"), run("new"));
         let page_mib = 4096 * 4096 * 4 / 1024 / 1024;
