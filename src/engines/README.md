@@ -123,7 +123,7 @@ When a lease ends, `recycle_decision` uses the numbers in the worker's last repl
 4. The job count is at least `max_jobs`: replace first, reason `jobs`.
 5. The age since `Ready` is at least `max_age`: replace first, reason `age`.
 
-**Kill now** kills the worker, and the manager then starts a new one. **Replace first** keeps the old worker leasable while the manager starts its replacement in a free slot. When the replacement is `Ready`, the old worker is killed, at once if it is idle or else when its lease ends. Thus a pool of one worker is never empty during the swap.
+**Kill now** kills the worker, and the manager then starts a new one. **Replace first** keeps the old worker leasable while the manager starts its replacement in a free slot. When the replacement is `Ready`, the old worker is killed, at once if it is idle or else when its lease ends. An idle old worker is swapped for its replacement under one lock, and the replacement takes its permit. Thus a pool of one worker is never empty during the swap, not even for an instant.
 
 A replacement that is `Ready` while its old worker is still leased waits outside the idle list, without a permit. It becomes leasable when the old worker leaves. A pool thus never runs more jobs at once than its size. The memory of a swap is one extra idle worker, about 250 MB for LibreOffice after its warm-up, never a second worker at its kill limit. The memory rule for a container is therefore (workers × kill) + one idle office worker + 512 MiB.
 

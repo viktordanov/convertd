@@ -1298,21 +1298,7 @@ impl Manager {
                     child.wait().await;
                     let _ = events.send(Event::Exited { slot, generation });
                 });
-                // A replacement whose incumbent is still busy waits for it:
-                // the pool never runs more jobs at once than its size.
-                let wait = self.retire_one_replaced(pool);
-                {
-                    let mut idle = lock(&pool.idle);
-                    if wait {
-                        idle.waiting.push(*worker);
-                    } else {
-                        idle.workers.push(*worker);
-                    }
-                    pool.publish_counts(&idle);
-                }
-                if !wait {
-                    pool.permits.add_permits(1);
-                }
+                self.place_ready(pool, *worker);
             }
             Err(error) => {
                 if current {
@@ -1343,29 +1329,58 @@ impl Manager {
         }
     }
 
-    /// A replacement is `Ready`: the oldest worker being replaced is
-    /// retired, now if idle, else when its lease ends. True when it is
-    /// still leased, so the replacement must wait for it.
-    fn retire_one_replaced(&mut self, pool: &PoolInner) -> bool {
-        let Some((&slot, member)) = self
+    /// Puts a `Ready` worker where leases find it, in one critical section,
+    /// so `idle + busy` never drops to 0 during a swap.
+    ///
+    /// - Nothing is being replaced: the worker joins the idle list with a
+    ///   new permit.
+    /// - The oldest worker being replaced is retired. If it is idle, the
+    ///   new worker takes its place and its permit, and it goes. A lease
+    ///   that already holds that permit takes the new worker.
+    /// - If it is leased, the new worker waits outside the idle list until
+    ///   it leaves (`release_one`): the pool never runs more jobs at once
+    ///   than its size.
+    fn place_ready(&mut self, pool: &PoolInner, worker: Worker) {
+        let replaced = self
             .members
             .iter()
             .filter(|(_, m)| m.fate.state() == FATE_REPLACING)
             .min_by_key(|(_, m)| m.generation)
-        else {
-            return false;
+            .map(|(&slot, member)| {
+                member.fate.retire();
+                (slot, member.generation, member.fate.reason())
+            });
+        let (gone, new_permit) = {
+            let mut idle = lock(&pool.idle);
+            let (gone, new_permit) = match replaced {
+                None => {
+                    idle.workers.push(worker);
+                    (None, true)
+                }
+                Some((slot, generation, reason)) => {
+                    match idle
+                        .workers
+                        .iter()
+                        .position(|w| w.slot == slot && w.generation == generation)
+                    {
+                        Some(at) => {
+                            let mut old = std::mem::replace(&mut idle.workers[at], worker);
+                            old.reason = reason;
+                            (Some(old), false)
+                        }
+                        None => {
+                            idle.waiting.push(worker);
+                            (None, false)
+                        }
+                    }
+                }
+            };
+            pool.publish_counts(&idle);
+            (gone, new_permit)
         };
-        member.fate.retire();
-        let generation = member.generation;
-        let reason = member.fate.reason();
-        match pool.take_idle(|w| w.slot == slot && w.generation == generation) {
-            Some(mut worker) => {
-                worker.reason = reason;
-                drop(worker);
-                false
-            }
-            // Leased, or taken by a lease that will find it retired.
-            None => true,
+        drop(gone);
+        if new_permit {
+            pool.permits.add_permits(1);
         }
     }
 
