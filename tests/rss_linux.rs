@@ -74,7 +74,20 @@ mod measured {
         reason = "a test runs the binary directly; no supervisor reaper exists here"
     )]
     impl Drop for Server {
+        /// SIGTERM first, so the supervisor stops its pools and reaps its
+        /// workers; SIGKILL only if it has not left after 20 s.
         fn drop(&mut self) {
+            if let Ok(pid) = libc::pid_t::try_from(self.0.id()) {
+                // SAFETY: a signal to our own child, which is not reaped yet.
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+                let until = Instant::now() + Duration::from_secs(20);
+                while Instant::now() < until {
+                    if matches!(self.0.try_wait(), Ok(Some(_))) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
             let _ = self.0.kill();
             let _ = self.0.wait();
         }
@@ -255,6 +268,7 @@ mod measured {
             .env("PORT", port.to_string())
             .env("API_KEY", KEY)
             .env("TMP_DIR", &tmp)
+            .env("SHUTDOWN_GRACE_SECONDS", "10")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         match engines {
@@ -304,8 +318,8 @@ mod measured {
         // budget after it, at most 1 MiB per later round of 1 000 requests
         // on average (the soak's budget in plan 005 §9). Single rounds
         // swing by more than 1 MiB, so the budget is from the first round
-        // to the last, not between neighbours. RSS_ROUNDS sets the count,
-        // at least 2.
+        // to the last, not between neighbours. RSS_ROUNDS sets the count:
+        // 3 by default, so the budget averages two intervals; at least 2.
         let [small, medium, large] = [15_000, 1 << 20, 20 << 20].map(pdf_of_size);
         // The small DOCX of the worker's warm-up runs the office path: the
         // supervisor's side of an office conversion.
@@ -315,7 +329,7 @@ mod measured {
         let rounds: usize = std::env::var("RSS_ROUNDS")
             .ok()
             .and_then(|n| n.parse().ok())
-            .unwrap_or(2)
+            .unwrap_or(3)
             .max(2);
         let mut readings = Vec::new();
         for round in 0..rounds {
