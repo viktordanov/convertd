@@ -269,6 +269,7 @@ fn embedded_fonts(
     // Whether the root element is `w:fonts`; `None` until one is seen. A
     // part with no element at all is malformed, not an empty table.
     let mut root: Option<bool> = None;
+    let mut second_root = false;
     package.xml_events(part, PART_CAP, |event| {
         let (e, opens) = match event {
             XmlEvent::Start(e) => {
@@ -288,6 +289,11 @@ fn embedded_fonts(
         if root.is_none() {
             root = Some(e.local_name().as_ref() == b"fonts");
             return true;
+        }
+        // A second top-level element after the root closed: malformed.
+        if open == usize::from(opens) {
+            second_root = true;
+            return false;
         }
         match current.as_mut() {
             None => {
@@ -324,7 +330,7 @@ fn embedded_fonts(
         }
         true
     })?;
-    if open != 0 || root.is_none() {
+    if open != 0 || root.is_none() || second_root {
         return Err(SkipReason::MalformedXml);
     }
 
@@ -382,16 +388,23 @@ fn font_key(key: &str) -> Option<[u8; 16]> {
     Some(out)
 }
 
-/// The tables a font needs: the character map and the metrics, then the
-/// outlines as TrueType glyphs or CFF.
-const REQUIRED_TABLES: [&[u8; 4]; 5] = [b"cmap", b"head", b"hhea", b"hmtx", b"maxp"];
+/// The tables a font needs, with the least length each can have (the fixed
+/// part of its format): the character map and the metrics. The outlines,
+/// TrueType glyphs or CFF, are checked apart.
+const REQUIRED_TABLES: [(&[u8; 4], u64); 5] = [
+    (b"cmap", 4),
+    (b"head", 54),
+    (b"hhea", 36),
+    (b"hmtx", 4),
+    (b"maxp", 6),
+];
 
 /// Whether the font part `target`, deobfuscated with `key`, starts a font:
 /// an sfnt version (TrueType, OpenType with CFF, Apple TrueType) with 1 to
 /// 1024 table records, each pointing inside the part, that list the
-/// character map, the metrics and the outlines. This reads the directory
-/// only; it is not a parse, but it rejects empty, cut, unrelated and
-/// incomplete parts. Word embeds single TrueType fonts, so a collection
+/// character map, the metrics and the outlines, each at least as long as
+/// the fixed part of its format. This reads the directory only; it is not
+/// a parse, but it rejects empty, cut, unrelated and incomplete parts. Word embeds single TrueType fonts, so a collection
 /// (`ttcf`) does not count.
 fn is_font(package: &mut Package, target: &str, key: Option<[u8; 16]>) -> Result<bool, SkipReason> {
     let size = package.size(target).unwrap_or(0);
@@ -431,7 +444,8 @@ fn is_font(package: &mut Package, target: &str, key: Option<[u8; 16]>) -> Result
             u64::from(u32::from_be_bytes([x[0], x[1], x[2], x[3]]))
         })
     };
-    let mut tags: HashSet<[u8; 4]> = HashSet::new();
+    // Tag to length, for the records that point inside the part.
+    let mut tables: HashMap<[u8; 4], u64> = HashMap::new();
     for i in 0..count {
         let at = usize::try_from(12 + 16 * i).unwrap_or(usize::MAX);
         let (offset, length) = (be32(at + 8), be32(at + 12));
@@ -439,13 +453,12 @@ fn is_font(package: &mut Package, target: &str, key: Option<[u8; 16]>) -> Result
             return Ok(false);
         }
         if let Some(tag) = bytes.get(at..at + 4) {
-            tags.insert([tag[0], tag[1], tag[2], tag[3]]);
+            tables.insert([tag[0], tag[1], tag[2], tag[3]], length);
         }
     }
-    let outlines = (tags.contains(b"glyf") && tags.contains(b"loca"))
-        || tags.contains(b"CFF ")
-        || tags.contains(b"CFF2");
-    Ok(outlines && REQUIRED_TABLES.iter().all(|tag| tags.contains(*tag)))
+    let has = |tag: &[u8; 4], least: u64| tables.get(tag).is_some_and(|&length| length >= least);
+    let outlines = (has(b"glyf", 1) && has(b"loca", 2)) || has(b"CFF ", 4) || has(b"CFF2", 5);
+    Ok(outlines && REQUIRED_TABLES.iter().all(|(tag, least)| has(tag, *least)))
 }
 
 /// Trimmed, case-folded, runs of whitespace collapsed to one space: the

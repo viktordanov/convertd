@@ -15,6 +15,8 @@ use crate::domain::verification::SkipReason;
 
 /// The bytes a slide's root start tag may take.
 pub const ROOT_TAG_CAP: u64 = 4 * 1024;
+/// Relationships kept per part; one more fails the read with `CapReached`.
+const MAX_RELATIONSHIPS: usize = 20_000;
 
 /// One event of [`Package::xml_events`].
 pub enum XmlEvent<'a, 'b> {
@@ -178,6 +180,7 @@ impl Package {
         // for a complete map.
         let mut open = 0usize;
         let mut rooted = false;
+        let mut capped = false;
         self.xml_events(&rels_name, super::PART_CAP, |event| {
             let e = match event {
                 XmlEvent::Start(e) => {
@@ -198,12 +201,19 @@ impl Package {
                 && attr(e, b"TargetMode").as_deref() != Some("External")
                 && let (Some(id), Some(kind), Some(target)) =
                     (attr(e, b"Id"), attr(e, b"Type"), attr(e, b"Target"))
-                && map.len() < 20_000
             {
+                if map.len() == MAX_RELATIONSHIPS {
+                    // A dropped relationship would read as one never made.
+                    capped = true;
+                    return false;
+                }
                 map.insert(id, (kind, resolve(part, &target)));
             }
             true
         })?;
+        if capped {
+            return Err(SkipReason::CapReached);
+        }
         if open != 0 || !rooted {
             return Err(SkipReason::MalformedXml);
         }

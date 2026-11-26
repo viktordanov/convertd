@@ -596,10 +596,11 @@ fn minimal_font() -> String {
     for (i, tag) in tables.iter().enumerate() {
         bytes.extend_from_slice(*tag);
         bytes.extend_from_slice(&[0; 4]);
-        bytes.extend_from_slice(&(256 + 16 * u32::try_from(i).unwrap()).to_be_bytes());
-        bytes.extend_from_slice(&16u32.to_be_bytes());
+        // Offsets 256, 512, …: no byte of the record reaches 0x80.
+        bytes.extend_from_slice(&(256 * (u32::try_from(i).unwrap() + 1)).to_be_bytes());
+        bytes.extend_from_slice(&64u32.to_be_bytes());
     }
-    bytes.resize(512, 0);
+    bytes.resize(2048, 0);
     String::from_utf8(bytes).unwrap()
 }
 

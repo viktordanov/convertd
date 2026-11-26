@@ -158,7 +158,7 @@ const FONT_TABLES: [&[u8; 4]; 7] = [
     b"cmap", b"glyf", b"head", b"hhea", b"hmtx", b"loca", b"maxp",
 ];
 
-/// A font part with an offset table listing `tables`, each 16 bytes long
+/// A font part with an offset table listing `tables`, each 64 bytes long
 /// after the directory, then filler.
 fn sfnt_with(magic: &[u8; 4], tables: &[&[u8; 4]]) -> Vec<u8> {
     let count = u16::try_from(tables.len()).unwrap();
@@ -169,10 +169,10 @@ fn sfnt_with(magic: &[u8; 4], tables: &[&[u8; 4]]) -> Vec<u8> {
     for (i, tag) in tables.iter().enumerate() {
         out.extend_from_slice(*tag);
         out.extend_from_slice(&[0; 4]);
-        out.extend_from_slice(&(start + 16 * u32::try_from(i).unwrap()).to_be_bytes());
-        out.extend_from_slice(&16u32.to_be_bytes());
+        out.extend_from_slice(&(start + 64 * u32::try_from(i).unwrap()).to_be_bytes());
+        out.extend_from_slice(&64u32.to_be_bytes());
     }
-    out.extend_from_slice(&vec![0x5a; 16 * tables.len()]);
+    out.extend_from_slice(&vec![0x5a; 64 * tables.len()]);
     out
 }
 
@@ -471,6 +471,55 @@ fn docx_font_table_needs_a_fonts_root() {
     let facts = with_table(&format!("<w:fonts {W}/>"));
     assert!(facts.embedded_fonts.is_empty());
     assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_font_table_with_a_second_root_skips_the_font_check() {
+    let table = format!(
+        r#"<w:fonts {W}/><w:x {W} xmlns:r="r"><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1"/></w:font></w:x>"#
+    );
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", &font),
+        ],
+        &runs(&["Aptos"]),
+    );
+    let facts = scan_bytes("roots.docx", &bytes, Family::Document);
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+}
+
+#[test]
+fn docx_font_with_a_short_required_table_is_not_embedded() {
+    // `head` is 54 bytes at least; 16 is a cut table.
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let mut font = sfnt(&[0, 1, 0, 0]);
+    // The `head` record is the third; its length is at 12 + 16 * 2 + 12.
+    font[56..60].copy_from_slice(&16u32.to_be_bytes());
+    let facts = aptos_embedded(&table_rels, &font);
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+}
+
+#[test]
+fn docx_font_table_relationships_over_the_cap_skip_the_font_check() {
+    // More relationships than the reader keeps: a dropped one would read
+    // as one never made, so the check is skipped.
+    let entries: Vec<(String, &str, &str)> = (0..20_001)
+        .map(|i| (format!("rIdX{i}"), "font", "fonts/font1.ttf"))
+        .collect();
+    let entries: Vec<(&str, &str, &str)> = entries
+        .iter()
+        .map(|(id, kind, target)| (id.as_str(), *kind, *target))
+        .collect();
+    let facts = aptos_embedded(&rels(&entries), &sfnt(&[0, 1, 0, 0]));
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::CapReached)]);
 }
 
 #[test]
