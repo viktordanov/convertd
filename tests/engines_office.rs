@@ -770,22 +770,28 @@ async fn default_paper_sets_the_page_size_of_a_docx_without_one() {
     .await;
 }
 
+/// The encrypted deck and sheet, as `corpus/expected.json` names them.
+const ENCRYPTED_FIXTURES: [&str; 2] = ["pptx/encrypted.pptx", "xlsx/encrypted.xlsx"];
+
 /// An encrypted OOXML upload is detected only as encrypted, so the
 /// supervisor names it `source.docx` and asks for a document. LibreOffice
 /// finds the real type from the content, and the worker picks the export
-/// keys from that type. Needs `CONVERTD_CORPUS_DIR/encrypted/` with
-/// `deck20.pptx` and `sheet3.xlsx`, encrypted with the password `secret`
-/// (made with `msoffcrypto-tool -e -p secret`; `corpus/generate.py` does not
-/// make them yet).
+/// keys from that type. Uses `pptx/encrypted.pptx` and `xlsx/encrypted.xlsx`
+/// from `corpus/generate.py`: `deck20.pptx` and `sheet3.xlsx` with OOXML
+/// agile encryption and the password `secret`. With `CONVERTD_CORPUS_DIR`
+/// set, a missing file fails the test, so a renamed fixture cannot turn it
+/// into a skip.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn encrypted_decks_and_sheets_named_docx_keep_their_export_keys() {
     let (Some(lo), Some(pdfium), Some(corpus)) = (lo(), pdfium(), corpus()) else {
         return;
     };
-    let encrypted = corpus.join("encrypted");
-    if !encrypted.join("deck20.pptx").exists() || !encrypted.join("sheet3.xlsx").exists() {
-        eprintln!("skipped: no corpus (no encrypted/deck20.pptx or encrypted/sheet3.xlsx)");
-        return;
+    for file in ENCRYPTED_FIXTURES {
+        assert!(
+            corpus.join(file).exists(),
+            "{file} is missing from {}: corpus/generate.py writes it",
+            corpus.display()
+        );
     }
     within(
         TEST,
@@ -798,7 +804,7 @@ async fn encrypted_decks_and_sheets_named_docx_keep_their_export_keys() {
             let pdf = PdfPdfium::new(render_pool.clone());
             let cases = [
                 (
-                    "deck20.pptx",
+                    ENCRYPTED_FIXTURES[0],
                     ExportOptions {
                         notes: SlideNotes::Append,
                         ..ExportOptions::default()
@@ -806,7 +812,7 @@ async fn encrypted_decks_and_sheets_named_docx_keep_their_export_keys() {
                     40,
                 ),
                 (
-                    "sheet3.xlsx",
+                    ENCRYPTED_FIXTURES[1],
                     ExportOptions {
                         one_page_per_sheet: true,
                         ..ExportOptions::default()
@@ -818,7 +824,7 @@ async fn encrypted_decks_and_sheets_named_docx_keep_their_export_keys() {
                 let case = dir.join(&format!("case-{i}"));
                 std::fs::create_dir_all(&case).unwrap();
                 let source = case.join("source.docx");
-                std::fs::copy(encrypted.join(file), &source).unwrap();
+                std::fs::copy(corpus.join(file), &source).unwrap();
                 let output = case.join("document.pdf");
                 let mut job = job(source, output.clone(), Family::Document);
                 job.password = Some(Password::new("secret"));
