@@ -245,8 +245,13 @@ fn rule_queries(yaml: &str) -> Vec<String> {
     let lines: Vec<&str> = yaml.lines().collect();
     let mut out = Vec::new();
     for (n, line) in lines.iter().enumerate() {
-        let indent = line.len() - line.trim_start().len();
-        let Some(value) = line.trim_start().strip_prefix("expr:") else {
+        // The key's own indent: `- expr:` opens a list item at the dash.
+        let trimmed = line.trim_start();
+        let (indent, key) = match trimmed.strip_prefix("- ") {
+            Some(rest) => (line.len() - rest.trim_start().len(), rest.trim_start()),
+            None => (line.len() - trimmed.len(), trimmed),
+        };
+        let Some(value) = key.strip_prefix("expr:") else {
             continue;
         };
         let value = value.trim();
@@ -354,13 +359,14 @@ fn the_name_scan_reports_a_misspelled_metric() {
 
 #[test]
 fn the_query_extractors_find_every_query() {
-    let yaml = "rules:\n  - alert: A\n    expr: |\n      sum(a_total)\n        > 0\n    for: 5m\n  - alert: B\n    expr: b_total > 1\n  - alert: C\n    expr: c_total > 0\n      and covert_d > 0\n    for: 1m\n";
+    let yaml = "rules:\n  - alert: A\n    expr: |\n      sum(a_total)\n        > 0\n    for: 5m\n  - alert: B\n    expr: b_total > 1\n  - alert: C\n    expr: c_total > 0\n      and covert_d > 0\n    for: 1m\n  - expr: rate(covert_e[5m])\n    alert: E\n";
     assert_eq!(
         rule_queries(yaml),
         [
             "      sum(a_total)\n        > 0",
             "b_total > 1",
-            "c_total > 0\n      and covert_d > 0"
+            "c_total > 0\n      and covert_d > 0",
+            "rate(covert_e[5m])"
         ]
     );
     let dashboard = serde_json::json!({
@@ -589,10 +595,16 @@ fn every_metric_the_dashboard_and_rules_name_is_emitted() {
 
     let named = named_metrics();
     let served = level_b::Served::start();
-    // An office conversion, a render with a clamped DPI (a warning and
-    // rendered pages), a render worker that panics (a restart), and a
-    // format the service refuses.
-    assert_eq!(served.convert(&level_b::docx_with("hello"), "{}"), 200);
+    // Two office conversions at once on one worker, so the second waits
+    // (the queue gauge exists only after a wait), a render with a clamped
+    // DPI (a warning and rendered pages), a render worker that panics (a
+    // restart), and a format the service refuses.
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| served.convert(&level_b::docx_with("FAKE:DELAY_MS=600"), "{}"));
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(served.convert(&level_b::docx_with("hello"), "{}"), 200);
+        assert_eq!(first.join().unwrap(), 200);
+    });
     assert_eq!(
         served.convert(
             &level_b::pdf_with("plain"),
