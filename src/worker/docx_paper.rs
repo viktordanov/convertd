@@ -637,6 +637,7 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
             .read_resolved_event_into(&mut buf)
             .map_err(|_| Skip::Unsupported)?;
         let in_rels = matches!(ns, ResolveResult::Bound(Namespace(n)) if n == RELS_NS);
+        let in_mc = matches!(ns, ResolveResult::Bound(Namespace(n)) if n == MC_NS);
         if let Event::Start(e) | Event::Empty(e) = &event {
             let escaped = e.attributes().with_checks(false).flatten().any(|a| {
                 let key = a.key.as_ref();
@@ -644,7 +645,7 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
             });
             let bad_root = !root_seen && !(in_rels && e.local_name().as_ref() == b"Relationships");
             // A branch could make another relationship the active one.
-            let branch = e.local_name().as_ref() == b"AlternateContent";
+            let branch = in_mc && e.local_name().as_ref() == b"AlternateContent";
             if escaped || bad_root || branch || depth >= 8 {
                 return Err(Skip::Unsupported);
             }

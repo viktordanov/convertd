@@ -1294,3 +1294,17 @@ fn a_directory_that_runs_into_the_end_record_keeps_the_package() {
     assert!(zip_scan::directory(&mut std::io::Cursor::new(&bytes), bytes.len() as u64).is_err());
     assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unsupported), None));
 }
+
+#[test]
+fn a_foreign_alternate_content_in_relationships_is_no_branch() {
+    let rels = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships" xmlns:v="vendor"><v:AlternateContent/><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/main.xml"/></Relationships>"#;
+    let bytes = zip(&[("_rels/.rels", rels, true, false)]);
+    let dir = Scratch::new();
+    let path = dir.path().join("p.docx");
+    std::fs::write(&path, &bytes).unwrap();
+    let mut file = File::open(&path).unwrap();
+    assert_eq!(
+        main_part(&mut file, &entries(&bytes)).ok().as_deref(),
+        Some("word/main.xml")
+    );
+}
