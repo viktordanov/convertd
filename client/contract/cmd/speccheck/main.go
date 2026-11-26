@@ -6,12 +6,7 @@
 //	    (no null types, no integer arrays, the pages pattern, the error codes
 //	    named in info.description).
 //
-//	speccheck compare EMITTED REFERENCE
-//	    Compares the spec emitted by convertd with the hand-written reference
-//	    after normalising the known differences between the two forms. Prints
-//	    one line per difference. Descriptions and examples are not compared.
-//
-// Both subcommands exit 1 when they find a problem and 2 on a usage error.
+// It exits 1 when it finds a problem and 2 on a usage error.
 package main
 
 import (
@@ -39,13 +34,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		findings, err := validateFile(ctx, args[1], stdout)
 		return report(stdout, stderr, findings, err)
-	case "compare":
-		if len(args) != 3 {
-			usage(stderr)
-			return 2
-		}
-		findings, err := compareFiles(ctx, args[1], args[2], stdout)
-		return report(stdout, stderr, findings, err)
 	default:
 		usage(stderr)
 		return 2
@@ -70,5 +58,4 @@ func report(stdout, stderr io.Writer, findings []string, err error) int {
 
 func usage(w io.Writer) {
 	fmt.Fprintln(w, "usage: speccheck validate FILE")
-	fmt.Fprintln(w, "       speccheck compare EMITTED REFERENCE")
 }

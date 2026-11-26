@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Single entry point for everything generated from the API spec.
 #
-#   ./generate.sh           validate the spec, regenerate the Go client and test
+#   ./generate.sh           emit and validate the spec, regenerate the Go client and test
 #                           it; then commit the spec and client/internal/api/client.go
 #                           together, and any facade change separately
 #   ./generate.sh --check   CI: the same, then fail if any generated file differs
 #                           from what is in the working tree or in HEAD. On drift
 #                           the working tree is put back as it was.
 #
-# Needs go 1.26 or later and git; cargo too once SPEC_SOURCE is "emitted".
+# Needs cargo, go 1.26 or later and git.
 # CARGO_TARGET_DIR and GOCACHE are taken from the caller's environment.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -23,18 +23,9 @@ esac
 # Pinned so that every machine generates the same code.
 OAPI_CODEGEN_VERSION="v2.9.0"
 
-# "emitted": api/openapi.json comes from `convertd openapi` (ledger 004 plan,
-# step 8). The hand-written api/openapi.yaml stays as the reference that the
-# emitted spec is compared with, until it is retired (step 11).
-SPEC_SOURCE="emitted"
-
-GENERATED=(client/internal/api/client.go client/go.mod client/go.sum)
-if [[ "$SPEC_SOURCE" == "emitted" ]]; then
-  SPEC="api/openapi.json"
-  GENERATED+=("$SPEC")
-else
-  SPEC="api/openapi.yaml"
-fi
+# The spec is the one `convertd openapi` emits; the repository commits it.
+SPEC="api/openapi.json"
+GENERATED=("$SPEC" client/internal/api/client.go client/go.mod client/go.sum)
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -54,30 +45,23 @@ speccheck() {
   (cd client/contract && go run ./cmd/speccheck "$@")
 }
 
-if [[ "$SPEC_SOURCE" == "emitted" ]]; then
-  echo "Emitting the spec from convertd..."
-  # Built with test-hooks, like the tests and scripts/contract_test.sh, so that
-  # one binary serves all three and none of them rebuilds convertd with other
-  # features. The spec code has no feature gates; contract case 16 checks that
-  # the served spec equals the committed one.
-  cargo run --locked --quiet --features test-hooks --bin convertd -- openapi > "$tmp/a.json"
-  cargo run --locked --quiet --features test-hooks --bin convertd -- openapi > "$tmp/b.json"
-  if ! cmp -s "$tmp/a.json" "$tmp/b.json"; then
-    echo "convertd openapi is not deterministic: two runs differ" >&2
-    diff "$tmp/a.json" "$tmp/b.json" | head -40 >&2
-    exit 1
-  fi
-  cp "$tmp/a.json" "$SPEC"
+echo "Emitting the spec from convertd..."
+# Built with test-hooks, like the tests and scripts/contract_test.sh, so that
+# one binary serves all three and none of them rebuilds convertd with other
+# features. The spec code has no feature gates; contract case 16 checks that
+# the served spec equals the committed one.
+cargo run --locked --quiet --features test-hooks --bin convertd -- openapi > "$tmp/a.json"
+cargo run --locked --quiet --features test-hooks --bin convertd -- openapi > "$tmp/b.json"
+if ! cmp -s "$tmp/a.json" "$tmp/b.json"; then
+  echo "convertd openapi is not deterministic: two runs differ" >&2
+  diff "$tmp/a.json" "$tmp/b.json" | head -40 >&2
+  exit 1
 fi
+cp "$tmp/a.json" "$SPEC"
 
 echo "Checking ${SPEC}..."
 # Paths are relative to client/contract, where speccheck runs.
 speccheck validate "../../${SPEC}"
-
-if [[ "$SPEC_SOURCE" == "emitted" && -f api/openapi.yaml ]]; then
-  echo "Comparing the emitted spec with the reference..."
-  speccheck compare ../../api/openapi.json ../../api/openapi.yaml
-fi
 
 echo "Generating the Go client (oapi-codegen ${OAPI_CODEGEN_VERSION})..."
 (
