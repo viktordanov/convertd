@@ -973,9 +973,14 @@ fn sigkill(pid: u32) {
     rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
 }
 
-/// A worker that dies by SIGKILL while its RSS is near its kill limit died
-/// of memory: the call is `TooBig` (422), not a crash to retry. A SIGKILL at
-/// a low RSS stays a crash.
+/// A worker that dies by SIGKILL after its RSS reached its recycle limit
+/// died of memory: the call is `TooBig` (422), not a crash to retry. A
+/// SIGKILL at a low RSS stays a crash.
+///
+/// Only the outside SIGKILL can kill the worker here: the kill limit is off,
+/// and both calls run on one lease, so no recycle runs between them. The
+/// worker's own RSS only has to pass `max_rss` (128 MiB) after allocating
+/// 200 MiB, and stay under it before: true on any runner.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_sigkill_near_the_memory_limit_is_too_big_not_a_crash() {
     within(
@@ -983,18 +988,17 @@ async fn a_sigkill_near_the_memory_limit_is_too_big_not_a_crash() {
         "a_sigkill_near_the_memory_limit_is_too_big_not_a_crash",
         async {
             let mut spec = spec("oom-kill", 1);
-            spec.kill_rss = 160 << 20;
+            spec.kill_rss = u64::MAX;
+            spec.max_rss = 128 << 20;
             let pool = ready(spec).await;
-            // Grow to within 10 % of the kill limit, below it.
-            let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
-            let reply = lease
-                .call(test_op(TestOp::Allocate { mb: 150 }), after(5000))
-                .await
-                .unwrap();
-            assert!(reply.rss_bytes >= 144 << 20, "rss {}", reply.rss_bytes);
-            drop(lease);
             let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
             let pid = lease.pid().unwrap();
+            let reply = lease
+                .call(test_op(TestOp::Allocate { mb: 200 }), after(5000))
+                .await
+                .unwrap();
+            assert!(reply.rss_bytes >= 128 << 20, "rss {}", reply.rss_bytes);
+            // The same lease: no recycle before the kill.
             let killer = tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 sigkill(pid);
@@ -1007,7 +1011,7 @@ async fn a_sigkill_near_the_memory_limit_is_too_big_not_a_crash() {
             assert!(matches!(err, CallError::TooBig { .. }), "{err:?}");
             drop(lease);
 
-            // A fresh worker at a low RSS: the same SIGKILL is a crash.
+            // A fresh worker, under max_rss: the same SIGKILL is a crash.
             let mut lease = pool.lease(after(10_000), Admission::Queue).await.unwrap();
             assert_ne!(lease.pid().unwrap(), pid);
             let pid = lease.pid().unwrap();
