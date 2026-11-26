@@ -171,7 +171,12 @@ pub(super) fn scan(
             true
         });
         match result {
-            Ok(read) => budget = budget.saturating_sub(read),
+            Ok(read) => {
+                budget = budget.saturating_sub(read);
+                if let Err(reason) = scope.complete() {
+                    facts.skipped.push((Check::Glyphs, reason));
+                }
+            }
             // Headers and notes are optional; the main part is not.
             Err(SkipReason::MissingPart) if part != &main => {}
             Err(reason) => {
@@ -314,7 +319,8 @@ fn embedded_fonts(
                 return true;
             }
             // Text outside the root is not XML.
-            XmlEvent::Text { stray, .. } => {
+            XmlEvent::Text { .. } | XmlEvent::Unresolved => {
+                let stray = !matches!(event, XmlEvent::Text { stray: false, .. });
                 if stray && open == 0 {
                     second_root = true;
                     return false;

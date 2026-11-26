@@ -5,8 +5,9 @@
 //!
 //! The same pass reads the text: `office:body` in `content.xml` and
 //! `office:master-styles` (headers and footers) in `styles.xml`, without
-//! annotations, tracked changes, presentation notes and the alternative
-//! text of frames (`svg:title`, `svg:desc`), which are not printed.
+//! annotations, tracked changes and the alternative text of frames
+//! (`svg:title`, `svg:desc`), which are not printed. Presentation notes go
+//! apart: they are printed only when the request exports notes pages.
 
 use std::collections::BTreeSet;
 
@@ -23,7 +24,15 @@ const NOT_PRINTED: &[&[u8]] = &[
     b"svg:desc",
 ];
 
-pub(super) fn scan(package: &mut Package, text: &mut TextCollector, facts: &mut SourceFacts) {
+/// Speaker notes: printed only when the request exports notes pages.
+const NOT_NOTES: &[&[u8]] = &[b"annotation", b"tracked-changes", b"svg:title", b"svg:desc"];
+
+pub(super) fn scan(
+    package: &mut Package,
+    text: &mut TextCollector,
+    notes: &mut TextCollector,
+    facts: &mut SourceFacts,
+) {
     facts.macros = macros(package);
     let mut found = BTreeSet::new();
     for (part, within) in [
@@ -31,9 +40,15 @@ pub(super) fn scan(package: &mut Package, text: &mut TextCollector, facts: &mut 
         ("styles.xml", &b"master-styles"[..]),
     ] {
         let mut scope = TextScope::new(&[], Some(within), NOT_PRINTED);
+        // The notes of the presentation's pages, not the master's template.
+        let mut notes_scope =
+            (part == "content.xml").then(|| TextScope::new(&[], Some(b"notes"), NOT_NOTES));
         let result = package.xml_events(part, PART_CAP, |event| {
             if let Some(drawn) = scope.on(&event) {
                 text.add(drawn);
+            }
+            if let Some(drawn) = notes_scope.as_mut().and_then(|s| s.on(&event)) {
+                notes.add(drawn);
             }
             let (XmlEvent::Start(e) | XmlEvent::Empty(e)) = event else {
                 return true;
@@ -46,8 +61,16 @@ pub(super) fn scan(package: &mut Package, text: &mut TextCollector, facts: &mut 
             }
             true
         });
+        let complete = scope
+            .complete()
+            .and_then(|()| notes_scope.as_ref().map_or(Ok(()), TextScope::complete));
         match result {
-            Ok(_) | Err(SkipReason::MissingPart) => {}
+            Ok(_) => {
+                if let Err(reason) = complete {
+                    facts.skipped.push((Check::Glyphs, reason));
+                }
+            }
+            Err(SkipReason::MissingPart) => {}
             Err(reason) => {
                 facts.skipped.push((Check::Fonts, reason));
                 facts.skipped.push((Check::Glyphs, reason));

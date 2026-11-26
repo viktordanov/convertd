@@ -98,9 +98,10 @@ fn skip_all(facts: &mut SourceFacts, reason: SkipReason) {
 
 fn scan_package(mut package: Package, family: Family, facts: &mut SourceFacts) {
     let mut text = TextCollector::new();
+    let mut notes = TextCollector::new();
     if package.has("mimetype") {
-        odf::scan(&mut package, &mut text, facts);
-        text.finish(facts);
+        odf::scan(&mut package, &mut text, &mut notes, facts);
+        finish(text, notes, facts);
         return;
     }
     if !package.has("[Content_Types].xml") {
@@ -111,12 +112,34 @@ fn scan_package(mut package: Package, family: Family, facts: &mut SourceFacts) {
     let mut fonts = BTreeSet::new();
     match family {
         Family::Document => docx::scan(&mut package, &mut fonts, &mut text, facts),
-        Family::Presentation => pptx::scan(&mut package, &mut fonts, &mut text, facts),
+        Family::Presentation => pptx::scan(&mut package, &mut fonts, &mut text, &mut notes, facts),
         Family::Spreadsheet => xlsx::scan(&mut package, &mut fonts, &mut text, facts),
         Family::Pdf | Family::Image => {}
     }
     facts.requested_fonts = fonts.into_iter().collect();
-    text.finish(facts);
+    finish(text, notes, facts);
+}
+
+/// Moves the code points into `facts`, sorted; past the cap the glyph
+/// check runs on what was kept and records `cap_reached`. When a text part
+/// could not be read, the scanner has recorded a glyphs skip and nothing
+/// is kept: the check does not run on a failed scan.
+fn finish(text: TextCollector, notes: TextCollector, facts: &mut SourceFacts) {
+    if facts
+        .skipped
+        .iter()
+        .any(|(check, _)| *check == Check::Glyphs)
+    {
+        facts.text_code_points.clear();
+        facts.notes_code_points.clear();
+        return;
+    }
+    let full = text.full || notes.full;
+    facts.text_code_points = text.into_sorted();
+    facts.notes_code_points = notes.into_sorted();
+    if full {
+        facts.skipped.push((Check::Glyphs, SkipReason::CapReached));
+    }
 }
 
 /// The distinct code points of the text read so far that need a glyph
@@ -137,44 +160,39 @@ impl TextCollector {
         }
     }
 
+    /// Adds the characters of `text`. A character is looked up once, needed
+    /// or not; after the first one past the cap, nothing can change the
+    /// result, so the rest is not looked at.
     fn add(&mut self, text: &str) {
+        if self.full {
+            return;
+        }
         for c in text.chars() {
             let cp = u32::from(c);
             let (word, bit) = ((cp / 64) as usize, 1u64 << (cp % 64));
             let Some(slot) = self.seen.get_mut(word) else {
                 continue;
             };
-            if *slot & bit != 0 || !needs_glyph(cp) {
+            if *slot & bit != 0 {
+                continue;
+            }
+            if !needs_glyph(cp) {
+                *slot |= bit;
                 continue;
             }
             if self.kept.len() >= MAX_CODE_POINTS {
                 self.full = true;
-                continue;
+                return;
             }
             *slot |= bit;
             self.kept.push(cp);
         }
     }
 
-    /// Moves the code points into `facts`, sorted; past the cap the glyph
-    /// check runs on what was kept and records `cap_reached`. When a text
-    /// part could not be read, the scanner has recorded a glyphs skip and
-    /// nothing is kept: the check does not run on a failed scan.
-    fn finish(self, facts: &mut SourceFacts) {
-        if facts
-            .skipped
-            .iter()
-            .any(|(check, _)| *check == Check::Glyphs)
-        {
-            facts.text_code_points.clear();
-            return;
-        }
+    fn into_sorted(self) -> Vec<u32> {
         let mut kept = self.kept;
         kept.sort_unstable();
-        facts.text_code_points = kept;
-        if self.full {
-            facts.skipped.push((Check::Glyphs, SkipReason::CapReached));
-        }
+        kept
     }
 }
 
@@ -191,6 +209,10 @@ struct TextScope {
     text_at: Option<usize>,
     within_at: Option<usize>,
     skip_at: Option<usize>,
+    /// A root element was seen.
+    rooted: bool,
+    /// Drawn character data whose text is unknown.
+    unresolved: bool,
 }
 
 impl TextScope {
@@ -207,7 +229,26 @@ impl TextScope {
             text_at: None,
             within_at: None,
             skip_at: None,
+            rooted: false,
+            unresolved: false,
         }
+    }
+
+    /// Whether the part read as a whole: a root that closed, and no drawn
+    /// text left unknown. quick-xml ends a part cut after a complete tag
+    /// without an error, so a text scan checks this after the read.
+    fn complete(&self) -> Result<(), SkipReason> {
+        if self.rooted && self.depth == 0 && !self.unresolved {
+            Ok(())
+        } else {
+            Err(SkipReason::MalformedXml)
+        }
+    }
+
+    fn drawn(&self) -> bool {
+        let within = self.within.is_none() || self.within_at.is_some();
+        let named = self.text.is_empty() || self.text_at.is_some();
+        within && named && self.skip_at.is_none()
     }
 
     /// The drawn text that `event` carries, if any.
@@ -235,9 +276,13 @@ impl TextScope {
                     self.text_at.get_or_insert(depth);
                 }
                 self.depth += 1;
+                self.rooted = true;
                 None
             }
-            XmlEvent::Empty(_) => None,
+            XmlEvent::Empty(_) => {
+                self.rooted = true;
+                None
+            }
             XmlEvent::End => {
                 self.depth = self.depth.saturating_sub(1);
                 for at in [&mut self.text_at, &mut self.within_at, &mut self.skip_at] {
@@ -247,10 +292,10 @@ impl TextScope {
                 }
                 None
             }
-            XmlEvent::Text { text, .. } => {
-                let within = self.within.is_none() || self.within_at.is_some();
-                let named = self.text.is_empty() || self.text_at.is_some();
-                (within && named && self.skip_at.is_none()).then_some(*text)
+            XmlEvent::Text { text, .. } => self.drawn().then_some(*text),
+            XmlEvent::Unresolved => {
+                self.unresolved |= self.drawn();
+                None
             }
         }
     }

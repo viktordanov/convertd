@@ -12,7 +12,9 @@
 //! `+mj-lt` and `+mn-lt` resolve through the theme of the reached master.
 //!
 //! The text is the `a:t` of the slides, hidden ones included. Layout and
-//! master text is mostly placeholder prompts, which are not drawn.
+//! master text is mostly placeholder prompts, which are not drawn. The
+//! `a:t` of each slide's notes page goes apart: it is printed only when
+//! the request exports notes pages.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -38,6 +40,7 @@ pub(super) fn scan(
     package: &mut Package,
     fonts: &mut BTreeSet<String>,
     text: &mut TextCollector,
+    notes: &mut TextCollector,
     facts: &mut SourceFacts,
 ) {
     let main = main_part(package).unwrap_or_else(|| SOURCE.to_owned());
@@ -132,9 +135,12 @@ pub(super) fn scan(
             if !cache.contains_key(&part) {
                 let slide_text = (part == *slide).then_some(&mut *text);
                 match latin_fonts(package, &part, budget, slide_text) {
-                    Ok((part_fonts, read)) => {
+                    Ok((part_fonts, read, complete)) => {
                         budget = budget.saturating_sub(read);
                         cache.insert(part.clone(), part_fonts);
+                        if let Err(reason) = complete {
+                            facts.skipped.push((Check::Glyphs, reason));
+                        }
                     }
                     Err(SkipReason::MissingPart) => {
                         cache.insert(part.clone(), PartFonts::default());
@@ -162,6 +168,22 @@ pub(super) fn scan(
                 }
             }
         }
+        // The slide's notes page, printed only when the request exports
+        // notes. A notes part that the package lacks has no text.
+        if let Some(part) = related(package, slide, "/notesSlide") {
+            let mut scope = TextScope::new(&[b"t"], None, &[]);
+            let result = package.xml_events(&part, budget, |event| {
+                if let Some(drawn) = scope.on(&event) {
+                    notes.add(drawn);
+                }
+                true
+            });
+            match result.and_then(|read| scope.complete().map(|()| read)) {
+                Ok(read) => budget = budget.saturating_sub(read),
+                Err(SkipReason::MissingPart) => {}
+                Err(reason) => facts.skipped.push((Check::Glyphs, reason)),
+            }
+        }
     }
     fonts.extend(found);
 }
@@ -177,13 +199,15 @@ fn related(package: &mut Package, part: &str, kind: &str) -> Option<String> {
 
 /// The literal `a:latin@typeface` values of one part, and whether it uses
 /// the theme's major (`+mj-lt`) or minor (`+mn-lt`) font. With `text`, the
-/// same pass collects the part's `a:t` text.
+/// same pass collects the part's `a:t` text, and the third value says
+/// whether the part read as a whole for it.
 fn latin_fonts(
     package: &mut Package,
     part: &str,
     budget: u64,
     mut text: Option<&mut TextCollector>,
-) -> Result<(PartFonts, u64), SkipReason> {
+) -> Result<(PartFonts, u64, Result<(), SkipReason>), SkipReason> {
+    let collect = text.is_some();
     let mut out = PartFonts::default();
     let mut scope = TextScope::new(&[b"t"], None, &[]);
     let read = package.xml_events(part, budget, |event| {
@@ -207,5 +231,6 @@ fn latin_fonts(
         }
         true
     })?;
-    Ok((out, read))
+    let complete = if collect { scope.complete() } else { Ok(()) };
+    Ok((out, read, complete))
 }

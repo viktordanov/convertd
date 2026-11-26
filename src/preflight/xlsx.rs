@@ -128,6 +128,10 @@ impl Referenced {
         self.bits[word] |= 1 << (index % 64);
     }
 
+    fn any(&self) -> bool {
+        self.all || self.bits.iter().any(|word| *word != 0)
+    }
+
     fn contains(&self, index: u32) -> bool {
         self.all
             || self
@@ -140,7 +144,9 @@ impl Referenced {
 /// Reads the inline strings of the first [`MAX_SHEETS`] worksheets and the
 /// shared strings that their cells (`c t="s"`) reference, under one
 /// [`FONT_SCAN_CAP`] budget. A shared string that no cell uses is not
-/// drawn. A missing part has no text; the first other error ends the read.
+/// drawn. A listed worksheet that is missing, and a shared-string table
+/// that cells use but the package lacks, are errors, as is any part that
+/// does not read as a whole.
 fn strings(
     package: &mut Package,
     shared: &str,
@@ -149,44 +155,51 @@ fn strings(
 ) -> Result<(), SkipReason> {
     let mut budget = FONT_SCAN_CAP;
     let mut referenced = Referenced::default();
+    // Every listed worksheet must be read: a missing one is not optional.
     for part in sheets.iter().take(MAX_SHEETS) {
         let mut scope = TextScope::new(&[b"t"], None, &[b"rPh"]);
         let mut shared_cell = false;
-        let mut value: Option<String> = None;
-        let result = package.xml_events(part, budget, |event| {
+        // The digits of a shared cell's <v>; None past 10 bytes.
+        let mut value: Option<Option<String>> = None;
+        let read = package.xml_events(part, budget, |event| {
             if let Some(drawn) = scope.on(&event) {
-                text.add(drawn);
+                add_escaped(text, drawn);
             }
             match event {
                 XmlEvent::Start(e) | XmlEvent::Empty(e) if e.local_name().as_ref() == b"c" => {
                     shared_cell = attr(e, b"t").as_deref() == Some("s");
                 }
                 XmlEvent::Start(e) if shared_cell && e.local_name().as_ref() == b"v" => {
-                    value = Some(String::new());
+                    value = Some(Some(String::new()));
                 }
                 XmlEvent::Text { text, .. } => {
-                    if let Some(value) = value.as_mut()
-                        && value.len() < 16
-                    {
-                        value.push_str(text);
+                    if let Some(digits) = value.as_mut() {
+                        match digits {
+                            Some(d) if d.len() + text.len() <= 10 => d.push_str(text),
+                            _ => *digits = None,
+                        }
                     }
                 }
-                XmlEvent::End => {
-                    if let Some(index) = value.take()
-                        && let Ok(index) = index.trim().parse::<u32>()
-                    {
-                        referenced.insert(index);
+                XmlEvent::Unresolved => {
+                    if value.is_some() {
+                        value = Some(None);
                     }
                 }
+                XmlEvent::End => match value.take() {
+                    Some(Some(digits)) => match digits.trim().parse::<u32>() {
+                        Ok(index) => referenced.insert(index),
+                        Err(_) => referenced.all = true,
+                    },
+                    // An index that cannot be read may name any string.
+                    Some(None) => referenced.all = true,
+                    None => {}
+                },
                 _ => {}
             }
             true
-        });
-        match result {
-            Ok(read) => budget = budget.saturating_sub(read),
-            Err(SkipReason::MissingPart) => {}
-            Err(reason) => return Err(reason),
-        }
+        })?;
+        scope.complete()?;
+        budget = budget.saturating_sub(read);
     }
     if sheets.len() > MAX_SHEETS {
         return Err(SkipReason::CapReached);
@@ -203,12 +216,54 @@ fn strings(
         if let Some(drawn) = scope.on(&event)
             && index.is_some_and(|i| referenced.contains(i))
         {
-            text.add(drawn);
+            add_escaped(text, drawn);
         }
         true
     });
     match result {
-        Ok(_) | Err(SkipReason::MissingPart) => Ok(()),
+        Ok(_) => scope.complete(),
+        // The table is optional only when no cell uses it.
+        Err(SkipReason::MissingPart) if !referenced.any() => Ok(()),
         Err(reason) => Err(reason),
     }
+}
+
+/// Adds SpreadsheetML text, whose `_xHHHH_` escapes stand for one UTF-16
+/// code unit each (`_x005F_` is a literal `_`). A surrogate pair is two
+/// escapes; a lone surrogate stands for nothing.
+fn add_escaped(text: &mut TextCollector, raw: &str) {
+    if !raw.contains("_x") {
+        text.add(raw);
+        return;
+    }
+    let mut out = String::with_capacity(raw.len());
+    let mut high: Option<u16> = None;
+    let mut rest = raw;
+    while let Some(at) = rest.find("_x") {
+        out.push_str(&rest[..at]);
+        let unit = rest
+            .get(at + 2..at + 7)
+            .filter(|tail| tail.ends_with('_'))
+            .and_then(|tail| u16::from_str_radix(&tail[..4], 16).ok());
+        match unit {
+            Some(unit) => {
+                if let Some(h) = high.take()
+                    && (0xDC00..0xE000).contains(&unit)
+                {
+                    out.extend(char::decode_utf16([h, unit]).flatten());
+                } else if (0xD800..0xDC00).contains(&unit) {
+                    high = Some(unit);
+                } else if let Some(c) = char::from_u32(u32::from(unit)) {
+                    out.push(c);
+                }
+                rest = &rest[at + 7..];
+            }
+            None => {
+                out.push_str("_x");
+                rest = &rest[at + 2..];
+            }
+        }
+    }
+    out.push_str(rest);
+    text.add(&out);
 }

@@ -1281,3 +1281,176 @@ fn xlsx_unreadable_workbook_relationships_skip_the_glyph_check() {
         facts.skipped
     );
 }
+
+#[test]
+fn a_text_part_cut_after_a_closed_run_skips_the_glyph_check() {
+    // quick-xml ends a part cut after a complete tag without an error; the
+    // root never closed, so the text is not taken as whole.
+    let document = format!(r#"<w:document {W}><w:body><w:p><w:r><w:t>Ab</w:t>"#);
+    let facts = scan_bytes("cut.docx", &docx(&[], &document), Family::Document);
+    assert!(
+        facts.text_code_points.is_empty(),
+        "{:?}",
+        facts.text_code_points
+    );
+    assert!(
+        facts
+            .skipped
+            .contains(&(Check::Glyphs, SkipReason::MalformedXml)),
+        "{:?}",
+        facts.skipped
+    );
+}
+
+#[test]
+fn an_undefined_entity_in_text_skips_only_the_glyph_check() {
+    let document = body("<w:p><w:r><w:t>a&nbsp;\u{0E01}</w:t></w:r></w:p>");
+    let facts = scan_bytes("entity.docx", &docx(&[], &document), Family::Document);
+    assert!(facts.text_code_points.is_empty());
+    assert_eq!(facts.skipped, [(Check::Glyphs, SkipReason::MalformedXml)]);
+    assert_eq!(facts.requested_fonts, ["Calibri", "Cambria"]);
+}
+
+/// A workbook with one worksheet and, when given, a shared-string table.
+fn xlsx_text(sheet: &str, shared: Option<&str>) -> Vec<u8> {
+    let root = rels(&[("rId1", "officeDocument", "xl/workbook.xml")]);
+    let wb_rels = rels(&[
+        ("rId1", "sharedStrings", "sharedStrings.xml"),
+        ("rId2", "worksheet", "worksheets/sheet1.xml"),
+    ]);
+    let content_types = types("");
+    let mut entries: Vec<(&str, &[u8])> = vec![
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", root.as_bytes()),
+        ("xl/workbook.xml", b"<workbook/>"),
+        ("xl/_rels/workbook.xml.rels", wb_rels.as_bytes()),
+        ("xl/worksheets/sheet1.xml", sheet.as_bytes()),
+    ];
+    if let Some(shared) = shared {
+        entries.push(("xl/sharedStrings.xml", shared.as_bytes()));
+    }
+    zip(&entries)
+}
+
+#[test]
+fn xlsx_escapes_stand_for_their_characters() {
+    // _x0E01_ is Thai; _xD808__xDC00_ a surrogate pair (U+12000); _x005F_
+    // a literal underscore, so _x005F_x0416_ stays text.
+    let sheet = r#"<worksheet><sheetData><row><c t="inlineStr"><is><t>_x0E01__xD808__xDC00_ _x005F_x0416_</t></is></c></row></sheetData></worksheet>"#;
+    let facts = scan_bytes("esc.xlsx", &xlsx_text(sheet, None), Family::Spreadsheet);
+    assert_eq!(
+        facts.text_code_points,
+        cps("_x0416\u{0E01}\u{12000}"),
+        "{:?}",
+        facts.skipped
+    );
+}
+
+#[test]
+fn xlsx_missing_parts_that_cells_need_skip_the_glyph_check() {
+    // A referenced shared-string table that the package lacks.
+    let sheet = r#"<worksheet><sheetData><row><c t="s"><v>0</v></c></row></sheetData></worksheet>"#;
+    let facts = scan_bytes(
+        "noshared.xlsx",
+        &xlsx_text(sheet, None),
+        Family::Spreadsheet,
+    );
+    assert!(
+        facts
+            .skipped
+            .contains(&(Check::Glyphs, SkipReason::MissingPart)),
+        "{:?}",
+        facts.skipped
+    );
+    // No cell uses the table: its absence is fine.
+    let sheet = r#"<worksheet><sheetData><row><c t="inlineStr"><is><t>a</t></is></c></row></sheetData></worksheet>"#;
+    let facts = scan_bytes("plain.xlsx", &xlsx_text(sheet, None), Family::Spreadsheet);
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+    assert_eq!(facts.text_code_points, cps("a"));
+    // A listed worksheet that the package lacks.
+    let mut bytes = xlsx_text(sheet, None);
+    let needle = b"xl/worksheets/sheet1.xml";
+    let hits: Vec<usize> = bytes
+        .windows(needle.len())
+        .enumerate()
+        .filter(|(_, w)| w == needle)
+        .map(|(at, _)| at)
+        .collect();
+    for at in hits {
+        bytes[at + 14..at + 19].copy_from_slice(b"shee9");
+    }
+    let facts = scan_bytes("nosheet.xlsx", &bytes, Family::Spreadsheet);
+    assert!(
+        facts
+            .skipped
+            .contains(&(Check::Glyphs, SkipReason::MissingPart)),
+        "{:?}",
+        facts.skipped
+    );
+}
+
+#[test]
+fn xlsx_an_unreadable_index_makes_every_shared_string_count() {
+    let long = "9".repeat(5000);
+    let sheet = format!(
+        r#"<worksheet><sheetData><row><c t="s"><v>{long}</v></c></row></sheetData></worksheet>"#
+    );
+    let shared = "<sst><si><t>\u{0E01}</t></si></sst>";
+    let facts = scan_bytes(
+        "long.xlsx",
+        &xlsx_text(&sheet, Some(shared)),
+        Family::Spreadsheet,
+    );
+    assert_eq!(facts.text_code_points, cps("\u{0E01}"));
+}
+
+#[test]
+fn pptx_notes_text_goes_apart() {
+    let mut bytes = pptx(&[("p:sld", "<a:t>x</a:t>")], true);
+    // Give slide 1 a notes page.
+    let notes = format!(
+        r#"<p:notes {P} {A}><p:txBody><a:p><a:r><a:t>ሀ</a:t></a:r></a:p></p:txBody></p:notes>"#
+    );
+    let slide_rels = rels(&[
+        ("rId1", "slideLayout", "../slideLayouts/slideLayout1.xml"),
+        ("rId2", "notesSlide", "../notesSlides/notesSlide1.xml"),
+    ]);
+    let z = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut z = z;
+    for i in 0..z.len() {
+        let mut f = z.by_index(i).unwrap();
+        let mut data = Vec::new();
+        std::io::Read::read_to_end(&mut f, &mut data).unwrap();
+        let name = f.name().unwrap().into_owned();
+        if name == "ppt/slides/_rels/slide1.xml.rels" {
+            data = slide_rels.clone().into_bytes();
+        }
+        entries.push((name, data));
+    }
+    entries.push(("ppt/notesSlides/notesSlide1.xml".into(), notes.into_bytes()));
+    let refs: Vec<(&str, &[u8])> = entries
+        .iter()
+        .map(|(n, d)| (n.as_str(), d.as_slice()))
+        .collect();
+    bytes = zip(&refs);
+    let facts = scan_bytes("notes.pptx", &bytes, Family::Presentation);
+    assert_eq!(facts.text_code_points, cps("x"));
+    assert_eq!(facts.notes_code_points, cps("\u{1200}"));
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn odp_notes_text_goes_apart() {
+    let content = r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0"><office:body><office:presentation><draw:page><draw:frame><draw:text-box><text:p>x</text:p></draw:text-box></draw:frame><presentation:notes><draw:frame><draw:text-box><text:p>ሀ</text:p></draw:text-box></draw:frame></presentation:notes></draw:page></office:presentation></office:body></office:document-content>"#;
+    let bytes = zip(&[
+        (
+            "mimetype",
+            b"application/vnd.oasis.opendocument.presentation",
+        ),
+        ("content.xml", content.as_bytes()),
+    ]);
+    let facts = scan_bytes("notes.odp", &bytes, Family::Presentation);
+    assert_eq!(facts.text_code_points, cps("x"));
+    assert_eq!(facts.notes_code_points, cps("\u{1200}"));
+}
