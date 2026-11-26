@@ -263,7 +263,7 @@ fn read(bytes: &[u8], name: &str) -> Vec<u8> {
 fn local_record<'a>(bytes: &'a [u8], name: &str) -> &'a [u8] {
     let mut list = entries(bytes);
     list.sort_by_key(|(_, e)| e.local_offset);
-    let (_, cd, _) =
+    let (_, cd, _, _) =
         zip_scan::directory(&mut std::io::Cursor::new(bytes), bytes.len() as u64).unwrap();
     let at = list.iter().position(|(n, _)| n == name).unwrap();
     let start = list[at].1.local_offset as usize;
@@ -698,4 +698,64 @@ fn too_many_namespace_bindings_are_left_alone() {
     let one = |i: usize| format!(r#"<w:p xmlns:n{i}="u"/>"#);
     let body: String = (0..2 * MAX_BINDINGS).map(one).collect();
     assert!(fixed(&doc(&body), Paper::A4).unwrap().contains(A4));
+}
+
+#[test]
+fn a_signature_origin_anywhere_keeps_the_package() {
+    let rels = br#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/digital-signature/origin" Target="sig/origin.sigs"/></Relationships>"#;
+    let main = doc("<w:p/>");
+    let source = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", rels, true, false),
+        ("word/document.xml", main.as_bytes(), true, false),
+        ("sig/origin.sigs", b"", false, false),
+    ]);
+    assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
+}
+
+#[test]
+fn a_namespace_spelled_with_a_reference_is_left_alone() {
+    let xml = doc(
+        r#"<w:sectPr><x:pgSz xmlns:x="http://schemas.openxmlformats.org/wordprocessingml/2006/m&#97;in" x:w="1" x:h="2"/></w:sectPr>"#,
+    );
+    assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
+}
+
+#[test]
+fn a_zip64_end_record_keeps_the_package() {
+    // The repack's archive with its end record rewritten as ZIP64: a
+    // ZIP64 end record, its locator, and a classic record that points to
+    // them.
+    let classic = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", doc("<w:p/>").as_bytes(), true, false),
+    ]);
+    let eocd = classic.len() - 22;
+    let entries = u16_at(&classic, eocd + 10) as u64;
+    let cd_size = u32_at(&classic, eocd + 12) as u64;
+    let cd_offset = u32_at(&classic, eocd + 16) as u64;
+    let mut bytes = classic[..eocd].to_vec();
+    let record_at = bytes.len() as u64;
+    bytes.extend_from_slice(&0x0606_4b50u32.to_le_bytes());
+    bytes.extend_from_slice(&44u64.to_le_bytes());
+    bytes.extend_from_slice(&[45, 0, 45, 0]);
+    bytes.extend_from_slice(&[0; 8]); // disk numbers
+    bytes.extend_from_slice(&entries.to_le_bytes());
+    bytes.extend_from_slice(&entries.to_le_bytes());
+    bytes.extend_from_slice(&cd_size.to_le_bytes());
+    bytes.extend_from_slice(&cd_offset.to_le_bytes());
+    bytes.extend_from_slice(&0x0706_4b50u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&record_at.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+    bytes.extend_from_slice(&[0; 4]);
+    bytes.extend_from_slice(&[0xFF; 4]); // entry counts
+    bytes.extend_from_slice(&[0xFF; 8]); // size, offset
+    bytes.extend_from_slice(&[0, 0]);
+    let (_, _, _, zip64) =
+        zip_scan::directory(&mut std::io::Cursor::new(&bytes), bytes.len() as u64).unwrap();
+    assert!(zip64);
+    assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unsupported), None));
 }

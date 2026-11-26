@@ -112,9 +112,9 @@ The main part is inflated at most twice, once to plan and once to rewrite. Each 
 
 These packages are loaded as they came, on Letter:
 
-- a ZIP64 archive, an encrypted main part, or a signed package (`_xmlsignatures/`);
+- a ZIP64 archive (also only at the end record), an encrypted main part, or a signed package (a signature origin or `_xmlsignatures/`);
 - a main part whose CRC or size does not match its directory record;
-- a main part that is not UTF-8 XML, by its bytes or its declaration, nests deeper than 4096 elements, or has more than 512 namespace declarations in scope;
+- a main part that is not UTF-8 XML, by its bytes or its declaration, nests deeper than 4096 elements, has more than 512 namespace declarations in scope, or spells a namespace with a character reference;
 - more than 100 000 sections;
 - a section or a body in an `mc:AlternateContent` branch, an `mc:AlternateContent` in a section, or a `w:pgSz` in a wrapper element inside a section.
 

@@ -360,15 +360,19 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     _ => Tag::Other,
                 };
                 let depth = stack.len();
-                let declares = e
-                    .attributes()
-                    .with_checks(false)
-                    .flatten()
-                    .filter(|a| {
-                        let key = a.key.as_ref();
-                        key == b"xmlns" || key.starts_with(b"xmlns:")
-                    })
-                    .count();
+                let mut declares = 0usize;
+                for a in e.attributes().with_checks(false).flatten() {
+                    let key = a.key.as_ref();
+                    if key == b"xmlns" || key.starts_with(b"xmlns:") {
+                        declares += 1;
+                        // A namespace spelled with a reference (`&#97;`) is
+                        // not compared as written: which elements are Word's
+                        // would be a guess.
+                        if a.value.contains(&b'&') {
+                            return Err(Skip::Unsupported);
+                        }
+                    }
+                }
                 if bindings + declares > MAX_BINDINGS {
                     return Err(Skip::Unsupported);
                 }
@@ -537,7 +541,9 @@ pub fn fix_part(xml: &[u8], paper: Paper) -> Result<Option<Vec<u8>>, Skip> {
 }
 
 /// The main part that `_rels/.rels` names, or `word/document.xml` when it
-/// names none, as the pre-flight finds it.
+/// names none, as the pre-flight finds it. A package with a signature
+/// origin is [`Skip::Unsupported`]: a changed main part would break its
+/// signature, wherever the signature parts are.
 pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Result<String, Skip> {
     let Some((_, rels)) = entries.iter().find(|(name, _)| name == "_rels/.rels") else {
         return Ok("word/document.xml".to_owned());
@@ -550,6 +556,7 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
     let bytes = utf16_to_utf8(&bytes).unwrap_or(bytes);
     let mut xml = quick_xml::Reader::from_reader(bytes.as_slice());
     let mut buf = Vec::new();
+    let mut main = None;
     loop {
         match xml
             .read_event_into(&mut buf)
@@ -563,19 +570,28 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
                         .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok())
                         .map(|v| v.into_owned())
                 };
-                if attr(b"Type").is_some_and(|t| OFFICE_DOCUMENT.contains(&t.as_str()))
+                let kind = attr(b"Type").unwrap_or_default();
+                if kind == SIGNATURE_ORIGIN {
+                    return Err(Skip::Unsupported);
+                }
+                if main.is_none()
+                    && OFFICE_DOCUMENT.contains(&kind.as_str())
                     && attr(b"TargetMode").is_none_or(|mode| mode == "Internal")
                     && let Some(target) = attr(b"Target")
                 {
-                    return Ok(normalize(&target));
+                    main = Some(normalize(&target));
                 }
             }
-            Event::Eof => return Ok("word/document.xml".to_owned()),
+            Event::Eof => return Ok(main.unwrap_or_else(|| "word/document.xml".to_owned())),
             _ => {}
         }
         buf.clear();
     }
 }
+
+/// The relationship type of a package's digital-signature origin.
+const SIGNATURE_ORIGIN: &str =
+    "http://schemas.openxmlformats.org/package/2006/relationships/digital-signature/origin";
 
 /// The relationship types of a main document, transitional and strict.
 const OFFICE_DOCUMENT: [&str; 2] = [
@@ -800,8 +816,9 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
         return Err(Skip::Unsupported);
     }
     // The central directory's size first: the listings below keep names.
-    let (count, cd_offset, cd_size) = zip_scan::directory(&mut file, size).map_err(scan_error)?;
-    if cd_size > DIRECTORY_CAP || cd_offset > u64::from(u32::MAX) {
+    let (count, cd_offset, cd_size, zip64) =
+        zip_scan::directory(&mut file, size).map_err(scan_error)?;
+    if zip64 || cd_size > DIRECTORY_CAP || cd_offset > u64::from(u32::MAX) {
         return Err(Skip::Unsupported);
     }
     let entries = zip_scan::list(&mut file, size).map_err(scan_error)?;
