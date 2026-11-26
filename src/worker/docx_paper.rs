@@ -260,7 +260,12 @@ struct Section {
 /// make the section that LibreOffice uses ambiguous: the part loads as it
 /// came.
 pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
-    let mut part = part.take(cap.saturating_add(1));
+    // Offsets are only safe in UTF-8: every byte is checked.
+    let mut part = Utf8Reader {
+        inner: part.take(cap.saturating_add(1)),
+        carry: Vec::with_capacity(8),
+        checked: Vec::new(),
+    };
     // quick-xml drops a UTF-8 byte order mark without counting it in its
     // positions, so it never sees one: `skipped` puts it back.
     let mut head = [0u8; 3];
@@ -277,7 +282,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     } else {
         (0, &head[..read])
     };
-    let mut xml = NsReader::from_reader(head.chain(part));
+    let mut xml = NsReader::from_reader(head.chain(BufReader::with_capacity(64 * 1024, part)));
     let mut buf = Vec::with_capacity(4096);
     let mut stack: Vec<Tag> = Vec::with_capacity(64);
     let mut plan = Plan::default();
@@ -319,7 +324,12 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                 };
                 let depth = stack.len();
                 if let Some(s) = open.as_mut() {
-                    if tag == Tag::Alternate {
+                    // A branch, or a page size inside a wrapper (such as an
+                    // element that mc:ProcessContent names): which size
+                    // counts is not plain from the XML.
+                    if tag == Tag::Alternate
+                        || (depth > s.depth + 1 && ns.is_some() && local == b"pgSz")
+                    {
                         return Err(Skip::Unsupported);
                     }
                     if depth == s.depth + 1 {
@@ -409,6 +419,18 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     body_has_section = true;
                 }
             }
+            Event::Decl(ref d) => {
+                let utf8 = match d.encoding() {
+                    None => true,
+                    Some(Ok(name)) => {
+                        name.eq_ignore_ascii_case(b"UTF-8") || name.eq_ignore_ascii_case(b"UTF8")
+                    }
+                    Some(Err(_)) => false,
+                };
+                if !utf8 {
+                    return Err(Skip::Unsupported);
+                }
+            }
             Event::Eof => break,
             _ => {}
         }
@@ -479,7 +501,8 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Opti
                         .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok())
                         .map(|v| v.into_owned())
                 };
-                if attr(b"Type").is_some_and(|t| t.ends_with("/officeDocument"))
+                if attr(b"Type").is_some_and(|t| OFFICE_DOCUMENT.contains(&t.as_str()))
+                    && attr(b"TargetMode").is_none_or(|mode| mode == "Internal")
                     && let Some(target) = attr(b"Target")
                 {
                     return Some(normalize(&target));
@@ -489,6 +512,49 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Opti
             _ => {}
         }
         buf.clear();
+    }
+}
+
+/// The relationship types of a main document, transitional and strict.
+const OFFICE_DOCUMENT: [&str; 2] = [
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument",
+    "http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument",
+];
+
+/// A reader that fails with `InvalidData` on bytes that are not UTF-8,
+/// across read boundaries.
+struct Utf8Reader<R> {
+    inner: R,
+    /// The start of a character that the last read cut (at most 3 bytes).
+    carry: Vec<u8>,
+    checked: Vec<u8>,
+}
+
+impl<R: Read> Read for Utf8Reader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n == 0 {
+            return if self.carry.is_empty() {
+                Ok(0)
+            } else {
+                Err(io::ErrorKind::InvalidData.into())
+            };
+        }
+        let data: &[u8] = if self.carry.is_empty() {
+            &buf[..n]
+        } else {
+            self.checked.clear();
+            self.checked.extend_from_slice(&self.carry);
+            self.checked.extend_from_slice(&buf[..n]);
+            &self.checked
+        };
+        let carry = match std::str::from_utf8(data) {
+            Ok(_) => Vec::new(),
+            Err(err) if err.error_len().is_none() => data[err.valid_up_to()..].to_vec(),
+            Err(_) => return Err(io::ErrorKind::InvalidData.into()),
+        };
+        self.carry = carry;
+        Ok(n)
     }
 }
 

@@ -571,3 +571,44 @@ fn a_file_already_at_the_destination_is_kept() {
     assert_eq!(repack(&input, &out, Paper::A4), Err(Skip::Unsupported));
     assert_eq!(std::fs::read(&out).unwrap(), b"not ours");
 }
+
+#[test]
+fn only_the_office_document_relationship_names_the_main_part() {
+    let rels = br#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId9" Type="urn:vendor/officeDocument" Target="custom/other.xml"/><Relationship Id="rId8" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="https://example.invalid/x.xml" TargetMode="External"/><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="/word/main.xml"/></Relationships>"#;
+    let bytes = zip(&[("_rels/.rels", rels, true, false)]);
+    let dir = Scratch::new();
+    let path = dir.path().join("p.docx");
+    std::fs::write(&path, &bytes).unwrap();
+    let mut file = File::open(&path).unwrap();
+    assert_eq!(
+        main_part(&mut file, &entries(&bytes)).as_deref(),
+        Some("word/main.xml")
+    );
+}
+
+#[test]
+fn a_page_size_in_a_wrapper_is_left_to_libreoffice() {
+    let xml = doc(
+        r#"<w:sectPr xmlns:x="ext"><x:wrap><w:pgSz w:w="11906" w:h="16838"/></x:wrap></w:sectPr>"#,
+    );
+    assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
+}
+
+#[test]
+fn a_part_that_is_not_utf8_is_left_alone() {
+    // Declared otherwise.
+    let latin = br#"<?xml version="1.0" encoding="ISO-8859-1"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p/></w:body></w:document>"#;
+    assert_eq!(fix_part(latin, Paper::A4), Err(Skip::Unsupported));
+    // Not declared, but a Latin-1 byte in the text.
+    let mut bytes = doc("<w:p><w:r><w:t>caf\u{e9}</w:t></w:r></w:p>").into_bytes();
+    let at = bytes
+        .windows(2)
+        .position(|w| w == "\u{e9}".as_bytes())
+        .unwrap();
+    bytes.splice(at..at + 2, [0xE9]);
+    assert_eq!(fix_part(&bytes, Paper::A4), Err(Skip::Unreadable));
+    // A character cut by the read boundary is still fine.
+    let text = doc("<w:p><w:r><w:t>\u{20ac}\u{20ac}\u{20ac}</w:t></w:r></w:p>");
+    let reader = BufReader::with_capacity(1, text.as_bytes());
+    assert!(!plan(reader, Paper::A4, MAIN_PART_CAP).unwrap().is_empty());
+}

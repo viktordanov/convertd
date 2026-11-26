@@ -114,9 +114,9 @@ These packages are loaded as they came, on Letter:
 
 - a ZIP64 archive, or an encrypted main part;
 - a main part whose CRC or size does not match its directory record;
-- a main part that is not UTF-8 XML, or nests deeper than 4096 elements;
+- a main part that is not UTF-8 XML, by its bytes or its declaration, or nests deeper than 4096 elements;
 - more than 100 000 sections;
-- a section in an `mc:AlternateContent` branch, or an `mc:AlternateContent` in a section.
+- a section or a body in an `mc:AlternateContent` branch, an `mc:AlternateContent` in a section, or a `w:pgSz` in a wrapper element inside a section.
 
 The callback counts the password prompts of one load. A failed load is `PasswordRequired` after one prompt without a password, `InvalidPassword` after a second prompt with a password, and `LoadFailed` otherwise.
 
