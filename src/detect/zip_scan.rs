@@ -91,6 +91,16 @@ fn u64_at(b: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
+/// Where the central directory is: `(entries, offset, size)`, under the
+/// same checks as [`list`]. For the office worker's DOCX repack.
+pub fn directory<R: Read + Seek>(
+    file: &mut R,
+    file_size: u64,
+) -> Result<(u64, u64, u64), ScanError> {
+    let directory = read_directory(file, file_size)?;
+    Ok((directory.entries, directory.offset, directory.size))
+}
+
 /// Where the central directory is.
 struct Directory {
     entries: u64,
