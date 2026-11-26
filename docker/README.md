@@ -48,12 +48,11 @@ One `Dockerfile` holds every target, so the product and the test image use the s
 
 | Target | What it holds | State |
 | --- | --- | --- |
-| `runtime` (default) | `runtime-base` plus convertd, the OCI labels and the health check | Built and run on arm64. It converts DOCX, PDF and PPTX |
+| `runtime` (default) | `runtime-base` plus convertd, the OCI labels and the health check | Built and run on arm64 and amd64. The CI image job converts on both |
 | `runtime-base` | Debian, the engines, the fonts, `build-info.json` and the user | Built and checked on arm64 and amd64 |
 | `dev` | `rust:1.99-trixie` plus the same engines, rustfmt, clippy, `locales` and `procps` | Built on arm64, for the engine tests of lane 002 |
-| `engine-check` | `runtime-base` plus the two spike binaries | Built and run on both architectures. Plan 003 step 7 removes it |
 
-The other stages are internal. `engines` downloads and checks the pinned files on the build platform. `lib-check` runs the [library check](#library-check). `rust-cross`, `spike-build`, `chef-tool`, `planner` and `builder` compile Rust on the build platform and cross-compile to the target, so no `rustc` runs under emulation.
+The other stages are internal. `engines` downloads and checks the pinned files on the build platform. `lib-check` runs the [library check](#library-check). `rust-cross`, `chef-tool`, `planner` and `builder` compile Rust on the build platform and cross-compile to the target, so no `rustc` runs under emulation.
 
 The Docker VM on the development Mac has about 4 GB. Build one image at a time. Keep `CARGO_JOBS` at 2. A build that ends with signal 9 ran out of memory. Build the base and the dev image like this:
 
@@ -145,13 +144,20 @@ TDF removes a point release from `/stable/` when the next one ships. The `engine
 
 For a new PDFium build, download `pdfium-linux-x64.tgz` and `pdfium-linux-arm64.tgz` from the `bblanchon/pdfium-binaries` release. Compare their `sha256sum` with the asset digests that the GitHub release gives. Then set `PDFIUM_BUILD` and both `PDFIUM_SHA256_*` values.
 
-Then prove the new pins:
+Then build the images with the new pins. Keep the old `runtime` image for the comparison:
 
-1. Build `engine-check` for `linux/arm64` and for `linux/amd64`.
+1. Build the `runtime` image and the `dev` image for `linux/arm64`, as [Targets](#targets) shows.
 2. If `lib-check` fails, read the lines that it prints. Add a line to `libreoffice/ldd-allow.txt` only for a plugin that conversion never loads, with the reason.
-3. Run both spike binaries in each image, as [What is verified](#what-is-verified) shows.
-4. Compare `/opt/convertd/build-info.json` with the old one. A changed font list changes the `FONT_SUBSTITUTED` warnings. For each duplicate family in `dpkg/fonts.cfg`, make sure that `fc-list` shows the kept copy with the higher or the same version.
-5. Run `docker/ab-pages.sh <old image> <new image> corpus/out` with `CURL_IMAGE` set. Every page must have the same hash, unless the release notes explain the change.
+3. Compare `/opt/convertd/build-info.json` with the old one. A changed font list changes the `FONT_SUBSTITUTED` warnings. For each duplicate family in `dpkg/fonts.cfg`, make sure that `fc-list` shows the kept copy with the higher or the same version.
+
+Then test the new images. Generate the corpus first with `corpus/generate.py corpus/out --hostile`, and build `corpus-bench` for the architecture of the image:
+
+1. In the `dev` image, run the engine suites with the corpus: `cargo test --features test-hooks --test engines_office --test engines_render --test engines_poison --test pool --test reap_race`, with `CONVERTD_CORPUS_DIR` set. Run them once with `-- --nocapture`, and make sure that no test prints `skipped` for a missing engine.
+2. Run `docker/smoke.sh <new image> docker/smoke/small.docx 635` with `CURL_IMAGE` set.
+3. Run `docker/corpus-check.sh <new image> <corpus-bench>` with `HARNESS_IMAGE` set. All cases of `corpus/expected.json` must pass.
+4. Run `docker/ab-pages.sh <old image> <new image> corpus/out` with `CURL_IMAGE` set. Every status must be the same, and every page must have the same hash, unless the release notes explain the change.
+
+A push to `main` that changes `docker/` then runs the image job. It builds both architectures natively and repeats the smoke test and the corpus check.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="measurement" files="Dockerfile dpkg/libreoffice.cfg" -->
@@ -173,19 +179,7 @@ Uncompressed sizes come from `docker image inspect`. The working target for the 
 <!-- memoria:section id="verification" files="Dockerfile smoke.sh ab-pages.sh corpus-check.sh" -->
 ## What is verified
 
-The `engine-check` image proves the engines under the production limits. Each run uses a read-only root, a tmpfs on `/tmp`, user `10001:10001`, no capabilities, `no-new-privileges` and no network:
-
-```sh
-docker buildx build -f docker/Dockerfile --target engine-check \
-  --platform linux/arm64 --load -t rs-convert-engine-check .
-docker run --rm --read-only --tmpfs /tmp:rw,size=1g,mode=1777 --user 10001:10001 \
-  --cap-drop ALL --security-opt no-new-privileges --network none \
-  -v "$corpus":/corpus:ro -e UserInstallation=file:///tmp/p1 -e NO_TRIM=1 -e FORGET=1 \
-  --entrypoint bash rs-convert-engine-check -c \
-  'spike-lok bench "$LO_PROGRAM_DIR" 2 /corpus/small.docx /corpus/deck.pptx /corpus/sheet.xlsx'
-```
-
-On 2026-11-25 this check gave these results:
+Before convertd had real engines, an `engine-check` image proved the engines under the production limits: a read-only root, a tmpfs on `/tmp`, user `10001:10001`, no capabilities, `no-new-privileges` and no network. It ran the M0 spike binaries. Both the image and the spikes are removed now, because the `runtime` image and the CI image job cover the same ground. On 2026-11-25 that check gave these results:
 
 - **arm64, native:** a DOCX, a PPTX and an XLSX convert to PDF through `/opt/libreoffice/program`, and PDFium renders every page through `/opt/pdfium/lib`.
 - **amd64, under emulation on the arm64 Mac:** the same conversions and renders pass. Emulation proves function only, not timing.
@@ -228,7 +222,7 @@ docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
 - That no job directory is left after the response.
 - That no fontconfig user cache is written.
 
-After the smoke test, the job runs `corpus-check.sh`: the `corpus-bench check` of lane 005, every case of `corpus/expected.json`, against the image. The harness runs in a pinned Debian container inside the network namespace of the service, because only there does the canary listener see a connection from LibreOffice. On 2026-11-26 this check passed 59 of 59 cases on the arm64 image by hand. The job has not run it yet.
+After the smoke test, the job runs `corpus-check.sh`: the `corpus-bench check` of lane 005, every case of `corpus/expected.json`, against the image. The harness runs in a pinned Debian container inside the network namespace of the service. Only there does the canary listener see a connection from LibreOffice. On 2026-11-26 this check passed 59 of 59 cases on the arm64 image by hand. The first automatic image run on `main` (45805165059) passed it on amd64.
 
 `smoke/small.docx` is the corpus entry `docx-small`, 36986 bytes. `corpus/generate.py` makes the same bytes, and its SHA-256 is in `corpus/expected.json`.
 
