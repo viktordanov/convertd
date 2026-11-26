@@ -118,7 +118,7 @@ x-request-id: df997c7b55784260b1bbdf216c48ba0d
 `TEST_ENGINE` works only in a build with the `test-hooks` feature, and the image never has it. Next: read [tests/README.md](tests/README.md) for the other test commands.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="usage" files="api/openapi.yaml api/openapi.json" -->
+<!-- memoria:section id="usage" files="api/openapi.json" -->
 ## The API
 
 One endpoint does the work. `POST /v1/convert` takes a multipart upload with a `file` part and an optional `options` part in JSON. The service detects the format from the bytes, never from the file name.
@@ -139,7 +139,7 @@ curl -sS -H "Authorization: Bearer $CONVERT_API_KEY" \
 
 Every `/v1` route needs the API key as a bearer token. The probes (`/healthz`, `/readyz`) and `/metrics` take no key. `GET /v1/capabilities` lists the formats, the limits and the engine versions of a deployment.
 
-`convertd openapi` emits the OpenAPI 3.1 spec. The repository holds its output as [api/openapi.json](api/openapi.json), and the server serves the same bytes at `/swagger/doc.json`. `generate.sh` generates the Go client from this file. The hand-written [api/openapi.yaml](api/openapi.yaml), in OpenAPI 3.0.3, stays as the reference contract. `speccheck compare`, in `client/contract/`, compares the two.
+`convertd openapi` emits the OpenAPI 3.1 spec. The repository holds its output as [api/openapi.json](api/openapi.json), and the server serves the same bytes at `/swagger/doc.json`. `generate.sh` generates the Go client from this file. The committed file is the contract. `generate.sh --check` fails when the spec that `convertd openapi` emits differs from it. `speccheck validate`, in `client/contract/`, checks its structure, its examples and the rules of the project for the spec.
 <!-- /memoria:section -->
 
 ## Boundaries
