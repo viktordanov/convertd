@@ -1565,7 +1565,7 @@
       "tags": [
         "images"
       ],
-      "notes": "640 x 480 RGB gradient.",
+      "notes": "640 x 480 RGB gradient. Image inputs are out of v1 (owner decision, 2026-11-26), so detection answers 415 UNSUPPORTED_FORMAT before any engine runs.",
       "cases": [
         {
           "name": "bundle",
@@ -1578,13 +1578,8 @@
             }
           },
           "expect": {
-            "status": 200,
-            "format": "png",
-            "family": "image",
-            "encrypted": false,
-            "pdf_origin": "assembled",
-            "page_count": 1,
-            "warnings": []
+            "status": 415,
+            "code": "UNSUPPORTED_FORMAT"
           }
         }
       ]
@@ -1597,7 +1592,7 @@
       "tags": [
         "images"
       ],
-      "notes": "The same gradient as JPEG, quality 85.",
+      "notes": "The same gradient as JPEG, quality 85. Image inputs are out of v1 (owner decision, 2026-11-26), so detection answers 415 UNSUPPORTED_FORMAT before any engine runs.",
       "cases": [
         {
           "name": "bundle",
@@ -1610,13 +1605,8 @@
             }
           },
           "expect": {
-            "status": 200,
-            "format": "jpeg",
-            "family": "image",
-            "encrypted": false,
-            "pdf_origin": "assembled",
-            "page_count": 1,
-            "warnings": []
+            "status": 415,
+            "code": "UNSUPPORTED_FORMAT"
           }
         }
       ]
@@ -1811,17 +1801,16 @@
       "origin": "hostile",
       "sha256": "a1896df9b1a15245da1c4ffd15259f14f793b6cbfb40ff3a8e39aef8062d9d50",
       "tags": [
-        "hostile",
-        "limits"
+        "hostile"
       ],
-      "notes": "A complete 1-bit grayscale PNG of 100,000 x 100,000 pixels, about 1.2 MB.",
+      "notes": "A complete 1-bit grayscale PNG of 100,000 x 100,000 pixels, about 1.2 MB. Image inputs are out of v1 (owner decision, 2026-11-26), so detection answers 415 UNSUPPORTED_FORMAT before any engine runs. It stays as a detection case: the bomb must never reach a decoder.",
       "cases": [
         {
           "name": "pdf",
           "options": {},
           "expect": {
-            "status": 422,
-            "code": "LIMIT_EXCEEDED"
+            "status": 415,
+            "code": "UNSUPPORTED_FORMAT"
           }
         }
       ]
