@@ -49,13 +49,13 @@ The integration tests:
 
 | File | What it tests | Needs `test-hooks` |
 | --- | --- | --- |
-| `convert_pdf.rs` | `/v1/convert` with `output=pdf` through the level-A fakes: detection, the response, the backstop, the permit, the response stall, and an early `401` or `413` with a lingering close | One test, for the markers |
+| `convert_pdf.rs` | `/v1/convert` through the level-A fakes: detection, the response, the backstop, the permit, the response stall and floor, a cut bundle, the deadline before packaging, owner and user passwords of encrypted PDFs, and an early `401` or `413` with a lingering close | One test, for the markers |
 | `convert_bundle.rs` | `output=images` and `output=bundle` through the level-A fakes: the tar.zst archive, page selection, render limits, warnings, and the disk budget that open downloads give back | No |
-| `detect.rs` | Format detection from the bytes, with ZIP and OLE2 files that the test builds | No |
+| `detect.rs` | Format detection from the bytes, with ZIP and OLE2 files that the test builds, hostile OLE2 directories included | No |
 | `errors.rs` | Errors over HTTP: auth, request IDs, fallbacks and the panic layer | No |
 | `ops.rs` | The probes, `/v1/capabilities`, `/metrics`, `convertd healthcheck` and the drain | Two tests, for `SIGTERM` on the binary at level A and level B |
 | `openapi_spec.rs` | The cheap invariants of the spec that `convertd openapi` emits | No |
-| `upload.rs` | The streamed upload: digests, part rules, caps, the disk budget, and stalled and vanished clients | No |
+| `upload.rs` | The streamed upload: digests, part rules, caps, the disk budget, and stalled, slow and vanished clients | No |
 | `pool.rs` | The worker pool with `test` workers (level B), including the RSS kill of a worker during its call | Yes |
 | `process.rs` | Spawning, scoped reaping and process-group kills. Some cases run on Linux only | Yes |
 | `reap_race.rs` | A worker that the process-wide reaper finds only in its stray pass still has its process group killed. Linux only, in a binary of its own, because the stray pass waits on every child of the test process | Yes |
@@ -63,7 +63,7 @@ The integration tests:
 | `engines_poison.rs` | The poison memory in the `OfficeLok` and `PdfPdfium` adapters, with `test` workers (level B) | Yes |
 | `engines_office.rs` | The office worker with the real LibreOffice, through the pool and the `OfficeEngine` adapter | No |
 | `engines_render.rs` | The render worker with the real PDFium, through the pool and the `PdfEngine` adapter | No |
-| `peak_heap.rs` | Heap per request with a counting allocator: the peak does not grow from 16 MiB to 100 MiB uploads, and a small request stays under 408 allocations | No |
+| `peak_heap.rs` | Heap per request with a counting allocator: the peak does not grow from 16 MiB to 100 MiB uploads, a small request stays under 408 allocations, and a hostile OLE2 upload stays bounded during detection | No |
 | `rss_linux.rs` | The idle RSS of the supervisor on Linux, at most 30 MB. The measurement is `#[ignore]`, so only its parsers run by default | The measurement only |
 
 The engine tests need `LO_PROGRAM_DIR` with `soffice.bin`, `PDFIUM_LIB_DIR` with `libpdfium.so`, or both. Some also need `CONVERTD_CORPUS_DIR`, the output folder of `corpus/generate.py`. If a variable is not set, or its folder does not hold that file, the test prints `skipped` and passes without a check. One exception: when `CONVERTD_CORPUS_DIR` is set, a missing corpus file fails the encrypted-file test in `engines_office.rs`, so a renamed corpus file cannot hide. Thus a pass on a host without the engines proves nothing about the engines.
@@ -123,7 +123,7 @@ A fixture that must get to the office queue is a DOCX with the marker in a store
 | `ci` | Every push to `main` and every pull request | All except `slow_*` | 60 s |
 | `full` | The manual and monthly CI run | All | 2 min |
 
-A test that does more than about 2 s of work, or sleeps past 5 s, has a name that starts with `slow_`. A test that waits on a real deadline, such as the 5 s minimum timeout, can stay in the push run. The `slow_` tests are in `process.rs`, `ops.rs`, `peak_heap.rs`, `rss_linux.rs`, `engines_office.rs` and `engines_render.rs`.
+A test that does more than about 2 s of work, or sleeps past 5 s, has a name that starts with `slow_`. A test that waits on a real deadline, such as the 5 s minimum timeout, can stay in the push run. The `slow_` tests are in `convert_pdf.rs`, `process.rs`, `ops.rs`, `peak_heap.rs`, `upload.rs`, `rss_linux.rs`, `engines_office.rs` and `engines_render.rs`.
 
 The `ci` profile leaves out these tests with the filter `not test(/^slow_/)`. The filter matches the start of the full test name. An integration test has its function name as its name. A unit test has its module path first, such as `config::tests::`, so the filter does not leave out a unit test named `slow_…`.
 
