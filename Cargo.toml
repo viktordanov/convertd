@@ -20,8 +20,6 @@ default = []
 # The one gate for every test hook (INTERFACES.md §10): TEST_ENGINE,
 # `convertd worker test` and the FAKE: marker parser. Never in the image.
 test-hooks = []
-# mimalloc as #[global_allocator], for the allocator A/B (plan 001 step 13).
-mimalloc = ["dep:mimalloc"]
 
 [dependencies]
 # HTTP server (001). No http2, no multipart: multer is used directly.
@@ -64,9 +62,6 @@ async-trait = "0.1.92"
 # Metrics (001), rendered by our own handler: no HTTP listener.
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
-
-# Allocator A/B (001 step 13), off by default.
-mimalloc = { version = "0.1.52", optional = true }
 
 # Engine workers and process control (002).
 rustix = { version = "1.1.5", features = ["process", "stdio", "pipe"] }

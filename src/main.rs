@@ -13,10 +13,6 @@ use convertd::rest::{healthcheck, openapi, server};
 use convertd::worker::Role;
 use convertd::{engines, jobs, logging, runtime, worker};
 
-#[cfg(feature = "mimalloc")]
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
 #[derive(Parser)]
 #[command(name = "convertd", version, about = "Document conversion service")]
 struct Cli {
