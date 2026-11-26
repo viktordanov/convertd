@@ -133,7 +133,7 @@ convertd serves Prometheus metrics on `GET /metrics` on the `http` port, without
 - **`grafana-dashboard.json`**: a Grafana dashboard. It shows the `/v1/convert` requests by status and error code, and p50 and p99 per stage. It also shows the queue, workers and restarts of each pool, supervisor memory, the disk budget and the warnings.
 - **`prometheusrule.yaml`**: a `PrometheusRule` for the Prometheus Operator with four alerts. They fire on 429, on 422 `LIMIT_EXCEEDED`, on a queue at its capacity and on a disk budget that is 90 % reserved. A comment above each alert gives the reason for its threshold.
 
-The dashboard computes rates over `$__rate_interval`, which is at least four scrape intervals. Grafana takes the scrape interval from the setting of the data source, not from the `ServiceMonitor`. A scrape interval of 15 s in both places keeps a burst of a few seconds visible. The "Conversions in flight" and "Time in each stage" panels estimate the concurrency from the stage time sums. Thus a burst between two scrapes still counts. Each request adds its time when it finishes, so the estimate is exact only under steady load. An upload that fails records no stage time, so stalled uploads that hold permits do not show there. A stage and family series starts at its first request. Thus the first burst of a new pod or family has no rate.
+The dashboard computes rates over `$__rate_interval`, which is at least four scrape intervals. Each query sets a minimum step of 15 s, the interval of the `ServiceMonitor` that follows. Thus Grafana uses 15 s as the scrape interval, whatever the data source says, and a rate window can be as short as 1 minute. The "Conversions in flight" and "Time in each stage" panels estimate the concurrency from the stage time sums. Thus a burst between two scrapes still counts. Each request adds its time when it finishes, so the estimate is exact only under steady load. An upload that fails records no stage time, so stalled uploads that hold permits do not show there. A stage and family series starts at its first request. Thus the first burst of a new pod or family has no rate.
 
 The scrape configuration belongs to the deployment, not to this repository. With the Prometheus Operator, a `ServiceMonitor` like this one selects the Service of the base:
 
@@ -159,8 +159,7 @@ To use the examples:
 1. Apply the `ServiceMonitor` in the namespace of convertd.
 2. In Grafana, open **Dashboards**, then **New**, then **Import**.
 3. Upload `grafana-dashboard.json` and select your Prometheus data source.
-4. Set **Scrape interval** of that data source to `15s`, the interval of the `ServiceMonitor`.
-5. Set the `release` label in `prometheusrule.yaml` to the value that the `ruleSelector` of your Prometheus selects. Then apply the file in the same namespace.
+4. Set the `release` label in `prometheusrule.yaml` to the value that the `ruleSelector` of your Prometheus selects. Then apply the file in the same namespace.
 
 convertd does not export the queue capacity, so the queue alert has a fixed threshold of 4 for each pool. If an overlay changes `OFFICE_WORKERS`, `RENDER_WORKERS` or `QUEUE_CAPACITY`, change the thresholds too. The rules select every convertd that the Prometheus scrapes. If deployments with other capacities share one Prometheus, add a `namespace` matcher to each queue selector. The queue gauge also counts the later engine calls of admitted requests, which the capacity does not limit. Thus the alert shows queue pressure, and the 429 alert shows the refusals.
 
