@@ -274,10 +274,17 @@ impl Package {
     }
 }
 
-/// Whether every attribute of `e` parses. quick-xml reads attributes
-/// lazily, so a strict scan checks them all, not only the ones it looks up.
+/// Whether every attribute of `e` parses and its value decodes (no
+/// undeclared entity). quick-xml reads attributes lazily and [`attr`]
+/// reads a value that does not decode as absent, so a strict scan checks
+/// them all, not only the ones it looks up.
 pub fn attributes_ok(e: &BytesStart<'_>) -> bool {
-    e.attributes().all(|a| a.is_ok())
+    e.attributes().all(|a| {
+        a.is_ok_and(|a| {
+            a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .is_ok()
+        })
+    })
 }
 
 /// One internal relationship of `part`: its id, type and resolved target.

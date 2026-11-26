@@ -604,6 +604,15 @@ fn docx_malformed_attribute_in_the_font_table_skips_the_font_check() {
 }
 
 #[test]
+fn docx_undecodable_relationship_target_skips_the_font_check() {
+    // An undeclared entity in Target: the relationship cannot be read, so
+    // it is not taken as absent.
+    let bad = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/&nope;.ttf"/></Relationships>"#;
+    let facts = aptos_embedded(bad, &sfnt(&[0, 1, 0, 0]));
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+}
+
+#[test]
 fn docx_font_relationships_need_the_font_type() {
     // A relationship whose type only ends in "/font" is not a font part.
     let custom = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://example.com/custom/font" Target="fonts/font1.ttf"/></Relationships>"#;
