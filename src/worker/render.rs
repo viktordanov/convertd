@@ -730,6 +730,180 @@ mod tests {
         assert_eq!(secret(None).unwrap(), None);
     }
 
+    /// PDFium bound from `PDFIUM_LIB_DIR`, as in the dev image; `None`
+    /// elsewhere, and the test then passes without checking.
+    fn bound_pdfium() -> Option<Pdfium> {
+        let dir = std::env::var_os("PDFIUM_LIB_DIR")?;
+        let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
+            &std::path::PathBuf::from(dir),
+        ))
+        .ok()?;
+        Some(Pdfium::new(bindings))
+    }
+
+    /// A document of `pages` square pages of `side` points, each with text.
+    fn square_pages(pdfium: &Pdfium, side: f32, pages: usize) -> PdfDocument<'_> {
+        let mut document = pdfium.create_new_pdf().unwrap();
+        let font = document.fonts_mut().helvetica();
+        for n in 0..pages {
+            let mut page = document
+                .pages_mut()
+                .create_page_at_end(PdfPagePaperSize::Custom(
+                    PdfPoints::new(side),
+                    PdfPoints::new(side),
+                ))
+                .unwrap();
+            page.objects_mut()
+                .create_text_object(
+                    PdfPoints::new(72.0),
+                    PdfPoints::new(side - 144.0),
+                    format!("Page {n}"),
+                    font,
+                    PdfPoints::new(48.0),
+                )
+                .unwrap();
+        }
+        document
+    }
+
+    fn config(scale: f32) -> PdfRenderConfig {
+        PdfRenderConfig::new()
+            .scale_page_by_factor(scale)
+            .set_format(PdfBitmapFormat::BGRA)
+            .set_reverse_byte_order(false)
+            .render_form_data(true)
+    }
+
+    /// Our bitmap holds what PDFium's own bitmap held, at sizes that round
+    /// both ways.
+    #[test]
+    fn render_into_matches_the_crate_render() {
+        let Some(pdfium) = bound_pdfium() else {
+            eprintln!("skipped: PDFIUM_LIB_DIR is not set");
+            return;
+        };
+        let document = square_pages(&pdfium, 595.3, 1);
+        let page = document.pages().get(0).unwrap();
+        let mut bitmap = Vec::new();
+        for scale in [1.0, 150.0 / 72.0, 0.37] {
+            let config = config(scale);
+            let (w, h) = render_into(&page, &config, scale, &mut bitmap).unwrap();
+            let theirs = page.render_with_config(&config).unwrap();
+            assert_eq!(
+                (w, h),
+                (theirs.width() as u32, theirs.height() as u32),
+                "{scale}"
+            );
+            assert_eq!(bitmap, theirs.as_raw_bytes(), "{scale}: the pixels differ");
+        }
+    }
+
+    /// The peak resident memory per process of rendering two 4096 x 4096
+    /// pages to PNG, before and after the copy-free path. Each path runs
+    /// in a child process of its own, because the peak only grows. It
+    /// needs PDFium: `cargo test --lib render_peak -- --ignored` in the dev
+    /// image.
+    #[test]
+    #[ignore = "needs PDFium and a quiet process; run by hand in the dev image"]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a child of the test binary, outside the worker's reaper"
+    )]
+    fn render_peak_rss_per_page() {
+        const NAME: &str = "worker::render::tests::render_peak_rss_per_page";
+        let Some(pdfium) = bound_pdfium() else {
+            eprintln!("skipped: PDFIUM_LIB_DIR is not set");
+            return;
+        };
+        let max_rss_kib = || {
+            // SAFETY: rusage is plain integers, for which zero is valid.
+            let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+            // SAFETY: getrusage fills the struct it is given.
+            unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+            // KiB on Linux, bytes on macOS.
+            if cfg!(target_os = "macos") {
+                usage.ru_maxrss / 1024
+            } else {
+                usage.ru_maxrss
+            }
+        };
+        if let Ok(path) = std::env::var("P2_RENDER_PATH") {
+            let document = square_pages(&pdfium, 4096.0, 2);
+            let before = max_rss_kib();
+            let mut bitmap = Vec::new();
+            let mut encoder = crate::worker::encode::Encoder::new();
+            for page in document.pages().iter() {
+                let config = config(1.0);
+                if path == "old" {
+                    let rendered = page.render_with_config(&config).unwrap();
+                    let bgra = rendered.as_raw_bytes();
+                    let mut rgb = Vec::with_capacity(bgra.len() / 4 * 3);
+                    for p in bgra.as_chunks::<4>().0 {
+                        rgb.extend_from_slice(&[p[2], p[1], p[0]]);
+                    }
+                    let mut out = Vec::new();
+                    use image::ImageEncoder;
+                    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+                    PngEncoder::new_with_quality(
+                        &mut out,
+                        CompressionType::Fast,
+                        FilterType::Adaptive,
+                    )
+                    .write_image(
+                        &rgb,
+                        rendered.width() as u32,
+                        rendered.height() as u32,
+                        image::ExtendedColorType::Rgb8,
+                    )
+                    .unwrap();
+                } else {
+                    let (w, h) = render_into(&page, &config, 1.0, &mut bitmap).unwrap();
+                    encoder
+                        .encode(crate::ipc::ImageFormat::Png, &bitmap, w, h, 85)
+                        .unwrap();
+                }
+            }
+            println!("P2 {path} {}", max_rss_kib() - before);
+            return;
+        }
+        drop(pdfium);
+        let run = |path: &str| -> i64 {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    NAME,
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("P2_RENDER_PATH", path)
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout);
+            text.lines()
+                .find_map(|line| line.strip_prefix(&format!("P2 {path} ")))
+                .and_then(|kib| kib.trim().parse().ok())
+                .unwrap_or_else(|| panic!("no result from the {path} child: {text}"))
+        };
+        let (old, new) = (run("old"), run("new"));
+        let page_mib = 4096 * 4096 * 4 / 1024 / 1024;
+        eprintln!(
+            "peak RSS growth for two 4096 x 4096 PNG pages: before {} MiB, after {} MiB \
+             (one BGRA page is {page_mib} MiB)",
+            old / 1024,
+            new / 1024
+        );
+        assert!(
+            new < old,
+            "the copy-free path is not lower: {new} KiB >= {old} KiB"
+        );
+        assert!(
+            new / 1024 < page_mib as i64 * 3 / 2,
+            "more than one page buffer: {} MiB",
+            new / 1024
+        );
+    }
+
     #[test]
     fn page_scale_honors_dpi_and_the_edge_cap() {
         // A4 at 150 DPI: 1240 × 1754 px.
