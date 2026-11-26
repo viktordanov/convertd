@@ -8,7 +8,7 @@
 # in this image, aliases included; "default_substitute" is the fallback for any other name.
 # Versions come from the pinned build args, not from LibreOfficeKit. fontconfig runs here, at
 # build time only; the supervisor never runs it. A derived font image runs this again (as root)
-# after its own fc-cache.
+# after /opt/convertd/cache-fonts.sh.
 set -euo pipefail
 : "${LO_VERSION:?}" "${PDFIUM_BUILD:?}"
 out="${BUILD_INFO_PATH:-/opt/convertd/build-info.json}"

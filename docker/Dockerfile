@@ -203,6 +203,8 @@ COPY docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
 COPY docker/fonts/fonts.json /etc/convertd/fonts.json
 COPY docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
 COPY docker/fonts/35-rs-convert-aliases.conf /etc/fonts/conf.d/35-rs-convert-aliases.conf
+# Builds the font cache so it stays valid after a tar export; kept for derived font images.
+COPY docker/cache-fonts.sh /opt/convertd/cache-fonts.sh
 # docker/install-engines.sh is shared with the dev target, so the two cannot drift. The script
 # and the .debs are bind mounts, so neither becomes a layer.
 RUN --mount=type=bind,from=engines,source=/out/debs,target=/debs \
@@ -283,6 +285,8 @@ COPY docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
 COPY docker/fonts/fonts.json /etc/convertd/fonts.json
 COPY docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
 COPY docker/fonts/35-rs-convert-aliases.conf /etc/fonts/conf.d/35-rs-convert-aliases.conf
+# Builds the font cache so it stays valid after a tar export; kept for derived font images.
+COPY docker/cache-fonts.sh /opt/convertd/cache-fonts.sh
 RUN --mount=type=bind,from=engines,source=/out/debs,target=/debs \
     --mount=type=bind,source=docker/libreoffice,target=/lo-config \
     --mount=type=bind,source=docker/install-engines.sh,target=/install-engines.sh \
