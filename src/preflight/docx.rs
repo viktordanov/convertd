@@ -183,8 +183,10 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
             return;
         }
     }
+    // The font table and its font parts take what the runs left of the
+    // font scan's budget.
     match font_table(package, &main)
-        .and_then(|table| embedded_fonts(package, table.as_deref(), &found))
+        .and_then(|table| embedded_fonts(package, table.as_deref(), &found, &mut budget))
     {
         Ok(embedded) => facts.embedded_fonts = embedded.into_iter().collect(),
         Err(reason) => {
@@ -203,7 +205,7 @@ fn font_table(package: &mut Package, main: &str) -> Result<Option<String>, SkipR
     if !package.has(&rels_path(main)) {
         return Ok(None);
     }
-    let rels = package.rels_complete(main)?;
+    let rels = package.rels_complete(main, &FONT_TABLE_TYPES)?;
     let mut tables: Vec<&String> = rels
         .values()
         .filter(|(kind, _)| FONT_TABLE_TYPES.contains(&kind.as_str()))
@@ -227,6 +229,7 @@ fn embedded_fonts(
     package: &mut Package,
     part: Option<&str>,
     requested: &BTreeSet<String>,
+    budget: &mut u64,
 ) -> Result<BTreeSet<String>, SkipReason> {
     let Some(part) = part else {
         return Ok(BTreeSet::new());
@@ -235,7 +238,7 @@ fn embedded_fonts(
         return Ok(BTreeSet::new());
     }
     let rels = if package.has(&rels_path(part)) {
-        package.rels_complete(part)?
+        package.rels_complete(part, &FONT_TYPES)?
     } else {
         Default::default()
     };
@@ -266,7 +269,7 @@ fn embedded_fonts(
     // part with no element at all is malformed, not an empty table.
     let mut root: Option<bool> = None;
     let mut second_root = false;
-    package.xml_events(part, PART_CAP, |event| {
+    let read = package.xml_events(part, PART_CAP.min(*budget), |event| {
         let (e, opens) = match event {
             XmlEvent::Start(e) => {
                 open += 1;
@@ -326,6 +329,7 @@ fn embedded_fonts(
         }
         true
     })?;
+    *budget = budget.saturating_sub(read);
     if open != 0 || root.is_none() || second_root {
         return Err(SkipReason::MalformedXml);
     }
@@ -337,7 +341,7 @@ fn embedded_fonts(
         }
         // The part is in the package: a read that fails is not evidence
         // that the family is missing, so it skips the check.
-        found[family] = is_font(package, target, key)?;
+        found[family] = is_font(package, target, key, budget)?;
     }
     Ok(families
         .iter()
@@ -402,10 +406,19 @@ const REQUIRED_TABLES: [(&[u8; 4], u64); 5] = [
 /// the fixed part of its format. This reads the directory only; it is not
 /// a parse, but it rejects empty, cut, unrelated and incomplete parts. Word embeds single TrueType fonts, so a collection
 /// (`ttcf`) does not count.
-fn is_font(package: &mut Package, target: &str, key: Option<[u8; 16]>) -> Result<bool, SkipReason> {
+fn is_font(
+    package: &mut Package,
+    target: &str,
+    key: Option<[u8; 16]>,
+    budget: &mut u64,
+) -> Result<bool, SkipReason> {
     let size = package.size(target).unwrap_or(0);
-    let read = |package: &mut Package, len: u64| -> Result<Vec<u8>, SkipReason> {
+    let mut read = |package: &mut Package, len: u64| -> Result<Vec<u8>, SkipReason> {
+        if len > *budget {
+            return Err(SkipReason::CapReached);
+        }
         let mut bytes = package.head(target, usize::try_from(len).unwrap_or(usize::MAX))?;
+        *budget -= bytes.len() as u64;
         if let Some(key) = key {
             for (i, byte) in bytes.iter_mut().take(OBFUSCATED).enumerate() {
                 *byte ^= key[i % 16];

@@ -528,6 +528,10 @@ fn docx_font_table_relationships_with_a_second_root_skip_the_font_check() {
     let two_roots = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font1.ttf"/></Relationships>"#;
     let facts = aptos_embedded(two_roots, &sfnt(&[0, 1, 0, 0]));
     assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+    // A part whose root is not `Relationships` is malformed, not empty.
+    let wrong_root = r#"<?xml version="1.0"?><Other><Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font1.ttf"/></Other>"#;
+    let facts = aptos_embedded(wrong_root, &sfnt(&[0, 1, 0, 0]));
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
     // A relationship nested below another element is not one.
     let nested = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><x><Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font1.ttf"/></x></Relationships>"#;
     let facts = aptos_embedded(nested, &sfnt(&[0, 1, 0, 0]));

@@ -192,11 +192,14 @@ impl Package {
     /// [`Package::rels`] for a scan that must not mistake a partial map for
     /// a whole one: the part must hold one `Relationships` root, closed,
     /// with nothing after it, and only its direct `Relationship` children
-    /// count. More than 20 000 fail with `CapReached`, a cut, empty or
-    /// multi-rooted part with `MalformedXml`.
+    /// count. Only relationships of the `types` given are kept, and their
+    /// resolved targets may take at most [`super::PART_CAP`] bytes in all.
+    /// More than 20 000 kept, or more bytes, fail with `CapReached`; a
+    /// cut, empty, wrongly rooted or multi-rooted part with `MalformedXml`.
     pub fn rels_complete(
         &mut self,
         part: &str,
+        types: &[&str],
     ) -> Result<HashMap<String, (String, String)>, SkipReason> {
         let rels_name = rels_path(part);
         let mut map = HashMap::new();
@@ -206,6 +209,7 @@ impl Package {
         let mut closed = false;
         let mut malformed = false;
         let mut capped = false;
+        let mut kept_bytes = 0u64;
         self.xml_events(&rels_name, super::PART_CAP, |event| {
             let (e, opens) = match event {
                 XmlEvent::Start(e) => (e, true),
@@ -225,9 +229,11 @@ impl Package {
                 closed = !opens;
             } else if open == 1
                 && root == Some(true)
+                && attr(e, b"Type").is_some_and(|kind| types.contains(&kind.as_str()))
                 && let Some((id, value)) = relationship(part, e)
             {
-                if map.len() == MAX_RELATIONSHIPS {
+                kept_bytes += (id.len() + value.0.len() + value.1.len()) as u64;
+                if map.len() == MAX_RELATIONSHIPS || kept_bytes > super::PART_CAP {
                     // A dropped relationship would read as one never made.
                     capped = true;
                     return false;
@@ -242,7 +248,7 @@ impl Package {
         if capped {
             return Err(SkipReason::CapReached);
         }
-        if malformed || open != 0 || root.is_none() {
+        if malformed || open != 0 || root != Some(true) {
             return Err(SkipReason::MalformedXml);
         }
         Ok(map)
