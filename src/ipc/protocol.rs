@@ -271,7 +271,8 @@ pub struct Fatal {
 pub struct Reply {
     /// The `Call` id this answers.
     pub id: u64,
-    /// Calls served by this process, this one included.
+    /// Conversions served by this process, this one included. A `Ping`
+    /// or an `Inspect` does not count (`worker::counts_as_job`).
     pub job: u32,
     pub engine: EngineTimes,
     /// The worker's RSS after the call; 0 where it cannot be read.

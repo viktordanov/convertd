@@ -54,10 +54,10 @@ pub struct EngineConfig {
     pub worker_max_age: Duration,
     /// Kill during a job above this RSS.
     pub worker_kill_rss_mb: u64,
-    /// The office pool's limits: `OFFICE_MAX_RSS_MB` and
+    /// The office pool's limits: `OFFICE_MAX_JOBS`, `OFFICE_MAX_RSS_MB` and
     /// `OFFICE_KILL_RSS_MB`, else the shared `WORKER_*` values.
     pub office: PoolLimits,
-    /// The render pool's limits: `RENDER_MAX_RSS_MB` and
+    /// The render pool's limits: `RENDER_MAX_JOBS`, `RENDER_MAX_RSS_MB` and
     /// `RENDER_KILL_RSS_MB`, else the shared `WORKER_*` values.
     pub render: PoolLimits,
     pub lo_program_dir: PathBuf,
@@ -76,17 +76,17 @@ impl EngineConfig {
         let worker_max_jobs = env.positive("WORKER_MAX_JOBS", 50)?;
         let worker_max_rss_mb = env.positive("WORKER_MAX_RSS_MB", 1024)?;
         let worker_kill_rss_mb = env.positive("WORKER_KILL_RSS_MB", 2048)?;
-        let limits =
-            |max_rss: &'static str, kill_rss: &'static str| -> Result<PoolLimits, ConfigError> {
-                Ok(PoolLimits {
-                    max_jobs: worker_max_jobs,
-                    max_rss_mb: env.positive(max_rss, worker_max_rss_mb)?,
-                    kill_rss_mb: env.positive(kill_rss, worker_kill_rss_mb)?,
-                })
-            };
+        let limits = |names: [&'static str; 3]| -> Result<PoolLimits, ConfigError> {
+            let [max_jobs, max_rss, kill_rss] = names;
+            Ok(PoolLimits {
+                max_jobs: env.positive(max_jobs, worker_max_jobs)?,
+                max_rss_mb: env.positive(max_rss, worker_max_rss_mb)?,
+                kill_rss_mb: env.positive(kill_rss, worker_kill_rss_mb)?,
+            })
+        };
         Ok(Self {
-            office: limits("OFFICE_MAX_RSS_MB", "OFFICE_KILL_RSS_MB")?,
-            render: limits("RENDER_MAX_RSS_MB", "RENDER_KILL_RSS_MB")?,
+            office: limits(["OFFICE_MAX_JOBS", "OFFICE_MAX_RSS_MB", "OFFICE_KILL_RSS_MB"])?,
+            render: limits(["RENDER_MAX_JOBS", "RENDER_MAX_RSS_MB", "RENDER_KILL_RSS_MB"])?,
             office_workers,
             render_workers: env.positive("RENDER_WORKERS", cpus)?,
             queue_capacity: env.parse("QUEUE_CAPACITY", 2 * office_workers)?,
@@ -117,10 +117,12 @@ mod tests {
         let e = engines(&[
             ("WORKER_KILL_RSS_MB", "1536"),
             ("WORKER_MAX_RSS_MB", "1024"),
+            ("WORKER_MAX_JOBS", "40"),
         ]);
         for limits in [e.office, e.render] {
             assert_eq!(limits.kill_rss_mb, 1536);
             assert_eq!(limits.max_rss_mb, 1024);
+            assert_eq!(limits.max_jobs, 40);
         }
     }
 
@@ -131,7 +133,9 @@ mod tests {
             ("OFFICE_MAX_RSS_MB", "960"),
             ("RENDER_KILL_RSS_MB", "256"),
             ("RENDER_MAX_RSS_MB", "192"),
+            ("OFFICE_MAX_JOBS", "200"),
         ]);
+        assert_eq!((e.office.max_jobs, e.render.max_jobs), (200, 50));
         assert_eq!((e.office.kill_rss_mb, e.office.max_rss_mb), (1280, 960));
         assert_eq!((e.render.kill_rss_mb, e.render.max_rss_mb), (256, 192));
         assert!(

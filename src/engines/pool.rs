@@ -220,7 +220,8 @@ pub struct WorkerRef {
     pub pool: &'static str,
     pub slot: u16,
     pub generation: u32,
-    /// Calls this process has served, the current one included.
+    /// Conversions this process has served, the current one included. A
+    /// `Ping` or an `Inspect` does not count.
     pub job: u32,
 }
 

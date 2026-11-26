@@ -47,7 +47,7 @@ A worker reads no configuration. The supervisor gives it a fixed environment and
 
 After `Ready`, the worker reads one `Call` at a time and writes one `Reply` with the same `id`. The worker answers `Ping` itself. It gives every other operation to its engine through the `Engine` trait, whose `handle` returns the result and the engine times.
 
-The `job` field of a reply counts every call that this process served, `Ping` included. The `rss_bytes` field is the RSS after the call. The engine times run from just before the document is opened to just after the last engine call. Process start, the bind and IPC are outside them. If a reply does not fit in one 16 MiB frame, the worker sends a `LimitExceeded` error with the same `id` instead.
+The `job` field of a reply counts the conversions that this process served. A `Ping` and an `Inspect` do not count, so `WORKER_MAX_JOBS` counts conversions (`counts_as_job`). `Test` counts, because it stands in for a conversion at level B. The `rss_bytes` field is the RSS after the call. The engine times run from just before the document is opened to just after the last engine call. Process start, the bind and IPC are outside them. If a reply does not fit in one 16 MiB frame, the worker sends a `LimitExceeded` error with the same `id` instead.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="failure" files="mod.rs sys.rs" -->

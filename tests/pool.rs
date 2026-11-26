@@ -356,7 +356,10 @@ async fn max_jobs_replaces_first_and_never_empties_a_pool_of_one() {
                 let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
                 assert_eq!(lease.worker_ref().unwrap().generation, 1);
                 first_pid.get_or_insert(lease.pid().unwrap());
-                lease.call(Op::Ping, after(5000)).await.unwrap();
+                lease
+                    .call(test_op(TestOp::Sleep { ms: 0 }), after(5000))
+                    .await
+                    .unwrap();
             }
             let until = Instant::now() + Duration::from_secs(10);
             let mut generation = 1;
@@ -397,7 +400,10 @@ async fn max_jobs_one_never_serves_two_calls_from_one_process() {
                 if lease.spawned_on_path().is_some() {
                     spawned_on_path += 1;
                 }
-                let reply = lease.call(Op::Ping, after(5000)).await.unwrap();
+                let reply = lease
+                    .call(test_op(TestOp::Sleep { ms: 0 }), after(5000))
+                    .await
+                    .unwrap();
                 assert_eq!(reply.job, 1);
             }
             assert_eq!(pids.len(), 10);
@@ -900,6 +906,61 @@ async fn a_replacement_is_leased_only_after_its_incumbent_leaves() {
             assert_eq!(lease.worker_ref().unwrap().generation, 2);
             drop(lease);
             finish(pool, "overlap").await;
+        },
+    )
+    .await;
+}
+
+/// `max_jobs` counts conversions: a `Ping` or an `Inspect` is not a job, so
+/// a busy render pool that inspects before each render does not recycle
+/// twice as often.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pings_and_inspects_do_not_count_towards_max_jobs() {
+    within(
+        TEST,
+        "pings_and_inspects_do_not_count_towards_max_jobs",
+        async {
+            let dir = base_dir("not-jobs");
+            let pdf = dir.join("source.pdf");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(&pdf, b"%PDF-1.4 FAKE:PAGES=1").unwrap();
+            let mut spec = spec("not-jobs", 1);
+            spec.max_jobs = 2;
+            let pool = ready(spec).await;
+            let inspect = Op::Inspect(InspectArgs {
+                pdf: pdf.clone(),
+                password: None,
+                probe_dpi: None,
+                probe_pages: Default::default(),
+                collect_fonts: false,
+            });
+            for op in [Op::Ping, inspect.clone(), Op::Ping, inspect] {
+                let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+                assert_eq!(lease.worker_ref().unwrap().generation, 1);
+                let reply = lease.call(op, after(5000)).await.unwrap();
+                assert_eq!(reply.job, 0, "not a job");
+            }
+            for job in 1..=2 {
+                let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+                assert_eq!(lease.worker_ref().unwrap().generation, 1);
+                let reply = lease
+                    .call(test_op(TestOp::Sleep { ms: 0 }), after(5000))
+                    .await
+                    .unwrap();
+                assert_eq!(reply.job, job);
+            }
+            // The second job reached max_jobs: the next lease gets the replacement.
+            let until = Instant::now() + Duration::from_secs(10);
+            loop {
+                let lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+                if lease.worker_ref().unwrap().generation == 2 {
+                    break;
+                }
+                drop(lease);
+                assert!(Instant::now() < until, "no replacement after two jobs");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            finish(pool, "not-jobs").await;
         },
     )
     .await;
