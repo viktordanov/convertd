@@ -98,7 +98,7 @@ struct Settings {
     behavior: Mutex<FakeBehavior>,
     /// Read `FAKE:` markers from the input (test-hooks builds only).
     markers: bool,
-    /// Slept and reported as `EngineTiming::engine`.
+    /// Slept; the measured sleep is reported as `EngineTiming::engine`.
     engine_time: Duration,
     jobs: AtomicU32,
 }
@@ -153,16 +153,26 @@ impl Settings {
             FakeBehavior::Panic => panic!("FAKE:PANIC"),
             FakeBehavior::Delay(delay) => (None, delay),
         };
-        let engine = delay + self.engine_time;
-        if !engine.is_zero() {
-            let until = Instant::now() + engine;
-            if until > deadline {
-                tokio::time::sleep_until(deadline.into()).await;
-                return Err(EngineError::Timeout);
-            }
-            tokio::time::sleep_until(until.into()).await;
+        let wanted = delay + self.engine_time;
+        if wanted.is_zero() {
+            return Ok(Played {
+                pages,
+                engine: Duration::ZERO,
+            });
         }
-        Ok(Played { pages, engine })
+        let slept = Instant::now();
+        let until = slept + wanted;
+        if until > deadline {
+            tokio::time::sleep_until(deadline.into()).await;
+            return Err(EngineError::Timeout);
+        }
+        tokio::time::sleep_until(until.into()).await;
+        // Measured, as a worker measures its engine: the timer's overshoot
+        // is engine time, not overhead.
+        Ok(Played {
+            pages,
+            engine: slept.elapsed(),
+        })
     }
 
     fn timing(&self, started: Instant, engine: Duration) -> EngineTiming {
