@@ -109,7 +109,7 @@ fn quoted_name(group: &[u8]) -> bool {
 /// `{...}` or `by (...)`, or part of a string, a number or a `[...]` range.
 /// A `# comment` is skipped. A `__name__` matcher gives [`NAME_MATCHER`].
 fn query_metrics(expr: &str) -> BTreeSet<String> {
-    const KEYWORDS: &[&str] = &["and", "or", "unless", "bool", "offset", "inf", "nan"];
+    const KEYWORDS: &[&str] = &["and", "or", "unless", "bool", "inf", "nan"];
     // An aggregation only when `(`, `by` or `without` follows; otherwise
     // the word is a metric name, as PromQL reads it.
     const AGGREGATIONS: &[&str] = &[
@@ -203,12 +203,16 @@ fn query_metrics(expr: &str) -> BTreeSet<String> {
                 // PromQL keywords ignore case; metric names do not.
                 let lower = word.to_ascii_lowercase();
                 let lower = lower.as_str();
+                // Bytes, not str slices: a label value can be UTF-8.
                 let grouped = ["by", "without"].iter().any(|g| {
-                    expr[next..].len() >= g.len()
-                        && expr[next..next + g.len()].eq_ignore_ascii_case(g)
-                        && !expr[next + g.len()..]
-                            .starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                    b.get(next..next + g.len())
+                        .is_some_and(|w| w.eq_ignore_ascii_case(g.as_bytes()))
+                        && !b.get(next + g.len()).is_some_and(|c| continues(*c))
                 });
+                // `offset` is a modifier only before its duration.
+                let modifier = lower == "offset"
+                    && b.get(next)
+                        .is_some_and(|c| c.is_ascii_digit() || *c == b'-' || *c == b'$');
                 if LABEL_LISTS.contains(&lower) && call {
                     i = skip_group(b, next, b')');
                 } else {
@@ -216,6 +220,7 @@ fn query_metrics(expr: &str) -> BTreeSet<String> {
                     // aggregation with its `(` or `by` is not a metric.
                     let syntax = call
                         || KEYWORDS.contains(&lower)
+                        || modifier
                         || lower == "group_left"
                         || lower == "group_right"
                         || (AGGREGATIONS.contains(&lower) && grouped);
@@ -473,13 +478,24 @@ fn the_name_scan_reports_a_misspelled_metric() {
     // An aggregation name without `(`, `by` or `without` is a metric.
     let names = query_metrics(
         "sum by (pool) (convert_workers) or sum without (pod) (x) or count or without \
-         or SUM BY (pool) (y) / ignoring (pod) z * on(pod) group_left w",
+         or SUM BY (pool) (y) / ignoring (pod) z * on(pod) group_left w offset 5m \
+         or offset or v{pod=~\"東京.*\"} offset -1h",
     );
     assert_eq!(
         names,
-        ["convert_workers", "count", "w", "without", "x", "y", "z"]
-            .map(String::from)
-            .into()
+        [
+            "convert_workers",
+            "count",
+            "offset",
+            "v",
+            "w",
+            "without",
+            "x",
+            "y",
+            "z"
+        ]
+        .map(String::from)
+        .into()
     );
 }
 
