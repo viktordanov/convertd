@@ -36,7 +36,7 @@ Build the tests with the cargo feature `test-hooks`. Without it, `pool.rs`, `pro
 
 `cargo test --features test-hooks` also runs every test, but it has no per-test time limit and it runs the `slow_` tests. To run the engine tests for real, run them in the `dev` image that [docker/README.md](../docker/README.md) describes. That image sets `LO_PROGRAM_DIR` and `PDFIUM_LIB_DIR`. Next: read [Fakes](#fakes) before you write a test that needs an engine.
 
-<!-- memoria:section id="levels" files="convert_pdf.rs convert_bundle.rs detect.rs errors.rs ops.rs openapi_spec.rs upload.rs pool.rs process.rs reap_race.rs oom_kill.rs worker_test_role.rs engines_poison.rs engines_office.rs engines_render.rs peak_heap.rs rss_linux.rs" -->
+<!-- memoria:section id="levels" files="convert_pdf.rs convert_bundle.rs detect.rs errors.rs ops.rs openapi_spec.rs upload.rs pool.rs process.rs reap_race.rs oom_kill.rs worker_test_role.rs engines_poison.rs engines_office.rs engines_render.rs peak_heap.rs rss_linux.rs observability.rs" -->
 ## Test levels
 
 The tests have three levels:
@@ -66,6 +66,7 @@ The integration tests:
 | `engines_render.rs` | The render worker with the real PDFium, through the pool and the `PdfEngine` adapter | No |
 | `peak_heap.rs` | Heap per request with a counting allocator: the peak does not grow from 16 MiB to 100 MiB uploads, a small request stays under 408 allocations, and a hostile OLE2 upload stays bounded during detection | No |
 | `rss_linux.rs` | The idle RSS of the supervisor on Linux, at most 30 MB. The measurement is `#[ignore]`, so only its parsers run by default | The measurement only |
+| `observability.rs` | Every metric that `deploy/observability/` names is on `/metrics`: the scan of the files, and a scrape of the binary at level B after a few requests | The scrape only |
 
 The engine tests need `LO_PROGRAM_DIR` with `soffice.bin`, `PDFIUM_LIB_DIR` with `libpdfium.so`, or both. Some also need `CONVERTD_CORPUS_DIR`, the output folder of `corpus/generate.py`. If a variable is not set, or its folder does not hold that file, the test prints `skipped` and passes without a check. One exception: when `CONVERTD_CORPUS_DIR` is set, a missing corpus file fails the encrypted-file test in `engines_office.rs`, so a renamed corpus file cannot hide. Thus a pass on a host without the engines proves nothing about the engines.
 

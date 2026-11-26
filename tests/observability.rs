@@ -2,10 +2,17 @@
 //! name only metrics that convertd emits (ledger item 010, effort O1).
 //!
 //! The scrape test starts `convertd serve` at level B, so the pools record
-//! their metrics too, sends requests until every family exists, and
-//! compares each `convert_*` name in the files with the scrape. A name
-//! counts when it is a sample name or a `# TYPE` family, so a histogram
-//! may appear as itself or with `_bucket`, `_sum` or `_count`.
+//! their metrics too, and sends requests until every family exists. Two
+//! sets of names must then be sample names of the scrape:
+//!
+//! - every `convert_*` identifier anywhere in the files, comments and
+//!   panel descriptions included;
+//! - every metric selector in a query (the `expr` of a panel or a rule, and
+//!   the metric of a `label_values` variable), whatever its prefix, so a
+//!   typo such as `covert_workers` fails too.
+//!
+//! A histogram counts only with its `_bucket`, `_sum` or `_count` suffix,
+//! because Prometheus has no series under the bare family name.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -28,20 +35,132 @@ fn metric_names(text: &str) -> BTreeSet<String> {
     names
 }
 
-/// The sample names and the `# TYPE` family names of a text exposition.
-fn exposed(exposition: &str) -> BTreeSet<String> {
+/// The index after the closing `close` that matches the opening byte at
+/// `at`, skipping quoted strings; the end of `b` when it never closes.
+fn skip_group(b: &[u8], at: usize, close: u8) -> usize {
+    let open = b[at];
+    let mut depth = 0usize;
+    let mut i = at;
+    while i < b.len() {
+        match b[i] {
+            b'"' | b'\'' | b'`' => {
+                i = skip_string(b, i);
+                continue;
+            }
+            c if c == open => depth += 1,
+            c if c == close => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    b.len()
+}
+
+/// The index after the string that starts at `at`.
+fn skip_string(b: &[u8], at: usize) -> usize {
+    let quote = b[at];
+    let mut i = at + 1;
+    while i < b.len() {
+        match b[i] {
+            b'\\' if quote != b'`' => i += 2,
+            c if c == quote => return i + 1,
+            _ => i += 1,
+        }
+    }
+    b.len()
+}
+
+/// The metric names that a PromQL expression selects: every identifier
+/// that is not a keyword, an aggregation, a function call, a label in
+/// `{...}` or `by (...)`, or part of a string, a number or a `[...]` range.
+fn query_metrics(expr: &str) -> BTreeSet<String> {
+    const KEYWORDS: &[&str] = &[
+        "and",
+        "or",
+        "unless",
+        "bool",
+        "offset",
+        "inf",
+        "nan",
+        "sum",
+        "min",
+        "max",
+        "avg",
+        "count",
+        "stddev",
+        "stdvar",
+        "topk",
+        "bottomk",
+        "quantile",
+        "count_values",
+        "group",
+        "limitk",
+        "limit_ratio",
+    ];
+    const LABEL_LISTS: &[&str] = &[
+        "by",
+        "without",
+        "on",
+        "ignoring",
+        "group_left",
+        "group_right",
+    ];
+    let starts = |c: u8| c.is_ascii_alphabetic() || c == b'_' || c == b':';
+    let continues = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b':';
+    let b = expr.as_bytes();
     let mut names = BTreeSet::new();
-    for line in exposition.lines() {
-        let name = match line.strip_prefix("# TYPE ") {
-            Some(rest) => rest.split_whitespace().next(),
-            None if line.starts_with('#') => None,
-            None => line.split(['{', ' ']).next(),
-        };
-        if let Some(name) = name.filter(|n| !n.is_empty()) {
-            names.insert(name.to_owned());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'"' | b'\'' | b'`' => i = skip_string(b, i),
+            b'{' => i = skip_group(b, i, b'}'),
+            b'[' => i = skip_group(b, i, b']'),
+            c if c.is_ascii_digit() || c == b'.' || c == b'$' => {
+                i += 1;
+                while i < b.len() && (continues(b[i]) || b[i] == b'.') {
+                    i += 1;
+                }
+            }
+            c if starts(c) => {
+                let start = i;
+                while i < b.len() && continues(b[i]) {
+                    i += 1;
+                }
+                let word = &expr[start..i];
+                let mut next = i;
+                while next < b.len() && b[next].is_ascii_whitespace() {
+                    next += 1;
+                }
+                let call = next < b.len() && b[next] == b'(';
+                if LABEL_LISTS.contains(&word) {
+                    if call {
+                        i = skip_group(b, next, b')');
+                    }
+                } else if !call && !KEYWORDS.contains(&word) {
+                    names.insert(word.to_owned());
+                }
+            }
+            _ => i += 1,
         }
     }
     names
+}
+
+/// The sample names of a text exposition: for a histogram, the names with
+/// `_bucket`, `_sum` and `_count`.
+fn exposed(exposition: &str) -> BTreeSet<String> {
+    exposition
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| line.split(['{', ' ']).next())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// The names in `named` that `exposed` does not have.
@@ -68,8 +187,61 @@ fn observability_files() -> Vec<(PathBuf, String)> {
     files
 }
 
+/// The queries of a dashboard: every `expr`, and the metric of each
+/// `label_values(metric{...}, label)` variable.
+fn dashboard_queries(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, item) in map {
+                match (key.as_str(), item.as_str()) {
+                    ("expr", Some(expr)) => out.push(expr.to_owned()),
+                    ("definition", Some(def)) => {
+                        let inner = def
+                            .trim()
+                            .strip_prefix("label_values(")
+                            .and_then(|rest| rest.rsplit_once(','))
+                            .map(|(metric, _)| metric.to_owned());
+                        out.push(inner.unwrap_or_else(|| panic!("unknown variable query {def}")));
+                    }
+                    _ => dashboard_queries(item, out),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                dashboard_queries(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The `expr:` values of a rules file, inline or as a `|` or `>` block.
+fn rule_queries(yaml: &str) -> Vec<String> {
+    let lines: Vec<&str> = yaml.lines().collect();
+    let mut out = Vec::new();
+    for (n, line) in lines.iter().enumerate() {
+        let indent = line.len() - line.trim_start().len();
+        let Some(value) = line.trim_start().strip_prefix("expr:") else {
+            continue;
+        };
+        let value = value.trim();
+        if value.starts_with('|') || value.starts_with('>') {
+            let block: Vec<&str> = lines[n + 1..]
+                .iter()
+                .take_while(|l| l.trim().is_empty() || l.len() - l.trim_start().len() > indent)
+                .copied()
+                .collect();
+            out.push(block.join("\n"));
+        } else {
+            out.push(value.trim_matches(['"', '\'']).to_owned());
+        }
+    }
+    out
+}
+
 /// Every metric name that the files name, after the checks that keep the
-/// scan from passing on nothing: both files exist and each names metrics.
+/// scan from passing on nothing: both files exist and each has queries.
 fn named_metrics() -> BTreeSet<String> {
     let files = observability_files();
     let file_names: Vec<String> = files
@@ -84,21 +256,29 @@ fn named_metrics() -> BTreeSet<String> {
     }
     let mut all = BTreeSet::new();
     for (path, text) in &files {
-        let names = metric_names(text);
-        // The dashboard names 15 families today and the rules 3: a scan
-        // that finds fewer is broken, not passing.
-        let least = if path.extension().is_some_and(|e| e == "json") {
-            10
+        let json = path.extension().is_some_and(|e| e == "json");
+        let queries = if json {
+            let mut out = Vec::new();
+            dashboard_queries(&serde_json::from_str(text).unwrap(), &mut out);
+            out
         } else {
-            3
+            rule_queries(text)
         };
+        // The dashboard has 42 queries today and the rules 4: a scan that
+        // finds fewer is broken, not passing.
+        let least = if json { 30 } else { 4 };
         assert!(
-            names.len() >= least,
-            "{} names only {:?}",
+            queries.len() >= least,
+            "{} has only {} queries",
             path.display(),
-            names
+            queries.len()
         );
-        all.extend(names);
+        for query in &queries {
+            let names = query_metrics(query);
+            assert!(!names.is_empty(), "no metric in {query}");
+            all.extend(names);
+        }
+        all.extend(metric_names(text));
     }
     all
 }
@@ -111,27 +291,52 @@ fn the_name_scan_reports_a_misspelled_metric() {
         convert_stage_duration_seconds_bucket{le=\"+Inf\"} 1\n\
         convert_stage_duration_seconds_sum 0.1\n\
         convert_stage_duration_seconds_count 1\n\
-        convert_queue_depth 0\n";
+        convert_workers{state=\"busy\"} 0\n";
     let have = exposed(exposition);
-    let expr = r#"sum(rate(convert_requets_total[5m])) / histogram_quantile(0.5, convert_stage_duration_seconds_bucket)
-        + convert_stage_duration_seconds_sum + convert_queue_depth_bucket + rs_convert_ignored"#;
-    let named = metric_names(expr);
-    assert_eq!(
-        named,
-        [
-            "convert_queue_depth_bucket",
-            "convert_requets_total",
-            "convert_stage_duration_seconds_bucket",
-            "convert_stage_duration_seconds_sum",
-        ]
-        .map(String::from)
-        .into(),
-    );
+    assert!(!have.contains("convert_stage_duration_seconds"));
+
+    let text = r#"sum(rate(convert_requets_total[5m])) + convert_stage_duration_seconds
+        + convert_stage_duration_seconds_sum + rs_convert_ignored"#;
+    let named = metric_names(text);
     assert_eq!(
         missing(&named, &have),
-        ["convert_queue_depth_bucket", "convert_requets_total"]
+        ["convert_requets_total", "convert_stage_duration_seconds"]
     );
-    assert!(have.contains("convert_stage_duration_seconds"));
+
+    let query = r#"histogram_quantile(0.99, sum by (le, stage) (rate(convert_stage_duration_seconds_bucket{stage=~"a|b", x="y,}"}[$__rate_interval])))
+        / ignoring(state) (covert_workers{state="max"} > 0) * 1e4
+        + (sum(rate(convert_requests_total{code!="OK"}[5m])) or vector(0))
+        + max_over_time(sum by (pool) (convert_workers{state="busy"})[1m:]) and on (pod) up"#;
+    let selected = query_metrics(query);
+    assert_eq!(
+        selected,
+        [
+            "convert_requests_total",
+            "convert_stage_duration_seconds_bucket",
+            "convert_workers",
+            "covert_workers",
+            "up",
+        ]
+        .map(String::from)
+        .into()
+    );
+    assert_eq!(missing(&selected, &have), ["covert_workers", "up"]);
+}
+
+#[test]
+fn the_query_extractors_find_every_query() {
+    let yaml = "rules:\n  - alert: A\n    expr: |\n      sum(a_total)\n        > 0\n    for: 5m\n  - alert: B\n    expr: b_total > 1\n";
+    assert_eq!(
+        rule_queries(yaml),
+        ["      sum(a_total)\n        > 0", "b_total > 1"]
+    );
+    let dashboard = serde_json::json!({
+        "panels": [{"targets": [{"expr": "rate(x_total[1m])"}]}],
+        "templating": {"list": [{"definition": "label_values(y_bytes{n=~\"$n\"}, pod)"}]}
+    });
+    let mut out = Vec::new();
+    dashboard_queries(&dashboard, &mut out);
+    assert_eq!(out, ["rate(x_total[1m])", "y_bytes{n=~\"$n\"}"]);
 }
 
 #[test]
@@ -158,7 +363,7 @@ fn the_dashboard_parses_and_reads_the_datasource_variable() {
             queries += 1;
         }
     }
-    assert!(queries >= 20, "only {queries} queries");
+    assert!(queries >= 30, "only {queries} queries");
     assert!(!named_metrics().is_empty());
 }
 
