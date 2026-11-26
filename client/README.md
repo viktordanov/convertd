@@ -174,6 +174,8 @@ Both result types carry `Info` from the response headers. `Info` holds the reque
 
 `Manifest.Warnings` holds the quality signals of a bundle, such as `FONT_SUBSTITUTED`. A warning never fails a conversion.
 
+With `Slides.IncludeHidden`, the PDF and the pages also hold the slides that are marked hidden, in slide order. `Page.Hidden` is true for each page of such a slide. The service sets it only when the slide list predicts the page count exactly. A legacy `.ppt` never sets it.
+
 The client ignores manifest fields that it does not know, and it keeps every enum value as a plain string. Thus a newer server with the same API version does not break an older client.
 <!-- /memoria:section -->
 
