@@ -15,7 +15,7 @@ use crate::ipc::{
     PageGeometry, ProbePages, ProbedPage, RenderArgs, RenderedOut, RenderedPage, Secret,
     WorkerError, WorkerErrorKind,
 };
-use crate::worker::encode::{EncodeError, encode, flat, max_edge};
+use crate::worker::encode::{EncodeError, Encoder, flat, max_edge};
 use crate::worker::output::OutputBudget;
 use crate::worker::{Engine, Handled, micros};
 
@@ -64,20 +64,13 @@ impl RenderWorker {
             font,
             PdfPoints::new(12.0),
         )?;
-        let bitmap = page.render_with_config(
-            &PdfRenderConfig::new()
-                .scale_page_by_factor(1.0)
-                .set_format(PdfBitmapFormat::BGRA)
-                .set_reverse_byte_order(false),
-        )?;
-        let bytes = bitmap.as_raw_bytes();
-        let _ = encode(
-            crate::ipc::ImageFormat::Jpeg,
-            &bytes,
-            bitmap.width() as u32,
-            bitmap.height() as u32,
-            85,
-        );
+        let config = PdfRenderConfig::new()
+            .scale_page_by_factor(1.0)
+            .set_format(PdfBitmapFormat::BGRA)
+            .set_reverse_byte_order(false);
+        let mut bitmap = Vec::new();
+        let (width, height) = render_into(&page, &config, 1.0, &mut bitmap)?;
+        let _ = Encoder::new().encode(crate::ipc::ImageFormat::Jpeg, &bitmap, width, height, 85);
         Ok(())
     }
 
@@ -132,6 +125,9 @@ impl RenderWorker {
                 .set_reverse_byte_order(false)
                 .use_grayscale_rendering(true)
                 .render_form_data(true);
+            let scale = f32::from(dpi) / 72.0;
+            // One bitmap for every probed page, which keeps its allocation.
+            let mut bitmap = Vec::new();
             for number in numbers {
                 let page = pages
                     .get((number - 1) as PdfPageIndex)
@@ -142,10 +138,9 @@ impl RenderWorker {
                     probe_skipped += 1;
                     continue;
                 }
-                let bitmap = page
-                    .render_with_config(&config)
+                render_into(&page, &config, scale, &mut bitmap)
                     .map_err(|err| render_failed(&err))?;
-                let (flat, colour) = flat(&bitmap.as_raw_bytes());
+                let (flat, colour) = flat(&bitmap);
                 probe.push(ProbedPage {
                     number,
                     objects: page.objects().len() as u32,
@@ -175,6 +170,10 @@ impl RenderWorker {
         let count = pages.len().max(0) as u32;
         let mut budget = OutputBudget::new(args.max_output_bytes);
         let mut out = Vec::with_capacity(args.pages.len());
+        // One bitmap and one encoder for the job: both keep their
+        // allocations from page to page, and no page is copied.
+        let mut bitmap = Vec::new();
+        let mut encoder = Encoder::new();
         let result = (|| {
             for &number in &args.pages {
                 if number == 0 || number > count {
@@ -199,38 +198,28 @@ impl RenderWorker {
                     )));
                 }
                 let rendering = Instant::now();
-                let bitmap = page
-                    .render_with_config(
-                        &PdfRenderConfig::new()
-                            .scale_page_by_factor(scale)
-                            .set_format(PdfBitmapFormat::BGRA)
-                            .set_reverse_byte_order(false)
-                            .render_form_data(true),
-                    )
+                let config = PdfRenderConfig::new()
+                    .scale_page_by_factor(scale)
+                    .set_format(PdfBitmapFormat::BGRA)
+                    .set_reverse_byte_order(false)
+                    .render_form_data(true);
+                let (width, height) = render_into(&page, &config, scale, &mut bitmap)
                     .map_err(|err| render_failed(&err))?;
-                let (width, height) = (bitmap.width() as u32, bitmap.height() as u32);
-                let bgra = bitmap.as_raw_bytes();
                 times.render_us += micros(rendering.elapsed());
-                if bgra.len() != (width as usize) * (height as usize) * 4 {
-                    return Err(WorkerError::new(
-                        WorkerErrorKind::Internal,
-                        "failed to read the bitmap: unexpected stride",
-                    ));
-                }
-                let (flat, colour) = flat(&bgra);
+                let (flat, colour) = flat(&bitmap);
                 let encoding = Instant::now();
-                let bytes = encode(args.format, &bgra, width, height, args.quality).map_err(
-                    |err| match err {
+                let bytes = encoder
+                    .encode(args.format, &bitmap, width, height, args.quality)
+                    .map_err(|err| match err {
                         EncodeError::TooLarge(message) => too_large(&message),
                         EncodeError::Failed(message) => WorkerError::new(
                             WorkerErrorKind::Internal,
                             format!("failed to encode page: {message}"),
                         ),
-                    },
-                )?;
+                    })?;
                 times.encode_us += micros(encoding.elapsed());
                 let file_name = format!("{number:04}.{}", args.format.extension());
-                let size_bytes = budget.write_file(&args.out_dir.join(&file_name), &bytes)?;
+                let size_bytes = budget.write_file(&args.out_dir.join(&file_name), bytes)?;
                 out.push(RenderedPage {
                     number,
                     file_name,
@@ -243,7 +232,7 @@ impl RenderWorker {
                     flat,
                     colour,
                     effective_dpi: scale * 72.0,
-                    crc32: Some(crc32fast::hash(&bytes)),
+                    crc32: Some(crc32fast::hash(bytes)),
                 });
             }
             Ok(())
@@ -373,6 +362,47 @@ impl RenderWorker {
         }
         Ok(Output::Decrypted(DecryptedOut { pdf_bytes }))
     }
+}
+
+/// The pixel size of a page rendered at `scale`, rounded as pdfium-render
+/// rounds it for `PdfRenderConfig::scale_page_by_factor` (`apply_to_page`
+/// in its `render_config.rs`, 0.9.6), so the render fills the bitmap.
+pub fn bitmap_size(w_pt: f32, h_pt: f32, scale: f32) -> (i32, i32) {
+    ((w_pt * scale).round() as i32, (h_pt * scale).round() as i32)
+}
+
+/// Renders `page` with `config`, whose scale is `scale`, into `bitmap`
+/// and gives the pixel size. The bitmap is our buffer, wrapped for PDFium
+/// with `PdfBitmap::from_bytes`, so nothing copies it afterwards. It keeps
+/// its allocation from page to page and ends up exactly `width * height * 4`
+/// bytes of BGRA rows. PDFium clears it to white before each page.
+fn render_into(
+    page: &PdfPage,
+    config: &PdfRenderConfig,
+    scale: f32,
+    bitmap: &mut Vec<u8>,
+) -> Result<(u32, u32), PdfiumError> {
+    let (width, height) = bitmap_size(page.width().value, page.height().value, scale);
+    if width <= 0 || height <= 0 {
+        return Err(PdfiumError::ImageSizeOutOfBounds);
+    }
+    let len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(PdfiumError::ImageSizeOutOfBounds)?;
+    // Same-size pages leave the buffer as it is; a larger page grows it. A
+    // size the allocator refuses is an error, as PDFium's own bitmap
+    // allocation was, not an abort of the worker.
+    if let Some(more) = len.checked_sub(bitmap.len()).filter(|&more| more > 0) {
+        bitmap
+            .try_reserve_exact(more)
+            .map_err(|_| PdfiumError::ImageSizeOutOfBounds)?;
+    }
+    bitmap.resize(len, 0);
+    let mut wrapped =
+        PdfBitmap::from_bytes(width, height, PdfBitmapFormat::BGRA, bitmap.as_mut_slice())?;
+    page.render_into_bitmap_with_config(&mut wrapped, config)?;
+    Ok((width as u32, height as u32))
 }
 
 /// The scale of a page: the requested DPI, reduced so that the longer edge
