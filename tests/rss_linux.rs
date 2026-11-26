@@ -176,34 +176,6 @@ mod measured {
         build(padding)
     }
 
-    /// A small one-page DOCX, stored, so each round also runs the office
-    /// path: the supervisor's side of an office conversion.
-    fn docx() -> Vec<u8> {
-        use std::io::Write as _;
-        let parts = [
-            (
-                "[Content_Types].xml",
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#,
-            ),
-            (
-                "_rels/.rels",
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#,
-            ),
-            (
-                "word/document.xml",
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>rss_linux office page</w:t></w:r></w:p></w:body></w:document>"#,
-            ),
-        ];
-        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        let stored = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
-        for (name, body) in parts {
-            zip.start_file(name, stored).unwrap();
-            zip.write_all(body.as_bytes()).unwrap();
-        }
-        zip.finish().unwrap().into_inner()
-    }
-
     /// One request with `Connection: close`; the answer is read and
     /// dropped. Returns the status.
     fn convert(port: u16, file: &[u8], output: &str) -> u16 {
@@ -327,12 +299,16 @@ mod measured {
         let first = rss_bytes(pid);
 
         // Rounds of 1 000 mixed requests: pdf, images and bundle; PDFs of
-        // 15 KB to 20 MB and a small DOCX. Two checks: plan 001's target, the first round against the
-        // reading after start, and a plateau check, the last round against
-        // the first, which a steady leak fails. RSS_ROUNDS sets the count,
-        // at least 2.
+        // 15 KB to 20 MB and a small DOCX. Two checks: plan 001's target,
+        // the first round against the reading after start, and a growth
+        // budget after it, at most 1 MiB per later round of 1 000 requests
+        // (the soak's budget in plan 005 §9). RSS_ROUNDS sets the count, at
+        // least 2.
         let [small, medium, large] = [15_000, 1 << 20, 20 << 20].map(pdf_of_size);
-        let files = [small, docx(), medium, large];
+        // The small DOCX of the worker's warm-up runs the office path: the
+        // supervisor's side of an office conversion.
+        let docx = convertd::worker::warmup::docx("rss_linux office page");
+        let files = [small, docx, medium, large];
         let outputs = ["pdf", "images", "bundle"];
         let rounds: usize = std::env::var("RSS_ROUNDS")
             .ok()
@@ -412,9 +388,11 @@ mod measured {
         for (round, reading) in readings.iter().enumerate() {
             assert!(*reading <= 30 * MB, "{reading} bytes after round {round}");
         }
+        let budget = (rounds as u64 - 1) << 20;
         assert!(
-            second * 2 <= warm * 3,
-            "a leak: {second} after the last round is more than 1.5 x {warm} after the first"
+            second.saturating_sub(warm) <= budget,
+            "{second} after the last round grew more than 1 MiB per round of 1 000 requests \
+             from {warm} after the first"
         );
         // Plan 001, Verification 2: the reading after the requests is at
         // most 1.5 x the reading after start.
