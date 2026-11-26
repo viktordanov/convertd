@@ -826,7 +826,9 @@ fn records(directory: &[u8], entries: u64, main: &str) -> Option<Vec<Record>> {
         });
         at += len;
     }
-    Some(out)
+    // Bytes after the counted records (a directory signature, say) would
+    // be dropped by the copy.
+    (at == directory.len()).then_some(out)
 }
 
 /// Counts what goes through and fails past `cap`.
@@ -942,23 +944,11 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
         return Err(Skip::Unreadable);
     }
 
-    // The central directory, whole: at most DIRECTORY_CAP bytes.
-    let mut directory = vec![0u8; cd_size as usize];
-    file.seek(SeekFrom::Start(cd_offset)).map_err(source_io)?;
-    file.read_exact(&mut directory).map_err(source_io)?;
-    let records = records(&directory, count, &main).ok_or(Skip::Unsupported)?;
-    let mut mains = records.iter().filter(|r| r.is_main);
-    let (Some(main_record), None) = (mains.next(), mains.next()) else {
-        return Err(Skip::Unsupported);
-    };
-    if main_record.flags & 1 != 0 {
-        return Err(Skip::Unsupported);
-    }
-
-    // The edits, from a first pass over the main part. The pass also checks
-    // the part's CRC and size: a damaged part loads as it came, so that the
-    // copy's new CRC never hides the damage from LibreOffice.
-    let edits = {
+    // The edits, from a first pass over the main part. The pass also takes
+    // the part's CRC and size, which must match its directory record
+    // below: a damaged part loads as it came, so that the copy's new CRC
+    // never hides the damage from LibreOffice.
+    let (edits, crc, len) = {
         let reader = zip_scan::open_entry(&mut file, &entry)
             .map_err(scan_error)?
             .ok_or(Skip::Unsupported)?;
@@ -974,16 +964,30 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
         )?;
         // plan() read to the end of the part; anything left is damage too.
         let rest = io::copy(&mut (&mut checked).take(1), &mut io::sink()).map_err(applied)?;
-        if rest != 0
-            || checked.len != entry.uncompressed
-            || checked.crc.finalize() != main_record.crc
-        {
+        if rest != 0 {
             return Err(Skip::Unreadable);
         }
-        edits
+        (edits, checked.crc.finalize(), checked.len)
     };
+    // Nothing to change: the directory is not read again.
     if edits.is_empty() {
         return Err(Skip::Sized);
+    }
+
+    // The central directory, whole: at most DIRECTORY_CAP bytes.
+    let mut directory = vec![0u8; cd_size as usize];
+    file.seek(SeekFrom::Start(cd_offset)).map_err(source_io)?;
+    file.read_exact(&mut directory).map_err(source_io)?;
+    let records = records(&directory, count, &main).ok_or(Skip::Unsupported)?;
+    let mut mains = records.iter().filter(|r| r.is_main);
+    let (Some(main_record), None) = (mains.next(), mains.next()) else {
+        return Err(Skip::Unsupported);
+    };
+    if main_record.flags & 1 != 0 {
+        return Err(Skip::Unsupported);
+    }
+    if len != entry.uncompressed || crc != main_record.crc {
+        return Err(Skip::Unreadable);
     }
     // Each entry's local record runs to the next one, the last to the
     // directory: the first starts at 0 and none overlap.

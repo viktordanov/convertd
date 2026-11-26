@@ -1082,3 +1082,24 @@ fn process_content_counts_only_in_its_namespace_and_scope() {
             .contains(&format!("<w:sectPr>{A4}</w:sectPr></w:body>"))
     );
 }
+
+#[test]
+fn a_directory_with_more_than_its_records_keeps_the_package() {
+    let classic = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", doc("<w:p/>").as_bytes(), true, false),
+    ]);
+    let eocd = classic.len() - 22;
+    let cd_size = u32_at(&classic, eocd + 12);
+    // A digital-signature record (0x05054b50) with 4 bytes of data, at the
+    // end of the central directory.
+    let mut bytes = classic[..eocd].to_vec();
+    bytes.extend_from_slice(&0x0505_4b50u32.to_le_bytes());
+    bytes.extend_from_slice(&4u16.to_le_bytes());
+    bytes.extend_from_slice(b"sign");
+    let mut end = classic[eocd..].to_vec();
+    put_u32(&mut end, 12, cd_size + 10);
+    bytes.extend_from_slice(&end);
+    assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unsupported), None));
+}
