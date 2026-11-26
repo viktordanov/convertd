@@ -29,7 +29,7 @@ Each file in the corpus exercises one path through the service. The public corpu
 - The service rejects each hostile file within its limits.
 - LibreOffice makes no network connection.
 
-On 2026-11-26, `check` ran against the real engines (LibreOffice 26.8.3.1 and PDFium 8179 in the image `rs-convert-lead-runtime:wave2a`), and 47 of 55 cases passed. The expectations come from the rules in the 005 plan. Only the page counts that depend on layout were copied from that run. The lead then ruled on the eight failures. Five expectations changed to what LibreOffice does, The three image cases (`png`, `jpeg` and `png-bomb`) keep their expectations until lane 001 answers image uploads with `415`, because image inputs are out of v1.
+On 2026-11-26, `check` ran against the real engines (LibreOffice 26.8.3.1 and PDFium 8179 in the image `rs-convert-lead-runtime:wave2a`), and 47 of 55 cases passed. The expectations come from the rules in the 005 plan. Only the page counts that depend on layout were copied from that run. The lead then ruled on the eight failures. Five expectations changed to what LibreOffice does. Image inputs are out of v1, so the three image cases (`png`, `jpeg` and `png-bomb`) now expect `415 UNSUPPORTED_FORMAT`, which lane 001 gives since `674091b`. `png-bomb` stays as a detection case.
 
 A pass does not prove that LibreOffice output matches Microsoft Office. The files are synthetic: Python libraries and hand-written XML make them, not Office. The private corpus carries the evidence from real documents.
 
