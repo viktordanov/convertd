@@ -10,8 +10,9 @@ The crate is not part of the `convertd` workspace. It has its own `[workspace]` 
 2. [Build and test](#build-and-test)
 3. [validate](#validate)
 4. [check](#check)
-5. [Later subcommands](#later-subcommands)
-6. [Results over time](#results-over-time)
+5. [listen](#listen)
+6. [Later subcommands](#later-subcommands)
+7. [Results over time](#results-over-time)
 
 <!-- memoria:section id="overview" files="Cargo.toml clippy.toml" -->
 ## Why a separate crate
@@ -73,7 +74,7 @@ CONVERT_API_KEY=<key> cargo run --manifest-path tools/corpus/Cargo.toml -- check
 
 The harness first applies the schema and semantic checks of `validate`, then asks `/v1/capabilities` for the installed fonts and the limits. It sends one case at a time. Each case gets the `timeout_seconds` of its options, or the service default, plus 15 s.
 
-The canary listener binds the `listener` address of `expected.json`, `127.0.0.1:47123`. If the bind fails, `check` stops: without the listener, zero connections proves nothing. A connection during a case, or within 200 ms after it, fails that case. After each case, `/healthz` must answer 200.
+The canary listener binds the `listener` address of `expected.json`, `127.0.0.1:47123`. If the bind fails, `check` stops: without the listener, zero connections proves nothing. Before the first case, `check` connects to the listener itself, and it stops unless the listener counts exactly that one connection. A connection during a case, or within 200 ms after it, fails that case. After each case, `/healthz` must answer 200.
 
 Each answer must meet these invariants:
 
@@ -94,9 +95,20 @@ On 2026-11-26, `check` ran that way against the image `rs-convert-lead-runtime:w
 On 2026-11-26, `check` ran the same way against `rs-convert-lead-runtime:wave2b`, built from `main` at `1eafd5ee`, and all 57 cases passed, with exit status 0. The listener saw no connection, and the service log had no error and no worker restart. The full run took about 31 s of request time. The slowest cases were `xlsx-100k` at about 7 to 8 s each and `pptx-photos60` at about 4 to 5 s each. Still no positive control has run, so the canaries prove only that no connection was made.
 <!-- /memoria:section -->
 
+<!-- memoria:section id="listen" files="src/main.rs src/check/listener.rs" -->
+## listen
+
+`listen` binds the canary listener address alone, by default `127.0.0.1:47123`. It prints each connection with its first request line, and it exits 0 when it has counted `--expect` connections (default 1), or 1 after `--timeout` seconds (default 60).
+
+It is the listener for two controls that `check` cannot run by itself. In both, the harness container shares the network namespace of the service:
+
+- **Shared namespace:** a process in the service container connects, for example `docker exec <service> env PORT=47123 /usr/local/bin/convertd healthcheck`. One connection proves that the harness sees the loopback of the service.
+- **Canary positive control (plan step 13):** plain `soffice` runs the three canaries with a permissive profile, and each must connect. On 2026-11-26 this failed on the host. With LibreOffice 26.8.3.1, a permissive profile and `soffice --convert-to`, no canary connected, and a test macro did not run either. Until this control passes, zero connections in `check` proves that the listener works, not that the canaries can connect.
+<!-- /memoria:section -->
+
 ## Later subcommands
 
-`validate` and `check` exist at this time. The 005 plan adds these subcommands in later steps:
+`validate`, `check` and `listen` exist at this time. The 005 plan adds these subcommands in later steps:
 
 | Subcommand | What it will do | Plan step |
 | --- | --- | --- |
