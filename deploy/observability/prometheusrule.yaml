@@ -61,12 +61,13 @@ spec:
               {{ $labels.namespace }} got 422 LIMIT_EXCEEDED for 30 minutes. Compare the
               documents with the kill RSS limits, or use the Coverage profile in deploy/README.md.
 
-        # The queue of a pool is full. convertd does not export the queue capacity, so the
+        # The queue of a pool is at its capacity. convertd does not export the capacity, so the
         # thresholds are the values of the base: the office queue holds QUEUE_CAPACITY
         # (default 2 x OFFICE_WORKERS = 4) and the render queue 2 x RENDER_WORKERS = 4. Change each
         # threshold when an overlay changes these values. The gauge also counts the later engine
-        # calls of admitted requests, so it can pass the capacity. Two minutes at the limit means
-        # that new requests get 429 at once.
+        # calls of admitted requests (for example the render calls after an office conversion),
+        # and only first calls count against the capacity. So this is sustained queue pressure:
+        # new requests can get 429, and ConvertdTooManyRequests says whether they do.
         - alert: ConvertdQueueAtCapacity
           expr: |
             max by (namespace, pod, pool) (convert_queue_depth{pool="office"}) >= 4
@@ -79,7 +80,8 @@ spec:
             summary: A convertd worker queue is at its capacity.
             description: >-
               The {{ $labels.pool }} queue on {{ $labels.pod }} in {{ $labels.namespace }} holds
-              {{ $value }} waiting leases for 2 minutes. New requests get 429.
+              {{ $value }} waiting leases for 2 minutes, as many as its capacity in the base.
+              New requests can get 429.
 
         # The disk budget (TMP_MAX_BYTES) is more than 90 % reserved for 5 minutes. A reservation that
         # does not fit gives 503 SERVICE_UNAVAILABLE. The budget is 3 GiB in the base, so 90 % leaves
