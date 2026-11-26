@@ -557,8 +557,8 @@ fn aptos_docx(vba: bool) -> Vec<u8> {
 }
 
 /// `aptos_docx(false)` with Aptos embedded in `word/fontTable.xml`: a font
-/// part behind `w:embedRegular` that starts with an sfnt version (`true`).
-/// The pre-flight unit tests cover obfuscated parts.
+/// part behind `w:embedRegular` that starts with an sfnt offset table
+/// (`true`, one table). The pre-flight unit tests cover obfuscated parts.
 fn aptos_embedded_docx() -> Vec<u8> {
     let main = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
     package(&[
@@ -581,7 +581,11 @@ fn aptos_embedded_docx() -> Vec<u8> {
             r#"<w:fonts xmlns:w="w" xmlns:r="r"><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1"/></w:font></w:fonts>"#.to_owned(),
         ),
         ("word/_rels/fontTable.xml.rels", rels(&[("rIdF1", "font", "fonts/font1.ttf")])),
-        ("word/fonts/font1.ttf", format!("true{}", "\0".repeat(60))),
+        // An offset table with one table record, then filler.
+        (
+            "word/fonts/font1.ttf",
+            format!("true\0\u{1}\0\u{10}\0\0\0\0head{}", "\0".repeat(76)),
+        ),
     ])
 }
 

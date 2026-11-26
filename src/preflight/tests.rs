@@ -147,10 +147,14 @@ fn docx_referenced_styles_their_chain_runs_and_headers() {
 /// The `w:fontKey` of the test fonts, as Word writes it.
 const KEY: &str = "{5F3C1A2B-9D4E-4C6F-8A7B-0E1D2C3B4A59}";
 
-/// A font part that starts with the sfnt version `magic`.
+/// A font part that starts with the sfnt version `magic`: an offset
+/// table with one table record, then filler.
 fn sfnt(magic: &[u8; 4]) -> Vec<u8> {
     let mut out = magic.to_vec();
-    out.extend_from_slice(&[0x5a; 60]);
+    // numTables 1, searchRange 16, entrySelector 0, rangeShift 0.
+    out.extend_from_slice(&[0, 1, 0, 16, 0, 0, 0, 0]);
+    out.extend_from_slice(b"head\0\0\0\0\0\0\0\x1c\0\0\0\x36");
+    out.extend_from_slice(&[0x5a; 64]);
     out
 }
 
@@ -225,6 +229,8 @@ fn docx_embedded_fonts_from_the_font_table() {
                 ("embedBold", "rIdF2", None),
             ],
         ),
+        ("Cut Font", &[("embedRegular", "rIdF6", None)]),
+        ("No Tables", &[("embedRegular", "rIdF7", None)]),
     ]);
     let table_rels = rels(&[
         ("rIdF1", "font", "fonts/font1.odttf"),
@@ -232,9 +238,13 @@ fn docx_embedded_fonts_from_the_font_table() {
         ("rIdF3", "font", "fonts/font3.odttf"),
         ("rIdF4", "font", "fonts/font4.ttf"),
         ("rIdF5", "font", "fonts/font5.ttf"),
+        ("rIdF6", "font", "fonts/font6.otf"),
+        ("rIdF7", "font", "fonts/font7.ttf"),
     ]);
     let obfuscated = obfuscate(&sfnt(&[0, 1, 0, 0]), KEY);
     let plain = sfnt(b"OTTO");
+    let mut no_tables = sfnt(b"true");
+    no_tables[4..6].copy_from_slice(&[0, 0]);
     let bytes = docx(
         &[
             ("word/fontTable.xml", table.as_bytes()),
@@ -246,6 +256,8 @@ fn docx_embedded_fonts_from_the_font_table() {
                 "word/fonts/font5.ttf",
                 b"not a font at all, not a font at all",
             ),
+            ("word/fonts/font6.otf", b"OTTO"),
+            ("word/fonts/font7.ttf", &no_tables),
         ],
         &runs(&[
             "aptos",
@@ -257,6 +269,8 @@ fn docx_embedded_fonts_from_the_font_table() {
             "Wrong Key",
             "Bad Key",
             "Second Try",
+            "Cut Font",
+            "No Tables",
         ]),
     );
     let facts = scan_bytes("embedded.docx", &bytes, Family::Document);
@@ -289,6 +303,57 @@ fn docx_embed_elements_count_only_inside_their_font() {
         facts.embedded_fonts
     );
     assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_font_table_cut_at_a_tag_boundary_skips_the_font_check() {
+    // The XML ends after a complete tag with elements still open: quick-xml
+    // reports EOF, and the scan must not take the partial table.
+    let table = format!(
+        r#"<w:fonts {W} xmlns:r="r"><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1"/>"#
+    );
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", &font),
+        ],
+        &runs(&["Aptos"]),
+    );
+    let facts = scan_bytes("cut.docx", &bytes, Family::Document);
+    assert!(
+        facts.requested_fonts.is_empty(),
+        "{:?}",
+        facts.requested_fonts
+    );
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+}
+
+#[test]
+fn docx_unreadable_font_part_skips_the_font_check() {
+    // The part is present but in a compression method the reader does not
+    // support: not evidence that the family is missing.
+    let table = font_table(&[("Aptos", &[("embedRegular", "rIdF1", None)])]);
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let mut bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", &font),
+        ],
+        &runs(&["Aptos"]),
+    );
+    set_method(&mut bytes, "word/fonts/font1.ttf", 12);
+    let facts = scan_bytes("unreadable.docx", &bytes, Family::Document);
+    assert!(
+        facts.requested_fonts.is_empty(),
+        "{:?}",
+        facts.requested_fonts
+    );
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MissingPart)]);
 }
 
 #[test]

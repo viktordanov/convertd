@@ -47,6 +47,11 @@ impl Package {
         self.entries.contains_key(name)
     }
 
+    /// The inflated size of `name` that the archive declares.
+    pub fn size(&self, name: &str) -> Option<u64> {
+        self.entries.get(name).map(|entry| entry.uncompressed)
+    }
+
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.entries.keys().map(String::as_str)
     }
