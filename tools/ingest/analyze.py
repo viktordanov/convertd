@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Summarise one ingest.py run directory, with anonymous figures only.
 
+Results stay outside the repository: OUT must be a scratch folder, and no
+run output, report or document is committed (the owner's decision). The
+documents of an ingestion are often confidential.
+
   analyze.py RUN_DIR [--warmup-min M]
 
 Reads requests.jsonl, samples.jsonl, docker.log, state.json and cell.json
