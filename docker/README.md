@@ -2,7 +2,7 @@
 
 `docker/` builds the one rs-convert image: convertd, a pinned LibreOffice, a pinned PDFium, a fixed font set and `build-info.json`, for `linux/amd64` and `linux/arm64`.
 
-The product image converts documents on arm64. On 2026-11-26 the `runtime` image converted a DOCX, a PDF and a PPTX under Docker ([What is verified](#what-is-verified)). It is not run yet on amd64, Kubernetes, Container Apps or gVisor. The engines, the fonts and the library check are proved on both architectures.
+The product image converts documents on arm64 and amd64. On 2026-11-26 the `runtime` image converted a DOCX, a PDF and a PPTX under Docker on arm64, and the CI image job converted a DOCX with it natively on both architectures ([What is verified](#what-is-verified)). It is not run yet on Kubernetes, Container Apps or gVisor. The engines, the fonts and the library check are proved on both architectures.
 
 ## Contents
 
@@ -204,7 +204,7 @@ An earlier `runtime` build of the same day, with no real engines in convertd, ga
 - **Health check:** `convertd healthcheck` exits 1 while `/readyz` answers 503, and also when nothing listens.
 - **Build cache:** after a change in `src/`, the cooked dependency layer comes from the cache, and the rebuild takes 18 s.
 
-These results prove conversion on arm64 under Docker only. They do not prove amd64, Kubernetes, Container Apps or gVisor.
+These results prove conversion on arm64 under Docker. They do not prove Kubernetes, Container Apps or gVisor.
 
 On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a baseline image built from the same `main` without them:
 
@@ -213,7 +213,7 @@ On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a basel
 - **Engine tests:** in the trimmed `dev` image, `engines_office`, `engines_render` and `engines_poison` passed (20 tests, one ignored). Two tests skipped: one needs `CONVERTD_SMALL_DISK`, and one finds no `encrypted/deck20.pptx` in the corpus.
 - **Build and smoke:** `build-info.json` is the same, `lib-check` passes, and `smoke.sh` passes.
 
-The amd64 proof at native speed needs the CI image job on the amd64 runners of GitHub. The job runs only by hand and monthly. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`:
+The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs only by hand and monthly. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The command:
 
 ```sh
 docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
