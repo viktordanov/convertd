@@ -1,9 +1,8 @@
 # CI for the image and the deployment files (ledger item 003, INTERFACES.md §14).
 # CI builds and tests; it never pushes. Releases stay manual: tag v<x.y.z>, run
-# build_docker.sh (PLAN.md:377). The image job is manual and monthly until plan 003 step 7.
+# build_docker.sh (PLAN.md:377). The image job runs by hand, monthly, and on pull requests
+# that touch the image or the engine code (the changes job decides).
 # Actions are pinned by commit SHA (the tag is in the comment); tools by version and SHA-256.
-# Not here yet (wave two, once they exist on main): 005's corpus-bench validate and
-# generate.py --check.
 name: image
 
 on:
@@ -104,12 +103,41 @@ jobs:
       - name: Test
         run: cargo nextest run --locked --features test-hooks --profile full
 
+  changes:
+    # Decides whether a pull request needs the image job: it does when it touches the image or
+    # the code that runs the engines. A path filter on the workflow cannot do this per job.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.diff.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed="$(git diff --name-only "${BASE}...${HEAD}")"
+          printf '%s\n' "${changed}"
+          if grep -E '^(docker/|src/engines/|src/worker/|src/preflight/|corpus/)|^Cargo\.lock$' \
+               <<<"${changed}" >/dev/null; then
+            echo "image=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=false" >> "$GITHUB_OUTPUT"
+          fi
+
   image:
-    # Manual and monthly only: the engine tests stay off the push path for now. convertd has
-    # the real engines and docker/smoke/small.docx is in the repository, so a dispatch builds
-    # the image natively on each arch and converts one DOCX over HTTP. Plan 003 step 7 turns
-    # it on for push and pull_request by removing this condition.
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    # By hand, monthly, and on pull requests that the changes job selects. It builds the image
+    # natively on each arch, runs the smoke test and the 59-case corpus check. The engine test
+    # suites stay out of it: they run monthly or by hand (lead's ruling, 2026-11-26).
+    needs: changes
+    if: >-
+      ${{ !cancelled() && (github.event_name == 'workflow_dispatch'
+          || github.event_name == 'schedule' || needs.changes.outputs.image == 'true') }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -142,6 +170,27 @@ jobs:
         env:
           CURL_IMAGE: curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
         run: docker/smoke.sh rs-convert:ci docker/smoke/small.docx "${{ vars.IMAGE_MAX_MB || 635 }}" | tee -a "$GITHUB_STEP_SUMMARY"
+      # The corpus check: lane 005's corpus-bench against the image, every case of
+      # corpus/expected.json. The generator needs Python 3.13 and the hashed pins.
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Generate the corpus
+        run: |
+          python -m venv "${RUNNER_TEMP}/corpus-venv"
+          "${RUNNER_TEMP}/corpus-venv/bin/python" -I -m pip install --require-hashes -r corpus/requirements.txt
+          "${RUNNER_TEMP}/corpus-venv/bin/python" -I corpus/generate.py corpus/out --hostile
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: "tools/corpus -> target"
+          shared-key: corpus-${{ matrix.arch }}
+      - name: Build corpus-bench
+        run: cargo build --release --locked --manifest-path tools/corpus/Cargo.toml
+      - name: Corpus check (59 cases, canary listener in the service namespace)
+        env:
+          # The image's own base: glibc for the harness binary built on the runner.
+          HARNESS_IMAGE: debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
+        run: docker/corpus-check.sh rs-convert:ci tools/corpus/target/release/corpus-bench | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Scan (monthly, report only)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         continue-on-error: true
@@ -153,6 +202,9 @@ jobs:
     env:
       KUBECONFORM_VERSION: v0.8.0
       KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+      # Pinned, so a runner image update cannot change the result (review finding 3).
+      SHELLCHECK_VERSION: v0.11.0
+      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install kubeconform
@@ -169,5 +221,13 @@ jobs:
           kubeconform -strict -summary deploy/k8s/overlays/gvisor/runtimeclass.yaml
       - name: Bicep compiles
         run: az bicep build --file deploy/aca/main.bicep --stdout >/dev/null
+      - name: Install shellcheck
+        run: |
+          curl -fsSL -o /tmp/shellcheck.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+          sudo install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
       - name: Shell scripts
-        run: shellcheck build_docker.sh docker/*.sh
+        run: /usr/local/bin/shellcheck build_docker.sh docker/*.sh
