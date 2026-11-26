@@ -3,7 +3,7 @@
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
@@ -183,13 +183,30 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
     // The supervisor creates pages/; the render engine writes into it.
     if received.request.output != Output::Pdf {
         let pages_dir = paths.pages_dir.clone();
-        let made = off_runtime((permit, job), move |_| std::fs::create_dir(pages_dir)).await;
-        match made {
-            Some((Ok(()), held)) => (permit, job) = held,
-            Some((Err(err), _)) => return pages_failed(state.queue_wait_seconds, &timings, err),
-            None => {
+        let made = off_runtime((permit, job), move |_| std::fs::create_dir(pages_dir));
+        // The deadline runs from the end of the upload: a wait for a
+        // blocking thread counts too.
+        let until = tokio::time::Instant::from_std(deadline);
+        match tokio::time::timeout_at(until, made).await {
+            Ok(Some((Ok(()), held))) => (permit, job) = held,
+            Ok(Some((Err(err), _))) => {
+                return pages_failed(state.queue_wait_seconds, &timings, err);
+            }
+            Ok(None) => {
                 let err = std::io::Error::other("the task that makes pages/ panicked");
                 return pages_failed(state.queue_wait_seconds, &timings, err);
+            }
+            Err(_) => {
+                let timeout = ConversionError::Timeout {
+                    seconds: received.request.timeout.as_secs(),
+                };
+                let api = ApiError::from_conversion(&timeout, state.queue_wait_seconds);
+                timings.total = Some(received.upload_done.elapsed());
+                let mut response = api.into_response();
+                response
+                    .headers_mut()
+                    .insert(SERVER_TIMING, timings.header());
+                return response;
             }
         }
     }
@@ -276,17 +293,36 @@ fn pages_failed(
 type Held = (tokio::sync::OwnedSemaphorePermit, Arc<JobDir>);
 
 /// Runs `work` on the blocking pool with the request's permit and job
-/// directory, and hands both back. A client that leaves meanwhile drops
-/// this future, not the task: its slot stays taken and its directory
-/// stays until the work ends. `None` if the task panicked; the permit and
-/// the directory went with it.
+/// directory, and hands both back. A client that leaves, or a deadline
+/// that passes, drops this future, not the task: work that has started
+/// keeps the slot taken and the directory until it ends. Work that no
+/// thread has taken up yet is skipped then, so a full pool does not
+/// spend threads on answers nobody receives. `None` if the task panicked
+/// or was skipped; the permit and the directory went with it.
 async fn off_runtime<T: Send + 'static>(
     held: Held,
     work: impl FnOnce(&JobDir) -> T + Send + 'static,
 ) -> Option<(T, Held)> {
-    tokio::task::spawn_blocking(move || (work(&held.1), held))
-        .await
-        .ok()
+    let ended = Ended(Arc::new(AtomicBool::new(false)));
+    let skip = Arc::clone(&ended.0);
+    let task = tokio::task::spawn_blocking(move || {
+        if skip.load(Ordering::SeqCst) {
+            return None;
+        }
+        Some((work(&held.1), held))
+    });
+    let out = task.await.ok().flatten();
+    drop(ended);
+    out
+}
+
+/// Set when [`off_runtime`]'s future is dropped or done.
+struct Ended(Arc<AtomicBool>);
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 /// The 200: headers first, then the body pump, which owns the job
@@ -707,5 +743,64 @@ pub mod test_hooks {
             .lock()
             .map(|gate| gate.as_deref() == Some(name))
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::sync::Semaphore;
+
+    use super::*;
+    use crate::jobs::DiskBudget;
+
+    /// Work still queued for a blocking thread when the request ends is
+    /// skipped, and its permit and job go back; work that started runs.
+    #[test]
+    fn queued_work_is_skipped_once_the_request_ends() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = std::env::temp_dir().join(format!("convertd-off-runtime-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        runtime.block_on(async {
+            let semaphore = Arc::new(Semaphore::new(1));
+            let held = (
+                Arc::clone(&semaphore).try_acquire_owned().unwrap(),
+                JobDir::create(&tmp, &DiskBudget::new(u64::MAX)).unwrap(),
+            );
+            // The only blocking thread is busy for 300 ms.
+            let busy =
+                tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_millis(300)));
+            let ran = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&ran);
+            let waited = tokio::time::timeout(
+                Duration::from_millis(50),
+                off_runtime(held, move |_| flag.store(true, Ordering::SeqCst)),
+            )
+            .await;
+            assert!(waited.is_err(), "the work got a thread at once");
+            busy.await.unwrap();
+            // The skipped task gives the permit back without running.
+            let permit = tokio::time::timeout(Duration::from_secs(2), semaphore.acquire())
+                .await
+                .expect("the permit never came back");
+            drop(permit);
+            assert!(!ran.load(Ordering::SeqCst), "the work ran for nobody");
+            // Work that is not dropped runs.
+            let held = (
+                Arc::clone(&semaphore).try_acquire_owned().unwrap(),
+                JobDir::create(&tmp, &DiskBudget::new(u64::MAX)).unwrap(),
+            );
+            let done = off_runtime(held, |_| 7).await;
+            assert_eq!(done.map(|(value, _)| value), Some(7));
+        });
+        drop(runtime);
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 }
