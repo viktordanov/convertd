@@ -758,4 +758,38 @@ fn a_zip64_end_record_keeps_the_package() {
         zip_scan::directory(&mut std::io::Cursor::new(&bytes), bytes.len() as u64).unwrap();
     assert!(zip64);
     assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unsupported), None));
+    // The same, with the real values in the classic record too.
+    let classic_end = bytes.len() - 22;
+    bytes.truncate(classic_end);
+    bytes.extend_from_slice(&classic[eocd..]);
+    let (_, _, _, zip64) =
+        zip_scan::directory(&mut std::io::Cursor::new(&bytes), bytes.len() as u64).unwrap();
+    assert!(zip64);
+    assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unsupported), None));
+    // And a classic archive is no ZIP64.
+    let (_, _, _, zip64) =
+        zip_scan::directory(&mut std::io::Cursor::new(&classic), classic.len() as u64).unwrap();
+    assert!(!zip64);
+}
+
+#[test]
+fn relationship_attributes_count_only_unqualified() {
+    // `xmlns:Type` and a prefixed `x:Target` come first; the real ones win.
+    let rels = br#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships" xmlns:x="other"><Relationship xmlns:Type="urn:t" x:Target="evil.xml" Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/main.xml"/><x:Relationship Type="http://schemas.openxmlformats.org/package/2006/relationships/digital-signature/origin" Target="s"/></Relationships>"#;
+    let bytes = zip(&[("_rels/.rels", rels, true, false)]);
+    let dir = Scratch::new();
+    let path = dir.path().join("p.docx");
+    std::fs::write(&path, &bytes).unwrap();
+    let mut file = File::open(&path).unwrap();
+    assert_eq!(
+        main_part(&mut file, &entries(&bytes)).ok().as_deref(),
+        Some("word/main.xml")
+    );
+}
+
+#[test]
+fn many_declarations_on_the_root_alone_are_fine() {
+    let many: String = (0..300).map(|i| format!(r#" xmlns:n{i}="u{i}""#)).collect();
+    let xml = format!(r#"<w:document xmlns:w="{W}"{many}><w:body><w:p/></w:body></w:document>"#);
+    assert!(fixed(&xml, Paper::A4).unwrap().contains(A4));
 }

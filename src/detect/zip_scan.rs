@@ -92,19 +92,22 @@ fn u64_at(b: &[u8], at: usize) -> u64 {
 }
 
 /// Where the central directory is: `(entries, offset, size, zip64)`, under
-/// the same checks as [`list`]; `zip64` when a ZIP64 end record gave them.
-/// For the office worker's DOCX repack.
+/// the same checks as [`list`]. `zip64` when the archive has a ZIP64 end
+/// record, whether or not the classic one needed it. For the office
+/// worker's DOCX repack.
 pub fn directory<R: Read + Seek>(
     file: &mut R,
     file_size: u64,
 ) -> Result<(u64, u64, u64, bool), ScanError> {
     let directory = read_directory(file, file_size)?;
-    Ok((
-        directory.entries,
-        directory.offset,
-        directory.size,
-        directory.zip64,
-    ))
+    let mut zip64 = directory.zip64;
+    if !zip64 && let Some(locator_pos) = directory.eocd_pos.checked_sub(20) {
+        file.seek(SeekFrom::Start(locator_pos))?;
+        let mut signature = [0; 4];
+        file.read_exact(&mut signature)?;
+        zip64 = u32_at(&signature, 0) == ZIP64_LOCATOR_SIG;
+    }
+    Ok((directory.entries, directory.offset, directory.size, zip64))
 }
 
 /// Where the central directory is.
@@ -113,6 +116,8 @@ struct Directory {
     offset: u64,
     size: u64,
     zip64: bool,
+    /// Where the classic end record starts.
+    eocd_pos: u64,
 }
 
 fn read_directory<R: Read + Seek>(file: &mut R, file_size: u64) -> Result<Directory, ScanError> {
@@ -174,6 +179,7 @@ fn read_directory<R: Read + Seek>(file: &mut R, file_size: u64) -> Result<Direct
         offset,
         size,
         zip64,
+        eocd_pos: tail_start + at as u64,
     })
 }
 

@@ -316,6 +316,9 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
         (0, &head[..read])
     };
     let mut xml = NsReader::from_reader(head.chain(BufReader::with_capacity(64 * 1024, part)));
+    // The total in scope is checked below; one element may use all of it.
+    xml.resolver_mut()
+        .set_max_declarations_per_element(MAX_BINDINGS);
     let mut buf = Vec::with_capacity(4096);
     let mut stack: Vec<Tag> = Vec::with_capacity(64);
     // Namespace declarations per open element, and in scope in all:
@@ -554,19 +557,24 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
     // OPC allows UTF-16 here, whatever the main part uses; no offsets are
     // needed, so it is decoded first.
     let bytes = utf16_to_utf8(&bytes).unwrap_or(bytes);
-    let mut xml = quick_xml::Reader::from_reader(bytes.as_slice());
+    let mut xml = NsReader::from_reader(bytes.as_slice());
     let mut buf = Vec::new();
     let mut main = None;
     loop {
-        match xml
-            .read_event_into(&mut buf)
-            .map_err(|_| Skip::Unsupported)?
-        {
-            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Relationship" => {
+        let (ns, event) = xml
+            .read_resolved_event_into(&mut buf)
+            .map_err(|_| Skip::Unsupported)?;
+        let in_rels = matches!(ns, ResolveResult::Bound(Namespace(n)) if n == RELS_NS);
+        match event {
+            Event::Start(e) | Event::Empty(e)
+                if in_rels && e.local_name().as_ref() == b"Relationship" =>
+            {
+                // Only the unqualified attributes: `xmlns:Type` or `x:Type`
+                // are not the relationship's type.
                 let attr = |key: &[u8]| {
                     e.attributes()
                         .flatten()
-                        .find(|a| a.key.local_name().as_ref() == key)
+                        .find(|a| a.key.as_ref() == key)
                         .and_then(|a| a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok())
                         .map(|v| v.into_owned())
                 };
@@ -588,6 +596,9 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
         buf.clear();
     }
 }
+
+/// The namespace of OPC relationship parts.
+const RELS_NS: &[u8] = b"http://schemas.openxmlformats.org/package/2006/relationships";
 
 /// The relationship type of a package's digital-signature origin.
 const SIGNATURE_ORIGIN: &str =
