@@ -540,10 +540,10 @@ async fn a_timeout_strike_records_the_time_the_worker_had() {
                 probe_max_pages: u32::MAX,
                 sha256: [14; 32],
             };
-            let deadline = || Instant::now() + Duration::from_millis(1300);
+            let deadline = || Instant::now() + Duration::from_millis(1100);
             for attempt in 1..=2 {
                 assert!(pool.wait_idle(1, Duration::from_secs(20)).await);
-                // Hold the only worker for 1 s: the inspect queues, then has
+                // Hold the only worker for 0.8 s: the inspect queues, then has
                 // about 0.3 s on the worker before its deadline.
                 let held = pool
                     .lease(
@@ -553,7 +553,7 @@ async fn a_timeout_strike_records_the_time_the_worker_had() {
                     .await
                     .unwrap();
                 let release = tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                    tokio::time::sleep(Duration::from_millis(800)).await;
                     drop(held);
                 });
                 let err = pdf
@@ -563,6 +563,28 @@ async fn a_timeout_strike_records_the_time_the_worker_had() {
                 assert_eq!(err, EngineError::Timeout, "attempt {attempt}");
                 release.await.unwrap();
             }
+            // Under the same load the third is refused when it gets a worker:
+            // it would have no more time than the two that timed out.
+            assert!(pool.wait_idle(1, Duration::from_secs(20)).await);
+            let before = generation(&pool).await;
+            let held = pool
+                .lease(
+                    Instant::now() + Duration::from_secs(5),
+                    PoolAdmission::Queue,
+                )
+                .await
+                .unwrap();
+            let release = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                drop(held);
+            });
+            let err = pdf
+                .inspect(inspect(), Admission::Queue, deadline())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Poisoned, "refused at dispatch");
+            release.await.unwrap();
+            assert_eq!(generation(&pool).await, before, "no worker was killed");
             // Same deadline, idle pool: the worker would have all of it.
             assert!(pool.wait_idle(1, Duration::from_secs(20)).await);
             let err = pdf

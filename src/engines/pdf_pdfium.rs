@@ -144,13 +144,16 @@ type ChunkOk = (Vec<ipc::RenderedPage>, Duration, WorkerRef);
 struct ChunkFailure {
     error: EngineError,
     strike: Option<Strike>,
+    /// The time its failing worker call had: a timeout strike's budget.
+    ran: Duration,
 }
 
 impl ChunkFailure {
-    fn of(err: CallError, retried: bool) -> Self {
+    fn of(err: CallError, retried: bool, ran: Duration) -> Self {
         Self {
             strike: strike_for(&err, retried),
             error: EngineFailure::from(err).into(),
+            ran,
         }
     }
 
@@ -158,6 +161,7 @@ impl ChunkFailure {
         Self {
             error,
             strike: None,
+            ran: Duration::ZERO,
         }
     }
 }
@@ -197,15 +201,16 @@ async fn render_chunk(
     deadline: Instant,
 ) -> Result<ChunkOk, ChunkFailure> {
     let op = Op::Render(args);
+    let ran = deadline.saturating_duration_since(Instant::now());
     match lease.call(op.clone(), deadline).await {
         Ok(reply) => return chunk_reply(&mut lease, reply, pool),
         Err(err @ CallError::Crashed { .. })
             if deadline.saturating_duration_since(Instant::now()) < RETRY_MIN_LEFT =>
         {
-            return Err(ChunkFailure::of(err, false));
+            return Err(ChunkFailure::of(err, false, ran));
         }
         Err(CallError::Crashed { .. }) => {}
-        Err(err) => return Err(ChunkFailure::of(err, false)),
+        Err(err) => return Err(ChunkFailure::of(err, false, ran)),
     }
     drop(lease);
     tracing::warn!(pool = pool.name(), "render chunk crashed; retrying once");
@@ -216,12 +221,14 @@ async fn render_chunk(
             return Err(ChunkFailure {
                 error: EngineFailure::from(err).into(),
                 strike: Some(Strike::Crash(1)),
+                ran,
             });
         }
     };
+    let ran = deadline.saturating_duration_since(Instant::now());
     match retry.call(op, deadline).await {
         Ok(reply) => chunk_reply(&mut retry, reply, pool),
-        Err(err) => Err(ChunkFailure::of(err, true)),
+        Err(err) => Err(ChunkFailure::of(err, true, ran)),
     }
 }
 
@@ -233,10 +240,14 @@ impl PdfEngine for PdfPdfium {
         adm: Admission,
         deadline: Instant,
     ) -> Result<Inspection, EngineError> {
+        // The PDF's size tells two exports of one upload apart: a smaller
+        // PDF is less work, so a timeout on a larger one does not cover it.
+        let bytes = std::fs::metadata(&job.pdf).map_or(0, |m| m.len());
         let poison = self.poison(
             job.sha256,
             Work::Inspect {
                 probe: job.probe_dpi.is_some(),
+                bytes,
             },
         );
         let op = Op::Inspect(InspectArgs {
@@ -357,9 +368,18 @@ impl PdfEngine for PdfPdfium {
             .map_err(|err| EngineError::from(EngineFailure::from(err)))?;
         let queue = first.queued();
         let lease_time = first.leased().saturating_sub(queue);
-        // A timeout strike records the time the chunks had to run, not the
-        // time this request spent waiting for a worker.
-        let ran = Attempt::new(attempt.work, deadline, Instant::now());
+        // Check again with the time a worker gets now: under queue pressure
+        // a request that is left with no more time than a timed-out one is
+        // refused instead of killing another worker.
+        if let Some(list) = &self.poison
+            && list.refuses(
+                &job.sha256,
+                &Attempt::new(attempt.work, deadline, Instant::now()),
+            )
+        {
+            drop(first);
+            return Err(EngineError::Poisoned);
+        }
         let spawned = first.spawned_on_path();
         let wanted = job.pages.len().div_ceil(RENDER_CHUNK_MIN_PAGES).max(1);
         let mut leases = vec![first];
@@ -394,6 +414,9 @@ impl PdfEngine for PdfPdfium {
         let mut longest = Duration::ZERO;
         let mut failure: Option<EngineError> = None;
         let mut strike: Option<Strike> = None;
+        // The budget of the call whose strike counts: a timeout covers only
+        // requests that give a worker no more time than that call had.
+        let mut strike_ran = Duration::MAX;
         // Pages of the chunks that went over their share: an equal share
         // keeps the disk within the reservation, but the job's cap is the
         // whole budget, so these get what the other chunks left.
@@ -411,7 +434,13 @@ impl PdfEngine for PdfPdfium {
                     over_error = Some(chunk.error);
                 }
                 Err(chunk) => {
+                    let before = strike;
                     strike = worse(strike, chunk.strike);
+                    if strike != before {
+                        strike_ran = chunk.ran;
+                    } else if chunk.strike == strike {
+                        strike_ran = strike_ran.min(chunk.ran);
+                    }
                     let more_severe = failure
                         .as_ref()
                         .is_none_or(|old| severity(&chunk.error) < severity(old));
@@ -436,6 +465,7 @@ impl PdfEngine for PdfPdfium {
                 }
                 Err(chunk) => {
                     strike = chunk.strike;
+                    strike_ran = chunk.ran;
                     failure = Some(chunk.error);
                 }
             }
@@ -446,6 +476,10 @@ impl PdfEngine for PdfPdfium {
             if let Some(list) = &self.poison
                 && let Some(strike) = strike
             {
+                let ran = Attempt {
+                    work: attempt.work,
+                    budget: strike_ran,
+                };
                 list.strike(&job.sha256, strike, &ran);
             }
             return Err(err);

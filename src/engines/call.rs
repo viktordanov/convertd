@@ -93,6 +93,17 @@ pub async fn call_with_poison(
                 return Err(EngineFailure::from(err).into());
             }
         };
+        // Check again with the time the worker gets now (see the render
+        // path): a timeout strike covers a request with no more time.
+        if let Some((p, attempt)) = &poison
+            && p.list.refuses(
+                &p.key,
+                &Attempt::new(attempt.work, deadline, Instant::now()),
+            )
+        {
+            drop(lease);
+            return Err(EngineError::Poisoned);
+        }
         let queue = *first_queue.get_or_insert(lease.queued());
         let lease_time = lease.leased().saturating_sub(lease.queued());
         let spawned = lease.spawned_on_path();

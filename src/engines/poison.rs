@@ -40,8 +40,9 @@ pub enum Work {
     /// An office conversion: always the whole document.
     Convert,
     /// A PDF inspect of the whole document: the page sizes, and with
-    /// `probe` the blank-page probe renders too (more work).
-    Inspect { probe: bool },
+    /// `probe` the blank-page probe renders too. `bytes` is the PDF's size:
+    /// two exports of one office upload differ in it.
+    Inspect { probe: bool, bytes: u64 },
     /// A PDF decrypt: a copy of the whole document.
     Decrypt,
     /// A render of this many pages.
@@ -70,9 +71,15 @@ impl Attempt {
     pub fn covers(&self, next: &Attempt) -> bool {
         let work = match (self.work, next.work) {
             (Work::Convert, Work::Convert) | (Work::Decrypt, Work::Decrypt) => true,
-            // A probed inspect is more work: its timeout does not cover an
-            // inspect without the probe.
-            (Work::Inspect { probe: timed_out }, Work::Inspect { probe }) => probe >= timed_out,
+            // A probed inspect, or a larger PDF, is more work: its timeout
+            // does not cover an inspect without the probe or of a smaller PDF.
+            (
+                Work::Inspect {
+                    probe: timed_out,
+                    bytes: timed_out_bytes,
+                },
+                Work::Inspect { probe, bytes },
+            ) => probe >= timed_out && bytes >= timed_out_bytes,
             (Work::Render { pages: timed_out }, Work::Render { pages }) => pages >= timed_out,
             _ => false,
         };
@@ -365,14 +372,12 @@ mod tests {
     fn a_probed_inspect_timeout_does_not_cover_an_unprobed_inspect() {
         let now = Instant::now();
         let l = list(600_000);
-        let probed = Attempt {
-            work: Work::Inspect { probe: true },
+        let inspect = |probe, bytes| Attempt {
+            work: Work::Inspect { probe, bytes },
             budget: Duration::from_secs(10),
         };
-        let plain = Attempt {
-            work: Work::Inspect { probe: false },
-            budget: Duration::from_secs(10),
-        };
+        let probed = inspect(true, 1_000);
+        let plain = inspect(false, 1_000);
         l.strike_at(&KEY, Strike::Timeout, &probed, now);
         l.strike_at(&KEY, Strike::Timeout, &probed, now);
         assert!(l.refuses_at(&KEY, &probed, now));
@@ -382,6 +387,15 @@ mod tests {
         l.strike_at(&other, Strike::Timeout, &plain, now);
         assert!(l.refuses_at(&other, &plain, now));
         assert!(l.refuses_at(&other, &probed, now), "more work");
+        // Another export of the same upload: a smaller PDF is not covered.
+        assert!(
+            !l.refuses_at(&other, &inspect(false, 600), now),
+            "a smaller PDF"
+        );
+        assert!(
+            l.refuses_at(&other, &inspect(false, 4_000), now),
+            "a larger PDF"
+        );
     }
 
     #[test]
