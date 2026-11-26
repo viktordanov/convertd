@@ -212,6 +212,7 @@ impl OfficeWorker {
         // before LibreOffice does.
         let copy = self.paper_copy(args);
         times.preflight_us = micros(preflight.elapsed());
+        let copy = copy?;
         let result = self.convert_from(copy.as_deref().unwrap_or(&args.input), args, times);
         if let Some(copy) = &copy {
             let _ = std::fs::remove_file(copy);
@@ -235,21 +236,30 @@ impl OfficeWorker {
     }
 
     /// The copy of a Word package that names the page size of every
-    /// section, or `None` to load the source as it came.
-    fn paper_copy(&self, args: &ConvertArgs) -> Option<std::path::PathBuf> {
-        let paper = self.paper?;
+    /// section, or `None` to load the source as it came. Only A4 needs one:
+    /// the importer's own default is Letter. A failed write (a full disk)
+    /// fails the job, so that the paper never depends on the disk.
+    fn paper_copy(&self, args: &ConvertArgs) -> Result<Option<std::path::PathBuf>, WorkerError> {
+        let Some(paper) = self.paper.filter(|paper| *paper != Paper::Letter) else {
+            return Ok(None);
+        };
         if args.family != Family::Document || !docx_paper::is_word_package(&args.input) {
-            return None;
+            return Ok(None);
         }
-        let copy = docx_paper::copy_path(&args.input)?;
-        std::fs::create_dir(copy.parent()?).ok()?;
+        let Some((copy, dir)) = docx_paper::copy_path(&args.input)
+            .and_then(|copy| Some((copy.clone(), copy.parent()?.to_path_buf())))
+        else {
+            return Ok(None);
+        };
+        std::fs::create_dir(&dir).map_err(|err| io_error("create the paper copy", &err))?;
         match docx_paper::repack(&args.input, &copy, paper) {
-            Ok(true) => Some(copy),
-            Ok(false) | Err(_) => {
-                if let Some(dir) = copy.parent() {
-                    let _ = std::fs::remove_dir(dir);
+            Ok(()) => Ok(Some(copy)),
+            Err(skip) => {
+                let _ = std::fs::remove_dir(&dir);
+                match skip {
+                    docx_paper::Skip::Io(err) => Err(io_error("write the paper copy", &err)),
+                    _ => Ok(None),
                 }
-                None
             }
         }
     }
