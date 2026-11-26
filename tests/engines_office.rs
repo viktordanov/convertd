@@ -756,7 +756,10 @@ async fn first_pages(
             );
             per_paper.push((page.width_pt.round() as u32, page.height_pt.round() as u32));
             // The worker's copy with page sizes is gone.
-            assert!(!job_dir.join("paper").exists(), "the copy stayed behind");
+            assert!(
+                !job_dir.join(".convertd-paper").exists(),
+                "the copy stayed behind"
+            );
         }
         sizes.push(per_paper);
         pool.shutdown(Duration::from_secs(5)).await;

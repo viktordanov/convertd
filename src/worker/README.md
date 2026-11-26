@@ -104,7 +104,7 @@ Only an encrypted DOCX has a test of this path (`tests/engines_office.rs`). An e
 
 The DOCX importer of LibreOffice 26.8.3 starts every section on Letter and never reads `LC_PAPER`. So for a DOCX, DOCM or DOTX, `docx_paper` gives each section without a `w:pgSz` one with the `DEFAULT_PAPER` size before the load. The worker learns the paper from its `LC_PAPER`. The sections are the `w:sectPr` of the body and of a paragraph's `w:pPr`, and a body without one gets one. The new element goes after the header and footer references, `w:footnotePr`, `w:endnotePr` and `w:type`, where the schema puts it. A section that has a `w:pgSz` keeps it, and a package in which every section has one is loaded as it came.
 
-The worker writes the changed package to `paper/<source name>` in the job directory, loads it, and removes it after the export. A retry after a crashed worker clears that folder first.
+The worker writes the changed package to `.convertd-paper/<source name>` in the job directory, loads it, and removes it after the export. A retry after a crashed worker removes that copy first. The worker removes nothing else in that folder.
 
 Only the main part changes, with its own compression method. Every other entry is copied byte for byte, data descriptors included. The copy may be at most the source size plus 1 MiB, which the supervisor reserves beside the PDF. With `DEFAULT_PAPER=Letter` there is no copy and no reservation, because Letter is the importer's own default.
 
@@ -112,9 +112,9 @@ The main part is inflated at most twice, once to plan and once to rewrite. Each 
 
 These packages are loaded as they came, on Letter:
 
-- a ZIP64 archive, or an encrypted main part;
+- a ZIP64 archive, an encrypted main part, or a signed package (`_xmlsignatures/`);
 - a main part whose CRC or size does not match its directory record;
-- a main part that is not UTF-8 XML, by its bytes or its declaration, or nests deeper than 4096 elements;
+- a main part that is not UTF-8 XML, by its bytes or its declaration, nests deeper than 4096 elements, or has more than 512 namespace declarations in scope;
 - more than 100 000 sections;
 - a section or a body in an `mc:AlternateContent` branch, an `mc:AlternateContent` in a section, or a `w:pgSz` in a wrapper element inside a section.
 

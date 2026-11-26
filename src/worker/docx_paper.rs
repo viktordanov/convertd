@@ -55,6 +55,9 @@ pub const MAIN_PART_CAP: u64 = crate::preflight::REQUEST_CAP;
 const DIRECTORY_CAP: u64 = 16 * MIB;
 /// Elements open at once.
 const MAX_DEPTH: usize = 4096;
+/// Namespace declarations in scope at once. A Word main part declares
+/// about 40, all on its root.
+const MAX_BINDINGS: usize = 512;
 /// The `w:sectPr` children that come before `w:pgSz` in the schema.
 const BEFORE_PAGE_SIZE: [&[u8]; 5] = [
     b"headerReference",
@@ -315,6 +318,10 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     let mut xml = NsReader::from_reader(head.chain(BufReader::with_capacity(64 * 1024, part)));
     let mut buf = Vec::with_capacity(4096);
     let mut stack: Vec<Tag> = Vec::with_capacity(64);
+    // Namespace declarations per open element, and in scope in all:
+    // quick-xml looks a prefix up through all of them.
+    let mut declared: Vec<u32> = Vec::with_capacity(64);
+    let mut bindings = 0usize;
     let mut plan = Plan::default();
     let mut open: Option<Section> = None;
     // The body: its depth, prefix and namespace.
@@ -353,6 +360,18 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     _ => Tag::Other,
                 };
                 let depth = stack.len();
+                let declares = e
+                    .attributes()
+                    .with_checks(false)
+                    .flatten()
+                    .filter(|a| {
+                        let key = a.key.as_ref();
+                        key == b"xmlns" || key.starts_with(b"xmlns:")
+                    })
+                    .count();
+                if bindings + declares > MAX_BINDINGS {
+                    return Err(Skip::Unsupported);
+                }
                 if let Some(s) = open.as_mut() {
                     // A branch, or a page size inside a wrapper (such as an
                     // element that mc:ProcessContent names): which size
@@ -424,6 +443,8 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     alternates += usize::from(tag == Tag::Alternate);
                     history += usize::from(tag == Tag::SectPrChange);
                     stack.push(tag);
+                    declared.push(declares as u32);
+                    bindings += declares;
                     if stack.len() > MAX_DEPTH {
                         return Err(Skip::Unreadable);
                     }
@@ -431,6 +452,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
             }
             Event::End(_) => {
                 let closed = stack.pop();
+                bindings -= declared.pop().unwrap_or(0) as usize;
                 alternates -= usize::from(closed == Some(Tag::Alternate));
                 history -= usize::from(closed == Some(Tag::SectPrChange));
                 let depth = stack.len();
@@ -783,6 +805,13 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
         return Err(Skip::Unsupported);
     }
     let entries = zip_scan::list(&mut file, size).map_err(scan_error)?;
+    // A signed package: a changed main part would break its signature.
+    if entries
+        .iter()
+        .any(|(name, _)| name.starts_with("_xmlsignatures/"))
+    {
+        return Err(Skip::Unsupported);
+    }
     let main = main_part(&mut file, &entries)?;
     let entry = entries
         .iter()
@@ -997,18 +1026,22 @@ fn write_main(
     Ok((crc, compressed, uncompressed))
 }
 
-/// Where the repacked copy of `source` goes: a `paper` directory next to
+/// The folder of the copies, next to the source.
+pub const COPY_DIR: &str = ".convertd-paper";
+
+/// Where the repacked copy of `source` goes: a [`COPY_DIR`] folder next to
 /// it, under the same file name, so LibreOffice sees the same name (a
 /// FILENAME field, for example).
 ///
-/// The directory differs, so a relative hyperlink resolves under `paper/`.
+/// The directory differs, so a relative hyperlink resolves under
+/// [`COPY_DIR`].
 /// That costs nothing: without the copy it resolves under the job
 /// directory, whose name is a random UUID per request (`jobs/job_dir.rs`)
 /// and which is removed after the response. Such a link target was never
 /// stable or reachable for a client. Writing the copy over the source
 /// instead would make a retry after a crash depend on which file is which.
 pub fn copy_path(source: &Path) -> Option<PathBuf> {
-    Some(source.parent()?.join("paper").join(source.file_name()?))
+    Some(source.parent()?.join(COPY_DIR).join(source.file_name()?))
 }
 
 /// Whether `source` is a package that LibreOffice reads with its DOCX

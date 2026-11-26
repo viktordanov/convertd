@@ -460,7 +460,7 @@ fn word_packages_are_told_by_extension() {
     assert!(!is_word_package(Path::new("/j/source.rtf")));
     assert_eq!(
         copy_path(Path::new("/j/source.docx")).unwrap(),
-        Path::new("/j/paper/source.docx")
+        Path::new("/j/.convertd-paper/source.docx")
     );
 }
 
@@ -666,4 +666,36 @@ fn a_file_system_error_on_the_source_is_not_a_skip() {
     // A directory in place of the source: reading it fails with EISDIR.
     let result = repack(dir.path(), &dir.path().join("copy.docx"), Paper::A4);
     assert!(matches!(result, Err(Skip::Io(_))), "{result:?}");
+}
+
+#[test]
+fn a_signed_package_is_not_changed() {
+    let main = doc("<w:p/>");
+    let source = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", main.as_bytes(), true, false),
+        ("_xmlsignatures/sig1.xml", b"<Signature/>", true, false),
+    ]);
+    assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
+}
+
+#[test]
+fn too_many_namespace_bindings_are_left_alone() {
+    // Ten declarations on each of 60 nested elements: 600 in scope.
+    let open = |level: usize| -> String {
+        let attrs: String = (0..10)
+            .map(|i| format!(r#" xmlns:n{level}x{i}="u""#))
+            .collect();
+        format!("<w:p{attrs}>")
+    };
+    let nested: String = (0..60).map(open).collect::<String>() + &"</w:p>".repeat(60);
+    assert_eq!(
+        fix_part(doc(&nested).as_bytes(), Paper::A4),
+        Err(Skip::Unsupported)
+    );
+    // Declarations go out of scope with their element.
+    let one = |i: usize| format!(r#"<w:p xmlns:n{i}="u"/>"#);
+    let body: String = (0..2 * MAX_BINDINGS).map(one).collect();
+    assert!(fixed(&doc(&body), Paper::A4).unwrap().contains(A4));
 }

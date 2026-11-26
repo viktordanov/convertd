@@ -216,8 +216,8 @@ impl OfficeWorker {
         let result = self.convert_from(copy.as_deref().unwrap_or(&args.input), args, times);
         // The supervisor gives the copy's reservation back when this job
         // answers, so the copy must be gone by then.
-        if let Some(dir) = copy.as_deref().and_then(Path::parent) {
-            clear_dir(dir).inspect_err(|_| {
+        if let Some(copy) = &copy {
+            remove_copy(copy).inspect_err(|_| {
                 let _ = std::fs::remove_file(&args.output);
             })?;
         }
@@ -253,13 +253,18 @@ impl OfficeWorker {
             return Ok(None);
         };
         // A worker that died during an earlier attempt of this job may have
-        // left a partial copy: the retry starts from the source again.
-        clear_dir(&dir)?;
-        std::fs::create_dir(&dir).map_err(|err| io_error("create the paper copy", &err))?;
+        // left a partial copy: the retry starts from the source again. Only
+        // this input's copy is touched, never other files in the folder.
+        remove_copy(&copy)?;
+        match std::fs::create_dir(&dir) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(io_error("create the paper copy", &err)),
+        }
         match docx_paper::repack(&args.input, &copy, paper) {
             Ok(()) => Ok(Some(copy)),
             Err(skip) => {
-                clear_dir(&dir)?;
+                remove_copy(&copy)?;
                 match skip {
                     docx_paper::Skip::Io(err) => Err(io_error("write the paper copy", &err)),
                     _ => Ok(None),
@@ -387,15 +392,20 @@ impl Engine for OfficeWorker {
     }
 }
 
-/// Removes the paper copy's directory and what it holds. Gone already is
-/// fine; any other failure is the job's I/O error, because the supervisor
-/// stops reserving the copy's bytes when the job answers.
-fn clear_dir(dir: &Path) -> Result<(), WorkerError> {
-    match std::fs::remove_dir_all(dir) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(io_error("remove the paper copy", &err)),
+/// Removes the paper copy, then its folder if that is empty. A copy that
+/// is gone already is fine; any other failure is the job's I/O error,
+/// because the supervisor stops reserving the copy's bytes when the job
+/// answers. The folder may hold another input's copy, so it stays then.
+fn remove_copy(copy: &Path) -> Result<(), WorkerError> {
+    match std::fs::remove_file(copy) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(io_error("remove the paper copy", &err)),
     }
+    if let Some(dir) = copy.parent() {
+        let _ = std::fs::remove_dir(dir);
+    }
+    Ok(())
 }
 
 fn domain_family(family: Family) -> DomainFamily {
