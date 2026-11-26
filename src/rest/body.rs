@@ -7,7 +7,10 @@
 //! keep the connection open (axum::serve sets no timeouts), so anything
 //! the body owned would live as long as the socket. Each send has a
 //! timeout of `IO_IDLE_TIMEOUT_SECONDS`; when it fires the pump stops,
-//! logs `response stalled` (`RESPONSE_STALLED`) and releases both.
+//! logs `response stalled` (`RESPONSE_STALLED`) and releases both. A
+//! client that keeps reading but below `RESPONSE_MIN_BYTES_PER_SECOND`
+//! over one window ends the same way, logged as `response too slow`
+//! (`RESPONSE_TOO_SLOW`).
 //!
 //! Why not `tokio::fs` + `ReaderStream`: every read would be its own
 //! `spawn_blocking` hop, about 1 600 for 100 MiB against one task here.
@@ -23,6 +26,7 @@ use bytes::{Bytes, BytesMut};
 use tokio::runtime::Handle;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
+use super::throughput::{Meter, MinRate};
 use crate::bundle::TarPlan;
 use crate::jobs::JobDir;
 use crate::observability::metrics;
@@ -37,6 +41,8 @@ pub struct Pump {
     pub job: Arc<JobDir>,
     pub permit: OwnedSemaphorePermit,
     pub idle: Duration,
+    /// The response's minimum throughput.
+    pub rate: MinRate,
     /// For the pump's own log lines.
     pub request_id: String,
 }
@@ -49,6 +55,8 @@ pub enum PumpEnd {
     Disconnected,
     /// The client stopped reading for `idle`.
     Stalled,
+    /// The client read below the minimum throughput for one window.
+    TooSlow,
     /// The file ended early or could not be read: the client sees a body
     /// shorter than `Content-Length`.
     Aborted,
@@ -56,20 +64,21 @@ pub enum PumpEnd {
 
 /// Streams exactly `size` bytes of `file`.
 pub fn file_body(file: File, size: u64, pump: Pump) -> Body {
-    spawn_pump(pump, move |tx, handle, idle| {
-        run(file, size, tx, handle, idle)
+    spawn_pump(pump, move |tx, handle, idle, meter| {
+        run(file, size, tx, handle, idle, meter)
     })
 }
 
 /// Streams the tar.zst of `plan`: one zstd frame, chunked, with no
 /// length known in advance.
 pub fn tar_body(plan: TarPlan, pump: Pump) -> Body {
-    spawn_pump(pump, move |tx, handle, idle| {
+    spawn_pump(pump, move |tx, handle, idle, meter| {
         let writer = ChannelWriter {
             buf: BytesMut::with_capacity(READ_CHUNK),
             tx,
             handle,
             idle,
+            meter,
             end: None,
         };
         match plan
@@ -84,6 +93,7 @@ pub fn tar_body(plan: TarPlan, pump: Pump) -> Body {
                 // through the error kind.
                 match err.kind() {
                     io::ErrorKind::TimedOut => PumpEnd::Stalled,
+                    io::ErrorKind::WouldBlock => PumpEnd::TooSlow,
                     io::ErrorKind::BrokenPipe => PumpEnd::Disconnected,
                     _ => {
                         let _ = handle.block_on(tokio::time::timeout(idle, tx.send(Err(err))));
@@ -101,12 +111,12 @@ type Sender = mpsc::Sender<io::Result<Bytes>>;
 /// permit, and returns the body that receives its chunks.
 fn spawn_pump(
     pump: Pump,
-    work: impl FnOnce(&Sender, &Handle, Duration) -> PumpEnd + Send + 'static,
+    work: impl FnOnce(&Sender, &Handle, Duration, Meter) -> PumpEnd + Send + 'static,
 ) -> Body {
     let (tx, rx) = mpsc::channel::<io::Result<Bytes>>(BODY_QUEUE_CHUNKS);
     let handle = Handle::current();
     tokio::task::spawn_blocking(move || {
-        let end = work(&tx, &handle, pump.idle);
+        let end = work(&tx, &handle, pump.idle, Meter::new(pump.rate));
         // Nothing reads the job directory any more: remove it here, on a
         // blocking thread, with no extra hop.
         pump.job.remove_now();
@@ -116,6 +126,10 @@ fn spawn_pump(
             PumpEnd::Stalled => {
                 tracing::warn!(request_id = %pump.request_id, code = "RESPONSE_STALLED", "response stalled");
                 metrics::response_cut("RESPONSE_STALLED");
+            }
+            PumpEnd::TooSlow => {
+                tracing::warn!(request_id = %pump.request_id, code = "RESPONSE_TOO_SLOW", "response too slow");
+                metrics::response_cut("RESPONSE_TOO_SLOW");
             }
             PumpEnd::Aborted => {
                 tracing::warn!(request_id = %pump.request_id, code = "RESPONSE_ABORTED", "response aborted");
@@ -137,19 +151,29 @@ struct ChannelWriter<'a> {
     tx: &'a Sender,
     handle: &'a Handle,
     idle: Duration,
+    meter: Meter,
     end: Option<PumpEnd>,
 }
 
 impl ChannelWriter<'_> {
     fn send(&mut self, len: usize) -> io::Result<()> {
         let chunk = self.buf.split_to(len).freeze();
+        let bytes = chunk.len() as u64;
         // The sent chunk keeps its allocation alive while it is queued.
         self.buf.reserve(READ_CHUNK);
         match self
             .handle
             .block_on(tokio::time::timeout(self.idle, self.tx.send(Ok(chunk))))
         {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(())) => {
+                if self.meter.record(bytes).is_err() {
+                    // The reason travels as the error kind: the writer
+                    // itself is inside the encoder.
+                    self.end = Some(PumpEnd::TooSlow);
+                    return Err(io::ErrorKind::WouldBlock.into());
+                }
+                Ok(())
+            }
             Ok(Err(_)) => {
                 self.end = Some(PumpEnd::Disconnected);
                 Err(io::ErrorKind::BrokenPipe.into())
@@ -188,6 +212,7 @@ fn run(
     tx: &mpsc::Sender<io::Result<Bytes>>,
     handle: &Handle,
     idle: Duration,
+    mut meter: Meter,
 ) -> PumpEnd {
     let mut left = size;
     while left > 0 {
@@ -201,7 +226,12 @@ fn run(
             return PumpEnd::Aborted;
         }
         match handle.block_on(tokio::time::timeout(idle, tx.send(Ok(chunk.freeze())))) {
-            Ok(Ok(())) => left -= len as u64,
+            Ok(Ok(())) => {
+                left -= len as u64;
+                if meter.record(len as u64).is_err() {
+                    return PumpEnd::TooSlow;
+                }
+            }
             Ok(Err(_)) => return PumpEnd::Disconnected,
             Err(_) => return PumpEnd::Stalled,
         }
@@ -260,6 +290,7 @@ mod tests {
             job,
             permit,
             idle: Duration::from_secs(5),
+            rate: MinRate::off(),
             request_id: "t".into(),
         };
         let body = file_body(File::open(&path).unwrap(), data.len() as u64, pump);
@@ -280,6 +311,7 @@ mod tests {
             job,
             permit: semaphore.clone().try_acquire_owned().unwrap(),
             idle: Duration::from_secs(5),
+            rate: MinRate::off(),
             request_id: "t".into(),
         };
         let body = file_body(File::open(&path).unwrap(), 100, pump);
@@ -301,6 +333,7 @@ mod tests {
             job,
             permit: semaphore.clone().try_acquire_owned().unwrap(),
             idle: Duration::from_millis(200),
+            rate: MinRate::off(),
             request_id: "t".into(),
         };
         // Hold the body without polling it, like hyper for a stalled client.
@@ -343,6 +376,7 @@ mod tests {
             job,
             permit: semaphore.clone().try_acquire_owned().unwrap(),
             idle: Duration::from_secs(5),
+            rate: MinRate::off(),
             request_id: "t".into(),
         };
         let body = tar_body(plan, pump);
@@ -367,6 +401,7 @@ mod tests {
             job,
             permit: semaphore.clone().try_acquire_owned().unwrap(),
             idle: Duration::from_millis(200),
+            rate: MinRate::off(),
             request_id: "t".into(),
         };
         let body = tar_body(plan, pump);

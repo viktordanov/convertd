@@ -843,6 +843,76 @@ async fn a_client_that_stops_reading_releases_the_permit_after_the_idle_timeout(
     drop(stream);
 }
 
+/// A client that keeps reading, but slowly, never trips the pump's idle
+/// timeout. The minimum-throughput floor ends the response after a window
+/// below it and frees the permit (review, lane 001 item 3). The floor is set
+/// high so that the reader can stay fast enough for the idle timer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_a_reader_below_the_floor_releases_the_permit() {
+    let app = App::new(
+        "response-slow",
+        &[
+            ("MAX_CONCURRENT_REQUESTS", "1"),
+            ("IO_IDLE_TIMEOUT_SECONDS", "2"),
+            ("RESPONSE_MIN_BYTES_PER_SECOND", "67108864"),
+        ],
+    );
+    let addr = app.serve().await;
+    let upload = big_pdf(96 * 1024 * 1024);
+    let body = file("big.pdf", &upload);
+    let small = file("small.pdf", &pdf("small"));
+
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader = std::thread::spawn({
+        let stop = stop.clone();
+        move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            stream
+                .write_all(&head(body.len(), &format!("Bearer {KEY}")))
+                .unwrap();
+            stream.write_all(&body).unwrap();
+            let status = read_status(&mut stream);
+            // 256 KiB every 50 ms, about 5 MB/s: the pump never waits near
+            // the 2 s idle timeout, but stays below the 64 MiB/s floor.
+            let mut buf = vec![0u8; 256 * 1024];
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => std::thread::sleep(Duration::from_millis(50)),
+                }
+            }
+            status
+        }
+    });
+    // The upload, conversion and headers take a moment.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(8);
+    loop {
+        let small = small.clone();
+        let status = tokio::task::spawn_blocking(move || round_trip(addr, &small))
+            .await
+            .unwrap();
+        if status == 200 {
+            break;
+        }
+        assert_eq!(status, 429);
+        assert!(Instant::now() < deadline, "the slow reader kept the permit");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(reader.join().unwrap(), 200);
+    let cuts = log_lines("RESPONSE_TOO_SLOW");
+    assert!(
+        cuts.iter().any(|l| l["message"] == "response too slow"),
+        "{cuts:?}"
+    );
+    app.assert_no_jobs().await;
+}
+
 /// Streams `total` bytes of body after `head`, in 64 KiB writes, until the
 /// server closes; returns how many bytes went out.
 /// Writes `total` bytes, counting them in `sent`; returns the write error

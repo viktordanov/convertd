@@ -112,6 +112,8 @@ Each engine call that writes reserves its cap of the disk budget first: the rend
 
 The response pump is one blocking task. It reads the PDF, or writes the tar.zst, in 64 KiB chunks and sends them to the response body through a queue of four. The pump, not the body, owns the job directory and the permit. If the client stops reading for `IO_IDLE_TIMEOUT_SECONDS`, the pump stops, logs `RESPONSE_STALLED` and releases both.
 
+The idle timer alone lets a trickle hold a permit: one byte just inside each idle period resets it. So both directions also have a floor, measured over each window of `IO_IDLE_TIMEOUT_SECONDS`. An upload below `UPLOAD_MIN_BYTES_PER_SECOND` answers 400 "upload too slow". A response read below `RESPONSE_MIN_BYTES_PER_SECOND` is cut and logged as `RESPONSE_TOO_SLOW`. Both default to 16 KiB/s, and 0 turns a floor off. The deadline covers the time up to the response headers, so the handler checks it again before it plans a bundle.
+
 Every 200 carries `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers and `Server-Timing`, and a PDF also `Content-Length`. Every error after detection also carries `Server-Timing`. `rest/timing.rs` builds the header and computes the overhead and the strict overhead for the `conversion finished` log line. The `preflight` stage is the office worker's scan, which the worker times inside `convert`. Only office inputs carry it. It is not engine time, so it counts as overhead. The `conversion finished` line logs it as `preflight_us`, and `convert_stage_duration_seconds` records it as the stage `preflight`.
 <!-- /memoria:section -->
 

@@ -1,5 +1,6 @@
 //! The state every handler shares, built once at start.
 
+use super::throughput::MinRate;
 use std::io;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -60,6 +61,9 @@ pub struct Shared {
     pub tmp_dir: PathBuf,
     /// `IO_IDLE_TIMEOUT_SECONDS`: upload stall and response stall.
     pub io_idle_timeout: Duration,
+    /// The minimum-throughput floors, over windows of `io_idle_timeout`.
+    pub upload_rate: MinRate,
+    pub response_rate: MinRate,
     pub api_keys: ApiKeys,
     /// `QUEUE_WAIT_SECONDS`, the `Retry-After` of a queue timeout.
     pub queue_wait_seconds: u32,
@@ -139,6 +143,14 @@ impl AppState {
             disk_budget: DiskBudget::new(config.server.tmp_max_bytes),
             tmp_dir: config.server.tmp_dir.clone(),
             io_idle_timeout: config.server.io_idle_timeout,
+            upload_rate: MinRate {
+                min_per_second: config.server.upload_min_bytes_per_second,
+                window: config.server.io_idle_timeout,
+            },
+            response_rate: MinRate {
+                min_per_second: config.server.response_min_bytes_per_second,
+                window: config.server.io_idle_timeout,
+            },
             api_keys: ApiKeys::new(
                 &config.server.api_key,
                 config.server.api_key_previous.as_ref(),

@@ -17,6 +17,7 @@ use convertd::engines::fake::{FakeBehavior, FakeOffice, FakePdf, FakeReadiness};
 use convertd::jobs::{DiskBudget, JobDir};
 use convertd::rest::server::router;
 use convertd::rest::state::{AppState, Engines};
+use convertd::rest::throughput::MinRate;
 use convertd::rest::upload::receive;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -193,7 +194,7 @@ async fn digests_of_a_five_mib_file_match() {
         .unwrap()
         .limits;
     let mut detected = None;
-    let received = receive(request, &job, &limits, &mut detected)
+    let received = receive(request, &job, &limits, MinRate::off(), &mut detected)
         .await
         .unwrap();
     assert!(detected.is_some());
@@ -521,6 +522,62 @@ async fn a_stalled_upload_is_400_and_releases_its_permit_and_directory() {
         .unwrap();
     assert_eq!(status, 200);
     app.assert_no_jobs().await;
+}
+
+/// A trickle that sends a little just inside every idle period never trips
+/// the idle timer. The minimum-throughput floor ends it after one window,
+/// with 400, and frees the permit (review, lane 001 item 3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_trickled_upload_is_400_and_releases_its_permit() {
+    let app = App::new(
+        "trickle",
+        &[
+            ("IO_IDLE_TIMEOUT_SECONDS", "1"),
+            ("UPLOAD_MIN_BYTES_PER_SECOND", "65536"),
+            ("MAX_CONCURRENT_REQUESTS", "1"),
+        ],
+    );
+    let addr = app.serve().await;
+    let mut upload = PDF.to_vec();
+    upload.extend(noise(256 * 1024));
+    let body = multipart(&[("file", Some("a.pdf"), &upload)]);
+    let started = Instant::now();
+    let (status, text) = tokio::task::spawn_blocking({
+        let body = body.clone();
+        move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            stream.write_all(&head(body.len())).unwrap();
+            let reader = stream.try_clone().unwrap();
+            // 64 bytes every 300 ms: well inside the 1 s idle timer.
+            let trickle = std::thread::spawn(move || {
+                for chunk in body.chunks(64) {
+                    if stream.write_all(chunk).is_err() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+            });
+            let mut reader = reader;
+            let answer = read_response(&mut reader);
+            drop(reader);
+            drop(trickle);
+            answer
+        }
+    })
+    .await
+    .unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(status, 400, "{text}");
+    assert!(text.contains("upload too slow"), "{text}");
+    assert!(elapsed < Duration::from_secs(4), "{elapsed:?}");
+    app.assert_no_jobs().await;
+    let status = tokio::task::spawn_blocking(move || round_trip(addr, &body))
+        .await
+        .unwrap();
+    assert_eq!(status, 200, "the permit is free again");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

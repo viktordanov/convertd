@@ -257,6 +257,10 @@ pub struct ServerConfig {
     pub max_concurrent_requests: usize,
     /// Upload idle timeout and the response pump's per-chunk send timeout.
     pub io_idle_timeout: Duration,
+    /// The upload's floor, averaged over each `io_idle_timeout`; 0 is off.
+    pub upload_min_bytes_per_second: u64,
+    /// The response body's floor, the same way; 0 is off.
+    pub response_min_bytes_per_second: u64,
     pub shutdown_grace: Duration,
     /// Root of the job directories and the worker slots.
     pub tmp_dir: PathBuf,
@@ -319,6 +323,8 @@ impl ServerConfig {
             api_key_previous: env.get("API_KEY_PREVIOUS")?.map(Secret::new),
             max_concurrent_requests: env.positive("MAX_CONCURRENT_REQUESTS", 16)?,
             io_idle_timeout: env.positive_seconds("IO_IDLE_TIMEOUT_SECONDS", 30)?,
+            upload_min_bytes_per_second: env.parse("UPLOAD_MIN_BYTES_PER_SECOND", 16_384)?,
+            response_min_bytes_per_second: env.parse("RESPONSE_MIN_BYTES_PER_SECOND", 16_384)?,
             shutdown_grace: env.seconds("SHUTDOWN_GRACE_SECONDS", 30)?,
             tmp_dir: env.path("TMP_DIR", "/tmp/convert")?,
             tmp_max_bytes: env.positive("TMP_MAX_BYTES", 3_221_225_472)?,
@@ -405,6 +411,8 @@ mod tests {
         assert_eq!(s.api_key_previous, None);
         assert_eq!(s.max_concurrent_requests, 16);
         assert_eq!(s.io_idle_timeout, Duration::from_secs(30));
+        assert_eq!(s.upload_min_bytes_per_second, 16_384);
+        assert_eq!(s.response_min_bytes_per_second, 16_384);
         assert_eq!(s.shutdown_grace, Duration::from_secs(30));
         assert_eq!(s.tmp_dir, PathBuf::from("/tmp/convert"));
         assert_eq!(s.tmp_max_bytes, 3_221_225_472);

@@ -45,9 +45,12 @@ use super::state::AppState;
 /// are rejected with `VALIDATION_ERROR` so that typos never pass silently.
 ///
 /// **Timing.** The call is synchronous. `timeout_seconds` is the whole
-/// budget for queueing, conversion, rendering and packaging. When it runs
-/// out the engine process is killed and the call returns
-/// `CONVERSION_TIMEOUT`.
+/// budget from the end of the upload to the response headers: queueing,
+/// conversion, rendering and packaging. When it runs out the engine
+/// process is killed and the call returns `CONVERSION_TIMEOUT`. Streaming
+/// the body comes after it and is not part of that budget. The server cuts
+/// a body that the client stops reading, or reads below the deployment's
+/// minimum rate; the same holds for an upload that stalls or trickles.
 ///
 /// **Safety.** Macros never run, external links are never fetched and the
 /// engine has no network access. A document that relies on any of those
@@ -122,7 +125,14 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
         }
     };
     let mut detected = None;
-    let received = match upload::receive(request, &job, state.service.limits(), &mut detected).await
+    let received = match upload::receive(
+        request,
+        &job,
+        state.service.limits(),
+        state.upload_rate,
+        &mut detected,
+    )
+    .await
     {
         Ok(received) => received,
         Err(err) => {
@@ -244,7 +254,16 @@ async fn success(
     package_started: Instant,
 ) -> Response {
     let output = received.request.output;
+    // The deadline covers everything up to the headers, packaging
+    // included: planning a bundle reads every page's size.
+    let deadline = received.upload_done + received.request.timeout;
     let prepared = match output {
+        _ if Instant::now() >= deadline => Err(ApiError::from_conversion(
+            &ConversionError::Timeout {
+                seconds: received.request.timeout.as_secs(),
+            },
+            state.queue_wait_seconds,
+        )),
         Output::Pdf => {
             // A few entries: cheap enough on this thread.
             settle(&job);
@@ -287,6 +306,7 @@ async fn success(
         job,
         permit,
         idle: state.io_idle_timeout,
+        rate: state.response_rate,
         request_id: request_id.to_owned(),
     };
     let (body, content_type, extension) = match prepared {
