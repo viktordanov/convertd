@@ -11,8 +11,10 @@
 set -euo pipefail
 mode="${1:?runtime|dev}"
 
+# fonts-wqy-microhei: the CJK fallback (Han, kana, Hangul), one 5 MB file, so that CJK text
+# never renders blank. FONTS_CJK=1 adds Noto CJK, with the right glyph forms per region (91 MB).
 fonts=(fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core
-       fonts-noto-core fonts-noto-color-emoji)
+       fonts-noto-core fonts-noto-color-emoji fonts-wqy-microhei)
 [[ "${FONTS_CJK:-0}" == 1 ]] && fonts+=(fonts-noto-cjk)
 extra=()
 # Dev only: what lane 002's tests use beyond the product (002-engine-workers/dev.Dockerfile.txt:25,28).
@@ -67,8 +69,19 @@ bash /opt/convertd/cache-fonts.sh
 # The dpkg excludes must not have dropped a family PLAN.md promises.
 for fam in "Liberation Sans" "Liberation Serif" "Liberation Mono" Carlito Caladea "DejaVu Sans" \
            "Noto Sans" "Noto Serif" "Noto Sans Mono" "Noto Sans Symbols" "Noto Sans Symbols2" \
-           "Noto Sans Math" "Noto Color Emoji" OpenSymbol; do
+           "Noto Sans Math" "Noto Color Emoji" OpenSymbol "Noto Sans Thai" "Noto Sans Ethiopic" \
+           "WenQuanYi Micro Hei"; do
   fc-list ":family=${fam}" family | grep . >/dev/null || { echo "font family missing: ${fam}" >&2; exit 1; }
+done
+# Coverage gate: some installed font must have each of these letters, or text in that script
+# renders blank (docs/ledger/fonts-study). One letter per script: Devanagari, Thai, Ethiopic,
+# Han, hiragana, katakana, Hangul, Arabic, Hebrew, then Bengali, Gujarati, Gurmukhi, Kannada,
+# Malayalam, Oriya, Tamil, Telugu, Sinhala, Khmer, Myanmar, Tibetan, Thaana, Syriac,
+# Mongolian, Cherokee, Yi and Ol Chiki.
+for cp in 0939 0E01 12A0 4E2D 306E 30AB D55C 0639 05D0 \
+          09AC 0A95 0A15 0C95 0D15 0B15 0BA4 0C24 0D9A 1797 1019 0F40 0780 0710 \
+          1820 13A0 A000 1C5A; do
+  fc-list ":charset=${cp}" family | grep . >/dev/null || { echo "no font has U+${cp}" >&2; exit 1; }
 done
 
 apt-get clean

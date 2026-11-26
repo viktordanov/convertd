@@ -180,7 +180,8 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ARG LO_VERSION
 ARG LO_BUILD
 ARG PDFIUM_BUILD
-# 1 adds Noto CJK (size unmeasured).
+# 1 adds Noto CJK, 91 MB installed (packages.debian.org): over the 635 MB CI budget. Without
+# it, WenQuanYi Micro Hei covers CJK (install-engines.sh).
 ARG FONTS_CJK=0
 # What dpkg never unpacks. docs: documentation, man pages, message catalogs (product only).
 # fonts: the Noto subset. libreoffice: the LibreOffice parts headless never loads. Both are in
