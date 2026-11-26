@@ -1096,13 +1096,18 @@ async fn a_sigkill_with_a_cgroup_oom_kill_is_too_big() {
 type Held = Arc<Mutex<Option<convertd::engines::pool::Lease>>>;
 
 /// A pool of one named `name` whose worker has asked for a replacement, and
-/// its incumbent (generation 1) leased into `held`. The replacement takes
-/// 1.5 s to start, so the caller arms its hook before it is placed.
-async fn incumbent_leased(name: &'static str, held: &Held, recycle_after: bool) -> Pool {
+/// its incumbent (generation 1) leased into `held`. Then `setup` is sent:
+/// the caller's hook holds the replacement's placement until it arrives.
+async fn incumbent_leased(
+    name: &'static str,
+    held: &Held,
+    recycle_after: bool,
+    setup: std::sync::mpsc::Sender<()>,
+) -> Pool {
     let mut spec = spec(name, 1);
     spec.name = name;
     spec.max_jobs = 2;
-    spec.init.test.ready_delay_ms = 1500;
+    spec.init.test.ready_delay_ms = 100;
     let pool = ready(spec).await;
     for _ in 0..2 {
         let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
@@ -1117,7 +1122,26 @@ async fn incumbent_leased(name: &'static str, held: &Held, recycle_after: bool) 
         incumbent.recycle_after();
     }
     *held.lock().unwrap() = Some(incumbent);
+    setup.send(()).unwrap();
     pool
+}
+
+/// A place_ready hook gate: the pool's first placement (its first worker)
+/// passes, and the second (the replacement) waits up to 10 s for `setup`.
+/// True when this call is the replacement's placement.
+fn hold_replacement(
+    placements: &AtomicUsize,
+    setup: &Mutex<std::sync::mpsc::Receiver<()>>,
+) -> bool {
+    if placements.fetch_add(1, Ordering::AcqRel) != 1 {
+        return false;
+    }
+    setup
+        .lock()
+        .unwrap()
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the incumbent was never stored");
+    true
 }
 
 /// The next lease must get the replacement (generation 2) within 3 s.
@@ -1157,26 +1181,44 @@ async fn a_lease_that_returns_during_the_handoff_does_not_strand_the_replacement
                 })
             };
             let fired = Arc::new(AtomicBool::new(false));
-            let (go_tx, ack_rx) = (Mutex::new(go_tx), Mutex::new(ack_rx));
-            let hook_fired = Arc::clone(&fired);
+            let early = Arc::new(AtomicBool::new(false));
+            let placements = Arc::new(AtomicUsize::new(0));
+            let (setup_tx, setup_rx) = std::sync::mpsc::channel::<()>();
+            let (go_tx, ack_rx, setup_rx) =
+                (Mutex::new(go_tx), Mutex::new(ack_rx), Mutex::new(setup_rx));
+            let (hook_fired, hook_early) = (Arc::clone(&fired), Arc::clone(&early));
+            let hook_placements = Arc::clone(&placements);
             convertd::engines::pool::set_place_ready_hook("race-return", move |stage| {
-                if stage == convertd::engines::pool::PlaceStage::Retired
-                    && !hook_fired.swap(true, Ordering::AcqRel)
-                {
-                    let _ = go_tx.lock().unwrap().send(());
-                    let _ = ack_rx
-                        .lock()
-                        .unwrap()
-                        .recv_timeout(Duration::from_millis(300));
+                match stage {
+                    convertd::engines::pool::PlaceStage::BeforeLock => {
+                        hold_replacement(&hook_placements, &setup_rx);
+                    }
+                    convertd::engines::pool::PlaceStage::Retired => {
+                        if !hook_fired.swap(true, Ordering::AcqRel) {
+                            let _ = go_tx.lock().unwrap().send(());
+                            // Under the idle lock the return must block: an
+                            // acknowledgement now means it saw the retire
+                            // before the replacement was placed.
+                            let acked = ack_rx
+                                .lock()
+                                .unwrap()
+                                .recv_timeout(Duration::from_millis(300));
+                            hook_early.store(acked.is_ok(), Ordering::Release);
+                        }
+                    }
                 }
             });
-            let pool = incumbent_leased("race-return", &held, false).await;
+            let pool = incumbent_leased("race-return", &held, false, setup_tx).await;
             let until = Instant::now() + Duration::from_secs(10);
             while done_rx.try_recv().is_err() {
                 assert!(Instant::now() < until, "the lease never returned");
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             assert!(fired.load(Ordering::Acquire), "the hook did not run");
+            assert!(
+                !early.load(Ordering::Acquire),
+                "the lease returned between the retire and the placement"
+            );
             returner.join().unwrap();
             replacement_is_leasable(&pool).await;
             finish(pool, "race-return").await;
@@ -1198,17 +1240,21 @@ async fn a_discarded_incumbent_does_not_strand_its_replacement() {
         async {
             let held: Held = Arc::new(Mutex::new(None));
             let fired = Arc::new(AtomicBool::new(false));
+            let placements = Arc::new(AtomicUsize::new(0));
+            let (setup_tx, setup_rx) = std::sync::mpsc::channel::<()>();
+            let setup_rx = Mutex::new(setup_rx);
             let (hook_held, hook_fired) = (Arc::clone(&held), Arc::clone(&fired));
+            let hook_placements = Arc::clone(&placements);
             convertd::engines::pool::set_place_ready_hook("race-discard", move |stage| {
                 if stage == convertd::engines::pool::PlaceStage::BeforeLock
-                    && let Some(lease) = hook_held.lock().unwrap().take()
+                    && hold_replacement(&hook_placements, &setup_rx)
                 {
                     // recycle_after: the lease ends through discard.
-                    drop(lease);
+                    drop(hook_held.lock().unwrap().take());
                     hook_fired.store(true, Ordering::Release);
                 }
             });
-            let pool = incumbent_leased("race-discard", &held, true).await;
+            let pool = incumbent_leased("race-discard", &held, true, setup_tx).await;
             let until = Instant::now() + Duration::from_secs(10);
             while !fired.load(Ordering::Acquire) {
                 assert!(Instant::now() < until, "the hook did not run");
