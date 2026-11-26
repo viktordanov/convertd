@@ -504,9 +504,6 @@ impl PdfEngine for PdfPdfium {
         // The budget of the call whose strike counts: a timeout covers only
         // requests that give a worker no more time than that call had.
         let mut strike_ran = Duration::ZERO;
-        // The work of the call whose strike counts: the job's pages, or the
-        // rerun's when it is the rerun that failed.
-        let mut strike_work = attempt.work;
         // Pages of the chunks that went over their share: an equal share
         // keeps the disk within the reservation, but the job's cap is the
         // whole budget, so these get what the other chunks left.
@@ -541,12 +538,13 @@ impl PdfEngine for PdfPdfium {
             over.sort_unstable();
             let finished: u64 = pages.iter().map(|p: &RenderedPage| p.size_bytes).sum();
             let left = job.max_output_bytes.saturating_sub(finished);
-            // The rerun renders only these pages: its check and its strike
-            // weigh that work, not the whole job's.
+            // The rerun renders only these pages: its check weighs that
+            // work. A strike still records the job's pages (with the
+            // rerun's budget), so it covers a retry of this job but not a
+            // request for fewer pages.
             let rerun_work = Work::Render {
                 pages: over.len() as u32,
             };
-            strike_work = rerun_work;
             let rerun_guard = guard.map(|g| Guard {
                 work: rerun_work,
                 ..g
@@ -575,7 +573,7 @@ impl PdfEngine for PdfPdfium {
                 && let Some(strike) = strike
             {
                 let ran = Attempt {
-                    work: strike_work,
+                    work: attempt.work,
                     budget: strike_ran,
                 };
                 list.strike(&job.sha256, strike, &ran);
