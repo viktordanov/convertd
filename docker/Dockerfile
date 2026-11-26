@@ -183,19 +183,21 @@ ARG PDFIUM_BUILD
 # 1 adds Noto CJK, 91 MB installed (packages.debian.org): over the 635 MB CI budget. Without
 # it, WenQuanYi Micro Hei covers CJK (install-engines.sh).
 ARG FONTS_CJK=0
+# Every COPY from the build context sets its mode: COPY keeps the mode of the checkout, and a
+# checkout made under umask 077 has 0600 files, which uid 10001 cannot read at run time.
 # What dpkg never unpacks. docs: documentation, man pages, message catalogs (product only).
 # fonts: the Noto subset. libreoffice: the LibreOffice parts headless never loads. Both are in
 # product and dev, so both images see the same families and the same LibreOffice.
-COPY docker/dpkg/docs.cfg /etc/dpkg/dpkg.cfg.d/90-rs-convert-docs
-COPY docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
-COPY docker/dpkg/libreoffice.cfg /etc/dpkg/dpkg.cfg.d/92-rs-convert-libreoffice
+COPY --chmod=0644 docker/dpkg/docs.cfg /etc/dpkg/dpkg.cfg.d/90-rs-convert-docs
+COPY --chmod=0644 docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
+COPY --chmod=0644 docker/dpkg/libreoffice.cfg /etc/dpkg/dpkg.cfg.d/92-rs-convert-libreoffice
 # fonts.json: {family -> metric_compatible} for FONT_SUBSTITUTED (005 §5). The aliases add the
 # Office families Debian does not map; build-info.json records what fc-match then picks.
-COPY docker/fonts/fonts.json /etc/convertd/fonts.json
-COPY docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
-COPY docker/fonts/35-rs-convert-aliases.conf /etc/fonts/conf.d/35-rs-convert-aliases.conf
+COPY --chmod=0644 docker/fonts/fonts.json /etc/convertd/fonts.json
+COPY --chmod=0644 docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
+COPY --chmod=0644 docker/fonts/35-rs-convert-aliases.conf /etc/fonts/conf.d/35-rs-convert-aliases.conf
 # Builds the font cache so it stays valid after a tar export; kept for derived font images.
-COPY docker/cache-fonts.sh /opt/convertd/cache-fonts.sh
+COPY --chmod=0755 docker/cache-fonts.sh /opt/convertd/cache-fonts.sh
 # docker/install-engines.sh is shared with the dev target, so the two cannot drift. The script
 # and the .debs are bind mounts, so neither becomes a layer.
 RUN --mount=type=bind,from=engines,source=/out/debs,target=/debs \
@@ -206,10 +208,19 @@ COPY --from=engines /out/pdfium /opt/pdfium
 # Writes /opt/convertd/build-info.json (versions from the pinned args, fonts from fc-list,
 # font_substitutes from fc-match per family in probe-families.txt, and the default substitute).
 # The script stays in the image so a derived font image can run it again.
-COPY docker/write-build-info.sh /opt/convertd/write-build-info.sh
-COPY docker/fonts/probe-families.txt /opt/convertd/probe-families.txt
+COPY --chmod=0755 docker/write-build-info.sh /opt/convertd/write-build-info.sh
+COPY --chmod=0644 docker/fonts/probe-families.txt /opt/convertd/probe-families.txt
 RUN LO_VERSION="${LO_BUILD:-${LO_VERSION}}" PDFIUM_BUILD="${PDFIUM_BUILD}" \
     bash /opt/convertd/write-build-info.sh
+# Gate: an unprivileged user must read every file that convertd, fontconfig and LibreOffice read
+# at run time. A 0600 file here builds fine and fails only at run time (uid 10001).
+RUN for f in /etc/convertd/fonts.json /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf \
+             /etc/fonts/conf.d/35-rs-convert-aliases.conf /opt/convertd/build-info.json \
+             /opt/convertd/probe-families.txt /opt/libreoffice/program/soffice.bin \
+             /opt/pdfium/lib/libpdfium.so; do \
+      setpriv --reuid=65534 --regid=65534 --clear-groups test -r "${f}" \
+        || { echo "not readable by uid 65534: ${f}" >&2; exit 1; }; \
+    done
 # Names agreed with lane 002. PDFIUM_BUILD exists because PDFium has no version call.
 ENV HOME=/tmp \
     LANG=C.UTF-8 \
@@ -236,7 +247,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends binutils && rm 
 COPY --from=runtime-base /opt /rootfs/opt
 COPY --from=runtime-base /usr/lib /rootfs/usr/lib
 COPY --from=runtime-base /etc/ld.so.conf.d /rootfs/etc/ld.so.conf.d
-COPY docker/libreoffice/ldd-allow.txt /allow.txt
+COPY --chmod=0644 docker/libreoffice/ldd-allow.txt /allow.txt
 RUN case "${TARGETARCH}" in amd64) tri=x86_64-linux-gnu ;; arm64) tri=aarch64-linux-gnu ;; esac; \
     dirs=("/rootfs/usr/lib/${tri}" /rootfs/usr/lib /rootfs/opt/libreoffice/program /rootfs/opt/pdfium/lib); \
     while read -r d; do dirs+=("/rootfs${d}"); done < <(cat /rootfs/etc/ld.so.conf.d/*.conf 2>/dev/null | grep '^/' || true); \
@@ -272,23 +283,32 @@ ARG PDFIUM_BUILD
 ARG RUST_VERSION
 ARG FONTS_CJK=0
 # The font and LibreOffice excludes only: the docs/locale excludes would fight locale-gen here.
-COPY docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
-COPY docker/dpkg/libreoffice.cfg /etc/dpkg/dpkg.cfg.d/92-rs-convert-libreoffice
-COPY docker/fonts/fonts.json /etc/convertd/fonts.json
-COPY docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
-COPY docker/fonts/35-rs-convert-aliases.conf /etc/fonts/conf.d/35-rs-convert-aliases.conf
+COPY --chmod=0644 docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
+COPY --chmod=0644 docker/dpkg/libreoffice.cfg /etc/dpkg/dpkg.cfg.d/92-rs-convert-libreoffice
+COPY --chmod=0644 docker/fonts/fonts.json /etc/convertd/fonts.json
+COPY --chmod=0644 docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
+COPY --chmod=0644 docker/fonts/35-rs-convert-aliases.conf /etc/fonts/conf.d/35-rs-convert-aliases.conf
 # Builds the font cache so it stays valid after a tar export; kept for derived font images.
-COPY docker/cache-fonts.sh /opt/convertd/cache-fonts.sh
+COPY --chmod=0755 docker/cache-fonts.sh /opt/convertd/cache-fonts.sh
 RUN --mount=type=bind,from=engines,source=/out/debs,target=/debs \
     --mount=type=bind,source=docker/libreoffice,target=/lo-config \
     --mount=type=bind,source=docker/install-engines.sh,target=/install-engines.sh \
     LO_VERSION="${LO_VERSION}" FONTS_CJK="${FONTS_CJK}" bash /install-engines.sh dev; \
     rustup component add --toolchain "${RUST_VERSION}" rustfmt clippy
 COPY --from=engines /out/pdfium /opt/pdfium
-COPY docker/write-build-info.sh /opt/convertd/write-build-info.sh
-COPY docker/fonts/probe-families.txt /opt/convertd/probe-families.txt
+COPY --chmod=0755 docker/write-build-info.sh /opt/convertd/write-build-info.sh
+COPY --chmod=0644 docker/fonts/probe-families.txt /opt/convertd/probe-families.txt
 RUN LO_VERSION="${LO_BUILD:-${LO_VERSION}}" PDFIUM_BUILD="${PDFIUM_BUILD}" \
     bash /opt/convertd/write-build-info.sh
+# Gate: an unprivileged user must read every file that convertd, fontconfig and LibreOffice read
+# at run time. A 0600 file here builds fine and fails only at run time (uid 10001).
+RUN for f in /etc/convertd/fonts.json /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf \
+             /etc/fonts/conf.d/35-rs-convert-aliases.conf /opt/convertd/build-info.json \
+             /opt/convertd/probe-families.txt /opt/libreoffice/program/soffice.bin \
+             /opt/pdfium/lib/libpdfium.so; do \
+      setpriv --reuid=65534 --regid=65534 --clear-groups test -r "${f}" \
+        || { echo "not readable by uid 65534: ${f}" >&2; exit 1; }; \
+    done
 ENV HOME=/home/convertd \
     LANG=C.UTF-8 \
     SAL_USE_VCLPLUGIN=svp \
