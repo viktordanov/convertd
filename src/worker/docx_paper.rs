@@ -292,6 +292,8 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     let mut body_has_section = false;
     // Open `mc:AlternateContent` elements.
     let mut alternates = 0usize;
+    // Open `w:sectPrChange` elements: a section's former properties.
+    let mut history = 0usize;
     let mut before = skipped + xml.buffer_position();
     loop {
         let (ns, event) = xml
@@ -328,7 +330,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     // element that mc:ProcessContent names): which size
                     // counts is not plain from the XML.
                     if tag == Tag::Alternate
-                        || (depth > s.depth + 1 && ns.is_some() && local == b"pgSz")
+                        || (depth > s.depth + 1 && history == 0 && ns.is_some() && local == b"pgSz")
                     {
                         return Err(Skip::Unsupported);
                     }
@@ -392,6 +394,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                 }
                 if !empty {
                     alternates += usize::from(tag == Tag::Alternate);
+                    history += usize::from(tag == Tag::SectPrChange);
                     stack.push(tag);
                     if stack.len() > MAX_DEPTH {
                         return Err(Skip::Unreadable);
@@ -401,6 +404,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
             Event::End(_) => {
                 let closed = stack.pop();
                 alternates -= usize::from(closed == Some(Tag::Alternate));
+                history -= usize::from(closed == Some(Tag::SectPrChange));
                 let depth = stack.len();
                 if let Some(s) = open.take_if(|s| s.depth == depth)
                     && !s.sized
@@ -489,6 +493,9 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Opti
         return Some("word/document.xml".to_owned());
     };
     let bytes = zip_scan::read_entry(file, rels, crate::preflight::PART_CAP as usize).ok()??;
+    // OPC allows UTF-16 here, whatever the main part uses; no offsets are
+    // needed, so it is decoded first.
+    let bytes = utf16_to_utf8(&bytes).unwrap_or(bytes);
     let mut xml = quick_xml::Reader::from_reader(bytes.as_slice());
     let mut buf = Vec::new();
     loop {
@@ -556,6 +563,28 @@ impl<R: Read> Read for Utf8Reader<R> {
         self.carry = carry;
         Ok(n)
     }
+}
+
+/// `bytes` decoded from UTF-16 when they start with its byte order mark.
+fn utf16_to_utf8(bytes: &[u8]) -> Option<Vec<u8>> {
+    let (body, little) = match bytes {
+        [0xFF, 0xFE, rest @ ..] => (rest, true),
+        [0xFE, 0xFF, rest @ ..] => (rest, false),
+        _ => return None,
+    };
+    let units = body.as_chunks::<2>().0.iter().map(|pair| {
+        if little {
+            u16::from_le_bytes(*pair)
+        } else {
+            u16::from_be_bytes(*pair)
+        }
+    });
+    let text: String = char::decode_utf16(units)
+        .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect();
+    // The declaration still names UTF-16; quick-xml reads bytes as UTF-8
+    // without the encoding feature, so it does not mind.
+    Some(text.into_bytes())
 }
 
 /// A package-relative target with `.` and `..` resolved.

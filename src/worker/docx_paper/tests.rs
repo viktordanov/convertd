@@ -612,3 +612,42 @@ fn a_part_that_is_not_utf8_is_left_alone() {
     let reader = BufReader::with_capacity(1, text.as_bytes());
     assert!(!plan(reader, Paper::A4, MAIN_PART_CAP).unwrap().is_empty());
 }
+
+#[test]
+fn a_former_page_size_does_not_size_the_current_section() {
+    let body = r#"<w:sectPr><w:pgMar w:top="1"/><w:sectPrChange w:id="1"><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:sectPrChange></w:sectPr>"#;
+    assert_eq!(
+        fixed(&doc(body), Paper::A4).unwrap(),
+        doc(&format!(
+            r#"<w:sectPr>{A4}<w:pgMar w:top="1"/><w:sectPrChange w:id="1"><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:sectPrChange></w:sectPr>"#
+        ))
+    );
+}
+
+#[test]
+fn utf16_relationships_name_the_main_part() {
+    let text = r#"<?xml version="1.0" encoding="UTF-16"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/main.xml"/></Relationships>"#;
+    for little in [true, false] {
+        let mut rels = if little {
+            vec![0xFF, 0xFE]
+        } else {
+            vec![0xFE, 0xFF]
+        };
+        for unit in text.encode_utf16() {
+            rels.extend(if little {
+                unit.to_le_bytes()
+            } else {
+                unit.to_be_bytes()
+            });
+        }
+        let bytes = zip(&[("_rels/.rels", &rels, true, false)]);
+        let dir = Scratch::new();
+        let path = dir.path().join("p.docx");
+        std::fs::write(&path, &bytes).unwrap();
+        let mut file = File::open(&path).unwrap();
+        assert_eq!(
+            main_part(&mut file, &entries(&bytes)).as_deref(),
+            Some("word/main.xml")
+        );
+    }
+}
