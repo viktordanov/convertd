@@ -47,7 +47,7 @@ spec:
             - {name: LOG_MODE, value: prod}
             - {name: TMP_DIR, value: /tmp/convert}
             # Explicit: with no CPU limit, "half the cores" would read the node's cores.
-            - {name: OFFICE_WORKERS, value: "1"}
+            - {name: OFFICE_WORKERS, value: "2"}
             - {name: RENDER_WORKERS, value: "2"}
             - {name: TIMEOUT_MAX_SECONDS, value: "210"}
             # convertd refuses to start if TIMEOUT_DEFAULT_SECONDS > TIMEOUT_MAX_SECONDS. Set it
@@ -58,15 +58,19 @@ spec:
             # below sizeLimit minus the headroom (1 GiB for worker slots, profiles and logs):
             # TMP_MAX_BYTES <= 4Gi - 1Gi. Change them together, or a full volume evicts the pod.
             - {name: TMP_MAX_BYTES, value: "3221225472"}     # 3 GiB
-            # The memory budget of the workers. Each worker may grow to WORKER_KILL_RSS_MB (MiB)
-            # before the watchdog kills it, so all of them together MUST fit in the memory limit:
-            # (OFFICE_WORKERS + RENDER_WORKERS) x WORKER_KILL_RSS_MB + 512 MiB <= limits.memory.
-            # 3 x 1152 + 512 = 3968 MiB <= 4096 MiB. Change the worker counts, these two values and
-            # the memory limit together: a container OOM can kill every job in the pod. Measured on
-            # the 59-case corpus (2026-11-26): office peak 533 MiB, render 109 MiB, supervisor
-            # 17 MiB. WORKER_MAX_RSS_MB recycles a worker after a job above it.
-            - {name: WORKER_KILL_RSS_MB, value: "1152"}
-            - {name: WORKER_MAX_RSS_MB, value: "768"}
+            # The memory budget of the workers. Each worker may grow to its pool's KILL_RSS_MB (MiB)
+            # before the watchdog kills it, and a replacement waits beside each office worker it
+            # replaces (about 256 MiB after its warm-up). All of them MUST fit in the memory limit:
+            # OFFICE_WORKERS x (OFFICE_KILL_RSS_MB + 256) + RENDER_WORKERS x RENDER_KILL_RSS_MB
+            # + 512 MiB <= limits.memory: 2 x (1152 + 256) + 2 x 320 + 512 = 3968 MiB <= 4096 MiB.
+            # Change the worker counts, these values and the memory limit together: a container
+            # OOM can kill every job in the pod. Measured on 276 real documents (2026-11-26,
+            # 2 CPUs): LibreOffice needed up to 3281 MiB for heavy decks (p99 1546 MiB), PDFium at
+            # most 279 MiB. MAX_RSS_MB recycles a worker after a job above it.
+            - {name: OFFICE_KILL_RSS_MB, value: "1152"}
+            - {name: OFFICE_MAX_RSS_MB, value: "896"}
+            - {name: RENDER_KILL_RSS_MB, value: "320"}
+            - {name: RENDER_MAX_RSS_MB, value: "256"}
           resources:
             requests:
               cpu: "2"

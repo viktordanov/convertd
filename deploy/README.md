@@ -19,7 +19,7 @@ Know two facts before you use these files. First, the `runtime` image is proved 
 <!-- memoria:section id="contract" files="k8s/base/deployment.yaml k8s/base/service.yaml k8s/base/networkpolicy.yaml k8s/overlays/gvisor/kustomization.yaml" -->
 ## Pod
 
-The base runs one container with 2 CPU and 4 GiB, `OFFICE_WORKERS=1`, `RENDER_WORKERS=2` and the API key from a Secret. Its settings:
+The base runs one container with 2 CPU and 4 GiB, `OFFICE_WORKERS=2`, `RENDER_WORKERS=2` and the API key from a Secret. Its settings:
 
 | Topic | Value in `k8s/base/deployment.yaml` |
 | --- | --- |
@@ -29,7 +29,8 @@ The base runs one container with 2 CPU and 4 GiB, `OFFICE_WORKERS=1`, `RENDER_WO
 | Termination grace | 230 s in total (5 s `preStop` sleep + 210 + 15) |
 | Temp volume on `/tmp` | `emptyDir` with `sizeLimit: 4Gi` on node disk |
 | `TMP_MAX_BYTES` | 3221225472 (3 GiB) |
-| `WORKER_KILL_RSS_MB`, `WORKER_MAX_RSS_MB` | 1152, 768 (MiB) |
+| `OFFICE_KILL_RSS_MB`, `OFFICE_MAX_RSS_MB` | 1152, 896 (MiB) |
+| `RENDER_KILL_RSS_MB`, `RENDER_MAX_RSS_MB` | 320, 256 (MiB) |
 | `TIMEOUT_MAX_SECONDS`, `TIMEOUT_DEFAULT_SECONDS` | 210, 120 |
 | CPU limit | none, requests only |
 | Network | ClusterIP Service on port 80. A NetworkPolicy denies all egress, DNS included |
@@ -51,16 +52,35 @@ convertd reserves space for each upload and job output under `TMP_DIR` (`/tmp/co
 <!-- memoria:section id="memory-budget" files="k8s/base/deployment.yaml" -->
 ## Memory budget
 
-Each worker can grow to `WORKER_KILL_RSS_MB` before the watchdog kills it, and convertd has no limit for all workers together. The memory limit of the container must therefore hold every worker at its kill limit:
+Each worker can grow to its pool's kill limit before the watchdog kills it, and convertd has no limit for all workers together. `OFFICE_KILL_RSS_MB` and `RENDER_KILL_RSS_MB` set the kill limit of each pool. A pool without its own value takes `WORKER_KILL_RSS_MB`. A replacement also waits beside each office worker that it replaces, with about 256 MiB after its warm-up. The memory limit of the container must hold all of this:
 
 ```text
-(OFFICE_WORKERS + RENDER_WORKERS) × WORKER_KILL_RSS_MB + 512 MiB ≤ limits.memory
-3 × 1152 MiB + 512 MiB = 3968 MiB ≤ 4096 MiB
+OFFICE_WORKERS × (OFFICE_KILL_RSS_MB + 256 MiB) + RENDER_WORKERS × RENDER_KILL_RSS_MB + 512 MiB ≤ limits.memory
+2 × (1152 + 256) MiB + 2 × 320 MiB + 512 MiB = 3968 MiB ≤ 4096 MiB
 ```
 
-The 512 MiB holds the supervisor, the page cache and a margin. On cgroup v2 with Kubernetes 1.28 or later, a container that passes its memory limit loses every process. Then every job on the pod fails. This is not verified on the cluster of the owner. Change the worker counts, both RSS values and the memory limit together. `WORKER_MAX_RSS_MB`, 768, recycles a worker after a job that leaves it above that size.
+The 512 MiB holds the supervisor, the page cache and a margin. On cgroup v2 with Kubernetes 1.28 or later, a container that passes its memory limit loses every process. Then every job on the pod fails. This is not verified on the cluster of the owner. Change the worker counts, the RSS values and the memory limit together. `OFFICE_MAX_RSS_MB` and `RENDER_MAX_RSS_MB` recycle a worker after a job that leaves it above that size.
 
-The values come from a measurement on 2026-11-26, in arm64 Docker, of the 59 cases of `corpus/expected.json`. Recycling and the watchdog were off. The office worker peaked at 533 MiB, during `pptx-photos60`, and a render worker at 109 MiB. The supervisor peaked at 17 MiB. An earlier soak saw office workers at up to 572 MiB. With the manifest values, the same corpus passed 59 of 59 cases, and no worker reached its kill limit.
+`/tmp` here is an `emptyDir` on node disk. An `emptyDir` with `medium: Memory`, or a tmpfs, adds its use to the memory limit. Then add `TMP_MAX_BYTES` to the left side.
+
+### Sizing for 2 CPUs and 4 GiB
+
+The values come from an ingestion of 276 real documents on 2026-11-26: 128 DOCX, 93 PPTX, 30 PDF, 23 XLSX and 2 PPT, of up to 43 MB. It ran in arm64 Docker with 2 CPUs, 3584 MiB, no swap and `/tmp` on disk. The figures:
+
+- LibreOffice is the bottleneck and needs the memory. One office worker needed 462 MiB at p50, 1546 MiB at p99, and up to 3281 MiB for heavy decks of 84 to 127 slides.
+- PDFium needed at most 279 MiB, at 150 and 300 DPI.
+- The second office worker raised the throughput by 50 to 61 %. A second render worker added 12 to 20 %.
+- Two concurrent requests filled the two CPUs. Four doubled the p99 and gave no more throughput.
+- With the watchdog on, no run had an OOM kill. A worker over its limit was killed, and its request got 422 `LIMIT_EXCEEDED`.
+
+Pick by the documents:
+
+| Profile | Settings | Trade-off |
+| --- | --- | --- |
+| Throughput (the base) | `OFFICE_WORKERS=2`, `OFFICE_KILL_RSS_MB=1152`, `OFFICE_MAX_RSS_MB=896`, `RENDER_WORKERS=2`, `RENDER_KILL_RSS_MB=320`, `RENDER_MAX_RSS_MB=256` | About 57 to 74 documents a minute on a mixed set. Documents that need more than 1152 MiB get 422. In the test set that was between 4 % (at 1536 MiB) and 13 % (at 768 MiB) of the files. |
+| Coverage | `OFFICE_WORKERS=1`, `OFFICE_KILL_RSS_MB=2688`, `OFFICE_MAX_RSS_MB=1024`, `RENDER_WORKERS=2`, `RENDER_KILL_RSS_MB=320`, `RENDER_MAX_RSS_MB=256` | About 30 documents a minute. Only the decks over 2688 MiB get 422: 3 of the 276 test files. 1 × (2688 + 256) + 2 × 320 + 512 = 4096 MiB. |
+
+Both profiles are projections from the measured peaks. The throughput figures come from cells with one shared kill limit, and no cell ran with these per-pool values. With one office worker, a heavy deck holds it for 20 to 55 s, so the next request waits `QUEUE_WAIT_SECONDS` (10 s) and gets 429. Clients must retry 429.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="kubernetes" files="k8s/base/kustomization.yaml k8s/base/deployment.yaml k8s/overlays/gvisor/kustomization.yaml k8s/overlays/gvisor/runtimeclass.yaml" -->
