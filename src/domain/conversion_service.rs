@@ -218,8 +218,10 @@ impl ConversionService {
                         job.deadline,
                         probe,
                         job.upload.sha256,
+                        // The family the worker exported with: the loaded
+                        // type, else the requested one (export_family).
                         Some(effective_export(
-                            converted.doc_type.family(),
+                            Some(converted.doc_type.family().unwrap_or(family)),
                             job.request.export,
                         )),
                         timings,

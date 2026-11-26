@@ -51,10 +51,26 @@ pub enum Work {
         password: bool,
         export: Option<ExportOptions>,
     },
-    /// A PDF decrypt: a copy of the whole document.
-    Decrypt,
+    /// A PDF decrypt with one password, by its keyed fingerprint
+    /// ([`password_fingerprint`]): an owner password writes a copy, a user
+    /// password of a restricted PDF stops at the permission check.
+    Decrypt { password: u64 },
     /// A render of this many pages.
     Render { pages: u32 },
+}
+
+/// A fingerprint of a decrypt password for [`Work::Decrypt`]: SipHash under
+/// a random key of this process, so the poison memory never holds the
+/// password, and the value means nothing outside this process.
+pub fn password_fingerprint(password: &str) -> u64 {
+    use std::hash::{BuildHasher, Hash, Hasher};
+    static KEY: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+        std::sync::OnceLock::new();
+    let mut hasher = KEY
+        .get_or_init(std::collections::hash_map::RandomState::new)
+        .build_hasher();
+    password.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The blank-page probe of an inspect: its DPI and its page cap.
@@ -65,9 +81,11 @@ pub struct Probe {
 }
 
 impl Probe {
-    /// Whether this probe is at least as much work as `other`.
+    /// Whether this probe is at least as much work as `other`: the same
+    /// DPI (a higher one can skip pages that no longer fit) and no fewer
+    /// pages.
     fn at_least(&self, other: &Probe) -> bool {
-        self.dpi >= other.dpi && self.pages >= other.pages
+        self.dpi == other.dpi && self.pages >= other.pages
     }
 }
 
@@ -92,7 +110,14 @@ impl Attempt {
     /// pages.
     pub fn covers(&self, next: &Attempt) -> bool {
         let work = match (self.work, next.work) {
-            (Work::Convert, Work::Convert) | (Work::Decrypt, Work::Decrypt) => true,
+            (Work::Convert, Work::Convert) => true,
+            // Another password can take another path (Restricted, no copy).
+            (
+                Work::Decrypt {
+                    password: timed_out,
+                },
+                Work::Decrypt { password },
+            ) => password == timed_out,
             // A probed inspect is more work, and another export is another
             // PDF: a timeout covers only the same export, probed if it was.
             (
@@ -480,9 +505,36 @@ mod tests {
         );
         assert!(
             !l.refuses_at(&KEY, &smaller(9, 200), now),
-            "a lower probe DPI"
+            "another probe DPI"
         );
-        assert!(l.refuses_at(&KEY, &smaller(36, 400), now), "a larger probe");
+        assert!(
+            !l.refuses_at(&KEY, &smaller(36, 400), now),
+            "another probe DPI"
+        );
+        assert!(
+            l.refuses_at(&KEY, &smaller(18, 400), now),
+            "more probe pages"
+        );
+    }
+
+    #[test]
+    fn a_decrypt_timeout_covers_only_the_same_password() {
+        let now = Instant::now();
+        let l = list(600_000);
+        let decrypt = |password: &str| Attempt {
+            work: Work::Decrypt {
+                password: password_fingerprint(password),
+            },
+            budget: Duration::from_secs(10),
+        };
+        l.strike_at(&KEY, Strike::Timeout, &decrypt("owner"), now);
+        l.strike_at(&KEY, Strike::Timeout, &decrypt("owner"), now);
+        assert!(l.refuses_at(&KEY, &decrypt("owner"), now));
+        assert!(
+            !l.refuses_at(&KEY, &decrypt("user"), now),
+            "another password"
+        );
+        assert_eq!(password_fingerprint("owner"), password_fingerprint("owner"));
     }
 
     #[test]
