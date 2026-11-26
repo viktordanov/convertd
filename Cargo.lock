@@ -350,6 +350,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "multer",
  "pdfium-render",
+ "png",
  "quick-xml",
  "rustix",
  "serde",
