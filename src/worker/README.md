@@ -110,7 +110,7 @@ Only the main part changes, with its own compression method. Every other entry i
 
 The main part is inflated at most twice, once to plan and once to rewrite. Each pass reads at most 64 MiB, the size of the pre-flight's per-request cap, and the archive is read under detection's caps. A failed write of the copy, such as a full disk, fails the job with the worker's I/O error. A busy disk thus never changes the paper. A copy that cannot be removed fails the job too, because the supervisor gives its reservation back when the job answers. The time counts as `preflight_us`.
 
-These packages are loaded as they came, on Letter. The conversion succeeds; only a failed write or removal is an error.
+For these packages the worker writes no copy, and LibreOffice loads the original unchanged. Its sections without a page size then get the importer's Letter. The copy step itself raises no error for them; only a failed write or removal does. LibreOffice can still refuse a damaged package.
 
 - ZIP64 anywhere: the end record, a directory record or a local header.
 - An encrypted main part, overlapping records, or bytes after the counted directory records.
