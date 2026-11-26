@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::ExitStatus;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
@@ -42,10 +42,15 @@ pub const CRASH_STATUS_WAIT: Duration = Duration::from_millis(100);
 /// How often a call samples its worker's RSS against `kill_rss`.
 pub const KILL_RSS_TICK: Duration = Duration::from_millis(200);
 
+/// A SIGKILL at an RSS within this share of `kill_rss` (or at `max_rss`
+/// and above) is taken for the kernel's OOM killer: the call ran out of
+/// memory, it did not crash.
+pub const OOM_MARGIN_PERCENT: u64 = 10;
+
 /// Resolves once process `pid` holds at least `limit` bytes, sampled every
 /// [`KILL_RSS_TICK`]; never, when the limit is off (`u64::MAX`) or the
-/// platform cannot read the RSS.
-async fn rss_above(pid: u32, limit: u64) -> u64 {
+/// platform cannot read the RSS. Each sample is stored in `last`.
+async fn rss_above(pid: u32, limit: u64, last: &AtomicU64) -> u64 {
     if limit == u64::MAX || crate::worker::sys::rss_of(pid).is_none() {
         return std::future::pending().await;
     }
@@ -53,12 +58,20 @@ async fn rss_above(pid: u32, limit: u64) -> u64 {
     let mut tick = tokio::time::interval_at(start, KILL_RSS_TICK);
     loop {
         tick.tick().await;
-        if let Some(rss) = crate::worker::sys::rss_of(pid)
-            && rss >= limit
-        {
-            return rss;
+        if let Some(rss) = crate::worker::sys::rss_of(pid) {
+            last.store(rss, Ordering::Relaxed);
+            if rss >= limit {
+                return rss;
+            }
         }
     }
+}
+
+/// Whether a worker that died at `rss` died of memory: at or above its
+/// recycle threshold, or within [`OOM_MARGIN_PERCENT`] of its kill limit.
+pub fn near_memory_limit(rss: u64, max_rss: u64, kill_rss: u64) -> bool {
+    let margin = kill_rss / 100 * OOM_MARGIN_PERCENT;
+    rss >= max_rss || rss >= kill_rss.saturating_sub(margin)
 }
 
 /// Everything a pool needs.
@@ -853,6 +866,8 @@ impl Lease {
         let at = tokio::time::Instant::from_std(deadline);
         let pid = worker.child.pid();
         let kill_rss = self.pool.spec.kill_rss;
+        // The last RSS seen: the previous reply's, then each watchdog sample.
+        let last_rss = AtomicU64::new(worker.rss);
         let outcome = tokio::time::timeout_at(at, async {
             if let Err(err) = worker.conn.send(&request).await {
                 return Exchange::Frame(err);
@@ -867,7 +882,7 @@ impl Lease {
                     Err(err) => Exchange::Frame(err),
                 },
                 _ = worker.child.wait() => Exchange::Eof,
-                rss = rss_above(pid, kill_rss) => Exchange::TooBig(rss),
+                rss = rss_above(pid, kill_rss, &last_rss) => Exchange::TooBig(rss),
             }
         })
         .await;
@@ -920,6 +935,23 @@ impl Lease {
                     .await
                     .ok()
                     .and_then(|exit| exit.status);
+                let signal = status.and_then(|s| std::os::unix::process::ExitStatusExt::signal(&s));
+                let rss = last_rss.load(Ordering::Relaxed);
+                if signal == Some(9) && near_memory_limit(rss, self.pool.spec.max_rss, kill_rss) {
+                    // The kernel's OOM killer, most likely: a memory failure
+                    // like the watchdog's kill, so no crash retry and no strike.
+                    self.broken = Some(Reason::RssKill);
+                    tracing::warn!(
+                        pool = worker.pool,
+                        worker_id = %worker.id(),
+                        generation = worker.generation,
+                        rss_bytes = rss,
+                        max_rss = self.pool.spec.max_rss,
+                        kill_rss = kill_rss,
+                        "worker killed by SIGKILL near its memory limit"
+                    );
+                    return Err(CallError::TooBig { rss });
+                }
                 tracing::warn!(
                     pool = worker.pool,
                     worker_id = %worker.id(),
@@ -1482,6 +1514,20 @@ mod tests {
 
     fn decide(jobs: u32, age: Duration, rss: u64, after: bool, max_jobs: u32) -> Recycle {
         recycle_decision(jobs, age, rss, after, max_jobs, H, 1000)
+    }
+
+    #[test]
+    fn a_sigkill_counts_as_memory_near_either_limit() {
+        const MIB: u64 = 1 << 20;
+        // At or above the recycle threshold.
+        assert!(near_memory_limit(1024 * MIB, 1024 * MIB, 2048 * MIB));
+        // Within 10 % of the kill limit, the recycle threshold off.
+        assert!(near_memory_limit(1850 * MIB, u64::MAX, 2048 * MIB));
+        assert!(!near_memory_limit(1800 * MIB, u64::MAX, 2048 * MIB));
+        // A low RSS is a crash.
+        assert!(!near_memory_limit(300 * MIB, 1024 * MIB, 2048 * MIB));
+        // Both limits off: never memory.
+        assert!(!near_memory_limit(64 * 1024 * MIB, u64::MAX, u64::MAX));
     }
 
     #[test]

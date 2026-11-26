@@ -965,3 +965,64 @@ async fn pings_and_inspects_do_not_count_towards_max_jobs() {
     )
     .await;
 }
+
+/// SIGKILL `pid` from outside, as the kernel's OOM killer does.
+fn sigkill(pid: u32) {
+    let pid = Pid::from_raw(pid as i32).unwrap();
+    rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
+}
+
+/// A worker that dies by SIGKILL while its RSS is near its kill limit died
+/// of memory: the call is `TooBig` (422), not a crash to retry. A SIGKILL at
+/// a low RSS stays a crash.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sigkill_near_the_memory_limit_is_too_big_not_a_crash() {
+    within(
+        TEST,
+        "a_sigkill_near_the_memory_limit_is_too_big_not_a_crash",
+        async {
+            let mut spec = spec("oom-kill", 1);
+            spec.kill_rss = 160 << 20;
+            let pool = ready(spec).await;
+            // Grow to within 10 % of the kill limit, below it.
+            let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+            let reply = lease
+                .call(test_op(TestOp::Allocate { mb: 150 }), after(5000))
+                .await
+                .unwrap();
+            assert!(reply.rss_bytes >= 144 << 20, "rss {}", reply.rss_bytes);
+            drop(lease);
+            let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+            let pid = lease.pid().unwrap();
+            let killer = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                sigkill(pid);
+            });
+            let err = lease
+                .call(test_op(TestOp::Sleep { ms: 3000 }), after(5000))
+                .await
+                .unwrap_err();
+            killer.await.unwrap();
+            assert!(matches!(err, CallError::TooBig { .. }), "{err:?}");
+            drop(lease);
+
+            // A fresh worker at a low RSS: the same SIGKILL is a crash.
+            let mut lease = pool.lease(after(10_000), Admission::Queue).await.unwrap();
+            assert_ne!(lease.pid().unwrap(), pid);
+            let pid = lease.pid().unwrap();
+            let killer = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                sigkill(pid);
+            });
+            let err = lease
+                .call(test_op(TestOp::Sleep { ms: 3000 }), after(5000))
+                .await
+                .unwrap_err();
+            killer.await.unwrap();
+            assert!(matches!(err, CallError::Crashed { .. }), "{err:?}");
+            drop(lease);
+            finish(pool, "oom-kill").await;
+        },
+    )
+    .await;
+}

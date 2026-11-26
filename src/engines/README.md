@@ -79,6 +79,7 @@ The pool keeps its idle workers in one list next to a FIFO-fair `tokio::sync::Se
 - **EOF or exit**: the lease kills the group and waits at most 100 ms for the exit status. It returns `CallError::Crashed { status }` and logs `worker crashed`.
 - **Bad frame**: a wrong `id`, invalid JSON or an oversize frame. The lease kills the worker and returns `CallError::Protocol`.
 - **Memory over `kill_rss`**: the call samples the worker's RSS every 200 ms while it waits. At `kill_rss` it kills the process group and returns `CallError::TooBig`, which maps to `LimitExceeded` and is never retried. On a platform where the supervisor cannot read the RSS, the watchdog does not run.
+- **SIGKILL near the memory limit**: a worker that dies by SIGKILL while its last RSS (the previous reply's, then each sample) is at `max_rss` or within 10 % of `kill_rss` is taken for the kernel's OOM killer. The call is `TooBig` too: 422 `LIMIT_EXCEEDED`, no crash retry and no poison strike. The log line is `worker killed by SIGKILL near its memory limit`, and the restart reason is `rss`. A SIGKILL at a lower RSS stays a crash.
 
 The `Drop` of a `Lease` decides what happens to the worker. If the call future was dropped before its reply, the worker is killed, because its reply then reaches the next lease. A dead worker, or one that failed a call, goes too. Otherwise the [recycling](#recycling) rules decide.
 
