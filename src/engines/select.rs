@@ -168,6 +168,11 @@ pub async fn start(config: &Config) -> Result<Selected, String> {
         warmup: !level_b,
         test: Default::default(),
     };
+    // cgroup v2 inside the container; without it the RSS rule alone decides.
+    let oom_events = crate::engines::pool::read_oom_kills(std::path::Path::new(
+        crate::engines::pool::CGROUP_MEMORY_EVENTS,
+    ))
+    .map(|_| PathBuf::from(crate::engines::pool::CGROUP_MEMORY_EVENTS));
     let spec = |name: &'static str,
                 role: Role,
                 size: usize,
@@ -189,6 +194,7 @@ pub async fn start(config: &Config) -> Result<Selected, String> {
         queue_capacity,
         queue_wait: engines.queue_wait,
         start_timeout: START_TIMEOUT,
+        oom_events: oom_events.clone(),
     };
     let office = Pool::start(
         spec(

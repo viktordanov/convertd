@@ -47,25 +47,51 @@ pub const KILL_RSS_TICK: Duration = Duration::from_millis(200);
 /// memory, it did not crash.
 pub const OOM_MARGIN_PERCENT: u64 = 10;
 
-/// Resolves once process `pid` holds at least `limit` bytes, sampled every
-/// [`KILL_RSS_TICK`]; never, when the limit is off (`u64::MAX`) or the
-/// platform cannot read the RSS. Each sample is stored in `last`.
-async fn rss_above(pid: u32, limit: u64, last: &AtomicU64) -> u64 {
-    if limit == u64::MAX || crate::worker::sys::rss_of(pid).is_none() {
-        return std::future::pending().await;
-    }
+/// Samples process `pid`'s RSS every [`KILL_RSS_TICK`] into `peak`, and
+/// resolves once a sample reaches `limit` (never, when the limit is off:
+/// `u64::MAX`). A failed read is retried on the next tick: the watchdog
+/// never parks, so it cannot stop sampling after one bad read.
+async fn rss_above(pid: u32, limit: u64, peak: &AtomicU64) -> u64 {
     let start = tokio::time::Instant::now() + KILL_RSS_TICK;
     let mut tick = tokio::time::interval_at(start, KILL_RSS_TICK);
+    let mut logged = false;
     loop {
         tick.tick().await;
-        if let Some(rss) = crate::worker::sys::rss_of(pid) {
-            last.store(rss, Ordering::Relaxed);
-            if rss >= limit {
-                return rss;
+        match crate::worker::sys::rss_of(pid) {
+            Some(rss) => {
+                record_peak(peak, rss);
+                if rss >= limit {
+                    return rss;
+                }
             }
+            None if !logged => {
+                logged = true;
+                tracing::debug!(pid, "failed to read the worker's RSS; retrying each tick");
+            }
+            None => {}
         }
     }
 }
+
+/// Keeps the highest RSS of a call. A worker that the kernel kills tears
+/// down its memory before its exit is seen, so a late sample can read 0:
+/// the peak, not the last sample, tells whether it died of memory.
+pub fn record_peak(peak: &AtomicU64, rss: u64) {
+    peak.fetch_max(rss, Ordering::Relaxed);
+}
+
+/// The `oom_kill` count of a cgroup v2 `memory.events` file, or `None` when
+/// the file is absent (cgroup v1, macOS) or has no such line.
+pub fn read_oom_kills(path: &std::path::Path) -> Option<u64> {
+    std::fs::read_to_string(path)
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("oom_kill ")?.trim().parse().ok())
+}
+
+/// The cgroup v2 file whose `oom_kill` count tells a kernel OOM kill, as
+/// seen inside the container's cgroup namespace.
+pub const CGROUP_MEMORY_EVENTS: &str = "/sys/fs/cgroup/memory.events";
 
 /// Whether a worker that died at `rss` died of memory: at or above its
 /// recycle threshold, or within [`OOM_MARGIN_PERCENT`] of its kill limit.
@@ -101,6 +127,9 @@ pub struct PoolSpec {
     /// The longest `Queue`-mode wait.
     pub queue_wait: Duration,
     pub start_timeout: Duration,
+    /// The cgroup's `memory.events`: a SIGKILL during a call in which its
+    /// `oom_kill` count rose is a memory failure. `None` without cgroup v2.
+    pub oom_events: Option<PathBuf>,
 }
 
 /// How a lease waits for a worker.
@@ -866,8 +895,14 @@ impl Lease {
         let at = tokio::time::Instant::from_std(deadline);
         let pid = worker.child.pid();
         let kill_rss = self.pool.spec.kill_rss;
-        // The last RSS seen: the previous reply's, then each watchdog sample.
-        let last_rss = AtomicU64::new(worker.rss);
+        // The call's peak RSS: the previous reply's, then each sample.
+        let peak_rss = AtomicU64::new(worker.rss);
+        let oom_kills = self
+            .pool
+            .spec
+            .oom_events
+            .as_deref()
+            .and_then(read_oom_kills);
         let outcome = tokio::time::timeout_at(at, async {
             if let Err(err) = worker.conn.send(&request).await {
                 return Exchange::Frame(err);
@@ -882,7 +917,7 @@ impl Lease {
                     Err(err) => Exchange::Frame(err),
                 },
                 _ = worker.child.wait() => Exchange::Eof,
-                rss = rss_above(pid, kill_rss, &last_rss) => Exchange::TooBig(rss),
+                rss = rss_above(pid, kill_rss, &peak_rss) => Exchange::TooBig(rss),
             }
         })
         .await;
@@ -936,10 +971,19 @@ impl Lease {
                     .ok()
                     .and_then(|exit| exit.status);
                 let signal = status.and_then(|s| std::os::unix::process::ExitStatusExt::signal(&s));
-                let rss = last_rss.load(Ordering::Relaxed);
-                if signal == Some(9) && near_memory_limit(rss, self.pool.spec.max_rss, kill_rss) {
-                    // The kernel's OOM killer, most likely: a memory failure
-                    // like the watchdog's kill, so no crash retry and no strike.
+                let rss = peak_rss.load(Ordering::Relaxed);
+                // The kernel's own count first; the RSS rule without cgroup v2.
+                let cgroup_oom = match (oom_kills, self.pool.spec.oom_events.as_deref()) {
+                    (Some(before), Some(path)) => {
+                        read_oom_kills(path).is_some_and(|now| now > before)
+                    }
+                    _ => false,
+                };
+                if signal == Some(9)
+                    && (cgroup_oom || near_memory_limit(rss, self.pool.spec.max_rss, kill_rss))
+                {
+                    // The kernel's OOM killer: a memory failure like the
+                    // watchdog's kill, so no crash retry and no strike.
                     self.broken = Some(Reason::RssKill);
                     tracing::warn!(
                         pool = worker.pool,
@@ -948,6 +992,7 @@ impl Lease {
                         rss_bytes = rss,
                         max_rss = self.pool.spec.max_rss,
                         kill_rss = kill_rss,
+                        cgroup_oom_kill = cgroup_oom,
                         "worker killed by SIGKILL near its memory limit"
                     );
                     return Err(CallError::TooBig { rss });
@@ -1514,6 +1559,38 @@ mod tests {
 
     fn decide(jobs: u32, age: Duration, rss: u64, after: bool, max_jobs: u32) -> Recycle {
         recycle_decision(jobs, age, rss, after, max_jobs, H, 1000)
+    }
+
+    #[test]
+    fn the_peak_survives_a_dying_workers_zero_sample() {
+        let peak = AtomicU64::new(250 << 20);
+        // Samples of a worker that the kernel kills: the last ones fall to 0
+        // while it tears down its memory.
+        for rss in [900u64 << 20, 3_100 << 20, 1_200 << 20, 0] {
+            record_peak(&peak, rss);
+        }
+        assert_eq!(peak.load(Ordering::Relaxed), 3_100 << 20);
+    }
+
+    #[test]
+    fn the_oom_kill_count_is_read_from_memory_events() {
+        let dir = std::env::temp_dir().join(format!("convertd-oom-events-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("memory.events");
+        std::fs::write(
+            &path,
+            "low 0\nhigh 0\nmax 12\noom 3\noom_kill 2\noom_group_kill 0\n",
+        )
+        .unwrap();
+        assert_eq!(read_oom_kills(&path), Some(2));
+        std::fs::write(&path, "low 0\n").unwrap();
+        assert_eq!(read_oom_kills(&path), None, "no oom_kill line");
+        assert_eq!(
+            read_oom_kills(&dir.join("absent")),
+            None,
+            "cgroup v1 or macOS"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
