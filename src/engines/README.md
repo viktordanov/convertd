@@ -101,7 +101,7 @@ The pool sets four metrics:
 - `convert_workers{pool,state}`, for `idle`, `busy` and `starting`. Each lease, each return and each manager event sets it under the idle lock, so the gauges agree with `/readyz`.
 - `convert_worker_restarts_total{pool,reason}`.
 - `convert_queue_depth{pool}`.
-- `convert_worker_cpu_seconds{pool,op}`, a histogram of the `cpu_us` of each reply, with buckets from 1 ms to 60 s. `op` is `convert`, `inspect`, `render`, `decrypt`, or `test` at level B. `Ping` is not recorded. A reply with an engine error is recorded, because the worker spent the CPU time. A call that times out, crashes or passes `kill_rss` sends no reply, so it records nothing. The histogram's `_sum` is the series for cores: `sum by (pool) (rate(convert_worker_cpu_seconds_sum[$__rate_interval]))` gives the cores that each pool uses.
+- `convert_worker_cpu_seconds{pool,op}`, a histogram of the `cpu_us` of each reply, with buckets from 1 ms to 60 s. `op` is `convert`, `inspect`, `render`, `decrypt`, or `test` at level B. `Ping` is not recorded. A reply with an engine error is recorded, because the worker spent the CPU time. A call that times out, crashes or passes `kill_rss` sends no reply, so it records nothing. The histogram's `_sum` is the series for cores: `sum by (pool) (rate(convert_worker_cpu_seconds_sum[$__rate_interval]))` gives the cores that each pool used for its finished calls. A call adds all of its CPU time when it replies. Thus a worker that is busy on a call longer than the rate window shows as idle during the call, and above one core when the call ends. Thus use a window that is much longer than a typical call, for example 5 m.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="contract" files="pool.rs" -->
