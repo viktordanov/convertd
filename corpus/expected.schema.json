@@ -220,7 +220,8 @@
       "required": ["code"],
       "properties": {
         "code": {
-          "enum": ["FONT_SUBSTITUTED", "PAGE_COUNT_MISMATCH", "BLANK_PAGE", "MACROS_IGNORED", "RENDER_CLAMPED"]
+          "enum": ["FONT_SUBSTITUTED", "PAGE_COUNT_MISMATCH", "BLANK_PAGE", "MACROS_IGNORED", "RENDER_CLAMPED",
+                   "GLYPHS_MISSING"]
         },
         "page": { "type": "integer", "minimum": 1 },
         "detail": { "type": "object" },

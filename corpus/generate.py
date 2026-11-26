@@ -307,6 +307,25 @@ def docx_headings(_ctx):
     return docx_bytes(d, {"word/theme/theme1.xml": theme_latin("majorFont", "Aptos Display")})
 
 
+# GLYPHS_MISSING: Cuneiform has no font in the image; Thai has Noto Sans Thai.
+CUNEIFORM_TEXT = "Cuneiform: \U00012000\U00012001\U00012002"
+THAI_TEXT = "Thai: \u0e2a\u0e27\u0e31\u0e2a\u0e14\u0e35"
+
+
+def docx_text(text):
+    d = docx.Document()
+    d.add_paragraph(text)
+    return docx_bytes(d)
+
+
+def docx_glyphs_missing(_ctx):
+    return docx_text(CUNEIFORM_TEXT)
+
+
+def docx_glyphs_thai(_ctx):
+    return docx_text(THAI_TEXT)
+
+
 def encrypt(plain, password="secret"):
     office = msoffcrypto.OfficeFile(io.BytesIO(plain))
     out = io.BytesIO()
@@ -861,6 +880,8 @@ ENTRIES = [
     ("docx-empty-page", "docx/empty-page.docx", docx_empty_page, False),
     ("docx-aptos-theme", "docx/aptos-theme.docx", docx_aptos_theme, False),
     ("docx-headings", "docx/headings.docx", docx_headings, False),
+    ("docx-glyphs-missing", "docx/glyphs-missing.docx", docx_glyphs_missing, False),
+    ("docx-glyphs-thai", "docx/glyphs-thai.docx", docx_glyphs_thai, False),
     ("docx-encrypted", "docx/encrypted.docx", docx_encrypted, False),
     ("docm-novba", "docx/novba.docm", docm_novba, False),
     ("docm-vba", "docx/vba.docm", docm_vba, False),
@@ -1071,6 +1092,10 @@ def check_facts(entry_id, data):
         z = members(data)
         require(z.read("ppt/presentation.xml").count(b"<p:sldId ") == 4, "sldIdLst does not list 4")
         require(b"<p:sld " not in z.read("ppt/slides/slide4.xml"), "slide 4 is still a slide")
+    elif entry_id in ("docx-glyphs-missing", "docx-glyphs-thai"):
+        text = {"docx-glyphs-missing": CUNEIFORM_TEXT, "docx-glyphs-thai": THAI_TEXT}[entry_id]
+        body = members(data).read("word/document.xml").decode()
+        require(f"<w:t>{text}</w:t>" in body, "the text run")
     elif entry_id in ("docx-aptos-theme", "docx-headings"):
         theme = members(data).read("word/theme/theme1.xml").decode()
         slot, family = {"docx-aptos-theme": ("minorFont", "Aptos"),
