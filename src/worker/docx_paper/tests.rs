@@ -1103,3 +1103,12 @@ fn a_directory_with_more_than_its_records_keeps_the_package() {
     bytes.extend_from_slice(&end);
     assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unsupported), None));
 }
+
+#[test]
+fn a_reference_in_a_wrapper_inside_a_section_keeps_the_package() {
+    let body = r#"<w:sectPr xmlns:x="ext"><x:wrap><w:headerReference w:type="default" r:id="rId7"/></x:wrap><w:pgMar w:top="1"/></w:sectPr>"#;
+    assert_eq!(
+        fix_part(doc(body).as_bytes(), Paper::A4),
+        Err(Skip::Unsupported)
+    );
+}

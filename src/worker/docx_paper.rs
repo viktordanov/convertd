@@ -393,20 +393,25 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                         }
                     }
                 }
+                // The name first: a namespace lookup only for candidates.
                 let processes = e.attributes().with_checks(false).flatten().any(|a| {
-                    let (ns, local) = xml.resolver().resolve_attribute(a.key);
-                    local.as_ref() == b"ProcessContent"
-                        && matches!(ns, ResolveResult::Bound(Namespace(n)) if n == MC_NS)
+                    a.key.local_name().as_ref() == b"ProcessContent" && {
+                        let (ns, _) = xml.resolver().resolve_attribute(a.key);
+                        matches!(ns, ResolveResult::Bound(Namespace(n)) if n == MC_NS)
+                    }
                 });
                 if bindings + declares > MAX_BINDINGS {
                     return Err(Skip::Unsupported);
                 }
                 if let Some(s) = open.as_mut() {
-                    // A branch, or a page size inside a wrapper (such as an
-                    // element that mc:ProcessContent names): which size
-                    // counts is not plain from the XML.
+                    // A branch, or a page size or an earlier child inside a
+                    // wrapper (such as one that mc:ProcessContent names):
+                    // which size counts, or where it goes, is not plain.
                     if tag == Tag::Alternate
-                        || (depth > s.depth + 1 && history == 0 && ns.is_some() && local == b"pgSz")
+                        || (depth > s.depth + 1
+                            && history == 0
+                            && ns.is_some()
+                            && (local == b"pgSz" || BEFORE_PAGE_SIZE.contains(&local)))
                     {
                         return Err(Skip::Unsupported);
                     }
