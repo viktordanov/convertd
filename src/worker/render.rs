@@ -285,6 +285,17 @@ impl RenderWorker {
                 )
             });
         }
+        // SAFETY: `document` is open; a plain read of its permissions.
+        let owner_permissions = unsafe { bindings.FPDF_GetDocPermissions(document) };
+        if args.require_owner && !owner_unlocked(password, owner_permissions as u32) {
+            // SAFETY: closes the document opened above, once.
+            unsafe { bindings.FPDF_CloseDocument(document) };
+            times.decrypt_us = micros(started.elapsed());
+            return Err(WorkerError::new(
+                WorkerErrorKind::InvalidPassword,
+                "the password is not the owner password",
+            ));
+        }
         let mut writer = CopyWriter::new(args.max_output_bytes);
         // SAFETY: `document` is open; `writer` starts with the FPDF_FILEWRITE
         // that PDFium calls back through, and outlives the call.
@@ -419,6 +430,15 @@ fn secret(password: Option<&Secret>) -> Result<Option<&str>, WorkerError> {
     Ok(password)
 }
 
+/// Whether an open with `password` unlocked the owner. PDFium sets its
+/// owner flag only for a non-empty password that passes the owner check
+/// (`CPDF_SecurityHandler::CheckSecurity`, chromium/8179). Then
+/// `FPDF_GetDocPermissions` grants every bit, except that the Standard
+/// handler clears bits 1 and 2 (`GetPermissions`: 0xFFFFFFFC).
+pub fn owner_unlocked(password: Option<&str>, owner_permissions: u32) -> bool {
+    password.is_some_and(|p| !p.is_empty()) && owner_permissions | 0b11 == u32::MAX
+}
+
 /// A failed open: the password errors as PDFium reports them, else
 /// `LoadFailed`.
 fn open_error(err: &PdfiumError, had_password: bool) -> WorkerError {
@@ -510,6 +530,17 @@ pub fn probe_numbers(pages: &ProbePages, count: u32) -> (Vec<u32>, u32) {
 mod tests {
     use super::probe_numbers;
     use crate::ipc::ProbePages;
+
+    #[test]
+    fn the_owner_is_unlocked_only_by_a_password_with_every_permission() {
+        use super::owner_unlocked;
+        assert!(owner_unlocked(Some("owner"), 0xFFFF_FFFC));
+        assert!(owner_unlocked(Some("owner"), u32::MAX));
+        // The file's own restricted P, as a user open reports it.
+        assert!(!owner_unlocked(Some("user"), 0xFFFF_F0C4));
+        assert!(!owner_unlocked(None, 0xFFFF_FFFC));
+        assert!(!owner_unlocked(Some(""), 0xFFFF_FFFC));
+    }
 
     #[test]
     fn the_probe_takes_the_pages_it_is_given() {

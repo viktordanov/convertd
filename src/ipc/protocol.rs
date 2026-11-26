@@ -218,6 +218,11 @@ pub struct DecryptArgs {
     pub password: Secret,
     pub output: PathBuf,
     pub max_output_bytes: u64,
+    /// Write the copy only when `password` unlocked the document as its
+    /// owner password; otherwise `InvalidPassword`. For a PDF that opens
+    /// without a password and restricts its permissions.
+    #[serde(default)]
+    pub require_owner: bool,
 }
 
 /// Faults the `test` role can act out.

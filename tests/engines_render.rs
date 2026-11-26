@@ -847,3 +847,60 @@ async fn inspect_probes_only_the_pages_it_is_given() {
     })
     .await;
 }
+
+/// An owner-only PDF opens without a password. `require_owner` writes the
+/// unrestricted copy only for the owner password, and inspect refuses a
+/// wrong one at the open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_only_the_owner_password_unlocks_an_owner_only_pdf() {
+    use convertd::engines::pool::Admission as PoolAdmission;
+    use convertd::ipc::{DecryptArgs, Op, Output, Secret, WorkerErrorKind};
+    let (Some(lo), Some(pdfium)) = (lo(), pdfium()) else {
+        return;
+    };
+    within(TEST, "slow_only_the_owner_password_unlocks_an_owner_only_pdf", async {
+        let dir = Scratch::new("render-owner");
+        let owner = soffice_pdf(
+            &lo,
+            &dir,
+            "owner",
+            1,
+            r#"{"RestrictPermissions":{"type":"boolean","value":"true"},"PermissionPassword":{"type":"string","value":"owner"},"Printing":{"type":"long","value":"0"}}"#,
+        );
+        let pool = ready(render_spec(dir.path(), &pdfium, 1)).await;
+        let pdf = PdfPdfium::new(pool.clone());
+        let wrong = pdf
+            .inspect(inspect_job(&owner, Some("wrong"), None), Admission::Queue, deadline())
+            .await
+            .unwrap_err();
+        assert_eq!(wrong, EngineError::InvalidPassword, "a wrong password fails the open");
+        let decrypt = |password: &str, output: PathBuf| {
+            Op::Decrypt(DecryptArgs {
+                pdf: owner.clone(),
+                password: Secret::new(password),
+                output,
+                max_output_bytes: 1 << 30,
+                require_owner: true,
+            })
+        };
+        for (password, name) in [("wrong", "wrong.pdf"), ("", "empty.pdf")] {
+            let mut lease = pool.lease(deadline(), PoolAdmission::Queue).await.unwrap();
+            let reply = lease.call(decrypt(password, dir.join(name)), deadline()).await.unwrap();
+            let err = reply.result.unwrap_err();
+            assert_eq!(err.kind, WorkerErrorKind::InvalidPassword, "{password:?}: {err:?}");
+            assert!(!dir.join(name).exists(), "{password:?}: no copy");
+        }
+        let plain = dir.join("plain.pdf");
+        let mut lease = pool.lease(deadline(), PoolAdmission::Queue).await.unwrap();
+        let reply = lease.call(decrypt("owner", plain.clone()), deadline()).await.unwrap();
+        assert!(matches!(reply.result, Ok(Output::Decrypted(_))), "{:?}", reply.result);
+        drop(lease);
+        let copy = pdf
+            .inspect(inspect_job(&plain, None, None), Admission::Queue, deadline())
+            .await
+            .unwrap();
+        assert!(!copy.encrypted, "the owner's copy has no security handler: {copy:?}");
+        pool.shutdown(Duration::from_secs(5)).await;
+    })
+    .await;
+}
