@@ -1,0 +1,2267 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "11.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    }
+  ],
+  "uid": "convertd-overview",
+  "title": "convertd",
+  "description": "convertd load per request, per stage and per pool, from the /metrics families in src/observability/metrics.rs.",
+  "tags": [
+    "convertd",
+    "rs-convert"
+  ],
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "links": [],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "options": [],
+        "refresh": 1,
+        "regex": ""
+      },
+      {
+        "name": "scrape_interval",
+        "label": "Scrape interval",
+        "type": "textbox",
+        "description": "The scrape interval of convertd, as a Prometheus duration such as 15s or 5m. Every query uses it as its min step, so $__rate_interval covers at least four scrapes.",
+        "query": "15s",
+        "hide": 0,
+        "current": {
+          "selected": false,
+          "text": "15s",
+          "value": "15s"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "15s",
+            "value": "15s"
+          }
+        ]
+      },
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(convert_disk_budget_bytes, namespace)",
+          "refId": "namespace-var",
+          "qryType": 1
+        },
+        "definition": "label_values(convert_disk_budget_bytes, namespace)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "hide": 0,
+        "regex": ""
+      },
+      {
+        "name": "pod",
+        "label": "Pod",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(convert_disk_budget_bytes{namespace=~\"$namespace\"}, pod)",
+          "refId": "pod-var",
+          "qryType": 1
+        },
+        "definition": "label_values(convert_disk_budget_bytes{namespace=~\"$namespace\"}, pod)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "hide": 0,
+        "regex": ""
+      },
+      {
+        "name": "family",
+        "label": "Input family",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\"}, family)",
+          "refId": "family-var",
+          "qryType": 1
+        },
+        "definition": "label_values(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\"}, family)",
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "hide": 0,
+        "regex": ""
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "id": 1,
+      "title": "Requests",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "id": 2,
+      "title": "Requests / s",
+      "description": "POST /v1/convert outcomes that the handler records. A 401 from the auth layer and a failure to create the job directory are not counted.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\"}[$__rate_interval]))",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "interval": "$scrape_interval",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 3,
+      "title": "Error share",
+      "description": "Share of requests with a code other than OK.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.05
+              },
+              {
+                "color": "red",
+                "value": 0.2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code!=\"OK\"}[$__rate_interval])) or vector(0)) / sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\"}[$__rate_interval]))",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "interval": "$scrape_interval",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 4,
+      "title": "429 share (all families)",
+      "description": "Share of requests refused with 429 TOO_MANY_REQUESTS: the queue, the queue wait or MAX_CONCURRENT_REQUESTS. It ignores the family filter, because a refusal before detection has family \"unknown\".",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.01
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=\"TOO_MANY_REQUESTS\"}[$__rate_interval])) or vector(0)) / sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "interval": "$scrape_interval",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 5,
+      "title": "Conversions in flight (estimate)",
+      "description": "The rate of the summed receive and total stage times (Little's law): from the start of the handler to the response head. The download of the body is not counted, and neither is an upload that fails (it records no stage). Each request adds its time when it finishes, so under steady load this is the mean number of conversions in progress. A conversion longer than the rate window counts in the window where it ends.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(convert_stage_duration_seconds_sum{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", stage=~\"receive|total\"}[$__rate_interval]))",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "interval": "$scrape_interval",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 6,
+      "title": "Busy workers (mean)",
+      "description": "Mean of the busy worker count of all selected pods and pools together, over the rate window, sampled every $scrape_interval. A worker is busy from its lease to its return.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "avg_over_time(sum(convert_workers{namespace=~\"$namespace\", pod=~\"$pod\", state=\"busy\"})[$__rate_interval:$scrape_interval])",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "interval": "$scrape_interval",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "id": 7,
+      "title": "Disk budget used",
+      "description": "Highest share of TMP_MAX_BYTES in use on one pod, at the end of the time range.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.75
+              },
+              {
+                "color": "red",
+                "value": 0.9
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(convert_disk_budget_bytes{namespace=~\"$namespace\", pod=~\"$pod\", state=\"used\"} / ignoring(state) (convert_disk_budget_bytes{namespace=~\"$namespace\", pod=~\"$pod\", state=\"max\"} > 0))",
+          "legendFormat": "",
+          "refId": "A",
+          "range": false,
+          "interval": "$scrape_interval",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 8,
+      "title": "Requests by HTTP status",
+      "description": "Outcomes of POST /v1/convert. convert_requests_total has a code label, not a status label: each series maps codes to the status from src/rest/response.rs. A 401 from the auth layer, a 404 for an unknown route and a failure to create the job directory are not counted. \"other\" catches a code that this map does not know.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 30,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"OK\"}[$__rate_interval]))",
+          "legendFormat": "200",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"BAD_REQUEST\"}[$__rate_interval]))",
+          "legendFormat": "400",
+          "refId": "B",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"FILE_TOO_LARGE\"}[$__rate_interval]))",
+          "legendFormat": "413",
+          "refId": "C",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"UNSUPPORTED_FORMAT\"}[$__rate_interval]))",
+          "legendFormat": "415",
+          "refId": "D",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"VALIDATION_ERROR|PASSWORD_REQUIRED|INVALID_PASSWORD|LIMIT_EXCEEDED|CONVERSION_FAILED\"}[$__rate_interval]))",
+          "legendFormat": "422",
+          "refId": "E",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"TOO_MANY_REQUESTS\"}[$__rate_interval]))",
+          "legendFormat": "429",
+          "refId": "F",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"INTERNAL_ERROR\"}[$__rate_interval]))",
+          "legendFormat": "500",
+          "refId": "G",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"SERVICE_UNAVAILABLE\"}[$__rate_interval]))",
+          "legendFormat": "503",
+          "refId": "H",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"CONVERSION_TIMEOUT\"}[$__rate_interval]))",
+          "legendFormat": "504",
+          "refId": "I",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code!~\"OK|BAD_REQUEST|FILE_TOO_LARGE|UNSUPPORTED_FORMAT|VALIDATION_ERROR|PASSWORD_REQUIRED|INVALID_PASSWORD|LIMIT_EXCEEDED|CONVERSION_FAILED|TOO_MANY_REQUESTS|INTERNAL_ERROR|SERVICE_UNAVAILABLE|CONVERSION_TIMEOUT\"}[$__rate_interval]))",
+          "legendFormat": "other",
+          "refId": "J",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 9,
+      "title": "Errors by code",
+      "description": "Every request with a code other than OK, by error code.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 30,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (code) (rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code!=\"OK\"}[$__rate_interval]))",
+          "legendFormat": "{{code}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 10,
+      "title": "Errors since the process started",
+      "description": "The counter itself, per pod and code. A series starts at its first request with the value it has at the first scrape, so a rate does not show a first burst that ends between two scrapes; this panel does.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 5
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (namespace, pod, code) (convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code!=\"OK\"})",
+          "legendFormat": "{{code}} {{namespace}}/{{pod}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 11,
+      "title": "Successful requests by output and family",
+      "description": "200 responses by requested output and detected input family.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 30,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (output, family) (rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=\"OK\"}[$__rate_interval]))",
+          "legendFormat": "{{output}} {{family}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 12,
+      "title": "Responses cut after the head, since the process started",
+      "description": "200 responses that convertd cut: RESPONSE_STALLED, RESPONSE_TOO_SLOW and RESPONSE_ABORTED. convert_requests_total counted them as OK at the head. A client that closes the connection itself is not counted. The counter starts again when the convertd process restarts. The counter itself, per pod: its series starts at the first cut with the value 1, so a rate would not show an isolated cut.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (namespace, pod, code) (convert_responses_cut_total{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{code}} {{namespace}}/{{pod}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 13,
+      "title": "Latency per stage",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 21
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 14,
+      "title": "p50 per stage",
+      "description": "Median duration of each stage of a request (Server-Timing stages). Short rate windows keep bursts visible.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, stage) (rate(convert_stage_duration_seconds_bucket{namespace=~\"$namespace\", pod=~\"$pod\", stage=~\"receive|detect|queue|preflight|convert|inspect|render|respond|engine|total\", family=~\"$family\"}[$__rate_interval])))",
+          "legendFormat": "{{stage}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 15,
+      "title": "p99 per stage",
+      "description": "99th percentile of each stage. A histogram quantile is an estimate inside its bucket.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, stage) (rate(convert_stage_duration_seconds_bucket{namespace=~\"$namespace\", pod=~\"$pod\", stage=~\"receive|detect|queue|preflight|convert|inspect|render|respond|engine|total\", family=~\"$family\"}[$__rate_interval])))",
+          "legendFormat": "{{stage}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 16,
+      "title": "Time in each stage (seconds per second)",
+      "description": "Rate of the summed time per stage, counted when each request finishes. Under steady load it estimates the requests in that stage at once. The stages overlap (an office preflight is inside convert, and receive is outside total), so the series do not add up and the panel does not stack them.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (stage) (rate(convert_stage_duration_seconds_sum{namespace=~\"$namespace\", pod=~\"$pod\", stage=~\"receive|detect|queue|preflight|convert|inspect|render|respond|engine|total\", family=~\"$family\"}[$__rate_interval]))",
+          "legendFormat": "{{stage}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 17,
+      "title": "Total and overhead by family, p50 and p99",
+      "description": "The total stage (from the end of the upload to the response head; the upload and the body download are outside it) and the overhead (total minus queue minus engine time) for each input family.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, family) (rate(convert_stage_duration_seconds_bucket{namespace=~\"$namespace\", pod=~\"$pod\", stage=\"total\", family=~\"$family\"}[$__rate_interval])))",
+          "legendFormat": "p50 total {{family}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, family) (rate(convert_stage_duration_seconds_bucket{namespace=~\"$namespace\", pod=~\"$pod\", stage=\"total\", family=~\"$family\"}[$__rate_interval])))",
+          "legendFormat": "p99 total {{family}}",
+          "refId": "B",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, family) (rate(convert_stage_duration_seconds_bucket{namespace=~\"$namespace\", pod=~\"$pod\", stage=\"overhead\", family=~\"$family\"}[$__rate_interval])))",
+          "legendFormat": "p50 overhead {{family}}",
+          "refId": "C",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, family) (rate(convert_stage_duration_seconds_bucket{namespace=~\"$namespace\", pod=~\"$pod\", stage=\"overhead\", family=~\"$family\"}[$__rate_interval])))",
+          "legendFormat": "p99 overhead {{family}}",
+          "refId": "D",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 18,
+      "title": "Engine overhead per pool and op, p50 and p99",
+      "description": "Wall time of an engine call minus its queue and engine time: IPC, spawn and lease costs, per pool and operation.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 38
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, pool, op) (rate(convert_engine_overhead_seconds_bucket{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{pool}} {{op}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, pool, op) (rate(convert_engine_overhead_seconds_bucket{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{pool}} {{op}}",
+          "refId": "B",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 19,
+      "title": "Input size, p50 and p99",
+      "description": "Upload size per input family.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 38
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, family) (rate(convert_input_bytes_bucket{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{family}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, family) (rate(convert_input_bytes_bucket{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{family}}",
+          "refId": "B",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 20,
+      "title": "Pools",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 46
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 21,
+      "title": "Queue depth per pool (max over the trailing rate window)",
+      "description": "Leases that wait for a worker. Each point is the maximum of the scraped samples in the trailing $__rate_interval (at least four scrapes), so a short queue stays visible when you zoom out, and one high sample shows in several points. A pool that never waited shows 0. The depth also counts the later engine calls of admitted requests. Only first calls count against QUEUE_CAPACITY (office: 2 x OFFICE_WORKERS) or 2 x RENDER_WORKERS, past which a request gets 429.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 47
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (namespace, pod, pool) (max_over_time(convert_queue_depth{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval])) or 0 * max by (namespace, pod, pool) (convert_workers{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{pool}} {{namespace}}/{{pod}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 22,
+      "title": "Workers per pool and state",
+      "description": "Workers that are idle, busy or starting, summed over the selected pods.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 47
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 30,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (pool, state) (convert_workers{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{pool}} {{state}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 23,
+      "title": "Busy workers per pool and pod (max over the trailing rate window)",
+      "description": "Each point is the highest busy count of a pod over its scraped samples in the trailing $__rate_interval, so one high sample shows in several points.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 55
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (namespace, pod, pool) (max_over_time(convert_workers{namespace=~\"$namespace\", pod=~\"$pod\", state=\"busy\"}[$__rate_interval]))",
+          "legendFormat": "{{pool}} {{namespace}}/{{pod}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 24,
+      "title": "Worker restarts by reason",
+      "description": "Workers that left the pool, by pool and reason: jobs, rss, age, timeout, crash, cancelled, error, start_failed. No series exists until the first restart.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 55
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 30,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (pool, reason) (increase(convert_worker_restarts_total{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{pool}} {{reason}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 25,
+      "title": "Worker restarts since the process started",
+      "description": "The counter itself. Its series starts at the first restart with the value 1, so increase() shows no isolated first restart; this panel does.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 55
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (namespace, pod, pool, reason) (convert_worker_restarts_total{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{pool}} {{reason}} {{namespace}}/{{pod}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 26,
+      "title": "Supervisor and disk",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 27,
+      "title": "Supervisor RSS and peak",
+      "description": "Resident memory of the convertd serve process (VmRSS and VmHWM). Linux only.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 64
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (namespace, pod) (convert_supervisor_rss_bytes{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "rss {{namespace}}/{{pod}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (namespace, pod) (convert_supervisor_rss_peak_bytes{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "peak {{namespace}}/{{pod}}",
+          "refId": "B",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 28,
+      "title": "Supervisor threads and open descriptors",
+      "description": "Threads and open file descriptors of the supervisor. Linux only.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 64
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (namespace, pod) (convert_supervisor_threads{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "threads {{namespace}}/{{pod}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (namespace, pod) (convert_supervisor_open_fds{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "fds {{namespace}}/{{pod}}",
+          "refId": "B",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 29,
+      "title": "Disk budget used versus the limit",
+      "description": "Bytes reserved under TMP_DIR against TMP_MAX_BYTES. A failed reservation gives 503.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 64
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (namespace, pod) (convert_disk_budget_bytes{namespace=~\"$namespace\", pod=~\"$pod\", state=\"used\"})",
+          "legendFormat": "used {{namespace}}/{{pod}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (namespace, pod) (convert_disk_budget_bytes{namespace=~\"$namespace\", pod=~\"$pod\", state=\"max\"})",
+          "legendFormat": "limit {{namespace}}/{{pod}}",
+          "refId": "B",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 30,
+      "title": "Quality",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 72
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 31,
+      "title": "Warnings by code",
+      "description": "Manifest warnings per second, such as FONT_SUBSTITUTED or RENDER_CLAMPED.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 73
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 30,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (code) (rate(convert_warnings_total{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{code}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 32,
+      "title": "Warnings since the process started",
+      "description": "The counter itself, per pod. A code's series starts at its first warning with the value 1, so a rate does not show an isolated warning; this panel does.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 73
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (namespace, pod, code) (convert_warnings_total{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{code}} {{namespace}}/{{pod}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 33,
+      "title": "Skipped checks by check and reason",
+      "description": "Verification checks that did not run. blank_page counts pages.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 73
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 30,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (check, reason) (rate(convert_verify_skipped_total{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{check}} {{reason}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 34,
+      "title": "Pages rendered by format",
+      "description": "Image pages rendered per second.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 73
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 30,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (format) (rate(convert_pages_rendered_total{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{format}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 35,
+      "title": "CPU per job (O2)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 81
+      },
+      "panels": []
+    },
+    {
+      "type": "text",
+      "id": 36,
+      "title": "CPU per job",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 82
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "CPU time per worker call (user plus system), by pool and operation, arrives with effort O2 of ledger item 010. Its panels go in this row.\n\nUntil then, the stage durations above are wall time: a burst that uses six cores shows as time, not as cores."
+      }
+    }
+  ]
+}

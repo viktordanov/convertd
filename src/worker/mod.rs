@@ -5,6 +5,7 @@
 //! `Init`, starts its engine, answers `Ready` (or `Fatal`), then serves one
 //! call at a time until its input pipe closes.
 
+pub mod docx_paper;
 pub mod encode;
 pub mod office;
 pub mod output;

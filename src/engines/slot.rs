@@ -141,10 +141,7 @@ impl WorkerEnv {
         locale_dropped.sort();
         Self {
             passthrough,
-            lc_paper: match paper {
-                Paper::A4 => "en_GB.UTF-8",
-                Paper::Letter => "en_US.UTF-8",
-            },
+            lc_paper: paper.lc_paper(),
             path_prefix: None,
             lc_all_dropped,
             locale_dropped,

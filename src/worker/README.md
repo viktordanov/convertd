@@ -79,7 +79,7 @@ The files that a worker writes itself go through `OutputBudget`. The budget hold
 For `DiskFull` and `LimitExceeded`, `io_error` writes a fixed message with no path in it.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="office" files="office.rs warmup.rs" -->
+<!-- memoria:section id="office" files="office.rs warmup.rs docx_paper.rs" -->
 ## Office worker
 
 `OfficeWorker::start` creates the one `Office` of the process and keeps it in a `ManuallyDrop` from the next line on, so no error path drops it. Then it does these steps:
@@ -101,6 +101,31 @@ A `Convert` runs `preflight::scan` on the source first, timed apart as `prefligh
 - **Text documents**: `ExportNotes` off.
 
 Only an encrypted DOCX has a test of this path (`tests/engines_office.rs`). An encrypted spreadsheet or presentation is not tested.
+
+The DOCX importer of LibreOffice 26.8.3 starts every section on Letter and never reads `LC_PAPER`. So for a DOCX, DOCM or DOTX, `docx_paper` gives each section without a `w:pgSz` one with the `DEFAULT_PAPER` size before the load. The worker learns the paper from its `LC_PAPER`. The sections are the `w:sectPr` of the body and of a paragraph's `w:pPr`, and a body without one gets one. The new element goes after the header and footer references, `w:footnotePr`, `w:endnotePr` and `w:type`, where the schema puts it. A package in which any section has a `w:pgSz` is loaded as it came. Its other sections may take their size from that one, as a continuous break does.
+
+The worker writes the changed package into `.convertd-paper/` in the job directory. It renames the source into that folder and the copy into the source's place. LibreOffice thus loads the copy under the source's own name and folder, so a FILENAME field and relative links stay as they were. After the export, the source goes back over the copy and the folder is removed. The source is thus moved for the duration of the load. A retry after a crashed worker puts it back first, before the pre-flight reads it. Anything at `.convertd-paper` that is not a folder is left alone.
+
+Only the main part changes, with its own compression method. Every other entry is copied byte for byte, data descriptors included. The copy may be at most the source size plus 1 MiB, which the supervisor reserves beside the PDF. With `DEFAULT_PAPER=Letter` there is no copy and no reservation, because Letter is the importer's own default.
+
+The main part is inflated at most twice, once to plan and once to rewrite. Each pass reads at most 64 MiB, the size of the pre-flight's per-request cap, and the archive is read under detection's caps. A failed write of the copy, such as a full disk, fails the job with the worker's I/O error. A busy disk thus never changes the paper. A copy that cannot be removed fails the job too, because the supervisor gives its reservation back when the job answers. The time counts as `preflight_us`.
+
+For these packages the worker writes no copy, and LibreOffice loads the original unchanged. Its sections without a page size then get the importer's Letter. The copy step itself raises no error for them; only a failed write or removal does. LibreOffice can still refuse a damaged package.
+
+- ZIP64 anywhere: the end record, a directory record or a local header.
+- An encrypted main part, overlapping records, or bytes after the counted directory records.
+- A stored main part with a data descriptor, which LibreOffice refuses (corpus case `docx-stored-descriptor`). The copy would load, so the paper setting would decide whether the document converts.
+- A main part whose local header, data descriptor, CRC or size disagrees with its directory record.
+- A signed package: a signature-origin relationship, or an `_xmlsignatures/` folder.
+- A root relationships part that is truncated or empty, or has another or a second root element.
+- A root relationships part with a relationship below the root, a branch, an escaped namespace, or more than 8 levels.
+- A main part over 64 MiB inflated, or a copy over the source size plus 1 MiB.
+- A main part that is not UTF-8, by its bytes or its declaration.
+- A main part deeper than 4096 elements, or with more than 512 namespace declarations in scope.
+- A namespace spelled with a character reference, or a prefix over 64 bytes.
+- More than 100 000 sections, or more than 16 distinct texts to insert.
+- A section or body in an `mc:AlternateContent` branch, an `mc:AlternateContent` in a section, or a body that is not the root's child.
+- A `w:pgSz` or an earlier section child in a wrapper inside a section, or a section in a wrapper under `mc:ProcessContent`.
 
 The callback counts the password prompts of one load. A failed load is `PasswordRequired` after one prompt without a password, `InvalidPassword` after a second prompt with a password, and `LoadFailed` otherwise.
 
