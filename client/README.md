@@ -132,7 +132,7 @@ The client picks the sentinel from the `code` in the error body. When the body h
 
 A network error or a canceled context wraps no sentinel. It comes back as `failed to send request: …`, and the caller decides whether to retry it.
 
-The service can answer before the upload ends, for example with 401 or 413. The call then sometimes fails with a write error such as `broken pipe`, not with the sentinel. The answer reaches the client socket every time, but Go's `http.Transport` returns the write error when it comes first. With a 64 MiB upload, the contract tests see this in about half the runs. The write error wraps no sentinel, so `Retryable` is false for it.
+The service can answer before the upload ends, for example with 401, 413 or 415. It then reads and discards the rest of the upload, so the client gets the answer and not a write error. The service stops that after 256 MiB, after 10 s, or after 2 s without data. A larger or slower upload can still end in a write error such as `broken pipe`. That error wraps no sentinel, so `Retryable` is false for it.
 
 The service sends `Retry-After` with 429 and 503, but the client does not expose that header. Use your own backoff for `ErrBusy` and `ErrUnavailable`.
 <!-- /memoria:section -->
@@ -193,7 +193,7 @@ When you change the API in the server code:
 
 `../scripts/contract_test.sh` builds convertd with the `test-hooks` feature and runs the contract tests against the level A fake. The timeout and queue cases start their own level B servers (`TEST_ENGINE=worker`), so their 504 and 429 come from the real pool. In image mode these two cases skip, because they need a server of their own. CI runs it in the `test` job. `../scripts/contract_test.sh --image REF` runs them against an image. `cd contract && go test ./...` runs only the spec tools and the self-tests, and it needs no server.
 
-The script prints the skipped cases with their reasons, the findings and the declared `(operationId, status)` pairs that no case observed. The early-answer case skips with a finding when the write error from [Errors and retries](#errors-and-retries) occurs.
+The script prints the skipped cases with their reasons and the declared `(operationId, status)` pairs that no case observed.
 
 The live cases prove that the service, the spec and this client agree on the responses that the cases exercise. They do not prove the quality of a conversion. In binary mode, both test levels replace the engines. In image mode, the engines are real, but no case compares the output with a reference.
 <!-- /memoria:section -->
