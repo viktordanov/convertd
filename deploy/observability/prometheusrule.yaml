@@ -20,7 +20,8 @@ spec:
         # 429 TOO_MANY_REQUESTS: the queue was full, the queue wait ran out, or MAX_CONCURRENT_REQUESTS
         # was reached. Clients retry 429, so a short burst is normal. More than 5 % of the requests for
         # 10 minutes means the pod is too small for its load. The second condition (at least
-        # 3 requests a minute) keeps a single refusal on an idle service from firing the alert.
+        # 5 refusals in the window) keeps a single refusal on an idle service from firing the
+        # alert, and still fires on a low but steady load that is all refused.
         - alert: ConvertdTooManyRequests
           expr: |
             (
@@ -29,7 +30,7 @@ spec:
               sum by (namespace, job) (rate(convert_requests_total[5m]))
             ) > 0.05
             and
-            sum by (namespace, job) (rate(convert_requests_total[5m])) > 0.05
+            sum by (namespace, job) (increase(convert_requests_total{code="TOO_MANY_REQUESTS"}[5m])) >= 5
           for: 10m
           labels:
             severity: warning
@@ -43,7 +44,8 @@ spec:
         # 422 LIMIT_EXCEEDED: a document passed a limit, usually the kill RSS of its worker pool.
         # On 276 real documents (2026-11-26) the base profile gave 422 for 4 to 13 % of the files,
         # by the kill limit (deploy/README.md, Sizing). So the threshold is 15 % for 30 minutes:
-        # above it the documents are heavier than the profile allows for.
+        # above it the documents are heavier than the profile allows for. The second condition
+        # (at least 5 such failures in the window) ignores an isolated failure, also at low load.
         - alert: ConvertdLimitExceeded
           expr: |
             (
@@ -52,7 +54,7 @@ spec:
               sum by (namespace, job) (rate(convert_requests_total[15m]))
             ) > 0.15
             and
-            sum by (namespace, job) (rate(convert_requests_total[15m])) > 0.05
+            sum by (namespace, job) (increase(convert_requests_total{code="LIMIT_EXCEEDED"}[15m])) >= 5
           for: 30m
           labels:
             severity: warning
