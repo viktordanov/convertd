@@ -4,8 +4,7 @@ info:
   title: Convert API
   version: 1.0.0-draft.1
   description: |
-    Converts office documents, PDFs and images into a standard PDF and per-page
-    images.
+    Converts office documents and PDFs into a standard PDF and per-page images.
 
     One call does the whole job. Upload a file, say what you want back, and
     receive either the PDF itself or a tar.zst bundle holding the PDF, the page
@@ -119,7 +118,8 @@ paths:
         **Routing.** The file type is detected from the bytes, never from the
         file name or the part's content type. Office and OpenDocument files go
         through LibreOffice. PDFs skip conversion and go straight to rendering.
-        Images are wrapped into a PDF with one page per image frame.
+        Image files (PNG, JPEG, TIFF, GIF, BMP, WebP) are detected and refused
+        with `415 UNSUPPORTED_FORMAT`: version 1 does not convert them.
 
         **Options.** Send them as a JSON object in the `options` part. Leave
         the part out to get a PDF with default settings. Unknown properties
@@ -830,7 +830,7 @@ components:
 
             - `converted`: produced by LibreOffice from an office file.
             - `passthrough`: the upload was already a PDF and is returned unchanged, or decrypted when it was encrypted.
-            - `assembled`: built from an uploaded image.
+            - `assembled`: built from an uploaded image. Version 1 does not produce it.
 
     ImageSettings:
       type: object

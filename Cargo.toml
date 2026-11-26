@@ -78,7 +78,8 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 webp = "0.3.1"
 
 [dev-dependencies]
-# Reader only, to check the stored ZIP bundles (001 step 8).
+# Tests and the overhead example read and write OOXML packages, which are
+# ZIP files (the warm-up tests unpack the warm-up documents).
 zip = { version = "9.8.2", default-features = false }
 
 [profile.release]

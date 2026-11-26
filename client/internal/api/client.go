@@ -886,7 +886,8 @@ type ClientInterface interface {
 	// **Routing.** The file type is detected from the bytes, never from the
 	// file name or the part's content type. Office and OpenDocument files go
 	// through LibreOffice. PDFs skip conversion and go straight to rendering.
-	// Images are wrapped into a PDF with one page per image frame.
+	// Image files (PNG, JPEG, TIFF, GIF, BMP, WebP) are not accepted as
+	// input and answer 415 `UNSUPPORTED_FORMAT`.
 	//
 	// **Options.** Send them as a JSON object in the `options` part. Leave
 	// the part out to get a PDF with default settings. Unknown properties
@@ -990,7 +991,8 @@ func (c *Client) GetCapabilities(ctx context.Context, params *GetCapabilitiesPar
 // **Routing.** The file type is detected from the bytes, never from the
 // file name or the part's content type. Office and OpenDocument files go
 // through LibreOffice. PDFs skip conversion and go straight to rendering.
-// Images are wrapped into a PDF with one page per image frame.
+// Image files (PNG, JPEG, TIFF, GIF, BMP, WebP) are not accepted as
+// input and answer 415 `UNSUPPORTED_FORMAT`.
 //
 // **Options.** Send them as a JSON object in the `options` part. Leave
 // the part out to get a PDF with default settings. Unknown properties
@@ -1282,7 +1284,8 @@ type ClientWithResponsesInterface interface {
 	// **Routing.** The file type is detected from the bytes, never from the
 	// file name or the part's content type. Office and OpenDocument files go
 	// through LibreOffice. PDFs skip conversion and go straight to rendering.
-	// Images are wrapped into a PDF with one page per image frame.
+	// Image files (PNG, JPEG, TIFF, GIF, BMP, WebP) are not accepted as
+	// input and answer 415 `UNSUPPORTED_FORMAT`.
 	//
 	// **Options.** Send them as a JSON object in the `options` part. Leave
 	// the part out to get a PDF with default settings. Unknown properties
@@ -1752,7 +1755,8 @@ func (c *ClientWithResponses) GetCapabilitiesWithResponse(ctx context.Context, p
 // **Routing.** The file type is detected from the bytes, never from the
 // file name or the part's content type. Office and OpenDocument files go
 // through LibreOffice. PDFs skip conversion and go straight to rendering.
-// Images are wrapped into a PDF with one page per image frame.
+// Image files (PNG, JPEG, TIFF, GIF, BMP, WebP) are not accepted as
+// input and answer 415 `UNSUPPORTED_FORMAT`.
 //
 // **Options.** Send them as a JSON object in the `options` part. Leave
 // the part out to get a PDF with default settings. Unknown properties
