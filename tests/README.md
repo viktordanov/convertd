@@ -36,7 +36,7 @@ Build the tests with the cargo feature `test-hooks`. Without it, `pool.rs`, `pro
 
 `cargo test --features test-hooks` also runs every test, but it has no per-test time limit and it runs the `slow_` tests. To run the engine tests for real, run them in the `dev` image that [docker/README.md](../docker/README.md) describes. That image sets `LO_PROGRAM_DIR` and `PDFIUM_LIB_DIR`. Next: read [Fakes](#fakes) before you write a test that needs an engine.
 
-<!-- memoria:section id="levels" files="convert_pdf.rs convert_bundle.rs detect.rs errors.rs ops.rs openapi_spec.rs upload.rs pool.rs process.rs reap_race.rs oom_kill.rs worker_test_role.rs engines_poison.rs engines_office.rs engines_render.rs peak_heap.rs rss_linux.rs" -->
+<!-- memoria:section id="levels" files="convert_pdf.rs convert_bundle.rs detect.rs errors.rs ops.rs openapi_spec.rs upload.rs pool.rs process.rs reap_race.rs oom_kill.rs worker_test_role.rs engines_poison.rs engines_office.rs engines_render.rs peak_heap.rs rss_linux.rs observability.rs" -->
 ## Test levels
 
 The tests have three levels:
@@ -54,6 +54,7 @@ The integration tests:
 | `detect.rs` | Format detection from the bytes, with ZIP and OLE2 files that the test builds, hostile OLE2 directories included | No |
 | `errors.rs` | Errors over HTTP: auth, request IDs, fallbacks and the panic layer | No |
 | `ops.rs` | The probes, `/v1/capabilities`, `/metrics`, `convertd healthcheck` and the drain | Two tests, for `SIGTERM` on the binary at level A and level B |
+| `observability.rs` | Every metric that `deploy/observability/` names is on `/metrics`: the scan of the files, and a scrape of the binary at level B after a few requests | The scrape only |
 | `openapi_spec.rs` | The cheap invariants of the spec that `convertd openapi` emits | No |
 | `upload.rs` | The streamed upload: digests, part rules, caps, the disk budget, and stalled, slow and vanished clients | No |
 | `pool.rs` | The worker pool with `test` workers (level B), including the RSS kill of a worker during its call | Yes |
@@ -65,11 +66,13 @@ The integration tests:
 | `engines_office.rs` | The office worker with the real LibreOffice, through the pool and the `OfficeEngine` adapter | No |
 | `engines_render.rs` | The render worker with the real PDFium, through the pool and the `PdfEngine` adapter | No |
 | `peak_heap.rs` | Heap per request with a counting allocator: the peak does not grow from 16 MiB to 100 MiB uploads, a small request stays under 408 allocations, and a hostile OLE2 upload stays bounded during detection | No |
-| `rss_linux.rs` | The idle RSS of the supervisor on Linux, at most 30 MB. The measurement is `#[ignore]`, so only its parsers run by default | The measurement only |
+| `rss_linux.rs` | The idle RSS of the supervisor on Linux, at most 30 MB, with the real engines. The measurement is `#[ignore]`, so by default only the parsers and the PDF fixture test run | Only with `RSS_ENGINE=fake` |
 
 The engine tests need `LO_PROGRAM_DIR` with `soffice.bin`, `PDFIUM_LIB_DIR` with `libpdfium.so`, or both. Some also need `CONVERTD_CORPUS_DIR`, the output folder of `corpus/generate.py`. If a variable is not set, or its folder does not hold that file, the test prints `skipped` and passes without a check. One exception: when `CONVERTD_CORPUS_DIR` is set, a missing corpus file fails the encrypted-file test in `engines_office.rs`, so a renamed corpus file cannot hide. Thus a pass on a host without the engines proves nothing about the engines.
 
-The RSS measurement runs only on request, in a Linux container: `cargo test --features test-hooks --test rss_linux -- --ignored --nocapture`. It has no recorded result yet.
+The RSS measurement runs only on request, in the dev image, against a release build with the real pools: `cargo test --release --test rss_linux -- --ignored --nocapture`. It runs three rounds (`RSS_ROUNDS`) of 1 000 requests each: PDFs of 15 KB to 20 MB and a small DOCX, as pdf, images and bundle. It checks every reading against 30 MB, the reading after the first round against 1.5 × the reading after start (plan 001), and the growth from the first round to the last against 1 MiB per later round, on average, because single rounds can swing by more than 1 MiB.
+
+On 2026-11-26, at commit `1eafa6e`, in the arm64 dev image with one office worker and one render worker, the supervisor used 7.4 MB after start and 16.5, 12.3 and 16.3 MB after the three rounds: all under 30 MB, but 2.24 × the start, so the 1.5 × check of plan 001 fails. With `MALLOC_ARENA_MAX=2`, as a diagnostic only, the readings were 7.1, 10.9, 12.1 and 12.9 MB (1.53 ×).
 
 `scripts/contract_test.sh` builds `convertd` with `test-hooks`, and the contract tests start it with `TEST_ENGINE=fake`. With `--image REF`, the script runs the tests against a container of that image instead. The contract tests prove that the server, the spec and the Go client agree. They do not prove that a conversion is correct, because the fake engine converts nothing.
 <!-- /memoria:section -->
