@@ -119,7 +119,12 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
         metrics::request("unknown", "unknown", ErrorCode::TooManyRequests.as_str());
         return ApiError::busy().into_response();
     };
-    let job = match JobDir::create(&state.tmp_dir, &state.disk_budget) {
+    // mkdir can block on a slow disk: off the runtime, as every file call.
+    let (tmp_dir, disk_budget) = (state.tmp_dir.clone(), state.disk_budget.clone());
+    let created = tokio::task::spawn_blocking(move || JobDir::create(&tmp_dir, &disk_budget))
+        .await
+        .unwrap_or_else(|err| Err(std::io::Error::other(err)));
+    let job = match created {
         Ok(job) => job,
         Err(err) => {
             return ApiError::from_upload(&upload::map_io(err), state.queue_wait_seconds)
@@ -166,8 +171,11 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
     let deadline = received.upload_done + received.request.timeout;
     let paths = job.paths(received.detection.format);
     // The supervisor creates pages/; the render engine writes into it.
+    let pages_dir = paths.pages_dir.clone();
     if received.request.output != Output::Pdf
-        && let Err(err) = std::fs::create_dir(&paths.pages_dir)
+        && let Err(err) = tokio::task::spawn_blocking(move || std::fs::create_dir(pages_dir))
+            .await
+            .unwrap_or_else(|err| Err(std::io::Error::other(err)))
     {
         let api = ApiError::from_upload(&upload::map_io(err), state.queue_wait_seconds);
         let mut response = api.into_response();
@@ -271,12 +279,16 @@ async fn success(
     let prepared = match output {
         _ if Instant::now() >= deadline => Err(timed_out()),
         Output::Pdf => {
-            // A few entries: cheap enough on this thread.
-            let _ = settle(&job);
-            File::open(&result.pdf)
-                .and_then(|file| Ok((file.metadata()?.len(), file)))
-                .map(|(size, file)| Prepared::Pdf { file, size })
-                .map_err(|err| ApiError::internal(format!("failed to open the result: {err}")))
+            let job = Arc::clone(&job);
+            let pdf = result.pdf.clone();
+            tokio::task::spawn_blocking(move || {
+                let _ = settle(&job);
+                File::open(pdf).and_then(|file| Ok((file.metadata()?.len(), file)))
+            })
+            .await
+            .unwrap_or_else(|err| Err(std::io::Error::other(err)))
+            .map(|(size, file)| Prepared::Pdf { file, size })
+            .map_err(|err| ApiError::internal(format!("failed to open the result: {err}")))
         }
         Output::Images | Output::Bundle => {
             let manifest = ManifestInput::new(state, received, request_id, timings);

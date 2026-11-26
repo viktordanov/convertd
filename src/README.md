@@ -28,7 +28,7 @@ Each engine runs in a worker process because a hostile file can crash it, hang i
 
 The supervisor reads only enough of a file to route it. `detect/` reads the signature, the ZIP central directory, `[Content_Types].xml` and the ODF `mimetype` entry. For an OLE2 file it reads only the names in the root storage, with its own reader that never builds the whole FAT. All of it is safe Rust with fixed caps. Everything else that reads document content runs in a worker, including the pre-flight scan of office files.
 
-`main.rs` dispatches `convertd worker` first, before it builds a runtime, starts logging or reads the configuration. For `convertd serve`, `runtime.rs` builds a Tokio runtime with 2 worker threads, unless `TOKIO_WORKER_THREADS` sets another count. The blocking pool has at most 32 threads, and an idle blocking thread exits after 10 s.
+`main.rs` dispatches `convertd worker` first, before it builds a runtime, starts logging or reads the configuration. For `convertd serve`, `runtime.rs` builds a Tokio runtime with 2 worker threads, unless `TOKIO_WORKER_THREADS` sets another count. The blocking pool has at most 32 threads, and an idle blocking thread exits after 10 s. The request path makes every file call on the blocking pool, never on a runtime thread: the job directory, `upload.part`, `pages/`, the settle walk and the open of the PDF.
 
 Lane 002 documents the worker side:
 

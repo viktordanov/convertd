@@ -18,7 +18,7 @@
 use super::framing::{FramingBody, FramingTooLarge, framing_too_large};
 use super::throughput::{MeteredBody, MinRate, too_slow};
 use std::error::Error as StdError;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -193,15 +193,9 @@ pub async fn receive(
                     return Err(UploadError::DuplicatePart("file"));
                 }
                 let file_name = field.file_name().and_then(sanitize_file_name);
-                let file = OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create_new(true)
-                    .open(job.upload_part())
-                    .map_err(map_io)?;
                 let (tx, rx) = mpsc::channel(UPLOAD_QUEUE_CHUNKS);
                 let sink_job = Arc::clone(job);
-                let sink = tokio::task::spawn_blocking(move || sink(file, &sink_job, rx));
+                let sink = tokio::task::spawn_blocking(move || sink(&sink_job, rx));
                 let forwarded = forward(&mut field, &tx, max_upload).await;
                 drop(tx);
                 let result = sink
@@ -353,14 +347,18 @@ pub struct Written {
     pub sha256: [u8; 32],
 }
 
-/// Runs on one blocking thread. Owns the file and a clone of the
-/// `Arc<JobDir>`, so the directory outlives it even if the handler future
-/// is dropped (hyper drops it on peer EOF mid-request).
-fn sink(
-    mut file: File,
-    job: &JobDir,
-    mut rx: mpsc::Receiver<SinkMessage>,
-) -> Result<SinkResult, UploadError> {
+/// Runs on one blocking thread, which also creates `upload.part`, so no
+/// open runs on the runtime. Owns a clone of the `Arc<JobDir>`, so the
+/// directory outlives it even if the handler future is dropped (hyper
+/// drops it on peer EOF mid-request). If the open fails, the receiver
+/// drops, `forward` stops, and the open's error is the result.
+fn sink(job: &JobDir, mut rx: mpsc::Receiver<SinkMessage>) -> Result<SinkResult, UploadError> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(job.upload_part())
+        .map_err(map_io)?;
     let written = write_chunks(&mut file, || rx.blocking_recv())?;
     let Some(written) = written else {
         return Err(UploadError::Incomplete("the client went away".into()));
