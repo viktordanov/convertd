@@ -647,6 +647,7 @@ async fn the_page_count_marker_flows_from_convert_to_inspect() {
                         pdf,
                         password: None,
                         probe_dpi: None,
+                        probe_pages: Default::default(),
                         collect_fonts: false,
                     }),
                     after(5000),
@@ -795,6 +796,49 @@ async fn a_worker_over_the_kill_limit_is_killed_during_its_call() {
             assert_ne!(lease.worker_ref().unwrap().generation, first);
             drop(lease);
             finish(pool, "kill-rss").await;
+        },
+    )
+    .await;
+}
+
+/// One Prometheus recorder for this test binary.
+fn prometheus() -> &'static metrics_exporter_prometheus::PrometheusHandle {
+    static HANDLE: std::sync::OnceLock<metrics_exporter_prometheus::PrometheusHandle> =
+        std::sync::OnceLock::new();
+    HANDLE.get_or_init(|| {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        metrics::set_global_recorder(recorder).expect("no other recorder in this binary");
+        handle
+    })
+}
+
+/// `convert_workers{pool="gauges",state}` as the recorder renders it.
+fn gauge(state: &str) -> Option<f64> {
+    let prefix = format!("convert_workers{{pool=\"gauges\",state=\"{state}\"}} ");
+    prometheus()
+        .render()
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix)?.parse().ok())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_worker_gauges_follow_a_lease_and_its_return() {
+    prometheus();
+    within(
+        TEST,
+        "the_worker_gauges_follow_a_lease_and_its_return",
+        async {
+            let mut spec = spec("gauges", 1);
+            spec.name = "gauges";
+            let pool = ready(spec).await;
+            let lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+            assert_eq!(pool.status().busy, 1);
+            assert_eq!((gauge("idle"), gauge("busy")), (Some(0.0), Some(1.0)));
+            drop(lease);
+            assert_eq!(pool.status().idle, 1);
+            assert_eq!((gauge("idle"), gauge("busy")), (Some(1.0), Some(0.0)));
+            finish(pool, "gauges").await;
         },
     )
     .await;

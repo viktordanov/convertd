@@ -300,6 +300,7 @@ fn panic_marker_exits_101() {
             pdf: dir.join("source.pdf"),
             password: None,
             probe_dpi: None,
+            probe_pages: Default::default(),
             collect_fonts: false,
         }),
     }));
@@ -341,6 +342,7 @@ fn inspect(pdf: PathBuf) -> Op {
         pdf,
         password: None,
         probe_dpi: Some(18),
+        probe_pages: Default::default(),
         collect_fonts: false,
     })
 }
@@ -427,6 +429,7 @@ fn fake_operations_write_valid_outputs() {
         password: Secret::new("pw"),
         output: decrypted_pdf.clone(),
         max_output_bytes: 1 << 20,
+        check_owner: false,
     })) else {
         panic!("expected decrypted");
     };

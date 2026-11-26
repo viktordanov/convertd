@@ -52,7 +52,7 @@ The reaper wakes on each SIGCHLD and every 2 s (`REAP_TICK`) as a safety net. Fo
 
 After that, it sweeps the groups of dead children with `waitid(P_PGID)` until `ECHILD`. The reaper touches only the PIDs that its own `Spawner` registered. Thus two spawners in one test process, or a library that waits on its own child, keep their exit statuses.
 
-`ReaperMode::Owned` is for tests and the `engine` CLI. `ReaperMode::ProcessWide` is for `convertd serve`. It also reaps unknown children and logs each one as `stray child reaped`. On Linux it makes the supervisor a child subreaper first, so strays that leave their group reparent to it. In this mode, other code in the process must not wait on a child of its own.
+`ReaperMode::Owned` is for tests and the `engine` CLI. `ReaperMode::ProcessWide` is for `convertd serve`. It also reaps unknown children and logs each one as `stray child reaped`. This pass peeks each exit with `waitid(P_ALL, WNOWAIT)` first. A worker can exit after its own peek and show up only in this pass, and its group is still killed while its zombie holds the PGID. On Linux it makes the supervisor a child subreaper first, so strays that leave their group reparent to it. In this mode, other code in the process must not wait on a child of its own.
 
 `ChildHandle::kill_group()` sends SIGKILL to the group under the registry lock. It sends nothing and returns `false` once the child is reaped, so a recycled PID never gets the signal. `ChildHandle::wait()` waits for the reaper and is cancel safe. When the last `Spawner` handle is dropped, it kills and reaps every child that is still registered, before it returns.
 
@@ -94,7 +94,7 @@ The pool logs these events:
 - `worker recycled`, with the reason `jobs`, `rss`, `age` or `error`, and `worker killed`, with the reason `timeout`, `cancelled` or `rss`. A kill over `kill_rss` also logs `worker over its memory limit` with `rss_bytes` and `kill_rss`.
 - `worker start failed`, with `error` and `backoff_ms`. `worker started` is a debug event.
 
-The pool sets three metrics: `convert_workers{pool,state}` for `idle`, `busy` and `starting`, `convert_worker_restarts_total{pool,reason}`, and `convert_queue_depth{pool}`.
+The pool sets three metrics: `convert_workers{pool,state}` for `idle`, `busy` and `starting`, `convert_worker_restarts_total{pool,reason}`, and `convert_queue_depth{pool}`. Each lease, each return and each manager event sets `convert_workers` under the idle lock, so the gauges agree with `/readyz`.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="contract" files="pool.rs" -->
@@ -162,17 +162,19 @@ Each worker process gets `<workers_dir>/<pool>-<slot>/` with the subdirectories 
 
 After a load, export, empty-document, limit or internal error, `OfficeLok` recycles the office worker, because LibreOffice's state is suspect. The password errors leave the worker in the pool. `PdfPdfium` recycles a render worker only after an internal error.
 
-`PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`. The chunks run together. A crashed chunk is retried once on a fresh lease, if at least 1 s is left. The pages come back in order. `engine` is the longest chunk, and the most severe chunk error wins: a timeout, then a crash, then a password error.
+`PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`, so the files on disk stay within the job's reservation. The chunks run together. A crashed chunk is retried once on a fresh lease, if at least 1 s is left. A chunk that goes over its share runs again on one lease, with the cap minus the bytes of the finished chunks, if at least 1 s is left. A job thus fails on its cap exactly when one worker fails, and the cap never adds a poison strike. The pages come back in order. `engine` is the longest chunk, plus the rerun. The most severe chunk error wins: a timeout, then a crash, then a password error.
 
 `PdfPdfium::assemble` returns `Failed("image inputs are not supported yet")`, which gives 422 `CONVERSION_FAILED`. A 500 tells callers to retry. Image inputs are out of v1 (the owner's decision).
 
 Poison memory (`poison.rs`) protects the workers from documents that hang or crash them. It is keyed by the upload's SHA-256 and shared by both pools, and it works like this:
 
-- A call that times out adds one strike. A crash that survived its retry adds two. A crash with no retry adds one: there was no time left for it, or the retry got no worker. A protocol error and the RSS kill add none. `poison::strikes_for` holds this rule for `convert` and for each render chunk.
-- A render strikes once, with the most strikes that one of its chunks earned.
-- At two strikes, `convert` and `render` return `Poisoned` before they lease a worker. `Poisoned` gives 422 `CONVERSION_FAILED`.
+- A call that times out adds one timeout strike. A crash that survived its retry adds two crash strikes. A crash with no retry adds one: there was no time left for it, or the retry got no worker. A protocol error and the RSS kill add none. `poison::strike_for` holds this rule for `convert` and for each render chunk.
+- A crash strike counts against every request for the document.
+- A timeout strike keeps its attempt: the operation, the page count of a render, and the time left when the call began. It counts only against a request for the same operation with no more time and no fewer pages. Times within 500 ms count as the same. A retry with a longer deadline or fewer pages thus still runs.
+- A render strikes once, with the worst strike of its chunks: a crash before a timeout.
+- At two strikes that count against a request, `convert` and `render` return `Poisoned` before they lease a worker. `Poisoned` gives 422 `CONVERSION_FAILED`.
 - Each strike sets the expiry to now + `POISON_TTL_SECONDS`. An expired entry starts again from zero.
-- The list keeps at most 1024 documents. When it is full, the entry that expires first goes. `POISON_TTL_SECONDS=0` turns poison memory off.
+- The list keeps at most 1024 documents and 8 timeout strikes for each. When it is full, the entry that expires first goes. `POISON_TTL_SECONDS=0` turns poison memory off.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="selection" files="select.rs" -->

@@ -15,6 +15,8 @@
 //!   group while the zombie still holds the PGID, then reaps it. Groups of
 //!   dead workers are swept with `waitid(P_PGID)` until `ECHILD`. Only
 //!   [`ReaperMode::ProcessWide`] (in `serve`) also reaps unknown children.
+//!   It peeks them with `waitid(P_ALL, NOWAIT)` too, so a worker that
+//!   exits between its own peek and that pass still has its group killed.
 //! - **Locking:** the spawner thread holds the registry lock across
 //!   `spawn()` and the insert, so an exit is never peeked before it is
 //!   registered; `kill_group` takes the same lock and does nothing once
@@ -250,6 +252,26 @@ impl Spawner {
         self.inner.reap();
     }
 
+    /// A spawner with no reaper task, for tests that drive the reaper by
+    /// hand. It does not become a subreaper.
+    #[cfg(feature = "test-hooks")]
+    pub fn without_reaper_task(mode: ReaperMode) -> Spawner {
+        Spawner {
+            inner: Arc::new(Inner {
+                registry: Mutex::new(Registry::default()),
+                mode,
+            }),
+        }
+    }
+
+    /// Runs only the stray pass of the reaper: the pass that collects a
+    /// worker that exited after its own peek.
+    #[cfg(feature = "test-hooks")]
+    pub fn reap_strays_now(&self) {
+        let mut registry = lock(&self.inner.registry);
+        self.inner.reap_strays(&mut registry);
+    }
+
     /// The registered children that have not been reaped.
     pub fn live_children(&self) -> usize {
         lock(&self.inner.registry).children.len()
@@ -396,18 +418,59 @@ impl Inner {
         }
     }
 
+    /// Reaps every exited child that no `reap` pass took: unknown ones
+    /// (`stray child reaped`) and registered workers that exited after
+    /// their own peek. Each exit is peeked first, so a worker's group is
+    /// killed while its zombie still holds the PGID.
     fn reap_strays(&self, registry: &mut Registry) {
-        while let Ok(Some((pid, status))) = rustix::process::wait(WaitOptions::NOHANG) {
-            let pid = pid.as_raw_nonzero().get();
-            if registry.children.contains_key(&pid) {
-                // A registered child that exited after the peek. It is
-                // already reaped, so its group is not signalled here; the
-                // group sweep collects what is left.
-                registry.finish(pid, Some(exit_status(status.as_raw())));
+        while let Some(pid) = peek_exited_child() {
+            let Some(id) = Pid::from_raw(pid) else {
+                break;
+            };
+            let registered = registry.children.contains_key(&pid);
+            if registered {
+                signal_group(pid);
+            }
+            let status = match waitpid(Some(id), WaitOptions::NOHANG) {
+                Ok(Some((_, status))) => Some(exit_status(status.as_raw())),
+                // The peeked child is gone: never loop on it.
+                _ => break,
+            };
+            if registered {
+                registry.finish(pid, status);
             } else {
                 tracing::info!(pid, "stray child reaped");
             }
         }
+    }
+}
+
+/// One exited child of this process, left a zombie (`waitid(P_ALL,
+/// WNOWAIT)`), or `None` when no child has exited.
+fn peek_exited_child() -> Option<i32> {
+    loop {
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+        // SAFETY: waitid fills the siginfo_t it is given. WNOWAIT leaves
+        // the child waitable, and WNOHANG returns at once.
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_ALL,
+                0,
+                info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if rc != 0 {
+            if io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            // ECHILD: no children at all.
+            return None;
+        }
+        // SAFETY: zeroed, then written by a successful waitid. With
+        // WNOHANG and no exited child, si_pid stays 0.
+        let pid = unsafe { info.assume_init().si_pid() };
+        return (pid > 0).then_some(pid);
     }
 }
 

@@ -588,3 +588,441 @@ async fn slow_a_long_render_splits_over_two_workers_and_survives_a_kill() {
     )
     .await;
 }
+
+/// A PDF written by hand: one page of `size` × `size` pt for each content
+/// stream, with a correct cross-reference table.
+fn handmade_pdf(size: u32, contents: &[String]) -> Vec<u8> {
+    let n = contents.len();
+    // Objects: 1 catalog, 2 pages, then a page and its content per entry.
+    let kids: Vec<String> = (0..n).map(|i| format!("{} 0 R", 3 + 2 * i)).collect();
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        format!("<< /Type /Pages /Kids [{}] /Count {n} >>", kids.join(" ")),
+    ];
+    for (i, content) in contents.iter().enumerate() {
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {size} {size}] /Contents {} 0 R /Resources << >> >>",
+            4 + 2 * i
+        ));
+        objects.push(format!(
+            "<< /Length {} >>\nstream\n{content}\nendstream",
+            content.len() + 1
+        ));
+    }
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::with_capacity(objects.len());
+    for (i, object) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for offset in offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+/// A page with R ≠ B keeps its channels in every format: PDFium's byte
+/// order reversal is off, so the encoders get BGRA as they expect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_coloured_page_keeps_its_channels() {
+    let Some(pdfium) = pdfium() else {
+        return;
+    };
+    within(TEST, "a_coloured_page_keeps_its_channels", async {
+        let dir = Scratch::new("render-colour");
+        // #3333B2: 0.2, 0.2, 0.698 in DeviceRGB.
+        let source = dir.join("blue.pdf");
+        std::fs::write(
+            &source,
+            handmade_pdf(72, &["0.2 0.2 0.698 rg 0 0 72 72 re f".to_string()]),
+        )
+        .unwrap();
+        let pool = ready(render_spec(dir.path(), &pdfium, 1)).await;
+        let pdf = PdfPdfium::new(pool.clone());
+        let expected = [0x33u8, 0x33, 0xB2];
+        for (format, tolerance) in [
+            (ImageFormat::Png, 0u8),
+            (ImageFormat::Jpeg, 8),
+            (ImageFormat::Webp, 8),
+        ] {
+            let out = dir.join(format.extension());
+            let rendered = pdf
+                .render(
+                    render_job(&source, vec![1], format, 72, &out),
+                    Admission::Continue,
+                    deadline(),
+                )
+                .await
+                .unwrap();
+            let page = &rendered.pages[0];
+            assert!(page.flat, "{format:?}: {page:?}");
+            assert_eq!(page.colour, expected, "{format:?}: the flat colour");
+            let bytes = std::fs::read(out.join(&page.file_name)).unwrap();
+            let image = image::load_from_memory(&bytes).unwrap().to_rgb8();
+            let pixel = image.get_pixel(image.width() / 2, image.height() / 2).0;
+            for (channel, (got, want)) in pixel.iter().zip(expected).enumerate() {
+                assert!(
+                    got.abs_diff(want) <= tolerance,
+                    "{format:?}: channel {channel} is {got}, want {want} ± {tolerance} (pixel {pixel:?})"
+                );
+            }
+            assert!(pixel[2] > pixel[0] + 100, "{format:?}: blue is not blue: {pixel:?}");
+        }
+        pool.shutdown(Duration::from_secs(5)).await;
+    })
+    .await;
+}
+
+/// A page of 2 × 2 pt squares in pseudo-random colours: a PNG of it does
+/// not compress well.
+fn noise_page(size: u32, seed: u64) -> String {
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    let mut next = || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((state >> 33) % 1000) as f32 / 1000.0
+    };
+    let mut out = String::new();
+    for y in (0..size).step_by(2) {
+        for x in (0..size).step_by(2) {
+            out.push_str(&format!(
+                "{:.3} {:.3} {:.3} rg {x} {y} 2 2 re f\n",
+                next(),
+                next(),
+                next()
+            ));
+        }
+    }
+    out
+}
+
+/// The output cap is the job's, not the chunk's: when the heavy pages all
+/// fall in one chunk, that chunk runs again with what the others left, so
+/// two workers succeed and fail exactly where one worker does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_output_cap_does_not_depend_on_the_number_of_render_workers() {
+    let Some(pdfium) = pdfium() else {
+        return;
+    };
+    within(
+        TEST,
+        "the_output_cap_does_not_depend_on_the_number_of_render_workers",
+        async {
+            let dir = Scratch::new("render-cap-split");
+            // Pages 1-10 are noise, pages 11-20 are blank: with two workers,
+            // chunk 1 holds nearly all the bytes.
+            let contents: Vec<String> = (0..20u64)
+                .map(|i| {
+                    if i < 10 {
+                        noise_page(120, i)
+                    } else {
+                        "1 1 1 rg 0 0 1 1 re f".to_string()
+                    }
+                })
+                .collect();
+            let source = dir.join("half-heavy.pdf");
+            std::fs::write(&source, handmade_pdf(120, &contents)).unwrap();
+            let all: Vec<u32> = (1..=20).collect();
+
+            for pool_dir in ["one", "two"] {
+                std::fs::create_dir_all(dir.join(pool_dir)).unwrap();
+            }
+            let one = ready(render_spec(&dir.join("one"), &pdfium, 1)).await;
+            let rendered = PdfPdfium::new(one.clone())
+                .render(
+                    render_job(&source, all.clone(), ImageFormat::Png, 72, &dir.join("a")),
+                    Admission::Continue,
+                    deadline(),
+                )
+                .await
+                .unwrap();
+            let total: u64 = rendered.pages.iter().map(|p| p.size_bytes).sum();
+            let heavy: u64 = rendered.pages[..10].iter().map(|p| p.size_bytes).sum();
+            eprintln!("total {total} bytes, pages 1-10 {heavy} bytes");
+            assert!(
+                heavy > total / 2 + 1024,
+                "the first half must be the heavy one"
+            );
+            let cap = total + 1024;
+            let mut job = render_job(&source, all.clone(), ImageFormat::Png, 72, &dir.join("b"));
+            job.max_output_bytes = cap;
+            let alone = PdfPdfium::new(one.clone())
+                .render(job, Admission::Continue, deadline())
+                .await;
+            assert!(alone.is_ok(), "one worker: {alone:?}");
+            one.shutdown(Duration::from_secs(5)).await;
+
+            let two = ready(render_spec(&dir.join("two"), &pdfium, 2)).await;
+            let pdf = PdfPdfium::new(two.clone());
+            let mut job = render_job(&source, all.clone(), ImageFormat::Png, 72, &dir.join("c"));
+            job.max_output_bytes = cap;
+            let split = pdf
+                .render(job, Admission::Continue, deadline())
+                .await
+                .unwrap_or_else(|err| panic!("two workers, cap {cap}: {err:?}"));
+            assert_eq!(split.pages.len(), 20);
+            let numbers: Vec<u32> = split.pages.iter().map(|p| p.number).collect();
+            assert_eq!(numbers, all);
+            assert_eq!(split.pages.iter().map(|p| p.size_bytes).sum::<u64>(), total);
+            assert!(
+                split.workers.len() >= 2,
+                "the render did not split: {:?}",
+                split.workers
+            );
+
+            // One byte under the total fails on two workers as on one.
+            let mut job = render_job(&source, all.clone(), ImageFormat::Png, 72, &dir.join("d"));
+            job.max_output_bytes = total - 1;
+            let under = pdf.render(job, Admission::Continue, deadline()).await;
+            assert!(
+                matches!(under, Err(EngineError::LimitExceeded(_))),
+                "{under:?}"
+            );
+            two.shutdown(Duration::from_secs(5)).await;
+        },
+    )
+    .await;
+}
+
+/// The probe renders only the pages it is given, and a cap on "every page"
+/// reports the rest as skipped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inspect_probes_only_the_pages_it_is_given() {
+    use convertd::engines::pool::Admission as PoolAdmission;
+    use convertd::ipc::{InspectArgs, Op, Output, ProbePages};
+    let Some(pdfium) = pdfium() else {
+        return;
+    };
+    within(TEST, "inspect_probes_only_the_pages_it_is_given", async {
+        let dir = Scratch::new("render-probe-pages");
+        let contents: Vec<String> = (0..30)
+            .map(|_| "0 0 0 rg 10 10 20 20 re f".to_string())
+            .collect();
+        let source = dir.join("thirty.pdf");
+        std::fs::write(&source, handmade_pdf(72, &contents)).unwrap();
+        let pool = ready(render_spec(dir.path(), &pdfium, 1)).await;
+        let inspect = |probe_pages| {
+            Op::Inspect(InspectArgs {
+                pdf: source.clone(),
+                password: None,
+                probe_dpi: Some(18),
+                probe_pages,
+                collect_fonts: false,
+            })
+        };
+        for (pages, numbers, skipped) in [
+            (ProbePages::Only(vec![5, 2, 40]), vec![2u32, 5], 0u32),
+            (ProbePages::Only(Vec::new()), Vec::new(), 0),
+            (ProbePages::All { max: Some(10) }, (1..=10).collect(), 20),
+            (ProbePages::All { max: None }, (1..=30).collect(), 0),
+        ] {
+            let mut lease = pool.lease(deadline(), PoolAdmission::Queue).await.unwrap();
+            let reply = lease
+                .call(inspect(pages.clone()), deadline())
+                .await
+                .unwrap();
+            let Ok(Output::Inspected(out)) = reply.result else {
+                panic!("{pages:?}: {:?}", reply.result);
+            };
+            assert_eq!(out.page_count, 30);
+            let probed: Vec<u32> = out.probe.iter().map(|p| p.number).collect();
+            assert_eq!(probed, numbers, "{pages:?}");
+            assert_eq!(out.probe_skipped, skipped, "{pages:?}");
+        }
+        pool.shutdown(Duration::from_secs(5)).await;
+    })
+    .await;
+}
+
+/// `FPDF_GetDocPermissions` and `FPDF_GetDocUserPermissions` of `pdf`
+/// opened with `password`, read with PDFium bound in this process, or
+/// `None` when the open fails.
+fn permissions(
+    pdfium: &pdfium_render::prelude::Pdfium,
+    pdf: &Path,
+    password: Option<&str>,
+) -> Option<(u32, u32)> {
+    use pdfium_render::prelude::PdfiumLibraryBindingsAccessor;
+    let bindings = pdfium.bindings();
+    // SAFETY: plain calls into the bound library on this thread; the
+    // document is closed once.
+    unsafe {
+        let document = bindings.FPDF_LoadDocument(pdf.to_str().unwrap(), password);
+        if document.is_null() {
+            return None;
+        }
+        let both = (
+            bindings.FPDF_GetDocPermissions(document) as u32,
+            bindings.FPDF_GetDocUserPermissions(document) as u32,
+        );
+        bindings.FPDF_CloseDocument(document);
+        Some(both)
+    }
+}
+
+/// An owner-only PDF opens without a password. `check_owner` writes the
+/// unrestricted copy only for the owner password, and inspect refuses a
+/// wrong one at the open.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_only_the_owner_password_unlocks_an_owner_only_pdf() {
+    use convertd::engines::pool::Admission as PoolAdmission;
+    use convertd::ipc::{DecryptArgs, Op, Output, Secret, WorkerErrorKind};
+    let (Some(lo), Some(pdfium)) = (lo(), pdfium()) else {
+        return;
+    };
+    within(TEST, "slow_only_the_owner_password_unlocks_an_owner_only_pdf", async {
+        let dir = Scratch::new("render-owner");
+        let owner = soffice_pdf(
+            &lo,
+            &dir,
+            "owner",
+            1,
+            r#"{"RestrictPermissions":{"type":"boolean","value":"true"},"PermissionPassword":{"type":"string","value":"owner"},"Printing":{"type":"long","value":"0"}}"#,
+        );
+        // What PDFium reports, read in this process: only the owner
+        // password makes the owner permissions differ from the user ones.
+        // Only this test binds PDFium in this process, and it drops it
+        // before the first await.
+        let (none, unlocked, wrong) = {
+            use pdfium_render::prelude::Pdfium;
+            let local = Pdfium::new(
+                Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(&pdfium))
+                    .expect("binds libpdfium"),
+            );
+            (
+                permissions(&local, &owner, None),
+                permissions(&local, &owner, Some("owner")),
+                permissions(&local, &owner, Some("wrong")),
+            )
+        };
+        let none = none.expect("opens without a password");
+        assert_eq!(none.0, none.1, "no password: {none:x?}");
+        assert_ne!(none.1 | 0b11, u32::MAX, "the file restricts something: {none:x?}");
+        let unlocked = unlocked.expect("the owner opens it");
+        assert_eq!(unlocked.0, 0xFFFF_FFFC, "the owner gets every bit: {unlocked:x?}");
+        assert_eq!(unlocked.1, none.1, "the user permissions stay the file's P");
+        assert_eq!(wrong, None, "a wrong one fails");
+        eprintln!("owner-only PDF: none {none:x?}, owner {unlocked:x?}");
+
+        let pool = ready(render_spec(dir.path(), &pdfium, 1)).await;
+        let pdf = PdfPdfium::new(pool.clone());
+        let wrong = pdf
+            .inspect(inspect_job(&owner, Some("wrong"), None), Admission::Queue, deadline())
+            .await
+            .unwrap_err();
+        assert_eq!(wrong, EngineError::InvalidPassword, "a wrong password fails the open");
+        let decrypt = |password: &str, output: PathBuf| {
+            Op::Decrypt(DecryptArgs {
+                pdf: owner.clone(),
+                password: Secret::new(password),
+                output,
+                max_output_bytes: 1 << 30,
+                check_owner: true,
+            })
+        };
+        for (password, name) in [("wrong", "wrong.pdf"), ("", "empty.pdf")] {
+            let mut lease = pool.lease(deadline(), PoolAdmission::Queue).await.unwrap();
+            let reply = lease.call(decrypt(password, dir.join(name)), deadline()).await.unwrap();
+            let err = reply.result.unwrap_err();
+            assert_eq!(err.kind, WorkerErrorKind::InvalidPassword, "{password:?}: {err:?}");
+            assert!(!dir.join(name).exists(), "{password:?}: no copy");
+        }
+        let plain = dir.join("plain.pdf");
+        let mut lease = pool.lease(deadline(), PoolAdmission::Queue).await.unwrap();
+        let reply = lease.call(decrypt("owner", plain.clone()), deadline()).await.unwrap();
+        assert!(matches!(reply.result, Ok(Output::Decrypted(_))), "{:?}", reply.result);
+        drop(lease);
+        let copy = pdf
+            .inspect(inspect_job(&plain, None, None), Admission::Queue, deadline())
+            .await
+            .unwrap();
+        assert!(!copy.encrypted, "the owner's copy has no security handler: {copy:?}");
+        pool.shutdown(Duration::from_secs(5)).await;
+    })
+    .await;
+}
+
+/// A PDF with a user password and owner restrictions: with `check_owner`,
+/// the user password gives `Restricted` and writes nothing, the owner
+/// password gives the copy, and a file without restrictions decrypts with
+/// its user password as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_a_user_password_keeps_the_owner_restrictions() {
+    use convertd::engines::pool::Admission as PoolAdmission;
+    use convertd::ipc::{DecryptArgs, Op, Output, Secret, WorkerErrorKind};
+    let (Some(lo), Some(pdfium)) = (lo(), pdfium()) else {
+        return;
+    };
+    within(TEST, "slow_a_user_password_keeps_the_owner_restrictions", async {
+        let dir = Scratch::new("render-user-restricted");
+        let both = soffice_pdf(
+            &lo,
+            &dir,
+            "both",
+            1,
+            r#"{"EncryptFile":{"type":"boolean","value":"true"},"DocumentOpenPassword":{"type":"string","value":"secret"},"RestrictPermissions":{"type":"boolean","value":"true"},"PermissionPassword":{"type":"string","value":"owner"},"Printing":{"type":"long","value":"0"}}"#,
+        );
+        let open = soffice_pdf(
+            &lo,
+            &dir,
+            "open",
+            1,
+            r#"{"EncryptFile":{"type":"boolean","value":"true"},"DocumentOpenPassword":{"type":"string","value":"secret"}}"#,
+        );
+        let pool = ready(render_spec(dir.path(), &pdfium, 1)).await;
+        let decrypt = |pdf: &Path, password: &str, name: &str, check_owner: bool| {
+            Op::Decrypt(DecryptArgs {
+                pdf: pdf.to_path_buf(),
+                password: Secret::new(password),
+                output: dir.join(name),
+                max_output_bytes: 1 << 30,
+                check_owner,
+            })
+        };
+        let cases = [
+            (&both, "secret", "user.pdf", true, Some(WorkerErrorKind::Restricted)),
+            (&both, "owner", "owner.pdf", true, None),
+            (&open, "secret", "open.pdf", true, None),
+            // Off: the security goes for any password that opens the file.
+            (&both, "secret", "unchecked.pdf", false, None),
+        ];
+        for (pdf, password, name, check_owner, want) in cases {
+            let mut lease = pool.lease(deadline(), PoolAdmission::Queue).await.unwrap();
+            let reply = lease
+                .call(decrypt(pdf, password, name, check_owner), deadline())
+                .await
+                .unwrap();
+            match want {
+                Some(kind) => {
+                    let err = reply.result.unwrap_err();
+                    assert_eq!(err.kind, kind, "{name}: {err:?}");
+                    assert!(!dir.join(name).exists(), "{name}: no copy");
+                }
+                None => {
+                    assert!(
+                        matches!(reply.result, Ok(Output::Decrypted(_))),
+                        "{name}: {:?}",
+                        reply.result
+                    );
+                    assert!(dir.join(name).exists(), "{name}: the copy");
+                }
+            }
+        }
+        pool.shutdown(Duration::from_secs(5)).await;
+    })
+    .await;
+}

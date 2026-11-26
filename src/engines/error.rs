@@ -34,6 +34,10 @@ pub enum EngineFailure {
     Crashed,
     #[error("the document failed before")]
     Poisoned,
+    /// Decrypt with `check_owner` kept the owner restrictions: pass the
+    /// original through.
+    #[error("the document keeps its owner restrictions")]
+    Restricted,
     #[error("{0}")]
     Internal(String),
 }
@@ -84,6 +88,7 @@ impl From<WorkerError> for EngineFailure {
                 EngineFailure::Internal("the worker does not support the operation".into())
             }
             WorkerErrorKind::Internal => EngineFailure::Internal("the engine failed".into()),
+            WorkerErrorKind::Restricted => EngineFailure::Restricted,
             WorkerErrorKind::FakeQueueFull => EngineFailure::QueueFull,
             WorkerErrorKind::FakeUnavailable => EngineFailure::Unavailable,
         }
@@ -168,6 +173,9 @@ impl From<EngineFailure> for crate::domain::engine::EngineError {
             EngineFailure::Failed(m) => E::Failed(m),
             EngineFailure::Crashed => E::Crashed,
             EngineFailure::Poisoned => E::Poisoned,
+            // Only `check_owner` gives it, which lane 001 sets together
+            // with its own `EngineError::Restricted`; until then, never.
+            EngineFailure::Restricted => E::Internal("decrypt kept the owner restrictions".into()),
             EngineFailure::Internal(m) => E::Internal(m),
         }
     }

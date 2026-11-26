@@ -132,11 +132,12 @@ async fn two_timeouts_poison_a_document_before_it_takes_a_worker() {
             }
             let before = generation(&pool).await;
             let started = Instant::now();
+            // The same request again: no more time, the same work.
             let err = office
                 .convert(
                     office_job(&hang, dir.join("b.pdf"), key),
                     Admission::Queue,
-                    Instant::now() + Duration::from_secs(5),
+                    Instant::now() + Duration::from_millis(300),
                 )
                 .await
                 .unwrap_err();
@@ -156,6 +157,56 @@ async fn two_timeouts_poison_a_document_before_it_takes_a_worker() {
                 )
                 .await
                 .expect("another document converts");
+            pool.shutdown(Duration::from_secs(1)).await;
+        },
+    )
+    .await;
+}
+
+/// A timeout strike covers only requests with no more time: a retry with
+/// a longer deadline runs and succeeds, and the short one stays refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_timeout_strike_does_not_block_a_retry_with_more_time() {
+    within(
+        TEST,
+        "a_timeout_strike_does_not_block_a_retry_with_more_time",
+        async {
+            let dir = Scratch::new("poison-more-time");
+            let slow = dir.join("slow.docx");
+            std::fs::write(&slow, b"FAKE:DELAY_MS=1500").unwrap();
+            let pool = pool(&dir.0).await;
+            let list = PoisonList::new(Duration::from_secs(60)).unwrap();
+            let office = OfficeLok::new(pool.clone()).with_poison(Some(list.clone()));
+            let key = [4u8; 32];
+            let short = || Instant::now() + Duration::from_millis(300);
+            for attempt in 1..=2 {
+                let err = office
+                    .convert(
+                        office_job(&slow, dir.join("a.pdf"), key),
+                        Admission::Queue,
+                        short(),
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(err, EngineError::Timeout, "attempt {attempt}");
+            }
+            let err = office
+                .convert(
+                    office_job(&slow, dir.join("b.pdf"), key),
+                    Admission::Queue,
+                    short(),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Poisoned, "the same short request");
+            office
+                .convert(
+                    office_job(&slow, dir.join("c.pdf"), key),
+                    Admission::Queue,
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .await
+                .expect("a retry with more time runs");
             pool.shutdown(Duration::from_secs(1)).await;
         },
     )

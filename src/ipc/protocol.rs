@@ -163,9 +163,31 @@ pub struct ConvertArgs {
 pub struct InspectArgs {
     pub pdf: PathBuf,
     pub password: Option<Secret>,
-    /// Render every page at this DPI for the blank-page probe.
+    /// Render the pages that `probe_pages` names at this DPI, for the
+    /// blank-page probe.
     pub probe_dpi: Option<u16>,
+    /// Which pages the probe renders. Unused without `probe_dpi`.
+    #[serde(default)]
+    pub probe_pages: ProbePages,
     pub collect_fonts: bool,
+}
+
+/// The pages of the blank-page probe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbePages {
+    /// The first pages of the document, at most `max` (`None`: every
+    /// page). The rest count in `InspectedOut::probe_skipped`.
+    All { max: Option<u32> },
+    /// Only these 1-based pages, in order. Numbers past the page count are
+    /// left out, and nothing counts as skipped.
+    Only(Vec<u32>),
+}
+
+impl Default for ProbePages {
+    fn default() -> Self {
+        ProbePages::All { max: None }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -196,6 +218,14 @@ pub struct DecryptArgs {
     pub password: Secret,
     pub output: PathBuf,
     pub max_output_bytes: u64,
+    /// Never drop owner restrictions that the caller did not unlock. The
+    /// copy is written when the user permissions grant everything or the
+    /// password unlocked the owner. Otherwise nothing is written: a
+    /// password that opened the file gives `Restricted`, and none gives
+    /// `InvalidPassword` (an owner-only PDF). Off: remove the security of
+    /// any file that opens, as before.
+    #[serde(default)]
+    pub check_owner: bool,
 }
 
 /// Faults the `test` role can act out.
@@ -358,8 +388,11 @@ pub struct InspectedOut {
     pub needs_password: bool,
     /// Every page, in order.
     pub pages: Vec<PageGeometry>,
-    /// Only with `probe_dpi`.
+    /// Only with `probe_dpi`: the pages that `probe_pages` names.
     pub probe: Vec<ProbedPage>,
+    /// Pages that `ProbePages::All { max }` left out of the probe.
+    #[serde(default)]
+    pub probe_skipped: u32,
     /// Only with `collect_fonts`.
     pub fonts: Vec<String>,
 }
@@ -464,6 +497,10 @@ pub enum WorkerErrorKind {
     /// The role does not answer this operation.
     Unsupported,
     Internal,
+    /// Decrypt with `check_owner`: the user password opened the file, but
+    /// the owner was not unlocked and the file restricts permissions. No
+    /// copy was written; the original stays as it is.
+    Restricted,
     /// Only the `test` role sends this, for `FAKE:TOO_MANY_REQUESTS`, so
     /// level-B fixtures behave as they do at level A.
     FakeQueueFull,

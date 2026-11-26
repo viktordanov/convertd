@@ -189,6 +189,7 @@ mod tests {
                 pdf: "/j/document.pdf".into(),
                 password: None,
                 probe_dpi: Some(18),
+                probe_pages: ProbePages::Only(vec![1, 3]),
                 collect_fonts: true,
             })),
             call(Op::Render(RenderArgs {
@@ -212,6 +213,7 @@ mod tests {
                 password: Secret::new("x"),
                 output: "/j/document.pdf".into(),
                 max_output_bytes: 2,
+                check_owner: true,
             })),
             call(Op::Test(TestOp::Sleep { ms: 3 })),
             call(Op::Test(TestOp::Hang)),
@@ -286,6 +288,7 @@ mod tests {
                 page_count: 1,
                 encrypted: true,
                 needs_password: false,
+                probe_skipped: 2,
                 pages: vec![PageGeometry {
                     width_pt: 595.0,
                     height_pt: 842.0,
@@ -357,6 +360,7 @@ mod tests {
             password: secret,
             output: "/b".into(),
             max_output_bytes: 1,
+            check_owner: false,
         };
         assert!(!format!("{args:?}").contains("hunter2"));
     }
