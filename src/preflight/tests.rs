@@ -1044,7 +1044,6 @@ fn odf_fonts_and_basic_macros() {
 /// An ODP whose pages use the given drawing-page styles. `styles` holds
 /// the automatic styles of `content.xml`, `common` those of `styles.xml`.
 fn odp(pages: &[Option<&str>], styles: &str, common: &str) -> Vec<u8> {
-    const NS: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0""#;
     let pages: String = pages
         .iter()
         .map(|style| match style {
@@ -1052,11 +1051,19 @@ fn odp(pages: &[Option<&str>], styles: &str, common: &str) -> Vec<u8> {
             None => r#"<draw:page draw:name="p"/>"#.to_owned(),
         })
         .collect();
+    odp_parts(&pages, styles, common, "")
+}
+
+/// An ODP from its parts: the children of `office:presentation`, the
+/// automatic styles of `content.xml`, and the common and automatic styles
+/// of `styles.xml` (the latter belong to master pages).
+fn odp_parts(pages: &str, styles: &str, common: &str, master_automatic: &str) -> Vec<u8> {
+    const NS: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0""#;
     let content = format!(
         r#"<office:document-content {NS}><office:automatic-styles>{styles}</office:automatic-styles><office:body><office:presentation>{pages}</office:presentation></office:body></office:document-content>"#
     );
     let common = format!(
-        r#"<office:document-styles {NS}><office:styles>{common}</office:styles></office:document-styles>"#
+        r#"<office:document-styles {NS}><office:styles>{common}</office:styles><office:automatic-styles>{master_automatic}</office:automatic-styles></office:document-styles>"#
     );
     zip(&[
         (
@@ -1066,6 +1073,62 @@ fn odp(pages: &[Option<&str>], styles: &str, common: &str) -> Vec<u8> {
         ("content.xml", content.as_bytes()),
         ("styles.xml", common.as_bytes()),
     ])
+}
+
+#[test]
+fn odp_styles_resolve_only_in_their_own_scope() {
+    // styles.xml may reuse an automatic style name of content.xml for a
+    // master page: that style never applies to a slide.
+    let slide = page_style("dp1", None, None);
+    let master = page_style("dp1", Some("hidden"), None);
+    let pages = r#"<draw:page draw:style-name="dp1"/><draw:page/>"#;
+    let facts = scan_bytes(
+        "scope.odp",
+        &odp_parts(pages, &slide, "", &master),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![]
+        })
+    );
+    // A slide style defined only among the master-page styles is unknown.
+    let pages = r#"<draw:page draw:style-name="dpM"/>"#;
+    let master = page_style("dpM", Some("hidden"), None);
+    let facts = scan_bytes(
+        "master-only.odp",
+        &odp_parts(pages, "", "", &master),
+        Family::Presentation,
+    );
+    assert_eq!(facts.slides, None);
+}
+
+#[test]
+fn odp_counts_only_the_slides_of_the_presentation() {
+    // An inline object inside a slide holds a draw:page of its own; it is
+    // not a slide. A style inside it is not a slide style either.
+    let styles = page_style("dp2", Some("hidden"), None);
+    let pages = concat!(
+        r#"<draw:page/>"#,
+        r#"<draw:page draw:style-name="dp2"><draw:frame><draw:object><office:document>"#,
+        r#"<office:automatic-styles><style:style style:name="dp2" style:family="drawing-page"><style:drawing-page-properties presentation:visibility="visible"/></style:style></office:automatic-styles>"#,
+        r#"<office:body><office:presentation><draw:page draw:name="inner"/></office:presentation></office:body>"#,
+        r#"</office:document></draw:object></draw:frame></draw:page>"#,
+    );
+    let facts = scan_bytes(
+        "nested.odp",
+        &odp_parts(pages, &styles, "", ""),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![2]
+        })
+    );
 }
 
 fn page_style(name: &str, visibility: Option<&str>, parent: Option<&str>) -> String {
