@@ -97,6 +97,8 @@ On 2026-11-26, `check` ran the same way against `rs-convert-lead-runtime:wave2b`
 Later on 2026-11-26, with two data-descriptor cases added, `check` ran again against `rs-convert-lead-runtime:wave2b`, and all 59 cases passed. The listener control passed inside the namespace of the service. `docx-stored-descriptor` gave `422 CONVERSION_FAILED` and `docx-deflated-descriptor` gave 200 with 2 pages, as expected.
 
 `expected.json` then gained a 60th case, `pdf-text3/webp-refused`, when WebP output left the service. It expects `422 VALIDATION_ERROR`, as lane 001 answers an unknown image format. No `check` run with that case is recorded yet.
+
+The hidden-slide work added `hidden_pages` to the expectations and six cases: `pptx-hidden3` (three), `odp-hidden` (two) and `pptx-deck20/include-hidden`. `check` compares `hidden_pages` with the pages that carry `hidden: true` in the manifest, as it does for `blank_pages`. No `check` run with these cases is recorded yet.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="listen" files="src/main.rs src/check/listener.rs" -->

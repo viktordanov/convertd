@@ -73,6 +73,9 @@ pub struct PageInfo {
     pub width_px: u32,
     pub height_px: u32,
     pub blank: bool,
+    /// Absent unless the page comes from a hidden slide.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -194,6 +197,21 @@ pub fn evaluate(case: &Case, obs: &Observed, ctx: &Context) -> Verdict {
         if got != want {
             v.failures
                 .push(format!("blank pages {got:?}, expected {want:?}"));
+        }
+    }
+    if let (Some(want), true) = (&expect.hidden_pages, archive)
+        && let Some(m) = manifest
+    {
+        let got: BTreeSet<u32> = m
+            .pages
+            .iter()
+            .filter(|p| p.hidden)
+            .map(|p| p.number)
+            .collect();
+        let want: BTreeSet<u32> = want.iter().copied().collect();
+        if got != want {
+            v.failures
+                .push(format!("hidden pages {got:?}, expected {want:?}"));
         }
     }
     // Only a bundle carries the PDF; `images` has no /BaseFont to read.
@@ -505,6 +523,7 @@ mod tests {
                         width_px: 413,
                         height_px: 584,
                         blank: false,
+                        hidden: false,
                     })
                     .collect(),
                 warnings,
@@ -735,6 +754,26 @@ mod tests {
             m.pages[1].blank = true;
         }
         assert!(failures(&c, &obs).is_empty());
+    }
+
+    #[test]
+    fn hidden_pages_must_match_exactly() {
+        let c = case(
+            json!({"output": "bundle"}),
+            json!({"status": 200, "hidden_pages": [2]}),
+        );
+        let mut obs = bundle(3, vec![]);
+        assert_eq!(failures(&c, &obs), ["hidden pages {}, expected {2}"]);
+        if let Some(m) = obs.manifest.as_mut() {
+            m.pages[1].hidden = true;
+        }
+        assert!(failures(&c, &obs).is_empty());
+        // An empty list: no page may carry the mark.
+        let none = case(
+            json!({"output": "bundle"}),
+            json!({"status": 200, "hidden_pages": []}),
+        );
+        assert_eq!(failures(&none, &obs), ["hidden pages {2}, expected {}"]);
     }
 
     #[test]
