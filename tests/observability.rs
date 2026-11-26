@@ -837,7 +837,10 @@ fn every_metric_the_dashboard_and_rules_name_is_emitted() {
         std::thread::sleep(Duration::from_millis(50));
     };
     assert!(scrape.starts_with("HTTP/1.1 200"), "{scrape}");
-    let have = exposed(&scrape);
+    // The exposition only: a header line such as `date:` is not a name.
+    let (_, body) = scrape.split_once("\r\n\r\n").expect("an HTTP head");
+    assert!(!body.is_empty(), "{scrape}");
+    let have = exposed(body);
 
     let mut absent = Vec::new();
     for name in missing(&named, &have) {
