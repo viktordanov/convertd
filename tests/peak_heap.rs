@@ -242,28 +242,33 @@ fn slow_peak_heap_does_not_grow_with_the_upload() {
     drop(server.runtime);
 }
 
-/// Allocations per 15 KB `output=pdf` request. The ceiling is the first
-/// measurement (340, debug build, macOS arm64, 2026-11-26) plus 20 %, so
-/// a regression shows. Linux has not been measured.
-#[test]
-fn allocations_per_small_request() {
-    const REQUESTS: usize = 20;
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let server = server("count");
+/// Mean allocations of one `output=pdf` request of `size` bytes, after
+/// five warm-up requests.
+fn allocations_per_request(server: &Server, size: usize, requests: usize) -> usize {
     let mut chunk = Box::new([0u8; 64 * 1024]);
-    let upload = upload(15_000);
+    let upload = upload(size);
     for _ in 0..5 {
         let mut stream = TcpStream::connect(server.addr).unwrap();
         assert_eq!(send(&mut stream, &upload, &mut chunk).0, 200);
     }
     settle();
     let before = ALLOCATIONS.load(Ordering::Relaxed);
-    for _ in 0..REQUESTS {
+    for _ in 0..requests {
         let mut stream = TcpStream::connect(server.addr).unwrap();
-        assert_eq!(send(&mut stream, &upload, &mut chunk).0, 200);
+        assert_eq!(send(&mut stream, &upload, &mut chunk), (200, size));
     }
     settle();
-    let per_request = (ALLOCATIONS.load(Ordering::Relaxed) - before) / REQUESTS;
+    (ALLOCATIONS.load(Ordering::Relaxed) - before) / requests
+}
+
+/// Allocations per 15 KB `output=pdf` request. The ceiling is the first
+/// measurement (340, debug build, macOS arm64, 2026-11-26) plus 20 %, so
+/// a regression shows. Linux has not been measured.
+#[test]
+fn allocations_per_small_request() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let server = server("count");
+    let per_request = allocations_per_request(&server, 15_000, 20);
     eprintln!("allocations per request: {per_request}");
     assert!(
         per_request <= ALLOCATION_CEILING,
@@ -274,6 +279,31 @@ fn allocations_per_small_request() {
 
 /// See [`allocations_per_small_request`].
 const ALLOCATION_CEILING: usize = 408;
+
+/// The allocations that an 8 MiB `output=pdf` request adds over a 15 KB
+/// one, per 64 KiB that it uploads and gets back. Most belong to the
+/// upload. The response pump allocated one buffer per chunk until it
+/// reused its buffers: 9.83 then, 9.05 now (debug build, macOS arm64,
+/// 2026-11-26). The ceiling sits between the two.
+#[test]
+fn allocations_per_response_chunk() {
+    const SIZE: usize = 8 * MIB;
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let server = server("chunks");
+    let small = allocations_per_request(&server, 15_000, 10);
+    let large = allocations_per_request(&server, SIZE, 5);
+    let chunks = SIZE / (64 * 1024);
+    let per_chunk = large.saturating_sub(small) as f64 / chunks as f64;
+    eprintln!("allocations: {small} small, {large} large, {per_chunk:.2} per 64 KiB");
+    assert!(
+        per_chunk <= PER_CHUNK_CEILING,
+        "{per_chunk:.2} allocations per 64 KiB, ceiling {PER_CHUNK_CEILING}"
+    );
+    drop(server.runtime);
+}
+
+/// See [`allocations_per_response_chunk`].
+const PER_CHUNK_CEILING: f64 = 9.5;
 
 /// A 1 MiB version-3 OLE2 file whose DIFAT sectors form one long chain
 /// (sectors 2, 3, ... 2046) and whose every DIFAT entry names sector 1 as

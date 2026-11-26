@@ -14,7 +14,8 @@
 //!
 //! Why not `tokio::fs` + `ReaderStream`: every read would be its own
 //! `spawn_blocking` hop, about 1 600 for 100 MiB against one task here.
-//! Peak memory per response is about five chunks.
+//! Peak memory per response is about six chunks, allocated once and
+//! reused (`Chunks`).
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -73,8 +74,11 @@ pub fn file_body(file: File, size: u64, pump: Pump) -> Body {
 /// length known in advance.
 pub fn tar_body(plan: TarPlan, pump: Pump) -> Body {
     spawn_pump(pump, move |tx, handle, idle, meter| {
+        let mut chunks = Chunks::default();
+        let current = chunks.free();
         let writer = ChannelWriter {
-            buf: BytesMut::with_capacity(READ_CHUNK),
+            chunks,
+            current,
             tx,
             handle,
             idle,
@@ -177,8 +181,36 @@ fn spawn_pump(
 /// A `Write` that sends 64 KiB chunks to the body, each under the idle
 /// timeout. A stalled or vanished client makes `write` fail and records
 /// why in `end`.
+/// The 64 KiB buffers of one pump, reused. A chunk sent to hyper shares
+/// the allocation of its slot. When hyper drops the chunk, `try_reclaim`
+/// gives the slot its allocation back. The pump runs at most
+/// `BODY_QUEUE_CHUNKS` chunks ahead of hyper, so a response allocates
+/// about six slots once, not one buffer per chunk.
+#[derive(Default)]
+struct Chunks {
+    slots: Vec<BytesMut>,
+}
+
+impl Chunks {
+    /// The index of an empty slot with room for `READ_CHUNK` bytes, whose
+    /// allocation no chunk in flight shares. A new slot when none is free.
+    fn free(&mut self) -> usize {
+        if let Some(index) = self
+            .slots
+            .iter_mut()
+            .position(|slot| slot.is_empty() && slot.try_reclaim(READ_CHUNK))
+        {
+            return index;
+        }
+        self.slots.push(BytesMut::with_capacity(READ_CHUNK));
+        self.slots.len() - 1
+    }
+}
+
 struct ChannelWriter<'a> {
-    buf: BytesMut,
+    chunks: Chunks,
+    /// The slot that collects the next chunk.
+    current: usize,
     tx: &'a Sender,
     handle: &'a Handle,
     idle: Duration,
@@ -187,11 +219,12 @@ struct ChannelWriter<'a> {
 }
 
 impl ChannelWriter<'_> {
-    fn send(&mut self, len: usize) -> io::Result<()> {
-        let chunk = self.buf.split_to(len).freeze();
+    /// Sends the current slot's bytes as one chunk and moves to a free slot.
+    fn send(&mut self) -> io::Result<()> {
+        let chunk = self.chunks.slots[self.current].split().freeze();
         let bytes = chunk.len() as u64;
-        // The sent chunk keeps its allocation alive while it is queued.
-        self.buf.reserve(READ_CHUNK);
+        // The sent chunk keeps its slot busy until hyper drops it.
+        self.current = self.chunks.free();
         match self.handle.block_on(tokio::time::timeout(
             self.idle,
             self.tx.send(Piece::Data(chunk)),
@@ -222,16 +255,22 @@ impl Write for ChannelWriter<'_> {
         if self.end.is_some() {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
-        self.buf.extend_from_slice(data);
-        while self.buf.len() >= READ_CHUNK {
-            self.send(READ_CHUNK)?;
+        let mut rest = data;
+        while !rest.is_empty() {
+            let buf = &mut self.chunks.slots[self.current];
+            let n = (READ_CHUNK - buf.len()).min(rest.len());
+            buf.extend_from_slice(&rest[..n]);
+            rest = &rest[n..];
+            if buf.len() == READ_CHUNK {
+                self.send()?;
+            }
         }
         Ok(data.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if !self.buf.is_empty() {
-            self.send(self.buf.len())?;
+        if !self.chunks.slots[self.current].is_empty() {
+            self.send()?;
         }
         Ok(())
     }
@@ -245,12 +284,14 @@ fn run(
     idle: Duration,
     mut meter: Meter,
 ) -> PumpEnd {
+    let mut chunks = Chunks::default();
     let mut left = size;
     while left > 0 {
         let len = READ_CHUNK.min(usize::try_from(left).unwrap_or(READ_CHUNK));
-        // A fresh allocation per chunk: queued chunks keep theirs alive.
-        let mut chunk = BytesMut::zeroed(len);
-        if let Err(err) = file.read_exact(&mut chunk) {
+        let slot = chunks.free();
+        let buf = &mut chunks.slots[slot];
+        buf.resize(len, 0);
+        if let Err(err) = file.read_exact(buf) {
             // After the 200 a read error cannot become a status: abort the
             // body so hyper drops the connection.
             let _ = handle.block_on(tokio::time::timeout(idle, tx.send(Piece::Failed(err))));
@@ -258,7 +299,7 @@ fn run(
         }
         match handle.block_on(tokio::time::timeout(
             idle,
-            tx.send(Piece::Data(chunk.freeze())),
+            tx.send(Piece::Data(buf.split().freeze())),
         )) {
             Ok(Ok(())) => {
                 left -= len as u64;
@@ -284,6 +325,24 @@ mod tests {
     use super::*;
     use crate::bundle::TarPlan;
     use crate::jobs::DiskBudget;
+
+    #[test]
+    fn a_slot_is_reused_once_hyper_drops_its_chunk() {
+        let mut chunks = Chunks::default();
+        let first = chunks.free();
+        chunks.slots[first].resize(READ_CHUNK, 1);
+        let chunk = chunks.slots[first].split().freeze();
+        let address = chunk.as_ptr();
+        // The chunk is in flight: its slot is busy.
+        let second = chunks.free();
+        assert_ne!(second, first);
+        assert_eq!(chunks.free(), second, "an empty free slot is reused");
+        drop(chunk);
+        assert_eq!(chunks.free(), first);
+        chunks.slots[first].resize(READ_CHUNK, 0);
+        assert_eq!(chunks.slots[first].as_ptr(), address, "same allocation");
+        assert_eq!(chunks.slots.len(), 2);
+    }
 
     fn job(name: &str) -> (Arc<JobDir>, std::path::PathBuf) {
         let tmp = std::env::temp_dir().join(format!("convertd-body-{name}-{}", std::process::id()));
