@@ -317,26 +317,30 @@ async fn success(
         )
     };
     let held = (permit, job);
+    // The wait for a blocking thread and the work both end at the deadline.
+    // A task still running then keeps the permit and the job until it ends.
+    let until = tokio::time::Instant::from_std(deadline);
     let done = if Instant::now() >= deadline {
-        Some((Err(timed_out()), held))
+        Ok(Some((Err(timed_out()), held)))
     } else if output == Output::Pdf {
         let pdf = result.pdf.clone();
-        off_runtime(held, move |job| {
+        let opened = off_runtime(held, move |job| {
             settle(job);
             File::open(pdf)
                 .and_then(|file| Ok((file.metadata()?.len(), file)))
                 .map(|(size, file)| Prepared::Pdf { file, size })
                 .map_err(|err| ApiError::internal(format!("failed to open the result: {err}")))
-        })
-        .await
+        });
+        tokio::time::timeout_at(until, opened).await
     } else {
         let manifest = ManifestInput::new(state, received, request_id, timings);
         let result = result.clone();
-        off_runtime(held, move |job| plan_tar(job, &manifest, &result)).await
+        let planned = off_runtime(held, move |job| plan_tar(job, &manifest, &result));
+        tokio::time::timeout_at(until, planned).await
     };
     let (prepared, held) = match done {
         // The second check, just before the 200.
-        Some((prepared, held)) => (
+        Ok(Some((prepared, held))) => (
             prepared.and_then(|prepared| {
                 if Instant::now() >= deadline {
                     Err(timed_out())
@@ -346,12 +350,13 @@ async fn success(
             }),
             Some(held),
         ),
-        None => (
+        Ok(None) => (
             Err(ApiError::internal(
                 "failed to prepare the response: the task panicked".to_owned(),
             )),
             None,
         ),
+        Err(_) => (Err(timed_out()), None),
     };
     let (prepared, (permit, job)) = match (prepared, held) {
         (Ok(prepared), Some(held)) => (prepared, held),
@@ -505,9 +510,12 @@ fn plan_tar(
     #[cfg(feature = "test-hooks")]
     {
         use std::sync::atomic::Ordering::SeqCst;
-        test_hooks::PLAN_ENTERED.store(true, SeqCst);
-        while test_hooks::PLAN_HOLD.load(SeqCst) {
-            std::thread::sleep(Duration::from_millis(5));
+        let name = input.upload.file_name.as_deref();
+        if test_hooks::gated(name) {
+            test_hooks::PLAN_ENTERED.store(true, SeqCst);
+            while test_hooks::gated(name) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
         let ms = test_hooks::PLAN_DELAY_MS.load(SeqCst);
         if ms > 0 {
@@ -677,14 +685,27 @@ pub struct Binary(Vec<u8>);
 /// Hooks for tests (feature `test-hooks`).
 #[cfg(feature = "test-hooks")]
 pub mod test_hooks {
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicU64};
 
     /// Milliseconds that planning a bundle sleeps first: a slow plan, to
     /// test the deadline check after it. Zero in every other test.
     pub static PLAN_DELAY_MS: AtomicU64 = AtomicU64::new(0);
-    /// Set when planning a bundle starts.
+    /// The upload file name whose bundle plan the gate holds. The plan of
+    /// that upload sets `PLAN_ENTERED`, then waits while the name stays;
+    /// every other request's plan passes. `None`: no gate.
+    pub static PLAN_GATE: Mutex<Option<String>> = Mutex::new(None);
+    /// Set when the gated plan starts.
     pub static PLAN_ENTERED: AtomicBool = AtomicBool::new(false);
-    /// While set, planning waits after it set `PLAN_ENTERED`: a test acts
-    /// while the plan surely runs, then clears it.
-    pub static PLAN_HOLD: AtomicBool = AtomicBool::new(false);
+
+    /// Whether the plan of the upload named `name` is held.
+    pub fn gated(name: Option<&str>) -> bool {
+        let Some(name) = name else {
+            return false;
+        };
+        PLAN_GATE
+            .lock()
+            .map(|gate| gate.as_deref() == Some(name))
+            .unwrap_or(false)
+    }
 }

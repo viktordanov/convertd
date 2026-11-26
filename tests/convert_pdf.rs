@@ -27,7 +27,7 @@ const KEY: &str = "test-key";
 
 static LOGS: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
 
-/// `PLAN_DELAY_MS` and `PLAN_HOLD` are statics of the whole process: the
+/// `PLAN_DELAY_MS` and `PLAN_GATE` are statics of the whole process: the
 /// tests that set them take this first, so two of them never run at once under `cargo test`
 /// (nextest runs each test in its own process).
 #[cfg(feature = "test-hooks")]
@@ -992,39 +992,61 @@ async fn slow_a_bundle_whose_planning_passes_the_deadline_is_504() {
     app.assert_no_jobs().await;
 }
 
+/// Holds the bundle plan of the upload named `name` until dropped.
+#[cfg(feature = "test-hooks")]
+struct PlanGate;
+
+#[cfg(feature = "test-hooks")]
+impl PlanGate {
+    fn hold(name: &str) -> Self {
+        use convertd::rest::convert_handlers::test_hooks::{PLAN_ENTERED, PLAN_GATE};
+        PLAN_ENTERED.store(false, std::sync::atomic::Ordering::SeqCst);
+        *PLAN_GATE.lock().unwrap() = Some(name.to_owned());
+        Self
+    }
+
+    /// Waits until the held plan has started.
+    async fn entered(&self) {
+        use convertd::rest::convert_handlers::test_hooks::PLAN_ENTERED;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !PLAN_ENTERED.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("planning never started");
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl Drop for PlanGate {
+    fn drop(&mut self) {
+        use convertd::rest::convert_handlers::test_hooks::PLAN_GATE;
+        *PLAN_GATE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
 /// A client that leaves while its bundle is planned does not free its
 /// slot: the planning task holds the permit until it ends (review round 2
-/// on ledger/001-perf3). The plan holds until the test has dropped the
-/// request and seen the 429.
+/// on ledger/001-perf3). The plan of this test's upload holds until the
+/// test has dropped the request and seen the 429.
 #[cfg(feature = "test-hooks")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_client_that_leaves_during_planning_keeps_its_slot_until_it_ends() {
-    use convertd::rest::convert_handlers::test_hooks::{PLAN_ENTERED, PLAN_HOLD};
-    use std::sync::atomic::Ordering::SeqCst;
     let _plan_hooks = PLAN_DELAY.lock().await;
     let app = App::new("plan-permit", &[("MAX_CONCURRENT_REQUESTS", "1")]);
-    PLAN_ENTERED.store(false, SeqCst);
-    PLAN_HOLD.store(true, SeqCst);
-    let bundle = with_options("a.pdf", &pdf("x"), r#"{"output":"bundle"}"#);
+    let gate = PlanGate::hold("plan-permit.pdf");
+    let bundle = with_options("plan-permit.pdf", &pdf("x"), r#"{"output":"bundle"}"#);
     let request = tokio::spawn({
         let router = app.router();
         async move { router.oneshot(convert_request(bundle)).await }
     });
-    let entered = tokio::time::timeout(Duration::from_secs(10), async {
-        while !PLAN_ENTERED.load(SeqCst) {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await;
-    if entered.is_err() {
-        PLAN_HOLD.store(false, SeqCst);
-        panic!("planning never started");
-    }
+    gate.entered().await;
     // The client leaves: the handler's future is dropped mid-plan.
     request.abort();
     assert!(request.await.unwrap_err().is_cancelled());
     let (response, _) = send(&app, file("b.pdf", &pdf("y"))).await;
-    PLAN_HOLD.store(false, SeqCst);
+    drop(gate);
     assert_eq!(
         response.status(),
         StatusCode::TOO_MANY_REQUESTS,
@@ -1042,6 +1064,31 @@ async fn a_client_that_leaves_during_planning_keeps_its_slot_until_it_ends() {
     })
     .await;
     assert!(freed.is_ok(), "the slot never came back");
+    app.assert_no_jobs().await;
+}
+
+/// The preparation of a response ends at the deadline: a plan that is
+/// still held (or a task still waiting for a blocking thread) answers 504
+/// at the deadline, not when it ends (review round 5 on ledger/001-perf3).
+/// About 5 s: the shortest timeout.
+#[cfg(feature = "test-hooks")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_a_held_plan_answers_504_at_the_deadline() {
+    let _plan_hooks = PLAN_DELAY.lock().await;
+    let app = App::new("plan-deadline", &[]);
+    let gate = PlanGate::hold("plan-deadline.pdf");
+    let bundle = with_options(
+        "plan-deadline.pdf",
+        &pdf("x"),
+        r#"{"output":"bundle","timeout_seconds":5}"#,
+    );
+    let answered = tokio::time::timeout(Duration::from_secs(8), send(&app, bundle)).await;
+    let still_held = convertd::rest::convert_handlers::test_hooks::gated(Some("plan-deadline.pdf"));
+    drop(gate);
+    let (response, body) = answered.expect("no answer while the plan was held");
+    assert!(still_held);
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(error_code(&body), "CONVERSION_TIMEOUT");
     app.assert_no_jobs().await;
 }
 
