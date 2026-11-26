@@ -2,7 +2,7 @@
 # docker/smoke.sh (ledger item 003). The image job runs it with docker/smoke/small.docx.
 # Proves the image, not the conversions (those belong to lane 005's corpus runs):
 #   1. image size against a budget
-#   2. time from `docker run` to /readyz 200
+#   2. time from `docker run` to /readyz 200, with no WARN or ERROR line in the log at start
 #   3. one DOCX to PDF over HTTP: curl exits 0, the body has its Content-Length, ends with
 #      %%EOF and has the expected Convert-Page-Count; no job-<hex> directory is left after
 #   4. the baked fontconfig cache is used (no user cache written)
@@ -20,9 +20,15 @@ set -euo pipefail
 
 image="${1:?image}"; docx="${2:?docx file}"; max_mb="${3:-0}"; want_pages="${4:-2}"
 curl_image="${CURL_IMAGE:?set CURL_IMAGE to a pinned curl image, tag@sha256:...}"
-dir="$(cd "$(dirname "${docx}")" && pwd)"; file="$(basename "${docx}")"
+file="$(basename "${docx}")"
 name="rs-convert-003-smoke-$$"
 out="$(mktemp -d)"
+# The curl container runs as its own user. A checkout made under umask 077 has a 0600 DOCX that
+# it cannot read (curl exit 26), so it gets a copy with fixed modes instead.
+dir="${out}/in"
+mkdir -p "${dir}"
+install -m 0644 "${docx}" "${dir}/${file}"
+chmod 0755 "${out}" "${dir}"
 key="smoke-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 fail=0
 
@@ -54,6 +60,12 @@ done
 t1=$(date +%s%N)
 if [[ "${ready}" == 1 ]]; then note "time to ready" "$(( (t1 - t0) / 1000000 )) ms"
 else bad "time to ready" "not ready after 60 s"; docker logs "${name}" | tail -n 50; exit 1; fi
+# A clean start logs no WARN and no ERROR: each one at start is a misconfiguration, such as an
+# unreadable /etc/convertd/fonts.json. LOG_MODE=prod logs one JSON object per line.
+start_log="$(docker logs "${name}" 2>&1)"
+warned="$(grep -c -E '"level":"(WARN|ERROR)"' <<<"${start_log}" || true)"
+if [[ "${warned}" == 0 ]]; then note "clean start" "ok, no WARN or ERROR"
+else bad "clean start" "${warned} WARN or ERROR lines"; grep -E '"level":"(WARN|ERROR)"' <<<"${start_log}"; fi
 
 # 3. One DOCX over HTTP. curl writes one '|'-separated line as the last line of its stderr:
 # status, bytes received, Content-Length, Convert-Page-Count, total time, Server-Timing. The
