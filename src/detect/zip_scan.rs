@@ -100,6 +100,10 @@ pub fn directory<R: Read + Seek>(
     file_size: u64,
 ) -> Result<(u64, u64, u64, bool), ScanError> {
     let directory = read_directory(file, file_size)?;
+    // The directory must end before the end record, not run into it.
+    if directory.offset + directory.size > directory.eocd_pos {
+        return Err(ScanError::Malformed);
+    }
     let mut zip64 = directory.zip64;
     // An optional locator: only after the central directory, and only
     // when it points to a ZIP64 end record.

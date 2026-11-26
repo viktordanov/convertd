@@ -1267,3 +1267,30 @@ fn a_zip64_size_sentinel_in_any_local_header_keeps_the_package() {
     put_u32(&mut source, 22, 0xFFFF_FFFF);
     assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
 }
+
+#[test]
+fn a_directory_that_runs_into_the_end_record_keeps_the_package() {
+    let mut bytes = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", doc("<w:p/>").as_bytes(), true, false),
+    ]);
+    let eocd = bytes.len() - 22;
+    let cd = u32_at(&bytes, eocd + 16) as usize;
+    // The last record's comment takes the end record's first 4 bytes, and
+    // the directory size counts them.
+    let mut at = cd;
+    let mut last = cd;
+    while at < eocd {
+        last = at;
+        at += 46
+            + u16_at(&bytes, at + 28) as usize
+            + u16_at(&bytes, at + 30) as usize
+            + u16_at(&bytes, at + 32) as usize;
+    }
+    put_u16(&mut bytes, last + 32, 4);
+    let size = u32_at(&bytes, eocd + 12) + 4;
+    put_u32(&mut bytes, eocd + 12, size);
+    assert!(zip_scan::directory(&mut std::io::Cursor::new(&bytes), bytes.len() as u64).is_err());
+    assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unsupported), None));
+}
