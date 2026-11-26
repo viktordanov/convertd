@@ -89,15 +89,7 @@ struct Style {
 
 pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &mut SourceFacts) {
     let main = main_part(package).unwrap_or_else(|| "word/document.xml".to_owned());
-    // An unreadable relationships part leaves the theme and styles to their
-    // usual names, but the font table cannot be found without it.
-    let (rels, rels_error) = match package.rels(&main) {
-        Ok(rels) => (rels, None),
-        Err(SkipReason::MissingPart) if !package.has(&rels_path(&main)) => {
-            (Default::default(), None)
-        }
-        Err(reason) => (Default::default(), Some(reason)),
-    };
+    let rels = package.rels(&main).unwrap_or_default();
     let target = |suffix: &str| {
         rels.values()
             .filter(|(kind, _)| kind.ends_with(suffix))
@@ -112,18 +104,6 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
         .into_iter()
         .next()
         .unwrap_or_else(|| "word/styles.xml".to_owned());
-    // Only a table the main part links by the font-table type: a leftover
-    // table is not loaded. Sorted, so that the choice never depends on map
-    // order.
-    let font_table_part = {
-        let mut tables: Vec<&String> = rels
-            .values()
-            .filter(|(kind, _)| FONT_TABLE_TYPES.contains(&kind.as_str()))
-            .map(|(_, target)| target)
-            .collect();
-        tables.sort();
-        tables.first().map(|target| (*target).clone())
-    };
     let theme = theme_fonts(package, &theme_part);
 
     // The parts with runs: the main part, then headers, footers, notes.
@@ -203,11 +183,9 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
             return;
         }
     }
-    if let Some(reason) = rels_error {
-        facts.skipped.push((Check::Fonts, reason));
-        return;
-    }
-    match embedded_fonts(package, font_table_part.as_deref(), &found) {
+    match font_table(package, &main)
+        .and_then(|table| embedded_fonts(package, table.as_deref(), &found))
+    {
         Ok(embedded) => facts.embedded_fonts = embedded.into_iter().collect(),
         Err(reason) => {
             facts.skipped.push((Check::Fonts, reason));
@@ -215,6 +193,24 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
         }
     }
     fonts.extend(found);
+}
+
+/// The font table that the main part links by the font-table type, read
+/// from a complete relationships part: a leftover table is not loaded, and
+/// a partial map would hide the link. Sorted, so that the choice never
+/// depends on map order. No relationships part means no table.
+fn font_table(package: &mut Package, main: &str) -> Result<Option<String>, SkipReason> {
+    if !package.has(&rels_path(main)) {
+        return Ok(None);
+    }
+    let rels = package.rels_complete(main)?;
+    let mut tables: Vec<&String> = rels
+        .values()
+        .filter(|(kind, _)| FONT_TABLE_TYPES.contains(&kind.as_str()))
+        .map(|(_, target)| target)
+        .collect();
+    tables.sort();
+    Ok(tables.first().map(|target| (*target).clone()))
 }
 
 /// The requested families that `part`, the font table linked from the
@@ -239,7 +235,7 @@ fn embedded_fonts(
         return Ok(BTreeSet::new());
     }
     let rels = if package.has(&rels_path(part)) {
-        package.rels(part)?
+        package.rels_complete(part)?
     } else {
         Default::default()
     };

@@ -523,6 +523,23 @@ fn docx_font_table_relationships_over_the_cap_skip_the_font_check() {
 }
 
 #[test]
+fn docx_font_table_relationships_with_a_second_root_skip_the_font_check() {
+    // Only the direct children of the one `Relationships` root count.
+    let two_roots = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font1.ttf"/></Relationships>"#;
+    let facts = aptos_embedded(two_roots, &sfnt(&[0, 1, 0, 0]));
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+    // A relationship nested below another element is not one.
+    let nested = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><x><Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font1.ttf"/></x></Relationships>"#;
+    let facts = aptos_embedded(nested, &sfnt(&[0, 1, 0, 0]));
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
 fn docx_font_relationships_need_the_font_type() {
     // A relationship whose type only ends in "/font" is not a font part.
     let custom = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://example.com/custom/font" Target="fonts/font1.ttf"/></Relationships>"#;

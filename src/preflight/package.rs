@@ -15,7 +15,8 @@ use crate::domain::verification::SkipReason;
 
 /// The bytes a slide's root start tag may take.
 pub const ROOT_TAG_CAP: u64 = 4 * 1024;
-/// Relationships kept per part; one more fails the read with `CapReached`.
+/// Relationships kept per part. [`Package::rels`] drops the rest;
+/// [`Package::rels_complete`] fails with `CapReached`.
 const MAX_RELATIONSHIPS: usize = 20_000;
 
 /// One event of [`Package::xml_events`].
@@ -171,54 +172,92 @@ impl Package {
     }
 
     /// The relationships of `part` (`<dir>/_rels/<file>.rels`): id to
-    /// (type, resolved target). External targets are left out.
+    /// (type, resolved target). External targets are left out. Lenient: at
+    /// most 20 000 are kept and a cut part gives what was read, which is
+    /// enough where a missing relationship falls back to a default name.
     pub fn rels(&mut self, part: &str) -> Result<HashMap<String, (String, String)>, SkipReason> {
         let rels_name = rels_path(part);
         let mut map = HashMap::new();
-        // A part cut at a tag boundary reads as EOF with elements still
-        // open, and an empty part as EOF with no element: either would pass
-        // for a complete map.
+        self.xml(&rels_name, super::PART_CAP, |e| {
+            if let Some((id, value)) = relationship(part, e)
+                && map.len() < MAX_RELATIONSHIPS
+            {
+                map.insert(id, value);
+            }
+            true
+        })?;
+        Ok(map)
+    }
+
+    /// [`Package::rels`] for a scan that must not mistake a partial map for
+    /// a whole one: the part must hold one `Relationships` root, closed,
+    /// with nothing after it, and only its direct `Relationship` children
+    /// count. More than 20 000 fail with `CapReached`, a cut, empty or
+    /// multi-rooted part with `MalformedXml`.
+    pub fn rels_complete(
+        &mut self,
+        part: &str,
+    ) -> Result<HashMap<String, (String, String)>, SkipReason> {
+        let rels_name = rels_path(part);
+        let mut map = HashMap::new();
         let mut open = 0usize;
-        let mut rooted = false;
+        // Whether the root was `Relationships`, once it has been seen.
+        let mut root: Option<bool> = None;
+        let mut closed = false;
+        let mut malformed = false;
         let mut capped = false;
         self.xml_events(&rels_name, super::PART_CAP, |event| {
-            let e = match event {
-                XmlEvent::Start(e) => {
-                    open += 1;
-                    rooted = true;
-                    e
-                }
-                XmlEvent::Empty(e) => {
-                    rooted = true;
-                    e
-                }
+            let (e, opens) = match event {
+                XmlEvent::Start(e) => (e, true),
+                XmlEvent::Empty(e) => (e, false),
                 XmlEvent::End => {
                     open = open.saturating_sub(1);
+                    closed |= open == 0;
                     return true;
                 }
             };
-            if e.local_name().as_ref() == b"Relationship"
-                && attr(e, b"TargetMode").as_deref() != Some("External")
-                && let (Some(id), Some(kind), Some(target)) =
-                    (attr(e, b"Id"), attr(e, b"Type"), attr(e, b"Target"))
+            if closed {
+                malformed = true;
+                return false;
+            }
+            if root.is_none() {
+                root = Some(e.local_name().as_ref() == b"Relationships");
+                closed = !opens;
+            } else if open == 1
+                && root == Some(true)
+                && let Some((id, value)) = relationship(part, e)
             {
                 if map.len() == MAX_RELATIONSHIPS {
                     // A dropped relationship would read as one never made.
                     capped = true;
                     return false;
                 }
-                map.insert(id, (kind, resolve(part, &target)));
+                map.insert(id, value);
+            }
+            if opens {
+                open += 1;
             }
             true
         })?;
         if capped {
             return Err(SkipReason::CapReached);
         }
-        if open != 0 || !rooted {
+        if malformed || open != 0 || root.is_none() {
             return Err(SkipReason::MalformedXml);
         }
         Ok(map)
     }
+}
+
+/// One internal relationship of `part`: its id, type and resolved target.
+fn relationship(part: &str, e: &BytesStart<'_>) -> Option<(String, (String, String))> {
+    if e.local_name().as_ref() != b"Relationship"
+        || attr(e, b"TargetMode").as_deref() == Some("External")
+    {
+        return None;
+    }
+    let (id, kind, target) = (attr(e, b"Id")?, attr(e, b"Type")?, attr(e, b"Target")?);
+    Some((id, (kind, resolve(part, &target))))
 }
 
 /// An attribute by local name, whatever its prefix.
