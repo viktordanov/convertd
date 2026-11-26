@@ -9,6 +9,9 @@
      empty, which also means that the formatting locale stays the system one (LANG=C.UTF-8,
      en-US), as before. -->
 <oor:data xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+ <!-- org.openoffice.Setup is defined in main.xcd. configmgr reads the .xcd files in directory
+      order, which is not sorted on every file system, so the dependency makes it read main first. -->
+ <dependency file="main"/>
  <oor:component-data oor:package="org.openoffice" oor:name="Setup">
   <node oor:name="L10N">
    <prop oor:name="ooSetupSystemLocale" oor:finalized="true">
