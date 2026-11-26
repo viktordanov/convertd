@@ -36,7 +36,7 @@ Build the tests with the cargo feature `test-hooks`. Without it, `pool.rs`, `pro
 
 `cargo test --features test-hooks` also runs every test, but it has no per-test time limit and it runs the `slow_` tests. To run the engine tests for real, run them in the `dev` image that [docker/README.md](../docker/README.md) describes. That image sets `LO_PROGRAM_DIR` and `PDFIUM_LIB_DIR`. Next: read [Fakes](#fakes) before you write a test that needs an engine.
 
-<!-- memoria:section id="levels" files="convert_pdf.rs convert_bundle.rs detect.rs errors.rs ops.rs openapi_spec.rs upload.rs pool.rs process.rs reap_race.rs oom_kill.rs worker_test_role.rs engines_poison.rs engines_office.rs engines_render.rs peak_heap.rs rss_linux.rs" -->
+<!-- memoria:section id="levels" files="convert_pdf.rs convert_bundle.rs detect.rs errors.rs ops.rs openapi_spec.rs upload.rs pool.rs process.rs reap_race.rs oom_kill.rs worker_test_role.rs engines_poison.rs engines_office.rs engines_render.rs peak_heap.rs rss_linux.rs observability.rs" -->
 ## Test levels
 
 The tests have three levels:
@@ -54,6 +54,7 @@ The integration tests:
 | `detect.rs` | Format detection from the bytes, with ZIP and OLE2 files that the test builds, hostile OLE2 directories included | No |
 | `errors.rs` | Errors over HTTP: auth, request IDs, fallbacks and the panic layer | No |
 | `ops.rs` | The probes, `/v1/capabilities`, `/metrics`, `convertd healthcheck` and the drain | Two tests, for `SIGTERM` on the binary at level A and level B |
+| `observability.rs` | Every metric that `deploy/observability/` names is on `/metrics`: the scan of the files, and a scrape of the binary at level B after a few requests | The scrape only |
 | `openapi_spec.rs` | The cheap invariants of the spec that `convertd openapi` emits | No |
 | `upload.rs` | The streamed upload: digests, part rules, caps, the disk budget, and stalled, slow and vanished clients | No |
 | `pool.rs` | The worker pool with `test` workers (level B), including the RSS kill of a worker during its call | Yes |
