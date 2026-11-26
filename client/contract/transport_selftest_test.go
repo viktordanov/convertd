@@ -433,6 +433,11 @@ func TestSelfTestFixtures(t *testing.T) {
 	var names []string
 	for _, f := range zr.File {
 		names = append(names, f.Name)
+		// LibreOffice does not load a DOCX with a stored entry followed by
+		// a data descriptor (flag bit 3).
+		if f.Name == "word/document.xml" && (f.Method != zip.Store || f.Flags&0x8 != 0) {
+			t.Errorf("word/document.xml: method %d, flags %#x; want stored without a data descriptor", f.Method, f.Flags)
+		}
 	}
 	if strings.Join(names, ",") != "[Content_Types].xml,_rels/.rels,word/document.xml" {
 		t.Errorf("DOCX parts = %v", names)
