@@ -123,6 +123,7 @@ jobs:
         env:
           BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          EVENT: ${{ github.event_name }}
         run: |
           # A branch's first push has an all-zeros `before`, and a force push can name a commit
           # that is no longer in the history. Neither gives a diff, so both run the image job.
@@ -131,7 +132,14 @@ jobs:
             echo "image=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          changed="$(git diff --name-only "${BASE}...${HEAD}")"
+          # A pull request compares with the merge base (three dots): only its own changes. A push
+          # compares the two commits directly (two dots). With three dots, a force push back to an
+          # ancestor would compare with the merge base, which is the new tip, and find nothing.
+          if [[ "${EVENT}" == pull_request ]]; then
+            changed="$(git diff --name-only "${BASE}...${HEAD}")"
+          else
+            changed="$(git diff --name-only "${BASE}" "${HEAD}")"
+          fi
           printf '%s\n' "${changed}"
           if grep -E '^(docker/|src/engines/|src/worker/|src/preflight/|corpus/)|^Cargo\.lock$' \
                <<<"${changed}" >/dev/null; then
