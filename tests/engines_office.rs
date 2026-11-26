@@ -702,8 +702,11 @@ async fn a_full_disk_gives_disk_full() {
 /// a document that leaves the page to LibreOffice: here an XLSX without
 /// `<pageSetup>`, which keeps the default page style of Calc. LibreOffice
 /// takes that page from `PaperInfo::getSystemDefaultPaper()`, which reads
-/// `LC_PAPER` through `newlocale(LC_PAPER_MASK, "")`. The locale data must be
-/// installed (the image ships en_GB.UTF-8 and en_US.UTF-8 for this).
+/// `LC_PAPER` through `newlocale(LC_PAPER_MASK, "")`, but only while
+/// `ooSetupSystemLocale` is empty. LibreOfficeKit's start-up commits it as
+/// en-US (`desktop/source/lib/init.cxx`, `setLanguageAndLocale`), which gives
+/// Letter. The image keeps it empty with `docker/libreoffice/rs-convert-paper.xcd`
+/// and ships the en_GB.UTF-8 and en_US.UTF-8 locale data that `LC_PAPER` needs.
 ///
 /// A DOCX is no probe: the DOCX importer of LibreOffice 26.8.3 sets Letter
 /// for a section without `w:pgSz` and never asks the locale
