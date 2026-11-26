@@ -95,6 +95,8 @@ On 2026-11-26, `check` ran that way against the image `rs-convert-lead-runtime:w
 On 2026-11-26, `check` ran the same way against `rs-convert-lead-runtime:wave2b`, built from `main` at `1eafd5ee`, and all 57 cases passed, with exit status 0. The listener saw no connection, and the service log had no error and no worker restart. The full run took about 31 s of request time. The slowest cases were `xlsx-100k` at about 7 to 8 s each and `pptx-photos60` at about 4 to 5 s each. Still no positive control had run, so the canaries proved only that no connection was made.
 
 Later on 2026-11-26, with two data-descriptor cases added, `check` ran again against `rs-convert-lead-runtime:wave2b`, and all 59 cases passed. The listener control passed inside the namespace of the service. `docx-stored-descriptor` gave `422 CONVERSION_FAILED` and `docx-deflated-descriptor` gave 200 with 2 pages, as expected.
+
+`expected.json` then gained a 60th case, `pdf-text3/webp-refused`, when WebP output left the service. It expects `422 VALIDATION_ERROR`, as lane 001 answers an unknown image format. No `check` run with that case is recorded yet.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="listen" files="src/main.rs src/check/listener.rs" -->

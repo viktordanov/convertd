@@ -1505,7 +1505,7 @@
         "smoke",
         "render"
       ],
-      "notes": "Hand-written 3-page A4 PDF. The dpi-600 case assumes the default MAX_DPI of 300. PDFs have no pre-flight.",
+      "notes": "Hand-written 3-page A4 PDF. The dpi-600 case assumes the default MAX_DPI of 300. PDFs have no pre-flight. The webp-refused case keeps the removal of WebP output tested (owner decision): lane 001 answers an unknown image format with 422 VALIDATION_ERROR.",
       "cases": [
         {
           "name": "bundle",
@@ -1552,6 +1552,20 @@
                 }
               }
             ]
+          }
+        },
+        {
+          "name": "webp-refused",
+          "options": {
+            "output": "images",
+            "pages": "1",
+            "images": {
+              "format": "webp"
+            }
+          },
+          "expect": {
+            "status": 422,
+            "code": "VALIDATION_ERROR"
           }
         }
       ]
