@@ -11,16 +11,16 @@
 //! and masters that a slide reaches (slide to layout to master).
 //! `+mj-lt` and `+mn-lt` resolve through the theme of the reached master.
 //!
-//! The text is the `a:t` of the slides, hidden ones included. Layout and
-//! master text is mostly placeholder prompts, which are not drawn. The
-//! `a:t` of each slide's notes page goes apart: it is printed only when
-//! the request exports notes pages.
+//! The text is the `a:t` of the slides that the export prints: hidden
+//! slides only when it includes them, and each printed slide's notes page
+//! only when it exports notes pages. Layout and master text is mostly
+//! placeholder prompts, which are not drawn.
 
 use std::collections::{BTreeSet, HashMap};
 
 use super::docx::{ThemeFonts, main_part, theme_fonts};
-use super::package::{Package, XmlEvent, attr, attr_prefixed};
-use super::{FONT_SCAN_CAP, PART_CAP, TextCollector, TextScope, add_font};
+use super::package::{Package, XmlEvent, attr, attr_prefixed, rels_path};
+use super::{FONT_SCAN_CAP, PART_CAP, Printed, TextCollector, TextScope, add_font};
 use crate::domain::verification::{Check, DeclaredPages, SkipReason, SourceFacts};
 
 /// At most this many slides are counted and scanned.
@@ -40,7 +40,7 @@ pub(super) fn scan(
     package: &mut Package,
     fonts: &mut BTreeSet<String>,
     text: &mut TextCollector,
-    notes: &mut TextCollector,
+    printed: Printed,
     facts: &mut SourceFacts,
 ) {
     let main = main_part(package).unwrap_or_else(|| SOURCE.to_owned());
@@ -90,7 +90,7 @@ pub(super) fn scan(
                 if !hidden {
                     visible += 1;
                 }
-                slides.push(target.clone());
+                slides.push((target.clone(), hidden));
             }
             Err(reason) => {
                 page_skip.get_or_insert(reason);
@@ -116,7 +116,9 @@ pub(super) fn scan(
     let mut themes: HashMap<String, ThemeFonts> = HashMap::new();
     let mut budget = FONT_SCAN_CAP;
     let mut found = BTreeSet::new();
-    for slide in &slides {
+    let mut notes_budget = FONT_SCAN_CAP;
+    for (slide, hidden) in &slides {
+        let printed_slide = !hidden || printed.hidden_slides;
         let layout = related(package, slide, "/slideLayout");
         let master = layout
             .as_deref()
@@ -133,7 +135,7 @@ pub(super) fn scan(
         };
         for part in [Some(slide.clone()), layout, master].into_iter().flatten() {
             if !cache.contains_key(&part) {
-                let slide_text = (part == *slide).then_some(&mut *text);
+                let slide_text = (part == *slide && printed_slide).then_some(&mut *text);
                 match latin_fonts(package, &part, budget, slide_text) {
                     Ok((part_fonts, read, complete)) => {
                         budget = budget.saturating_sub(read);
@@ -168,24 +170,49 @@ pub(super) fn scan(
                 }
             }
         }
-        // The slide's notes page, printed only when the request exports
-        // notes. A notes part that the package lacks has no text.
-        if let Some(part) = related(package, slide, "/notesSlide") {
-            let mut scope = TextScope::new(&[b"t"], None, &[]);
-            let result = package.xml_events(&part, budget, |event| {
-                if let Some(drawn) = scope.on(&event) {
-                    notes.add(drawn);
-                }
-                true
-            });
-            match result.and_then(|read| scope.complete().map(|()| read)) {
-                Ok(read) => budget = budget.saturating_sub(read),
-                Err(SkipReason::MissingPart) => {}
-                Err(reason) => facts.skipped.push((Check::Glyphs, reason)),
-            }
+        if printed.notes
+            && printed_slide
+            && let Err(reason) = notes_text(package, slide, &mut notes_budget, text)
+        {
+            facts.skipped.push((Check::Glyphs, reason));
         }
     }
     fonts.extend(found);
+}
+
+/// Adds the `a:t` of `slide`'s notes page, found through the slide's
+/// complete relationships, under its own budget so that notes never take
+/// the font scan's. A slide without a notes relationship has no notes; a
+/// notes part that is missing or does not read as a whole is an error.
+fn notes_text(
+    package: &mut Package,
+    slide: &str,
+    budget: &mut u64,
+    text: &mut TextCollector,
+) -> Result<(), SkipReason> {
+    if !package.has(&rels_path(slide)) {
+        return Ok(());
+    }
+    let rels = package.rels_complete(slide, None, budget)?;
+    let mut targets: Vec<&String> = rels
+        .values()
+        .filter(|(kind, _)| kind.ends_with("/notesSlide"))
+        .map(|(_, target)| target)
+        .collect();
+    targets.sort();
+    let Some(part) = targets.first().map(|t| (*t).clone()) else {
+        return Ok(());
+    };
+    let mut scope = TextScope::new(&[b"t"], None, &[]);
+    let read = package.xml_events(&part, *budget, |event| {
+        if let Some(drawn) = scope.on(&event) {
+            text.add(drawn);
+        }
+        true
+    })?;
+    scope.complete()?;
+    *budget = budget.saturating_sub(read);
+    Ok(())
 }
 
 /// The first target of `part`'s relationships whose type ends with `kind`.

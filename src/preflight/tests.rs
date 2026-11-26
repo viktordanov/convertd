@@ -60,13 +60,18 @@ fn theme(major: &str, minor: &str) -> String {
 /// and removes the directory. One directory per call, so tests that run in
 /// parallel in one process never remove each other's files.
 fn scan_bytes(name: &str, bytes: &[u8], family: Family) -> SourceFacts {
+    scan_printed(name, bytes, family, Printed::default())
+}
+
+/// [`scan_bytes`] for an export that prints `printed`.
+fn scan_printed(name: &str, bytes: &[u8], family: Family, printed: Printed) -> SourceFacts {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("convertd-preflight-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path: PathBuf = dir.join(name);
     std::fs::write(&path, bytes).unwrap();
-    let facts = scan(&path, family);
+    let facts = scan(&path, family, printed);
     std::fs::remove_dir_all(&dir).unwrap();
     facts
 }
@@ -1050,6 +1055,7 @@ fn rtf_and_missing_files() {
     let facts = scan(
         std::path::Path::new("/nonexistent/source.docx"),
         Family::Document,
+        Printed::default(),
     );
     assert_eq!(facts.skipped.len(), 4);
 }
@@ -1212,7 +1218,7 @@ fn xlsx_text_code_points_from_shared_and_inline_strings() {
     let bytes = zip(&[
         ("[Content_Types].xml", content_types.as_bytes()),
         ("_rels/.rels", root.as_bytes()),
-        ("xl/workbook.xml", b"<workbook/>"),
+        ("xl/workbook.xml", WORKBOOK.as_bytes()),
         ("xl/_rels/workbook.xml.rels", wb_rels.as_bytes()),
         ("xl/sharedStrings.xml", shared.as_bytes()),
         ("xl/worksheets/sheet1.xml", sheet.as_bytes()),
@@ -1311,6 +1317,9 @@ fn an_undefined_entity_in_text_skips_only_the_glyph_check() {
     assert_eq!(facts.requested_fonts, ["Calibri", "Cambria"]);
 }
 
+/// A workbook that lists one visible sheet, `rId2`.
+const WORKBOOK: &str = r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="A" sheetId="1" r:id="rId2"/></sheets></workbook>"#;
+
 /// A workbook with one worksheet and, when given, a shared-string table.
 fn xlsx_text(sheet: &str, shared: Option<&str>) -> Vec<u8> {
     let root = rels(&[("rId1", "officeDocument", "xl/workbook.xml")]);
@@ -1322,7 +1331,7 @@ fn xlsx_text(sheet: &str, shared: Option<&str>) -> Vec<u8> {
     let mut entries: Vec<(&str, &[u8])> = vec![
         ("[Content_Types].xml", content_types.as_bytes()),
         ("_rels/.rels", root.as_bytes()),
-        ("xl/workbook.xml", b"<workbook/>"),
+        ("xl/workbook.xml", WORKBOOK.as_bytes()),
         ("xl/_rels/workbook.xml.rels", wb_rels.as_bytes()),
         ("xl/worksheets/sheet1.xml", sheet.as_bytes()),
     ];
@@ -1405,7 +1414,7 @@ fn xlsx_an_unreadable_index_makes_every_shared_string_count() {
 }
 
 #[test]
-fn pptx_notes_text_goes_apart() {
+fn pptx_notes_text_counts_when_notes_are_printed() {
     let mut bytes = pptx(&[("p:sld", "<a:t>x</a:t>")], true);
     // Give slide 1 a notes page.
     let notes = format!(
@@ -1436,13 +1445,19 @@ fn pptx_notes_text_goes_apart() {
     bytes = zip(&refs);
     let facts = scan_bytes("notes.pptx", &bytes, Family::Presentation);
     assert_eq!(facts.text_code_points, cps("x"));
-    assert_eq!(facts.notes_code_points, cps("\u{1200}"));
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+    let notes = Printed {
+        notes: true,
+        ..Printed::default()
+    };
+    let facts = scan_printed("notes.pptx", &bytes, Family::Presentation, notes);
+    assert_eq!(facts.text_code_points, cps("x\u{1200}"));
     assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
 }
 
 #[test]
-fn odp_notes_text_goes_apart() {
-    let content = r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0"><office:body><office:presentation><draw:page><draw:frame><draw:text-box><text:p>x</text:p></draw:text-box></draw:frame><presentation:notes><draw:frame><draw:text-box><text:p>ሀ</text:p></draw:text-box></draw:frame></presentation:notes></draw:page></office:presentation></office:body></office:document-content>"#;
+fn odp_notes_and_hidden_pages_count_when_printed() {
+    let content = r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0"><office:body><office:presentation><draw:page><draw:frame><draw:text-box><text:p>x</text:p></draw:text-box></draw:frame><presentation:notes><draw:frame><draw:text-box><text:p>ሀ</text:p></draw:text-box></draw:frame></presentation:notes></draw:page><draw:page presentation:visibility="hidden"><draw:frame><draw:text-box><text:p>ก</text:p></draw:text-box></draw:frame></draw:page></office:presentation></office:body></office:document-content>"#;
     let bytes = zip(&[
         (
             "mimetype",
@@ -1452,5 +1467,106 @@ fn odp_notes_text_goes_apart() {
     ]);
     let facts = scan_bytes("notes.odp", &bytes, Family::Presentation);
     assert_eq!(facts.text_code_points, cps("x"));
-    assert_eq!(facts.notes_code_points, cps("\u{1200}"));
+    let notes = Printed {
+        notes: true,
+        ..Printed::default()
+    };
+    let facts = scan_printed("notes.odp", &bytes, Family::Presentation, notes);
+    assert_eq!(facts.text_code_points, cps("x\u{1200}"));
+    let all = Printed {
+        notes: true,
+        hidden_slides: true,
+    };
+    let facts = scan_printed("notes.odp", &bytes, Family::Presentation, all);
+    assert_eq!(facts.text_code_points, cps("x\u{0E01}\u{1200}"));
+}
+
+#[test]
+fn pptx_hidden_slides_count_only_when_printed() {
+    let bytes = pptx(
+        &[
+            ("p:sld", "<a:t>x</a:t>"),
+            ("p:sld show=\"0\"", "<a:t>ก</a:t>"),
+        ],
+        true,
+    );
+    let facts = scan_bytes("hidden.pptx", &bytes, Family::Presentation);
+    assert_eq!(facts.text_code_points, cps("x"));
+    let hidden = Printed {
+        hidden_slides: true,
+        ..Printed::default()
+    };
+    let facts = scan_printed("hidden.pptx", &bytes, Family::Presentation, hidden);
+    assert_eq!(facts.text_code_points, cps("x\u{0E01}"));
+}
+
+#[test]
+fn xlsx_hidden_sheets_are_not_read() {
+    let root = rels(&[("rId1", "officeDocument", "xl/workbook.xml")]);
+    let wb_rels = rels(&[
+        ("rId2", "worksheet", "worksheets/sheet1.xml"),
+        ("rId3", "worksheet", "worksheets/sheet2.xml"),
+        ("rId4", "worksheet", "worksheets/unlisted.xml"),
+    ]);
+    let workbook = r#"<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="A" sheetId="1" r:id="rId2"/><sheet name="B" sheetId="2" state="hidden" r:id="rId3"/></sheets></workbook>"#;
+    let sheet = |t: &str| {
+        format!(
+            r#"<worksheet><sheetData><row><c t="inlineStr"><is><t>{t}</t></is></c></row></sheetData></worksheet>"#
+        )
+    };
+    let (a, b, c) = (sheet("a"), sheet("ก"), sheet("ሀ"));
+    let content_types = types("");
+    let bytes = zip(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", root.as_bytes()),
+        ("xl/workbook.xml", workbook.as_bytes()),
+        ("xl/_rels/workbook.xml.rels", wb_rels.as_bytes()),
+        ("xl/worksheets/sheet1.xml", a.as_bytes()),
+        ("xl/worksheets/sheet2.xml", b.as_bytes()),
+        ("xl/worksheets/unlisted.xml", c.as_bytes()),
+    ]);
+    let facts = scan_bytes("hidden.xlsx", &bytes, Family::Spreadsheet);
+    assert_eq!(facts.text_code_points, cps("a"));
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn xlsx_escapes_cut_by_a_reference_still_decode() {
+    // The value of <t> is _x1200_, in three fragments.
+    let sheet = r#"<worksheet><sheetData><row><c t="inlineStr"><is><t>_x12&#x30;0_ _x00</t></is></c></row></sheetData></worksheet>"#;
+    let facts = scan_bytes("cut.xlsx", &xlsx_text(sheet, None), Family::Spreadsheet);
+    // A cut escape at the end of a value is literal text.
+    assert_eq!(facts.text_code_points, cps("_x0\u{1200}"));
+}
+
+#[test]
+fn odf_alternative_text_by_namespace_whatever_the_prefix() {
+    let content = r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:s="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><office:body><office:text><draw:frame><s:title>Ж</s:title><s:desc>Ж</s:desc></draw:frame><text:p>a</text:p></office:text></office:body></office:document-content>"#;
+    let bytes = zip(&[
+        ("mimetype", b"application/vnd.oasis.opendocument.text"),
+        ("content.xml", content.as_bytes()),
+    ]);
+    let facts = scan_bytes("alt.odt", &bytes, Family::Document);
+    assert_eq!(facts.text_code_points, cps("a"));
+}
+
+#[test]
+fn a_second_root_skips_the_glyph_check() {
+    let document = format!("{}<w:t>ก</w:t>", body("<w:p><w:r><w:t>a</w:t></w:r></w:p>"));
+    let facts = scan_bytes("roots.docx", &docx(&[], &document), Family::Document);
+    assert!(
+        facts.text_code_points.is_empty(),
+        "{:?}",
+        facts.text_code_points
+    );
+    assert!(
+        facts
+            .skipped
+            .contains(&(Check::Glyphs, SkipReason::MalformedXml))
+            || facts
+                .skipped
+                .contains(&(Check::Fonts, SkipReason::MalformedXml)),
+        "{:?}",
+        facts.skipped
+    );
 }

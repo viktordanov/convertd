@@ -2,18 +2,19 @@
 //! `xl/styles.xml` `font/name@val`, with `scheme=minor|major` mapped to the
 //! workbook theme. No declared page count.
 //!
-//! The text is the inline strings of the worksheets and the shared strings
-//! that their cells reference, without phonetic runs (`rPh`). Formula
-//! results are not read.
+//! The text is the inline strings of the worksheets that the workbook
+//! lists as visible, which LibreOffice prints, and the shared strings that
+//! their cells reference, without phonetic runs (`rPh`). Formula results
+//! are not read.
 
 use std::collections::BTreeSet;
 
 use super::docx::{main_part, theme_fonts};
-use super::package::{Package, XmlEvent, attr, rels_path};
+use super::package::{Package, XmlEvent, attr, attr_prefixed, rels_path};
 use super::{FONT_SCAN_CAP, PART_CAP, TextCollector, TextScope, add_font};
 use crate::domain::verification::{Check, SkipReason, SourceFacts};
 
-/// At most this many worksheets are read for inline strings.
+/// At most this many sheets are listed; more skip the glyph check.
 pub const MAX_SHEETS: usize = 1024;
 
 pub(super) fn scan(
@@ -48,13 +49,7 @@ pub(super) fn scan(
     };
     let styles = target("/styles", "xl/styles.xml");
     let shared = target("/sharedStrings", "xl/sharedStrings.xml");
-    let mut sheets: Vec<String> = rels
-        .values()
-        .filter(|(kind, _)| kind.ends_with("/worksheet"))
-        .map(|(_, target)| target.clone())
-        .collect();
-    sheets.sort();
-    sheets.dedup();
+    let complete = complete.and_then(|()| printed_sheets(package, &workbook, &rels));
     let theme = theme_fonts(package, &target("/theme", "xl/theme/theme1.xml"));
 
     // One <font> at a time: its <name> and <scheme> children.
@@ -99,9 +94,49 @@ pub(super) fn scan(
         Err(SkipReason::MissingPart) => {}
         Err(reason) => facts.skipped.push((Check::Fonts, reason)),
     }
-    if let Err(reason) = complete.and_then(|()| strings(package, &shared, &sheets, text)) {
+    if let Err(reason) = complete.and_then(|sheets| strings(package, &shared, &sheets, text)) {
         facts.skipped.push((Check::Glyphs, reason));
     }
+}
+
+/// The worksheets that the workbook's `sheets` list names and does not
+/// hide (`state` `hidden` or `veryHidden`), in order: the ones the PDF
+/// prints. A listed sheet without its relationship is an error.
+fn printed_sheets(
+    package: &mut Package,
+    workbook: &str,
+    rels: &std::collections::HashMap<String, (String, String)>,
+) -> Result<Vec<String>, SkipReason> {
+    let mut ids = Vec::new();
+    let mut too_many = false;
+    package.xml(workbook, PART_CAP, |e| {
+        if e.local_name().as_ref() == b"sheet" {
+            let state = attr(e, b"state");
+            if matches!(state.as_deref(), Some("hidden" | "veryHidden")) {
+                return true;
+            }
+            if ids.len() >= MAX_SHEETS {
+                too_many = true;
+                return false;
+            }
+            ids.push(attr_prefixed(e, b"id"));
+        }
+        true
+    })?;
+    if too_many {
+        return Err(SkipReason::CapReached);
+    }
+    let mut sheets = Vec::with_capacity(ids.len());
+    for id in ids {
+        let (kind, target) = id
+            .and_then(|id| rels.get(&id))
+            .ok_or(SkipReason::MissingPart)?;
+        // A chart sheet has no cells.
+        if kind.ends_with("/worksheet") {
+            sheets.push(target.clone());
+        }
+    }
+    Ok(sheets)
 }
 
 /// The highest shared-string index tracked one by one; a cell that names
@@ -141,7 +176,7 @@ impl Referenced {
     }
 }
 
-/// Reads the inline strings of the first [`MAX_SHEETS`] worksheets and the
+/// Reads the inline strings of the printed worksheets and the
 /// shared strings that their cells (`c t="s"`) reference, under one
 /// [`FONT_SCAN_CAP`] budget. A shared string that no cell uses is not
 /// drawn. A listed worksheet that is missing, and a shared-string table
@@ -156,14 +191,17 @@ fn strings(
     let mut budget = FONT_SCAN_CAP;
     let mut referenced = Referenced::default();
     // Every listed worksheet must be read: a missing one is not optional.
-    for part in sheets.iter().take(MAX_SHEETS) {
+    for part in sheets {
         let mut scope = TextScope::new(&[b"t"], None, &[b"rPh"]);
         let mut shared_cell = false;
         // The digits of a shared cell's <v>; None past 10 bytes.
         let mut value: Option<Option<String>> = None;
+        let mut unescape = Unescape::default();
         let read = package.xml_events(part, budget, |event| {
             if let Some(drawn) = scope.on(&event) {
-                add_escaped(text, drawn);
+                unescape.feed(drawn, text);
+            } else if !matches!(event, XmlEvent::Text { .. }) {
+                unescape.flush(text);
             }
             match event {
                 XmlEvent::Start(e) | XmlEvent::Empty(e) if e.local_name().as_ref() == b"c" => {
@@ -201,13 +239,18 @@ fn strings(
         scope.complete()?;
         budget = budget.saturating_sub(read);
     }
-    if sheets.len() > MAX_SHEETS {
-        return Err(SkipReason::CapReached);
+    // No cell uses the table: it is not read, so a leftover table can
+    // neither cost the budget nor fail the check.
+    if !referenced.any() {
+        return Ok(());
     }
-
     let mut scope = TextScope::new(&[b"t"], None, &[b"rPh"]);
     let mut index: Option<u32> = None;
+    let mut unescape = Unescape::default();
     let result = package.xml_events(shared, budget, |event| {
+        if !matches!(event, XmlEvent::Text { .. }) {
+            unescape.flush(text);
+        }
         if let XmlEvent::Start(e) | XmlEvent::Empty(e) = &event
             && e.local_name().as_ref() == b"si"
         {
@@ -216,54 +259,105 @@ fn strings(
         if let Some(drawn) = scope.on(&event)
             && index.is_some_and(|i| referenced.contains(i))
         {
-            add_escaped(text, drawn);
+            unescape.feed(drawn, text);
         }
         true
     });
-    match result {
-        Ok(_) => scope.complete(),
-        // The table is optional only when no cell uses it.
-        Err(SkipReason::MissingPart) if !referenced.any() => Ok(()),
-        Err(reason) => Err(reason),
+    unescape.flush(text);
+    result?;
+    scope.complete()
+}
+
+/// Decodes SpreadsheetML text, whose `_xHHHH_` escapes stand for one
+/// UTF-16 code unit each (`_x005F_` is a literal `_`), into the collector.
+/// The value of a `t` element can come in several fragments (a reference
+/// splits it), so an escape cut at a fragment's end waits for the next
+/// one; any markup ends the value. A surrogate pair is two escapes; a lone
+/// surrogate stands for nothing.
+#[derive(Default)]
+struct Unescape {
+    /// The start of an escape that the last fragment cut, at most 6 bytes.
+    pending: String,
+    high: Option<u16>,
+}
+
+impl Unescape {
+    fn feed(&mut self, fragment: &str, text: &mut TextCollector) {
+        let joined;
+        let raw: &str = if self.pending.is_empty() {
+            fragment
+        } else {
+            joined = std::mem::take(&mut self.pending) + fragment;
+            &joined
+        };
+        if !raw.contains('_') {
+            self.high = None;
+            text.add(raw);
+            return;
+        }
+        let mut out = String::with_capacity(raw.len());
+        let mut rest = raw;
+        while let Some(at) = rest.find('_') {
+            if at > 0 {
+                self.high = None;
+                out.push_str(&rest[..at]);
+            }
+            let tail = &rest[at..];
+            if tail.len() < 7 && is_escape_prefix(tail) {
+                self.pending = tail.to_owned();
+                rest = "";
+                break;
+            }
+            let unit = tail
+                .get(1..7)
+                .filter(|t| t.starts_with('x') && t.ends_with('_'))
+                .and_then(|t| u16::from_str_radix(&t[1..5], 16).ok());
+            match unit {
+                Some(unit) => {
+                    self.unit(unit, &mut out);
+                    rest = &tail[7..];
+                }
+                None => {
+                    self.high = None;
+                    out.push('_');
+                    rest = &tail[1..];
+                }
+            }
+        }
+        if !rest.is_empty() {
+            self.high = None;
+            out.push_str(rest);
+        }
+        text.add(&out);
+    }
+
+    fn unit(&mut self, unit: u16, out: &mut String) {
+        if let Some(high) = self.high.take()
+            && (0xDC00..0xE000).contains(&unit)
+        {
+            out.extend(char::decode_utf16([high, unit]).flatten());
+        } else if (0xD800..0xDC00).contains(&unit) {
+            self.high = Some(unit);
+        } else if let Some(c) = char::from_u32(u32::from(unit)) {
+            out.push(c);
+        }
+    }
+
+    /// Ends the value: a cut escape was literal text.
+    fn flush(&mut self, text: &mut TextCollector) {
+        self.high = None;
+        if !self.pending.is_empty() {
+            text.add(&std::mem::take(&mut self.pending));
+        }
     }
 }
 
-/// Adds SpreadsheetML text, whose `_xHHHH_` escapes stand for one UTF-16
-/// code unit each (`_x005F_` is a literal `_`). A surrogate pair is two
-/// escapes; a lone surrogate stands for nothing.
-fn add_escaped(text: &mut TextCollector, raw: &str) {
-    if !raw.contains("_x") {
-        text.add(raw);
-        return;
-    }
-    let mut out = String::with_capacity(raw.len());
-    let mut high: Option<u16> = None;
-    let mut rest = raw;
-    while let Some(at) = rest.find("_x") {
-        out.push_str(&rest[..at]);
-        let unit = rest
-            .get(at + 2..at + 7)
-            .filter(|tail| tail.ends_with('_'))
-            .and_then(|tail| u16::from_str_radix(&tail[..4], 16).ok());
-        match unit {
-            Some(unit) => {
-                if let Some(h) = high.take()
-                    && (0xDC00..0xE000).contains(&unit)
-                {
-                    out.extend(char::decode_utf16([h, unit]).flatten());
-                } else if (0xD800..0xDC00).contains(&unit) {
-                    high = Some(unit);
-                } else if let Some(c) = char::from_u32(u32::from(unit)) {
-                    out.push(c);
-                }
-                rest = &rest[at + 7..];
-            }
-            None => {
-                out.push_str("_x");
-                rest = &rest[at + 2..];
-            }
-        }
-    }
-    out.push_str(rest);
-    text.add(&out);
+/// Whether `tail`, shorter than an escape, can still become one.
+fn is_escape_prefix(tail: &str) -> bool {
+    tail.bytes().enumerate().all(|(i, b)| match i {
+        0 => b == b'_',
+        1 => b == b'x',
+        2..=5 => b.is_ascii_hexdigit(),
+        _ => false,
+    })
 }

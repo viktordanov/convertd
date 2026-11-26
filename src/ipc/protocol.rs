@@ -332,13 +332,12 @@ pub struct SourceFactsWire {
     pub embedded_fonts: Vec<String>,
     /// The distinct text code points that need a glyph, sorted, at most
     /// `MAX_CODE_POINTS` (`GLYPHS_MISSING`). Decoding keeps only the first
-    /// `MAX_CODE_POINTS` values, so a hostile reply cannot make the
-    /// supervisor hold or sort more.
+    /// `MAX_CODE_POINTS` values in the field, so the supervisor never sorts
+    /// or keeps more. Peak decode memory is bounded by the frame limit, as
+    /// for every other list in a reply: `Response` is internally tagged, so
+    /// serde buffers the fields before this visitor runs.
     #[serde(default, deserialize_with = "bounded_code_points")]
     pub text_code_points: Vec<u32>,
-    /// The same for a deck's speaker notes.
-    #[serde(default, deserialize_with = "bounded_code_points")]
-    pub notes_code_points: Vec<u32>,
     pub macros: Option<MacroFactWire>,
     pub skipped: Vec<(CheckWire, SkipReasonWire)>,
 }

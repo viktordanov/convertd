@@ -6,31 +6,28 @@
 //! The same pass reads the text: `office:body` in `content.xml` and
 //! `office:master-styles` (headers and footers) in `styles.xml`, without
 //! annotations, tracked changes and the alternative text of frames
-//! (`svg:title`, `svg:desc`), which are not printed. Presentation notes go
-//! apart: they are printed only when the request exports notes pages.
+//! (`svg:title`, `svg:desc`), which are not printed. Presentation notes
+//! count when the request exports notes pages, hidden slides when it
+//! includes them; a hidden sheet is never printed.
 
 use std::collections::BTreeSet;
 
 use super::package::{Package, XmlEvent, attr};
-use super::{PART_CAP, TextCollector, TextScope, add_font};
+use super::{PART_CAP, Printed, TextCollector, TextScope, add_font};
 use crate::domain::verification::{Check, MacroFact, MacroKind, SkipReason, SourceFacts};
 
-/// Elements whose text is not printed.
-const NOT_PRINTED: &[&[u8]] = &[
-    b"annotation",
-    b"tracked-changes",
-    b"notes",
-    b"svg:title",
-    b"svg:desc",
-];
-
-/// Speaker notes: printed only when the request exports notes pages.
-const NOT_NOTES: &[&[u8]] = &[b"annotation", b"tracked-changes", b"svg:title", b"svg:desc"];
+/// Elements whose text is not printed, notes pages included.
+const NOT_PRINTED: &[&[u8]] = &[b"annotation", b"tracked-changes", b"notes"];
+/// The same when the request exports notes pages.
+const NOT_PRINTED_WITH_NOTES: &[&[u8]] = &[b"annotation", b"tracked-changes"];
+/// The alternative text of frames, by namespace.
+const SVG: &[u8] = b"urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0";
+const ALT_TEXT: &[(&[u8], &[u8])] = &[(SVG, b"title"), (SVG, b"desc")];
 
 pub(super) fn scan(
     package: &mut Package,
     text: &mut TextCollector,
-    notes: &mut TextCollector,
+    printed: Printed,
     facts: &mut SourceFacts,
 ) {
     facts.macros = macros(package);
@@ -39,20 +36,25 @@ pub(super) fn scan(
         ("content.xml", &b"body"[..]),
         ("styles.xml", &b"master-styles"[..]),
     ] {
-        let mut scope = TextScope::new(&[], Some(within), NOT_PRINTED);
-        // The notes of the presentation's pages, not the master's template.
-        let mut notes_scope =
-            (part == "content.xml").then(|| TextScope::new(&[], Some(b"notes"), NOT_NOTES));
+        // The master pages' notes are a template, never printed as such.
+        let skip = if printed.notes && part == "content.xml" {
+            NOT_PRINTED_WITH_NOTES
+        } else {
+            NOT_PRINTED
+        };
+        let mut scope = TextScope::new(&[], Some(within), skip).skipping_ns(ALT_TEXT);
         let result = package.xml_events(part, PART_CAP, |event| {
             if let Some(drawn) = scope.on(&event) {
                 text.add(drawn);
             }
-            if let Some(drawn) = notes_scope.as_mut().and_then(|s| s.on(&event)) {
-                notes.add(drawn);
-            }
             let (XmlEvent::Start(e) | XmlEvent::Empty(e)) = event else {
                 return true;
             };
+            if let XmlEvent::Start(_) = event
+                && not_exported(e, printed)
+            {
+                scope.skip_current();
+            }
             if e.local_name().as_ref() == b"font-face"
                 && let Some(family) = attr(e, b"font-family")
             {
@@ -61,9 +63,7 @@ pub(super) fn scan(
             }
             true
         });
-        let complete = scope
-            .complete()
-            .and_then(|()| notes_scope.as_ref().map_or(Ok(()), TextScope::complete));
+        let complete = scope.complete();
         match result {
             Ok(_) => {
                 if let Err(reason) = complete {
@@ -79,6 +79,17 @@ pub(super) fn scan(
         }
     }
     facts.requested_fonts = found.into_iter().collect();
+}
+
+/// A hidden slide (`draw:page presentation:visibility="hidden"`) unless the
+/// export includes hidden slides, and a hidden sheet (`table:table
+/// table:display="false"`), which LibreOffice never prints.
+fn not_exported(e: &quick_xml::events::BytesStart<'_>, printed: Printed) -> bool {
+    match e.local_name().as_ref() {
+        b"page" => !printed.hidden_slides && attr(e, b"visibility").as_deref() == Some("hidden"),
+        b"table" => attr(e, b"display").as_deref() == Some("false"),
+        _ => false,
+    }
 }
 
 /// A `Basic/<lib>/<module>.xml` entry other than `script-lb.xml`,

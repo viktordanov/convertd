@@ -115,11 +115,9 @@ pub struct SourceFacts {
     /// The distinct code points of the document's text that a font must
     /// draw: no controls, white space, default-ignorable or private-use
     /// characters ([`super::text::needs_glyph`]). Sorted, at most
-    /// [`MAX_CODE_POINTS`].
+    /// [`MAX_CODE_POINTS`]. Only the text that the export prints: the
+    /// notes pages and hidden slides when the request includes them.
     pub text_code_points: Vec<u32>,
-    /// The same for the speaker notes of a deck, which are printed only
-    /// when the request exports notes pages.
-    pub notes_code_points: Vec<u32>,
     pub macros: Option<MacroFact>,
     pub skipped: Vec<(Check, SkipReason)>,
 }
@@ -293,12 +291,7 @@ fn fonts(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdict) {
 /// the first [`LISTED_CODE_POINTS`] code points and a count per script.
 /// Without a coverage (outside the image) the check is skipped.
 fn glyphs(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdict) {
-    let notes: &[u32] = if input.request.export.notes == SlideNotes::None {
-        &[]
-    } else {
-        &facts.notes_code_points
-    };
-    if facts.text_code_points.is_empty() && notes.is_empty() {
+    if facts.text_code_points.is_empty() {
         return;
     }
     let catalog = input.fonts;
@@ -309,7 +302,6 @@ fn glyphs(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdict) {
     let mut missing: Vec<u32> = facts
         .text_code_points
         .iter()
-        .chain(notes)
         .copied()
         .filter(|&cp| !catalog.covers(cp))
         .collect();
@@ -944,28 +936,6 @@ mod tests {
         assert_eq!(
             w[0].message,
             "1 character has no font in this image: Thai 1"
-        );
-    }
-
-    #[test]
-    fn glyphs_in_notes_count_only_when_notes_are_exported() {
-        let fonts = latin_coverage();
-        let facts = SourceFacts {
-            text_code_points: vec![0x41, 0x0e01],
-            notes_code_points: vec![0x0e01, 0x1200],
-            ..Default::default()
-        };
-        let mut plain = case(Format::Pptx, facts, 1, &fonts);
-        let verdict = plain.verdict();
-        assert_eq!(
-            verdict.warnings[0].detail[0],
-            ("missing", DetailValue::Int(1))
-        );
-        plain.request.export.notes = SlideNotes::Append;
-        let verdict = plain.verdict();
-        assert_eq!(
-            verdict.warnings[0].detail[0],
-            ("missing", DetailValue::Int(2))
         );
     }
 

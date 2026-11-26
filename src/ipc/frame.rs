@@ -274,7 +274,6 @@ mod tests {
                     requested_fonts: vec!["Calibri".into()],
                     embedded_fonts: vec!["Aptos".into()],
                     text_code_points: vec![0x0e01],
-                    notes_code_points: vec![],
                     macros: Some(MacroFactWire {
                         kind: MacroKindWire::Vba,
                         part: "word/vbaProject.bin".into(),

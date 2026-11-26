@@ -215,7 +215,11 @@ impl OfficeWorker {
         {
             swap.recover()?;
         }
-        let facts = crate::preflight::scan(&args.input, domain_family(args.family));
+        let printed = crate::preflight::Printed {
+            notes: args.export.notes != SlideNotes::None,
+            hidden_slides: args.export.include_hidden_slides,
+        };
+        let facts = crate::preflight::scan(&args.input, domain_family(args.family), printed);
         // The copy with page sizes counts as pre-flight: it reads the source
         // before LibreOffice does.
         let swap = self.paper_swap(args);
