@@ -10,10 +10,11 @@ Know two facts before you use these files. First, the `runtime` image is proved 
 
 1. [Pod](#pod)
 2. [Disk budget](#disk-budget)
-3. [Deployment](#deployment)
-4. [Shutdown and rollout](#shutdown-and-rollout)
-5. [Worker isolation](#worker-isolation)
-6. [What is verified](#what-is-verified)
+3. [Memory budget](#memory-budget)
+4. [Deployment](#deployment)
+5. [Shutdown and rollout](#shutdown-and-rollout)
+6. [Worker isolation](#worker-isolation)
+7. [What is verified](#what-is-verified)
 
 <!-- memoria:section id="contract" files="k8s/base/deployment.yaml k8s/base/service.yaml k8s/base/networkpolicy.yaml k8s/overlays/gvisor/kustomization.yaml" -->
 ## Pod
@@ -28,6 +29,7 @@ The base runs one container with 2 CPU and 4 GiB, `OFFICE_WORKERS=1`, `RENDER_WO
 | Termination grace | 230 s in total (5 s `preStop` sleep + 210 + 15) |
 | Temp volume on `/tmp` | `emptyDir` with `sizeLimit: 4Gi` on node disk |
 | `TMP_MAX_BYTES` | 3221225472 (3 GiB) |
+| `WORKER_KILL_RSS_MB`, `WORKER_MAX_RSS_MB` | 1152, 768 (MiB) |
 | `TIMEOUT_MAX_SECONDS`, `TIMEOUT_DEFAULT_SECONDS` | 210, 120 |
 | CPU limit | none, requests only |
 | Network | ClusterIP Service on port 80. A NetworkPolicy denies all egress, DNS included |
@@ -44,6 +46,21 @@ convertd refuses to start if `TIMEOUT_MAX_SECONDS` is more than 210, or less tha
 convertd reserves space for each upload and job output under `TMP_DIR` (`/tmp/convert`) within the disk budget, `TMP_MAX_BYTES`. If a reservation fails, the request gets status 503, and the pod stays up. The budget does not count the worker slots, the LibreOffice profiles, partial writes and the container logs. These use the headroom of the volume.
 
 `TMP_MAX_BYTES` must stay at least 1 GiB below the size of the `/tmp` volume. The volume is 4 GiB and the budget is 3 GiB. If the volume fills, the kubelet evicts the pod and every job on it fails. Change `TMP_MAX_BYTES`, `sizeLimit` and both `ephemeral-storage` values together. The ephemeral-storage request equals the limit, so the scheduler reserves the whole volume.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="memory-budget" files="k8s/base/deployment.yaml" -->
+## Memory budget
+
+Each worker can grow to `WORKER_KILL_RSS_MB` before the watchdog kills it, and convertd has no limit for all workers together. The memory limit of the container must therefore hold every worker at its kill limit:
+
+```text
+(OFFICE_WORKERS + RENDER_WORKERS) × WORKER_KILL_RSS_MB + 512 MiB ≤ limits.memory
+3 × 1152 MiB + 512 MiB = 3968 MiB ≤ 4096 MiB
+```
+
+The 512 MiB holds the supervisor, the page cache and a margin. On cgroup v2 with Kubernetes 1.28 or later, a container that passes its memory limit loses every process. Then every job on the pod fails. This is not verified on the cluster of the owner. Change the worker counts, both RSS values and the memory limit together. `WORKER_MAX_RSS_MB`, 768, recycles a worker after a job that leaves it above that size.
+
+The values come from a measurement on 2026-11-26, in arm64 Docker, of the 59 cases of `corpus/expected.json`. Recycling and the watchdog were off. The office worker peaked at 533 MiB, during `pptx-photos60`, and a render worker at 109 MiB. The supervisor peaked at 17 MiB. An earlier soak saw office workers at up to 572 MiB. With the manifest values, the same corpus passed 59 of 59 cases, and no worker reached its kill limit.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="kubernetes" files="k8s/base/kustomization.yaml k8s/base/deployment.yaml k8s/overlays/gvisor/kustomization.yaml k8s/overlays/gvisor/runtimeclass.yaml" -->
