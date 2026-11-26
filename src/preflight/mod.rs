@@ -3,8 +3,9 @@
 //! The office worker (lane 002) calls [`scan`] on the source file before
 //! LibreOffice loads it and returns the facts in `Converted.facts`
 //! (INTERFACES.md §13). The algorithms are 005 §5: the declared slide count
-//! (V1, PPTX), the requested font families (V2) and the macro storage
-//! (V4). No tokio, no network, no engine calls.
+//! (V1, PPTX), the requested font families (V2), the macro storage (V4)
+//! and the distinct code points of the text (`GLYPHS_MISSING`). No tokio,
+//! no network, no engine calls.
 //!
 //! It must never panic: the worker's panic hook ends the process, which
 //! would turn a good conversion into `CONVERSION_FAILED`. A part that is
@@ -34,9 +35,12 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::domain::document::Family;
-use crate::domain::verification::{Check, MacroFact, MacroKind, SkipReason, SourceFacts};
+use crate::domain::text::needs_glyph;
+use crate::domain::verification::{
+    Check, MAX_CODE_POINTS, MacroFact, MacroKind, SkipReason, SourceFacts,
+};
 
-use package::Package;
+use package::{Package, XmlEvent};
 
 /// Inflated bytes per small part.
 pub const PART_CAP: u64 = 4 * 1024 * 1024;
@@ -87,14 +91,16 @@ fn read_head(file: &mut File, head: &mut [u8]) -> usize {
 }
 
 fn skip_all(facts: &mut SourceFacts, reason: SkipReason) {
-    for check in [Check::PageCount, Check::Fonts, Check::Macros] {
+    for check in [Check::PageCount, Check::Fonts, Check::Glyphs, Check::Macros] {
         facts.skipped.push((check, reason));
     }
 }
 
 fn scan_package(mut package: Package, family: Family, facts: &mut SourceFacts) {
+    let mut text = TextCollector::new();
     if package.has("mimetype") {
-        odf::scan(&mut package, facts);
+        odf::scan(&mut package, &mut text, facts);
+        text.finish(facts);
         return;
     }
     if !package.has("[Content_Types].xml") {
@@ -104,12 +110,130 @@ fn scan_package(mut package: Package, family: Family, facts: &mut SourceFacts) {
     facts.macros = ooxml_macros(&mut package, facts);
     let mut fonts = BTreeSet::new();
     match family {
-        Family::Document => docx::scan(&mut package, &mut fonts, facts),
-        Family::Presentation => pptx::scan(&mut package, &mut fonts, facts),
-        Family::Spreadsheet => xlsx::scan(&mut package, &mut fonts, facts),
+        Family::Document => docx::scan(&mut package, &mut fonts, &mut text, facts),
+        Family::Presentation => pptx::scan(&mut package, &mut fonts, &mut text, facts),
+        Family::Spreadsheet => xlsx::scan(&mut package, &mut fonts, &mut text, facts),
         Family::Pdf | Family::Image => {}
     }
     facts.requested_fonts = fonts.into_iter().collect();
+    text.finish(facts);
+}
+
+/// The distinct code points of the text read so far that need a glyph
+/// ([`needs_glyph`]), at most [`MAX_CODE_POINTS`]. A bit per code point,
+/// so a character costs the same whatever the text holds.
+struct TextCollector {
+    seen: Vec<u64>,
+    kept: Vec<u32>,
+    full: bool,
+}
+
+impl TextCollector {
+    fn new() -> Self {
+        Self {
+            seen: vec![0; 0x11_0000 / 64],
+            kept: Vec::new(),
+            full: false,
+        }
+    }
+
+    fn add(&mut self, text: &str) {
+        for c in text.chars() {
+            let cp = u32::from(c);
+            let (word, bit) = ((cp / 64) as usize, 1u64 << (cp % 64));
+            let Some(slot) = self.seen.get_mut(word) else {
+                continue;
+            };
+            if *slot & bit != 0 || !needs_glyph(cp) {
+                continue;
+            }
+            if self.kept.len() >= MAX_CODE_POINTS {
+                self.full = true;
+                continue;
+            }
+            *slot |= bit;
+            self.kept.push(cp);
+        }
+    }
+
+    /// Moves the code points into `facts`, sorted; past the cap the glyph
+    /// check runs on what was kept and records `cap_reached`.
+    fn finish(self, facts: &mut SourceFacts) {
+        let mut kept = self.kept;
+        kept.sort_unstable();
+        facts.text_code_points = kept;
+        if self.full {
+            facts.skipped.push((Check::Glyphs, SkipReason::CapReached));
+        }
+    }
+}
+
+/// Picks the drawn text out of one part's events: the text of an element
+/// named in `text` (by local name), or with `text` empty of any element
+/// inside `within`, and never inside an element named in `skip`.
+struct TextScope {
+    text: &'static [&'static [u8]],
+    within: Option<&'static [u8]>,
+    skip: &'static [&'static [u8]],
+    depth: usize,
+    text_at: Option<usize>,
+    within_at: Option<usize>,
+    skip_at: Option<usize>,
+}
+
+impl TextScope {
+    fn new(
+        text: &'static [&'static [u8]],
+        within: Option<&'static [u8]>,
+        skip: &'static [&'static [u8]],
+    ) -> Self {
+        Self {
+            text,
+            within,
+            skip,
+            depth: 0,
+            text_at: None,
+            within_at: None,
+            skip_at: None,
+        }
+    }
+
+    /// The drawn text that `event` carries, if any.
+    fn on<'e>(&mut self, event: &XmlEvent<'e, '_>) -> Option<&'e str> {
+        match event {
+            XmlEvent::Start(e) => {
+                let name = e.local_name();
+                let name = name.as_ref();
+                let depth = self.depth;
+                if self.skip.contains(&name) {
+                    self.skip_at.get_or_insert(depth);
+                }
+                if self.within == Some(name) {
+                    self.within_at.get_or_insert(depth);
+                }
+                if self.text.contains(&name) {
+                    self.text_at.get_or_insert(depth);
+                }
+                self.depth += 1;
+                None
+            }
+            XmlEvent::Empty(_) => None,
+            XmlEvent::End => {
+                self.depth = self.depth.saturating_sub(1);
+                for at in [&mut self.text_at, &mut self.within_at, &mut self.skip_at] {
+                    if *at == Some(self.depth) {
+                        *at = None;
+                    }
+                }
+                None
+            }
+            XmlEvent::Text { text, .. } => {
+                let within = self.within.is_none() || self.within_at.is_some();
+                let named = self.text.is_empty() || self.text_at.is_some();
+                (within && named && self.skip_at.is_none()).then_some(*text)
+            }
+        }
+    }
 }
 
 /// Adds a family name read from a part, unless it is empty, a theme

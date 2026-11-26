@@ -655,7 +655,13 @@ fn docx_unreadable_main_relationships_skip_the_font_check() {
         "{:?}",
         facts.requested_fonts
     );
-    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MissingPart)]);
+    assert_eq!(
+        facts.skipped,
+        [
+            (Check::Glyphs, SkipReason::MissingPart),
+            (Check::Fonts, SkipReason::MissingPart)
+        ]
+    );
 }
 
 #[test]
@@ -1034,7 +1040,7 @@ fn ole2_macro_storages() {
     let bytes = ole2(&["EncryptionInfo", "EncryptedPackage"]);
     let facts = scan_bytes("e.docx", &bytes, Family::Document);
     assert!(facts.requested_fonts.is_empty() && facts.macros.is_none());
-    assert_eq!(facts.skipped.len(), 3);
+    assert_eq!(facts.skipped.len(), 4);
 }
 
 #[test]
@@ -1045,7 +1051,7 @@ fn rtf_and_missing_files() {
         std::path::Path::new("/nonexistent/source.docx"),
         Family::Document,
     );
-    assert_eq!(facts.skipped.len(), 3);
+    assert_eq!(facts.skipped.len(), 4);
 }
 
 #[test]
@@ -1129,4 +1135,117 @@ fn broken_packages_never_panic() {
             let _ = scan_bytes("flipped", &flipped, family);
         }
     }
+}
+
+/// The code points of `text`, sorted and distinct.
+fn cps(text: &str) -> Vec<u32> {
+    let set: BTreeSet<u32> = text.chars().map(u32::from).collect();
+    set.into_iter().collect()
+}
+
+#[test]
+fn docx_text_code_points_from_runs_headers_and_entities() {
+    // F2: w:t text of the body and a header; an entity and a character
+    // reference count; delText, instrText, white space, ZWJ and private
+    // use do not.
+    let document = body(
+        "<w:p><w:r><w:t xml:space=\"preserve\">Ab \u{0E01}\u{200D}</w:t></w:r>\
+         <w:r><w:t>&amp;&#x1200;\u{F0A7}</w:t></w:r>\
+         <w:del><w:r><w:delText>\u{4E2D}</w:delText></w:r></w:del>\
+         <w:r><w:instrText>PAGE \u{0915}</w:instrText></w:r></w:p>",
+    );
+    let header = format!(r#"<w:hdr {W}><w:p><w:r><w:t>Ω</w:t></w:r></w:p></w:hdr>"#);
+    let bytes = docx(&[("word/header1.xml", header.as_bytes())], &document);
+    let facts = scan_bytes("text.docx", &bytes, Family::Document);
+    assert_eq!(facts.text_code_points, cps("Ab&\u{0E01}\u{1200}Ω"));
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn text_code_points_stop_at_the_cap() {
+    // More distinct letters than MAX_CODE_POINTS: the first ones are kept
+    // and the cap is recorded, so the check still runs on what was read.
+    let many: String = (0x4E00..0x4E00 + MAX_CODE_POINTS as u32 + 10)
+        .filter_map(char::from_u32)
+        .collect();
+    let document = body(&format!("<w:p><w:r><w:t>{many}</w:t></w:r></w:p>"));
+    let facts = scan_bytes("many.docx", &docx(&[], &document), Family::Document);
+    assert_eq!(facts.text_code_points.len(), MAX_CODE_POINTS);
+    assert_eq!(facts.text_code_points[0], 0x4E00);
+    assert!(
+        facts
+            .skipped
+            .contains(&(Check::Glyphs, SkipReason::CapReached)),
+        "{:?}",
+        facts.skipped
+    );
+}
+
+#[test]
+fn pptx_text_code_points_from_the_slides() {
+    let bytes = pptx(
+        &[
+            (
+                "p:sld",
+                "<p:txBody><a:p><a:r><a:t>\u{0E01}x</a:t></a:r></a:p></p:txBody>",
+            ),
+            ("p:sld", "<a:t>\u{05D0}</a:t>"),
+        ],
+        true,
+    );
+    let facts = scan_bytes("text.pptx", &bytes, Family::Presentation);
+    assert_eq!(facts.text_code_points, cps("x\u{05D0}\u{0E01}"));
+}
+
+#[test]
+fn xlsx_text_code_points_from_shared_and_inline_strings() {
+    // Phonetic runs (rPh) are not drawn.
+    let root = rels(&[("rId1", "officeDocument", "xl/workbook.xml")]);
+    let wb_rels = rels(&[
+        ("rId1", "sharedStrings", "sharedStrings.xml"),
+        ("rId2", "worksheet", "worksheets/sheet1.xml"),
+    ]);
+    let shared =
+        "<sst><si><t>\u{0E01}</t></si><si><r><t>b</t></r><rPh><t>\u{30A2}</t></rPh></si></sst>";
+    let sheet = "<worksheet><sheetData><row><c t=\"inlineStr\"><is><t>\u{1200}</t></is></c><c><v>42</v></c></row></sheetData></worksheet>";
+    let content_types = types("");
+    let bytes = zip(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", root.as_bytes()),
+        ("xl/workbook.xml", b"<workbook/>"),
+        ("xl/_rels/workbook.xml.rels", wb_rels.as_bytes()),
+        ("xl/sharedStrings.xml", shared.as_bytes()),
+        ("xl/worksheets/sheet1.xml", sheet.as_bytes()),
+    ]);
+    let facts = scan_bytes("text.xlsx", &bytes, Family::Spreadsheet);
+    assert_eq!(facts.text_code_points, cps("b\u{0E01}\u{1200}"));
+}
+
+#[test]
+fn odf_text_code_points_from_the_body_and_the_master_pages() {
+    // Text in the body and in a footer of styles.xml counts; annotations
+    // and tracked deletions are not printed.
+    let content = r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><office:automatic-styles/><office:body><office:text><text:tracked-changes><text:changed-region><text:deletion><text:p>Ж</text:p></text:deletion></text:changed-region></text:tracked-changes><text:p>a<text:span>ก</text:span><office:annotation><dc:creator>中</dc:creator><text:p>中</text:p></office:annotation></text:p></office:text></office:body></office:document-content>"#;
+    let styles = r#"<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:styles><style:style style:name="x"/></office:styles><office:master-styles><style:master-page style:name="Standard"><style:footer><text:p>ሀ</text:p></style:footer></style:master-page></office:master-styles></office:document-styles>"#;
+    let bytes = zip(&[
+        ("mimetype", b"application/vnd.oasis.opendocument.text"),
+        ("content.xml", content.as_bytes()),
+        ("styles.xml", styles.as_bytes()),
+    ]);
+    let facts = scan_bytes("text.odt", &bytes, Family::Document);
+    assert_eq!(facts.text_code_points, cps("a\u{0E01}\u{1200}"));
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn malformed_text_part_skips_the_glyph_check() {
+    let document = body("<w:p><w:r><w:t>\u{0E01}</w:t></w:r></w:p>").replace("</w:body>", "");
+    let facts = scan_bytes("bad.docx", &docx(&[], &document), Family::Document);
+    assert!(
+        facts
+            .skipped
+            .contains(&(Check::Glyphs, SkipReason::MalformedXml)),
+        "{:?}",
+        facts.skipped
+    );
 }

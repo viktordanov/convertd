@@ -24,9 +24,14 @@ pub enum XmlEvent<'a, 'b> {
     Start(&'a BytesStart<'b>),
     Empty(&'a BytesStart<'b>),
     End,
-    /// Character data that is not only white space, a CDATA section or
-    /// an entity or character reference.
-    Text,
+    /// Character data: the decoded text of a text node or a CDATA
+    /// section, or what a character or predefined entity reference stands
+    /// for. `stray` is true unless it is only white space in a text node;
+    /// outside the root such data is not XML.
+    Text {
+        text: &'a str,
+        stray: bool,
+    },
 }
 
 pub struct Package {
@@ -74,7 +79,7 @@ impl Package {
     ) -> Result<u64, SkipReason> {
         self.xml_events(name, cap, |event| match event {
             XmlEvent::Start(e) | XmlEvent::Empty(e) => on_start(e),
-            XmlEvent::End | XmlEvent::Text => true,
+            XmlEvent::End | XmlEvent::Text { .. } => true,
         })
     }
 
@@ -105,11 +110,39 @@ impl Package {
                 Ok(Event::Start(e)) => on_event(XmlEvent::Start(&e)),
                 Ok(Event::Empty(e)) => on_event(XmlEvent::Empty(&e)),
                 Ok(Event::End(_)) => on_event(XmlEvent::End),
-                Ok(Event::Text(t)) if t.iter().any(|b| !b.is_ascii_whitespace()) => {
-                    on_event(XmlEvent::Text)
+                Ok(Event::Text(t)) => match t.decode() {
+                    Ok(text) => on_event(XmlEvent::Text {
+                        stray: text.chars().any(|c| !c.is_ascii_whitespace()),
+                        text: &text,
+                    }),
+                    Err(_) => on_event(XmlEvent::Text {
+                        text: "",
+                        stray: true,
+                    }),
+                },
+                Ok(Event::CData(c)) => {
+                    let text = c.decode().unwrap_or_default();
+                    on_event(XmlEvent::Text {
+                        text: &text,
+                        stray: true,
+                    })
                 }
                 // An entity or character reference is character data too.
-                Ok(Event::CData(_) | Event::GeneralRef(_)) => on_event(XmlEvent::Text),
+                Ok(Event::GeneralRef(r)) => {
+                    let mut utf8 = [0u8; 4];
+                    let text: &str = match r.resolve_char_ref() {
+                        Ok(Some(c)) => c.encode_utf8(&mut utf8),
+                        _ => match &*r {
+                            b"amp" => "&",
+                            b"lt" => "<",
+                            b"gt" => ">",
+                            b"quot" => "\"",
+                            b"apos" => "'",
+                            _ => "",
+                        },
+                    };
+                    on_event(XmlEvent::Text { text, stray: true })
+                }
                 Ok(Event::Eof) => break Ok(()),
                 Ok(_) => true,
                 Err(_) if count.get() > cap => break Err(SkipReason::CapReached),
@@ -234,8 +267,8 @@ impl Package {
                     return true;
                 }
                 // Text outside the root is not XML.
-                XmlEvent::Text => {
-                    malformed |= open == 0;
+                XmlEvent::Text { stray, .. } => {
+                    malformed |= stray && open == 0;
                     return !malformed;
                 }
             };

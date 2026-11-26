@@ -2,18 +2,36 @@
 //! `office:font-face-decls/style:font-face@svg:font-family` in
 //! `content.xml` and `styles.xml`, and the macro storage (V4). No declared
 //! page count.
+//!
+//! The same pass reads the text: `office:body` in `content.xml` and
+//! `office:master-styles` (headers and footers) in `styles.xml`, without
+//! annotations, tracked changes and presentation notes, which are not
+//! printed.
 
 use std::collections::BTreeSet;
 
-use super::package::{Package, attr};
-use super::{PART_CAP, add_font};
+use super::package::{Package, XmlEvent, attr};
+use super::{PART_CAP, TextCollector, TextScope, add_font};
 use crate::domain::verification::{Check, MacroFact, MacroKind, SkipReason, SourceFacts};
 
-pub(super) fn scan(package: &mut Package, facts: &mut SourceFacts) {
+/// Elements whose text is not printed.
+const NOT_PRINTED: &[&[u8]] = &[b"annotation", b"tracked-changes", b"notes"];
+
+pub(super) fn scan(package: &mut Package, text: &mut TextCollector, facts: &mut SourceFacts) {
     facts.macros = macros(package);
     let mut found = BTreeSet::new();
-    for part in ["content.xml", "styles.xml"] {
-        let result = package.xml(part, PART_CAP, |e| {
+    for (part, within) in [
+        ("content.xml", &b"body"[..]),
+        ("styles.xml", &b"master-styles"[..]),
+    ] {
+        let mut scope = TextScope::new(&[], Some(within), NOT_PRINTED);
+        let result = package.xml_events(part, PART_CAP, |event| {
+            if let Some(drawn) = scope.on(&event) {
+                text.add(drawn);
+            }
+            let (XmlEvent::Start(e) | XmlEvent::Empty(e)) = event else {
+                return true;
+            };
             if e.local_name().as_ref() == b"font-face"
                 && let Some(family) = attr(e, b"font-family")
             {
@@ -26,6 +44,7 @@ pub(super) fn scan(package: &mut Package, facts: &mut SourceFacts) {
             Ok(_) | Err(SkipReason::MissingPart) => {}
             Err(reason) => {
                 facts.skipped.push((Check::Fonts, reason));
+                facts.skipped.push((Check::Glyphs, reason));
                 return;
             }
         }

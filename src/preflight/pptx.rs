@@ -10,12 +10,15 @@
 //! V2 reads `a:latin@typeface` from the slides, and from only the layouts
 //! and masters that a slide reaches (slide to layout to master).
 //! `+mj-lt` and `+mn-lt` resolve through the theme of the reached master.
+//!
+//! The text is the `a:t` of the slides, hidden ones included. Layout and
+//! master text is mostly placeholder prompts, which are not drawn.
 
 use std::collections::{BTreeSet, HashMap};
 
 use super::docx::{ThemeFonts, main_part, theme_fonts};
-use super::package::{Package, attr, attr_prefixed};
-use super::{FONT_SCAN_CAP, PART_CAP, add_font};
+use super::package::{Package, XmlEvent, attr, attr_prefixed};
+use super::{FONT_SCAN_CAP, PART_CAP, TextCollector, TextScope, add_font};
 use crate::domain::verification::{Check, DeclaredPages, SkipReason, SourceFacts};
 
 /// At most this many slides are counted and scanned.
@@ -31,13 +34,19 @@ struct PartFonts {
     minor: bool,
 }
 
-pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &mut SourceFacts) {
+pub(super) fn scan(
+    package: &mut Package,
+    fonts: &mut BTreeSet<String>,
+    text: &mut TextCollector,
+    facts: &mut SourceFacts,
+) {
     let main = main_part(package).unwrap_or_else(|| SOURCE.to_owned());
     let rels = match package.rels(&main) {
         Ok(rels) => rels,
         Err(reason) => {
             facts.skipped.push((Check::PageCount, reason));
             facts.skipped.push((Check::Fonts, reason));
+            facts.skipped.push((Check::Glyphs, reason));
             return;
         }
     };
@@ -57,6 +66,7 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
     }) {
         facts.skipped.push((Check::PageCount, reason));
         facts.skipped.push((Check::Fonts, reason));
+        facts.skipped.push((Check::Glyphs, reason));
         return;
     }
 
@@ -83,6 +93,10 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
                 page_skip.get_or_insert(reason);
             }
         }
+    }
+    // A slide that was not counted is not read for text either.
+    if let Some(reason) = page_skip {
+        facts.skipped.push((Check::Glyphs, reason));
     }
     match page_skip {
         Some(reason) => facts.skipped.push((Check::PageCount, reason)),
@@ -116,7 +130,8 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
         };
         for part in [Some(slide.clone()), layout, master].into_iter().flatten() {
             if !cache.contains_key(&part) {
-                match latin_fonts(package, &part, budget) {
+                let slide_text = (part == *slide).then_some(&mut *text);
+                match latin_fonts(package, &part, budget, slide_text) {
                     Ok((part_fonts, read)) => {
                         budget = budget.saturating_sub(read);
                         cache.insert(part.clone(), part_fonts);
@@ -126,6 +141,7 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
                     }
                     Err(reason) => {
                         facts.skipped.push((Check::Fonts, reason));
+                        facts.skipped.push((Check::Glyphs, reason));
                         return;
                     }
                 }
@@ -160,14 +176,25 @@ fn related(package: &mut Package, part: &str, kind: &str) -> Option<String> {
 }
 
 /// The literal `a:latin@typeface` values of one part, and whether it uses
-/// the theme's major (`+mj-lt`) or minor (`+mn-lt`) font.
+/// the theme's major (`+mj-lt`) or minor (`+mn-lt`) font. With `text`, the
+/// same pass collects the part's `a:t` text.
 fn latin_fonts(
     package: &mut Package,
     part: &str,
     budget: u64,
+    mut text: Option<&mut TextCollector>,
 ) -> Result<(PartFonts, u64), SkipReason> {
     let mut out = PartFonts::default();
-    let read = package.xml(part, budget, |e| {
+    let mut scope = TextScope::new(&[b"t"], None, &[]);
+    let read = package.xml_events(part, budget, |event| {
+        if let Some(drawn) = scope.on(&event)
+            && let Some(text) = text.as_deref_mut()
+        {
+            text.add(drawn);
+        }
+        let (XmlEvent::Start(e) | XmlEvent::Empty(e)) = event else {
+            return true;
+        };
         if e.local_name().as_ref() == b"latin"
             && let Some(face) = attr(e, b"typeface")
         {
