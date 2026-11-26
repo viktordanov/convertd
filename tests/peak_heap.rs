@@ -274,3 +274,70 @@ fn allocations_per_small_request() {
 
 /// See [`allocations_per_small_request`].
 const ALLOCATION_CEILING: usize = 408;
+
+/// A 1 MiB version-3 OLE2 file whose DIFAT sectors form one long chain
+/// (sectors 2, 3, ... 2046) and whose every DIFAT entry names sector 1 as
+/// a FAT sector. A reader that builds the FAT from the whole DIFAT before
+/// any cap reads sector 1 once per entry: about 260 000 entries, a FAT of
+/// about 133 MB (review, lane 001 item 1).
+fn hostile_ole2() -> Vec<u8> {
+    const SECTOR: usize = 512;
+    const END_OF_CHAIN: u32 = 0xFFFF_FFFE;
+    let sectors = (MIB / SECTOR) - 1; // sectors 0..=2046 after the header
+    let mut file = vec![0u8; MIB];
+    let h = &mut file[..SECTOR];
+    h[..8].copy_from_slice(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+    h[0x18..0x1A].copy_from_slice(&0x3Eu16.to_le_bytes()); // minor version
+    h[0x1A..0x1C].copy_from_slice(&3u16.to_le_bytes()); // major version 3
+    h[0x1C..0x1E].copy_from_slice(&0xFFFEu16.to_le_bytes()); // byte order
+    h[0x1E..0x20].copy_from_slice(&9u16.to_le_bytes()); // 512-byte sectors
+    h[0x20..0x22].copy_from_slice(&6u16.to_le_bytes()); // 64-byte mini sectors
+    h[0x2C..0x30].copy_from_slice(&(sectors as u32).to_le_bytes()); // FAT sectors
+    h[0x30..0x34].copy_from_slice(&0u32.to_le_bytes()); // first directory sector
+    h[0x38..0x3C].copy_from_slice(&4096u32.to_le_bytes()); // mini stream cutoff
+    h[0x3C..0x40].copy_from_slice(&END_OF_CHAIN.to_le_bytes()); // no mini FAT
+    h[0x44..0x48].copy_from_slice(&2u32.to_le_bytes()); // first DIFAT sector
+    h[0x48..0x4C].copy_from_slice(&((sectors - 2) as u32).to_le_bytes());
+    for i in 0..109 {
+        h[0x4C + 4 * i..0x50 + 4 * i].copy_from_slice(&1u32.to_le_bytes());
+    }
+    // Sector 1, the named FAT sector: no special values, so nothing strips it.
+    for word in file[2 * SECTOR..3 * SECTOR].as_chunks_mut::<4>().0 {
+        word.copy_from_slice(&1u32.to_le_bytes());
+    }
+    // DIFAT sectors 2..=2046: 127 entries naming sector 1, then the next one.
+    for sector in 2..sectors {
+        let at = (sector + 1) * SECTOR;
+        let block = &mut file[at..at + SECTOR];
+        for word in block[..SECTOR - 4].as_chunks_mut::<4>().0 {
+            word.copy_from_slice(&1u32.to_le_bytes());
+        }
+        let next = if sector + 1 < sectors {
+            (sector + 1) as u32
+        } else {
+            END_OF_CHAIN
+        };
+        block[SECTOR - 4..].copy_from_slice(&next.to_le_bytes());
+    }
+    file
+}
+
+#[test]
+fn hostile_ole2_detection_stays_bounded() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let bytes = hostile_ole2();
+    let mut cursor = std::io::Cursor::new(&bytes);
+    let baseline = LIVE.load(Ordering::Relaxed);
+    PEAK.store(baseline, Ordering::Relaxed);
+    let result = convertd::detect::detect_file(&mut cursor, bytes.len() as u64);
+    let peak = PEAK.load(Ordering::Relaxed).saturating_sub(baseline);
+    eprintln!("hostile OLE2: {result:?}, peak {peak} bytes");
+    assert!(
+        matches!(
+            result,
+            Err(convertd::domain::detection::DetectError::Unsupported { label: "ole2" })
+        ),
+        "{result:?}"
+    );
+    assert!(peak < 4 * MIB, "peak {peak} bytes");
+}
