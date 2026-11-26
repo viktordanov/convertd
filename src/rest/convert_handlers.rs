@@ -255,15 +255,19 @@ async fn success(
 ) -> Response {
     let output = received.request.output;
     // The deadline covers everything up to the headers, packaging
-    // included: planning a bundle reads every page's size.
+    // included. It is checked before planning, and again after it, because
+    // planning a bundle reads every page's size and can take long.
     let deadline = received.upload_done + received.request.timeout;
-    let prepared = match output {
-        _ if Instant::now() >= deadline => Err(ApiError::from_conversion(
+    let timed_out = || {
+        ApiError::from_conversion(
             &ConversionError::Timeout {
                 seconds: received.request.timeout.as_secs(),
             },
             state.queue_wait_seconds,
-        )),
+        )
+    };
+    let prepared = match output {
+        _ if Instant::now() >= deadline => Err(timed_out()),
         Output::Pdf => {
             // A few entries: cheap enough on this thread.
             settle(&job);
@@ -285,6 +289,14 @@ async fn success(
                 })
         }
     };
+    // The second check, just before the 200.
+    let prepared = prepared.and_then(|prepared| {
+        if Instant::now() >= deadline {
+            Err(timed_out())
+        } else {
+            Ok(prepared)
+        }
+    });
     let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(api) => {
@@ -406,6 +418,13 @@ fn plan_tar(
     input: &ManifestInput,
     result: &ConversionResult,
 ) -> Result<Prepared, ApiError> {
+    #[cfg(feature = "test-hooks")]
+    {
+        let ms = test_hooks::PLAN_DELAY_MS.load(std::sync::atomic::Ordering::Relaxed);
+        if ms > 0 {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
+    }
     settle(job);
     let format = input.request.images.format;
     let io = |err: std::io::Error| ApiError::internal(format!("failed to plan the bundle: {err}"));
@@ -570,3 +589,13 @@ fn record_metrics(
 #[schema(value_type = String, format = Binary)]
 #[allow(dead_code)]
 pub struct Binary(Vec<u8>);
+
+/// Hooks for tests (feature `test-hooks`).
+#[cfg(feature = "test-hooks")]
+pub mod test_hooks {
+    use std::sync::atomic::AtomicU64;
+
+    /// Milliseconds that planning a bundle sleeps first: a slow plan, to
+    /// test the deadline check after it. Zero in every other test.
+    pub static PLAN_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+}

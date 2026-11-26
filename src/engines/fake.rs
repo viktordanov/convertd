@@ -357,9 +357,9 @@ pub struct FakePdf {
     password: Option<String>,
     /// The owner password of a `/Restricted` PDF.
     owner_password: Option<String>,
-    /// render returns only at the deadline, with success: an engine that
-    /// used up the whole budget.
-    render_until_deadline: bool,
+    /// render returns only this long before the deadline (zero: at it),
+    /// with success: an engine that used up the budget.
+    render_until_deadline: Option<Duration>,
 }
 
 impl FakePdf {
@@ -368,7 +368,7 @@ impl FakePdf {
             settings: Settings::new(behavior, false),
             password: None,
             owner_password: None,
-            render_until_deadline: false,
+            render_until_deadline: None,
         }
     }
 
@@ -379,7 +379,7 @@ impl FakePdf {
             settings: Settings::new(FakeBehavior::Succeed, true),
             password: None,
             owner_password: None,
-            render_until_deadline: false,
+            render_until_deadline: None,
         }
     }
 
@@ -397,7 +397,13 @@ impl FakePdf {
 
     /// render succeeds, but only once the deadline has passed.
     pub fn with_render_until_deadline(mut self) -> Self {
-        self.render_until_deadline = true;
+        self.render_until_deadline = Some(Duration::ZERO);
+        self
+    }
+
+    /// render succeeds `margin` before the deadline, no sooner.
+    pub fn with_render_until_before_deadline(mut self, margin: Duration) -> Self {
+        self.render_until_deadline = Some(margin);
         self
     }
 
@@ -529,9 +535,9 @@ impl PdfEngine for FakePdf {
         deadline: Instant,
     ) -> Result<Rendered, EngineError> {
         let started = Instant::now();
-        let played = if self.render_until_deadline {
-            // Succeeds, but only once the deadline has passed.
-            tokio::time::sleep_until(deadline.into()).await;
+        let played = if let Some(margin) = self.render_until_deadline {
+            // Succeeds, but only once the deadline (less `margin`) has passed.
+            tokio::time::sleep_until((deadline - margin).into()).await;
             Played {
                 pages: None,
                 engine: started.elapsed(),

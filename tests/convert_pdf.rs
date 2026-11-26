@@ -950,6 +950,41 @@ async fn a_client_that_stops_reading_releases_the_permit_after_the_idle_timeout(
     drop(stream);
 }
 
+/// Planning a bundle reads every page's size and can take long. A render
+/// that ends 1 s before the deadline passes the check before planning;
+/// planning then takes 1.5 s, and the check after it answers 504 instead
+/// of a 200 past the deadline (performance review, lane 001 item 3).
+#[cfg(feature = "test-hooks")]
+#[tokio::test]
+async fn slow_a_bundle_whose_planning_passes_the_deadline_is_504() {
+    use std::sync::atomic::Ordering;
+    let app = App::with_pdf(
+        "deadline-after-plan",
+        &[],
+        FakePdf::new(FakeBehavior::Succeed)
+            .with_render_until_before_deadline(Duration::from_secs(1)),
+    );
+    convertd::rest::convert_handlers::test_hooks::PLAN_DELAY_MS.store(1500, Ordering::Relaxed);
+    let (response, body) = send(
+        &app,
+        with_options(
+            "a.pdf",
+            &pdf("x"),
+            r#"{"output":"bundle","timeout_seconds":5}"#,
+        ),
+    )
+    .await;
+    convertd::rest::convert_handlers::test_hooks::PLAN_DELAY_MS.store(0, Ordering::Relaxed);
+    assert_eq!(
+        response.status(),
+        StatusCode::GATEWAY_TIMEOUT,
+        "{}",
+        String::from_utf8_lossy(&body[..body.len().min(200)])
+    );
+    assert_eq!(error_code(&body), "CONVERSION_TIMEOUT");
+    app.assert_no_jobs().await;
+}
+
 /// `timeout_seconds` covers everything up to the headers. A render that
 /// returns only at the deadline lands after the service's last check but
 /// inside the backstop's grace, so the handler's check before packaging is
