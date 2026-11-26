@@ -452,6 +452,11 @@ impl FontCatalog {
         self
     }
 
+    /// The merged coverage ranges, sorted.
+    pub fn coverage(&self) -> &[(u32, u32)] {
+        &self.coverage
+    }
+
     /// Whether a coverage is known: without one `GLYPHS_MISSING` cannot run.
     pub fn has_coverage(&self) -> bool {
         !self.coverage.is_empty()
