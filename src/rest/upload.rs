@@ -15,7 +15,7 @@
 //! parsed and validated as soon as it arrives, so a bad option fails
 //! before the upload is stored.
 
-use super::throughput::{Meter, MinRate};
+use super::throughput::{MeteredBody, MinRate, too_slow};
 use std::error::Error as StdError;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
@@ -162,7 +162,9 @@ pub async fn receive(
                 .for_field("file", max_upload)
                 .for_field("options", OPTIONS_PART_MAX),
         );
-    let body = request.into_body().into_data_stream();
+    // The floor meters the whole body, not only the file part.
+    let body =
+        axum::body::Body::new(MeteredBody::new(request.into_body(), rate)).into_data_stream();
     let mut multipart = Multipart::with_constraints(body, boundary, constraints);
 
     let mut options: Option<ConversionRequest> = None;
@@ -194,7 +196,7 @@ pub async fn receive(
                 let (tx, rx) = mpsc::channel(UPLOAD_QUEUE_CHUNKS);
                 let sink_job = Arc::clone(job);
                 let sink = tokio::task::spawn_blocking(move || sink(file, &sink_job, rx));
-                let forwarded = forward(&mut field, &tx, max_upload, Meter::new(rate)).await;
+                let forwarded = forward(&mut field, &tx, max_upload).await;
                 drop(tx);
                 let result = sink
                     .await
@@ -234,23 +236,15 @@ pub async fn receive(
 }
 
 /// Sends the file part's chunks to the sink, then the end marker. Stops
-/// early when the sink is gone (it failed; its error is the answer), and
-/// when the upload falls below its minimum throughput.
+/// early when the sink is gone (it failed; its error is the answer).
 async fn forward(
     field: &mut multer::Field<'_>,
     tx: &mpsc::Sender<SinkMessage>,
     max_upload: u64,
-    mut meter: Meter,
 ) -> Result<(), UploadError> {
     loop {
         match field.chunk().await {
             Ok(Some(chunk)) => {
-                meter
-                    .record(chunk.len() as u64)
-                    .map_err(|slow| UploadError::TooSlow {
-                        observed: slow.observed,
-                        min: slow.min,
-                    })?;
                 if tx.send(SinkMessage::Chunk(chunk)).await.is_err() {
                     return Ok(());
                 }
@@ -285,7 +279,12 @@ fn map_multer(err: multer::Error, max_upload: u64) -> UploadError {
             UploadError::TooLarge { limit: max_upload }
         }
         multer::Error::StreamReadFailed(inner) => {
-            if is_stall(inner.as_ref()) {
+            if let Some(slow) = too_slow(inner.as_ref()) {
+                UploadError::TooSlow {
+                    observed: slow.observed,
+                    min: slow.min,
+                }
+            } else if is_stall(inner.as_ref()) {
                 UploadError::Stalled
             } else {
                 UploadError::Incomplete(inner.to_string())

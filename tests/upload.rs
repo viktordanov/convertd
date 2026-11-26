@@ -580,6 +580,78 @@ async fn a_trickled_upload_is_400_and_releases_its_permit() {
     assert_eq!(status, 200, "the permit is free again");
 }
 
+/// The floor covers the whole body, not only the file part: a trickle in
+/// the part headers before the file, or in the closing boundary after it,
+/// also ends with 400 and frees the permit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_a_trickle_outside_the_file_part_is_400_too() {
+    let app = App::new(
+        "trickle-edges",
+        &[
+            ("IO_IDLE_TIMEOUT_SECONDS", "1"),
+            ("UPLOAD_MIN_BYTES_PER_SECOND", "65536"),
+            ("MAX_CONCURRENT_REQUESTS", "1"),
+        ],
+    );
+    let addr = app.serve().await;
+    let mut upload = PDF.to_vec();
+    upload.extend(noise(256 * 1024));
+    let body = multipart(&[("file", Some("a.pdf"), &upload)]);
+    // The part headers end at the first blank line; the closing boundary
+    // is the last 40 bytes or so.
+    let headers_end = body.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    let tail_start = body.len() - (BOUNDARY.len() + 8);
+    for (name, fast, slow, rest) in [
+        ("preamble", 0..0, 0..headers_end, headers_end..body.len()),
+        (
+            "closing boundary",
+            0..tail_start,
+            tail_start..body.len(),
+            0..0,
+        ),
+    ] {
+        let started = Instant::now();
+        let (status, text) = tokio::task::spawn_blocking({
+            let body = body.clone();
+            move || {
+                let mut stream = TcpStream::connect(addr).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                stream.write_all(&head(body.len())).unwrap();
+                let mut reader = stream.try_clone().unwrap();
+                let writer = std::thread::spawn(move || {
+                    if stream.write_all(&body[fast]).is_err() {
+                        return;
+                    }
+                    // One byte every 300 ms: inside the 1 s idle timer.
+                    for byte in &body[slow] {
+                        if stream.write_all(std::slice::from_ref(byte)).is_err() {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(300));
+                    }
+                    let _ = stream.write_all(&body[rest]);
+                });
+                let answer = read_response(&mut reader);
+                drop(writer);
+                answer
+            }
+        })
+        .await
+        .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(status, 400, "{name}: {text}");
+        assert!(text.contains("upload too slow"), "{name}: {text}");
+        assert!(elapsed < Duration::from_secs(4), "{name}: {elapsed:?}");
+        app.assert_no_jobs().await;
+    }
+    let status = tokio::task::spawn_blocking(move || round_trip(addr, &body))
+        .await
+        .unwrap();
+    assert_eq!(status, 200, "the permit is free again");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_client_that_closes_mid_upload_releases_everything_at_once() {
     let app = App::new(

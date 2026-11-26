@@ -28,10 +28,69 @@ impl MinRate {
 }
 
 /// Bytes per second, measured over the window that fell below the floor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("too slow: {observed} bytes/s, below the minimum of {min} bytes/s")]
 pub struct TooSlow {
     pub observed: u64,
     pub min: u64,
+}
+
+/// A request body that fails with [`TooSlow`] once a window carries less
+/// than the floor. It meters every byte of the body: the part headers, the
+/// options part and the closing boundary as well as the file.
+pub struct MeteredBody {
+    inner: axum::body::Body,
+    meter: Meter,
+}
+
+impl MeteredBody {
+    pub fn new(inner: axum::body::Body, rate: MinRate) -> Self {
+        Self {
+            inner,
+            meter: Meter::new(rate),
+        }
+    }
+}
+
+impl http_body::Body for MeteredBody {
+    type Data = bytes::Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<bytes::Bytes>, axum::Error>>> {
+        let polled = std::pin::Pin::new(&mut self.inner).poll_frame(cx);
+        if let std::task::Poll::Ready(Some(Ok(frame))) = &polled
+            && let Some(data) = frame.data_ref()
+        {
+            let len = data.len() as u64;
+            if let Err(slow) = self.meter.record(len) {
+                return std::task::Poll::Ready(Some(Err(axum::Error::new(slow))));
+            }
+        }
+        polled
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+/// The [`TooSlow`] in `err`'s source chain, if any.
+pub fn too_slow(err: &(dyn std::error::Error + 'static)) -> Option<TooSlow> {
+    let mut current = Some(err);
+    while let Some(err) = current {
+        if let Some(slow) = err.downcast_ref::<TooSlow>() {
+            return Some(*slow);
+        }
+        current = err.source();
+    }
+    None
 }
 
 /// Counts the bytes of one transfer, window by window.
