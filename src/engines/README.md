@@ -52,7 +52,7 @@ The reaper wakes on each SIGCHLD and every 2 s (`REAP_TICK`) as a safety net. Fo
 
 After that, it sweeps the groups of dead children with `waitid(P_PGID)` until `ECHILD`. The reaper touches only the PIDs that its own `Spawner` registered. Thus two spawners in one test process, or a library that waits on its own child, keep their exit statuses.
 
-`ReaperMode::Owned` is for tests and the `engine` CLI. `ReaperMode::ProcessWide` is for `convertd serve`. It also reaps unknown children and logs each one as `stray child reaped`. On Linux it makes the supervisor a child subreaper first, so strays that leave their group reparent to it. In this mode, other code in the process must not wait on a child of its own.
+`ReaperMode::Owned` is for tests and the `engine` CLI. `ReaperMode::ProcessWide` is for `convertd serve`. It also reaps unknown children and logs each one as `stray child reaped`. This pass peeks each exit with `waitid(P_ALL, WNOWAIT)` first. A worker can exit after its own peek and show up only in this pass, and its group is still killed while its zombie holds the PGID. On Linux it makes the supervisor a child subreaper first, so strays that leave their group reparent to it. In this mode, other code in the process must not wait on a child of its own.
 
 `ChildHandle::kill_group()` sends SIGKILL to the group under the registry lock. It sends nothing and returns `false` once the child is reaped, so a recycled PID never gets the signal. `ChildHandle::wait()` waits for the reaper and is cancel safe. When the last `Spawner` handle is dropped, it kills and reaps every child that is still registered, before it returns.
 
