@@ -348,6 +348,28 @@ func TestUnsupportedFormat(t *testing.T) {
 	wantErr(t, err, convert.ErrUnsupportedFormat)
 }
 
+// Image uploads left v1 (owner decision): a PNG gets 415, and capabilities
+// lists no image input.
+func TestImageUploadUnsupported(t *testing.T) {
+	ctx := testContext(t)
+	f := newFacade(t)
+	_, err := f.ConvertToImages(ctx, "image.png", bytes.NewReader(pngImage()), convert.Options{})
+	wantErr(t, err, convert.ErrUnsupportedFormat)
+	if convert.Retryable(err) {
+		t.Error("ErrUnsupportedFormat is retryable")
+	}
+
+	caps, err := f.Capabilities(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range caps.Formats {
+		if format.Family == "image" || format.Engine == "image" {
+			t.Errorf("capabilities lists the image input %+v", format)
+		}
+	}
+}
+
 // uploadLimit is the server's cap: the harness's in binary mode, the
 // advertised one in image mode.
 func uploadLimit(t *testing.T) int64 {
