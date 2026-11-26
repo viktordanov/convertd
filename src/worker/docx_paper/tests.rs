@@ -990,7 +990,7 @@ fn a_main_part_whose_local_header_disagrees_is_not_copied() {
     let entry = at(&bytes);
     let descriptor = entry.local_offset as usize + 30 + 17 + 4 + entry.compressed as usize;
     bytes[descriptor + 4] ^= 0xFF;
-    assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unreadable), None));
+    assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unsupported), None));
     // The local header without the descriptor flag that the directory has.
     let mut bytes = entries_of(true);
     let local = at(&bytes).local_offset as usize;
@@ -1189,4 +1189,59 @@ fn zip64_in_a_directory_record_keeps_the_package() {
     // The disk-start sentinel on the first directory record.
     put_u16(&mut source, cd + 34, 0xFFFF);
     assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
+}
+
+#[test]
+fn local_fields_beside_a_descriptor_are_zero_or_right() {
+    let main = doc("<w:p/>");
+    let mut bytes = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", main.as_bytes(), true, true),
+    ]);
+    let local = entries(&bytes)
+        .into_iter()
+        .find(|(n, _)| n == "word/document.xml")
+        .unwrap()
+        .1
+        .local_offset as usize;
+    // A wrong, non-zero CRC where the descriptor's placeholder goes.
+    put_u32(&mut bytes, local + 14, 0x1234_5678);
+    assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unreadable), None));
+}
+
+#[test]
+fn trailing_compressed_bytes_in_the_main_part_keep_the_package() {
+    let main = doc("<w:p/>");
+    let source = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", main.as_bytes(), true, false),
+    ]);
+    // Add 3 bytes after the main part's deflate stream, and count them in
+    // its compressed size.
+    let list = entries(&source);
+    let (_, entry) = list.iter().find(|(n, _)| n == "word/document.xml").unwrap();
+    let data_end = entry.local_offset as usize + 30 + 17 + 4 + entry.compressed as usize;
+    let mut bytes = source[..data_end].to_vec();
+    bytes.extend_from_slice(b"xyz");
+    bytes.extend_from_slice(&source[data_end..]);
+    let size = entry.compressed as u32 + 3;
+    put_u32(&mut bytes, entry.local_offset as usize + 18, size);
+    let eocd = bytes.len() - 22;
+    let cd = u32_at(&bytes, eocd + 16) as usize + 3;
+    put_u32(&mut bytes, eocd + 16, cd as u32);
+    let mut at = cd;
+    while at < eocd {
+        let name_len = u16_at(&bytes, at + 28) as usize;
+        if &bytes[at + 46..at + 46 + name_len] == b"word/document.xml" {
+            put_u32(&mut bytes, at + 20, size);
+        }
+        let offset = u32_at(&bytes, at + 42);
+        if offset > entry.local_offset as u32 {
+            put_u32(&mut bytes, at + 42, offset + 3);
+        }
+        at += 46 + name_len + u16_at(&bytes, at + 30) as usize + u16_at(&bytes, at + 32) as usize;
+    }
+    assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unreadable), None));
 }

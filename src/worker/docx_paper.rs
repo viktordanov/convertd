@@ -991,9 +991,14 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
             paper,
             MAIN_PART_CAP,
         )?;
-        // plan() read to the end of the part; anything left is damage too.
+        // plan() read to the end of the part; anything left is damage too,
+        // and so are compressed bytes that the stream did not use.
         let rest = io::copy(&mut (&mut checked).take(1), &mut io::sink()).map_err(applied)?;
-        if rest != 0 {
+        let consumed = match &checked.inner {
+            zip_scan::EntryReader::Deflated(decoder) => decoder.total_in(),
+            zip_scan::EntryReader::Stored(data) => entry.compressed - data.limit(),
+        };
+        if rest != 0 || consumed != entry.compressed {
             return Err(Skip::Unreadable);
         }
         (edits, checked.crc.finalize(), checked.len)
@@ -1068,49 +1073,54 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
         if (u16_at(&header, 6) ^ record.flags) & 0x0008 != 0 {
             return Err(Skip::Unreadable);
         }
-        let mut descriptor = [0u8; 16];
+        // The directory's CRC and sizes, which a descriptor must repeat: they
+        // also tell the 16-byte layout (with a signature) from the 12-byte
+        // one, whose CRC may look like a signature.
+        let want = [
+            record.crc,
+            record.compressed as u32,
+            record.uncompressed as u32,
+        ];
         if record.flags & 0x0008 != 0 {
             let at = record.local_offset + needed;
             let room = usize::try_from((end - at).min(16)).unwrap_or(16);
+            let mut descriptor = [0u8; 16];
             file.seek(SeekFrom::Start(at)).map_err(source_io)?;
             file.read_exact(&mut descriptor[..room])
                 .map_err(source_io)?;
-            let signed = room >= 4 && u32_at(&descriptor, 0) == 0x0807_4b50;
-            if room < if signed { 16 } else { 12 } {
+            let fields = |from: usize| {
+                [
+                    u32_at(&descriptor, from),
+                    u32_at(&descriptor, from + 4),
+                    u32_at(&descriptor, from + 8),
+                ]
+            };
+            let signed = room >= 16 && u32_at(&descriptor, 0) == 0x0807_4b50 && fields(4) == want;
+            let plain = room >= 12 && fields(0) == want;
+            if !signed && !plain {
                 return Err(Skip::Unsupported);
-            }
-            if !signed {
-                descriptor.copy_within(0..12, 4);
             }
         }
         // The main part's own name, flags, CRC and sizes are replaced or
         // kept beside new data: they must agree with the directory first,
         // so that the copy never repairs or hides what LibreOffice would see
-        // in the source.
+        // in the source. With a descriptor, the local fields may be zero.
         if record.is_main {
             let cd_name = &directory[record.start + 46..record.start + 46 + record.name_len];
             if &name_extra[..name_len] != cd_name || u16_at(&header, 6) != record.flags {
                 return Err(Skip::Unreadable);
             }
-            let fields = if record.flags & 0x0008 == 0 {
-                [
-                    u32_at(&header, 14),
-                    u32_at(&header, 18),
-                    u32_at(&header, 22),
-                ]
-            } else {
-                [
-                    u32_at(&descriptor, 4),
-                    u32_at(&descriptor, 8),
-                    u32_at(&descriptor, 12),
-                ]
-            };
-            let want = [
-                record.crc,
-                record.compressed as u32,
-                record.uncompressed as u32,
+            let local = [
+                u32_at(&header, 14),
+                u32_at(&header, 18),
+                u32_at(&header, 22),
             ];
-            if fields != want {
+            let placeholders = record.flags & 0x0008 != 0;
+            let agrees = local
+                .iter()
+                .zip(&want)
+                .all(|(have, want)| have == want || (placeholders && *have == 0));
+            if !agrees {
                 return Err(Skip::Unreadable);
             }
         }
