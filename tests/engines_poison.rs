@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use convertd::domain::conversion::ImageFormat;
 use convertd::domain::document::Family;
 use convertd::domain::engine::{
-    Admission, EngineError, OfficeEngine, OfficeJob, PdfEngine, RenderJob,
+    Admission, DecryptJob, EngineError, InspectJob, OfficeEngine, OfficeJob, PdfEngine, RenderJob,
 };
 use convertd::engines::config::Paper;
 use convertd::engines::office_lok::OfficeLok;
@@ -421,6 +421,281 @@ async fn a_convert_crash_whose_retry_gets_no_worker_counts_one_strike() {
                 "{err:?}"
             );
             assert!(list.is_poisoned(&key), "two single strikes poison");
+            pool.shutdown(Duration::from_secs(1)).await;
+        },
+    )
+    .await;
+}
+
+/// Inspect and decrypt go through poison memory by the same rule as convert
+/// and render: a crash that survives its retry counts two, so the next
+/// request for that document is refused before it takes a worker. A crash
+/// with no time for a retry counts one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inspects_and_decrypts_are_poisoned_by_the_same_rule() {
+    within(
+        TEST,
+        "inspects_and_decrypts_are_poisoned_by_the_same_rule",
+        async {
+            let dir = Scratch::new("poison-inspect");
+            let panics = dir.join("panic.pdf");
+            std::fs::write(&panics, b"%PDF FAKE:PANIC").unwrap();
+            let pool = pool(&dir.0).await;
+            let list = PoisonList::new(Duration::from_secs(60)).unwrap();
+            let pdf = PdfPdfium::new(pool.clone()).with_poison(Some(list.clone()));
+            let inspect = |sha256| InspectJob {
+                pdf: panics.clone(),
+                password: None,
+                probe_dpi: None,
+                collect_fonts: false,
+                probe_max_pages: u32::MAX,
+                sha256,
+                export: None,
+            };
+            let decrypt = |sha256, output: &str| DecryptJob {
+                pdf: panics.clone(),
+                password: convertd::domain::secret::Password::new("x"),
+                output: dir.join(output),
+                max_output_bytes: 1 << 20,
+                check_owner: true,
+                sha256,
+            };
+            let long = || Instant::now() + Duration::from_secs(10);
+
+            // Inspect: the crash and its retry count two.
+            let key = [11u8; 32];
+            let err = pdf
+                .inspect(inspect(key), Admission::Queue, long())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Crashed);
+            assert!(list.is_poisoned(&key), "a crash after its retry counts two");
+            // Refused before the lease: with the only worker held, a check
+            // after the lease would end in a queue or lease timeout instead.
+            assert!(pool.wait_idle(1, Duration::from_secs(20)).await);
+            let held = pool.lease(long(), PoolAdmission::Queue).await.unwrap();
+            let short_wait = Instant::now() + Duration::from_millis(500);
+            let err = pdf
+                .inspect(inspect(key), Admission::Queue, short_wait)
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Poisoned, "refused without a lease");
+            drop(held);
+
+            // Decrypt: the same.
+            let key = [12u8; 32];
+            let err = pdf
+                .decrypt(decrypt(key, "a.pdf"), Admission::Queue, long())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Crashed);
+            let err = pdf
+                .decrypt(decrypt(key, "b.pdf"), Admission::Queue, long())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Poisoned);
+
+            // Less than 1 s left: no retry, one strike; two such poison.
+            let key = [13u8; 32];
+            let short = || Instant::now() + Duration::from_millis(800);
+            for crash in 1..=2 {
+                assert!(pool.wait_idle(1, Duration::from_secs(20)).await);
+                let err = pdf
+                    .inspect(inspect(key), Admission::Queue, short())
+                    .await
+                    .unwrap_err();
+                assert_eq!(err, EngineError::Crashed, "crash {crash}");
+                assert_eq!(
+                    list.is_poisoned(&key),
+                    crash == 2,
+                    "a crash with no retry counts one (crash {crash})"
+                );
+            }
+            pool.shutdown(Duration::from_secs(1)).await;
+        },
+    )
+    .await;
+}
+
+/// A timeout strike records the time the worker had, not the time the
+/// request waited in the queue: two inspects that spend most of their
+/// deadline queued behind a held worker do not refuse a later request with
+/// the same deadline and an idle pool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_timeout_strike_records_the_time_the_worker_had() {
+    within(
+        TEST,
+        "a_timeout_strike_records_the_time_the_worker_had",
+        async {
+            let dir = Scratch::new("poison-queued");
+            let hang = dir.join("hang.pdf");
+            std::fs::write(&hang, b"%PDF FAKE:HANG").unwrap();
+            let pool = pool(&dir.0).await;
+            let list = PoisonList::new(Duration::from_secs(60)).unwrap();
+            let pdf = PdfPdfium::new(pool.clone()).with_poison(Some(list.clone()));
+            let inspect = || InspectJob {
+                pdf: hang.clone(),
+                password: None,
+                probe_dpi: None,
+                collect_fonts: false,
+                probe_max_pages: u32::MAX,
+                sha256: [14; 32],
+                export: None,
+            };
+            let deadline = || Instant::now() + Duration::from_millis(1100);
+            for attempt in 1..=2 {
+                assert!(pool.wait_idle(1, Duration::from_secs(20)).await);
+                // Hold the only worker for 0.8 s: the inspect queues, then has
+                // about 0.3 s on the worker before its deadline.
+                let held = pool
+                    .lease(
+                        Instant::now() + Duration::from_secs(5),
+                        PoolAdmission::Queue,
+                    )
+                    .await
+                    .unwrap();
+                let release = tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(800)).await;
+                    drop(held);
+                });
+                let err = pdf
+                    .inspect(inspect(), Admission::Queue, deadline())
+                    .await
+                    .unwrap_err();
+                assert_eq!(err, EngineError::Timeout, "attempt {attempt}");
+                release.await.unwrap();
+            }
+            // Under the same load the third is refused when it gets a worker:
+            // it would have no more time than the two that timed out.
+            assert!(pool.wait_idle(1, Duration::from_secs(20)).await);
+            let before = generation(&pool).await;
+            let held = pool
+                .lease(
+                    Instant::now() + Duration::from_secs(5),
+                    PoolAdmission::Queue,
+                )
+                .await
+                .unwrap();
+            let release = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                drop(held);
+            });
+            let err = pdf
+                .inspect(inspect(), Admission::Queue, deadline())
+                .await
+                .unwrap_err();
+            assert_eq!(err, EngineError::Poisoned, "refused at dispatch");
+            release.await.unwrap();
+            assert_eq!(generation(&pool).await, before, "no worker was killed");
+            // Same deadline, idle pool: the worker would have all of it.
+            assert!(pool.wait_idle(1, Duration::from_secs(20)).await);
+            let err = pdf
+                .inspect(inspect(), Admission::Queue, deadline())
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err,
+                EngineError::Timeout,
+                "not refused: the strikes had 0.3 s"
+            );
+            pool.shutdown(Duration::from_secs(1)).await;
+        },
+    )
+    .await;
+}
+
+/// A crash whose retry waits for a worker and is then refused at dispatch
+/// (two timeout strikes cover the time left) ends as `Poisoned`, and its
+/// crash still counts one strike: for convert and for a render chunk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_crash_whose_retry_is_refused_counts_one_strike() {
+    use convertd::engines::poison::{Attempt, Strike, Work};
+    within(
+        TEST,
+        "a_crash_whose_retry_is_refused_counts_one_strike",
+        async {
+            let dir = Scratch::new("poison-refused-retry");
+            let panics_docx = dir.join("panic.docx");
+            std::fs::write(&panics_docx, b"FAKE:PANIC").unwrap();
+            let panics_pdf = dir.join("panic.pdf");
+            std::fs::write(&panics_pdf, b"%PDF FAKE:PANIC").unwrap();
+            let out = dir.join("pages");
+            std::fs::create_dir_all(&out).unwrap();
+            // A replacement takes 0.8 s, so the retry dispatches with about
+            // 4.1 s of a 5 s deadline: covered by strikes of 4 s (+ 0.5 s).
+            let mut spec = spec(&dir.0);
+            spec.init.test.ready_delay_ms = 800;
+            let pool = Pool::start(spec, Spawner::new(ReaperMode::Owned).unwrap());
+            assert!(pool.wait_idle(1, Duration::from_secs(20)).await);
+            let list = PoisonList::new(Duration::from_secs(60)).unwrap();
+            let office = OfficeLok::new(pool.clone()).with_poison(Some(list.clone()));
+            let pdf = PdfPdfium::new(pool.clone()).with_poison(Some(list.clone()));
+            let deadline = || Instant::now() + Duration::from_secs(5);
+            let cases: [(Work, [u8; 32]); 2] = [
+                (Work::Convert, [31; 32]),
+                (
+                    Work::Render {
+                        pages: 1,
+                        rerun_of: None,
+                    },
+                    [32; 32],
+                ),
+            ];
+            for (work, key) in cases {
+                let covered = Attempt {
+                    work,
+                    budget: Duration::from_secs(4),
+                };
+                list.strike(&key, Strike::Timeout, &covered);
+                list.strike(&key, Strike::Timeout, &covered);
+                assert!(pool.wait_idle(1, Duration::from_secs(20)).await);
+                let err = match work {
+                    Work::Convert => office
+                        .convert(
+                            office_job(&panics_docx, dir.join("a.pdf"), key),
+                            Admission::Queue,
+                            deadline(),
+                        )
+                        .await
+                        .unwrap_err(),
+                    _ => pdf
+                        .render(
+                            RenderJob {
+                                pdf: panics_pdf.clone(),
+                                password: None,
+                                pages: vec![1],
+                                format: ImageFormat::Jpeg,
+                                dpi: 72,
+                                quality: 85,
+                                max_edge: 0,
+                                out_dir: out.clone(),
+                                sha256: key,
+                                max_output_bytes: 1 << 20,
+                            },
+                            Admission::Queue,
+                            deadline(),
+                        )
+                        .await
+                        .unwrap_err(),
+                };
+                assert_eq!(
+                    err,
+                    EngineError::Poisoned,
+                    "{work:?}: the retry was refused"
+                );
+                // Exactly one crash strike: a request with far more time is
+                // not refused, and one more crash strike refuses it.
+                let far = Attempt {
+                    work,
+                    budget: Duration::from_secs(60),
+                };
+                assert!(
+                    !list.refuses(&key, &far),
+                    "{work:?}: one crash strike, not two"
+                );
+                list.strike(&key, Strike::Crash(1), &far);
+                assert!(list.refuses(&key, &far), "{work:?}: the crash counted");
+            }
             pool.shutdown(Duration::from_secs(1)).await;
         },
     )

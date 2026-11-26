@@ -1,11 +1,11 @@
 //! Poison memory (plan 002 step 12): documents that recently timed out or
 //! crashed a worker are refused before they take a worker again.
 //!
-//! Keyed by the upload's SHA-256, which the domain passes in `OfficeJob`
-//! and `RenderJob`. A crash that survives the one retry counts two
-//! strikes, a crash with no retry one, and a timeout one. At [`STRIKES`]
-//! strikes a request is refused: `convert` and `render` return `Poisoned`
-//! (422) before they lease. Crash strikes count against every request for
+//! Keyed by the upload's SHA-256, which the domain passes in `OfficeJob`,
+//! `InspectJob`, `DecryptJob` and `RenderJob`. A crash that survives the
+//! one retry counts two strikes, a crash with no retry one, and a timeout
+//! one. At [`STRIKES`] strikes a request is refused: `convert`, `inspect`,
+//! `decrypt` and `render` return `Poisoned` (422) before they lease. Crash strikes count against every request for
 //! the document. A timeout strike counts only against a request that asks
 //! for the same operation with no more time and no fewer pages
 //! ([`Attempt::covers`]), so a retry with a longer deadline or fewer pages
@@ -14,6 +14,8 @@
 //! it off.
 
 use std::collections::HashMap;
+
+use crate::domain::conversion::ExportOptions;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -39,8 +41,53 @@ pub const BUDGET_SLACK: Duration = Duration::from_millis(500);
 pub enum Work {
     /// An office conversion: always the whole document.
     Convert,
-    /// A render of this many pages.
-    Render { pages: u32 },
+    /// A PDF inspect of the whole document: the page sizes, and with
+    /// `probe` the blank-page probe renders too, at `dpi` for at most
+    /// `pages` pages. `password` is the keyed fingerprint of the password,
+    /// if any: a wrong one stops at the open, a right one probes, and a
+    /// password makes the worker open the file once more without it. `export` is the office export that made the PDF (`None`
+    /// for a PDF upload): two exports of one upload are different PDFs.
+    Inspect {
+        probe: Option<Probe>,
+        password: Option<u64>,
+        export: Option<ExportOptions>,
+    },
+    /// A PDF decrypt with one password, by its keyed fingerprint
+    /// ([`password_fingerprint`]), and whether it checks the owner: an
+    /// owner password writes a copy, a user password of a restricted PDF
+    /// stops at the permission check when `check_owner` is set.
+    Decrypt { password: u64, check_owner: bool },
+    /// A render of this many pages. A rerun of a job's over-share chunks
+    /// names the job's page count in `rerun_of`: it matches only the same
+    /// kind of rerun, never a standalone render (`None`).
+    Render { pages: u32, rerun_of: Option<u32> },
+}
+
+/// A fingerprint of a decrypt password for [`Work::Decrypt`]: SipHash under
+/// a random key of this process, so the poison memory never holds the
+/// password, and the value means nothing outside this process.
+pub fn password_fingerprint(password: &str) -> u64 {
+    use std::hash::BuildHasher;
+    static KEY: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+        std::sync::OnceLock::new();
+    KEY.get_or_init(std::collections::hash_map::RandomState::new)
+        .hash_one(password)
+}
+
+/// The blank-page probe of an inspect: its DPI and its page cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Probe {
+    pub dpi: u16,
+    pub pages: u32,
+}
+
+impl Probe {
+    /// Whether this probe is at least as much work as `other`: the same
+    /// DPI (a higher one can skip pages that no longer fit) and no fewer
+    /// pages.
+    fn at_least(&self, other: &Probe) -> bool {
+        self.dpi == other.dpi && self.pages >= other.pages
+    }
 }
 
 /// One request for a document: its work and the time it had when the
@@ -65,7 +112,45 @@ impl Attempt {
     pub fn covers(&self, next: &Attempt) -> bool {
         let work = match (self.work, next.work) {
             (Work::Convert, Work::Convert) => true,
-            (Work::Render { pages: timed_out }, Work::Render { pages }) => pages >= timed_out,
+            // Another password can take another path (Restricted, no copy).
+            (
+                Work::Decrypt {
+                    password: timed_out,
+                    check_owner: timed_out_check,
+                },
+                Work::Decrypt {
+                    password,
+                    check_owner,
+                },
+            ) => password == timed_out && check_owner == timed_out_check,
+            // A probed inspect is more work, and another export is another
+            // PDF: a timeout covers only the same export, probed if it was.
+            (
+                Work::Inspect {
+                    probe: timed_out,
+                    password: timed_out_password,
+                    export: timed_out_export,
+                },
+                Work::Inspect {
+                    probe,
+                    password,
+                    export,
+                },
+            ) => {
+                let probe_covered = match (timed_out, probe) {
+                    (None, _) => true,
+                    (Some(_), None) => false,
+                    (Some(t), Some(p)) => p.at_least(&t),
+                };
+                probe_covered && password == timed_out_password && export == timed_out_export
+            }
+            (
+                Work::Render {
+                    pages: timed_out,
+                    rerun_of: timed_out_parent,
+                },
+                Work::Render { pages, rerun_of },
+            ) => rerun_of == timed_out_parent && pages >= timed_out,
             _ => false,
         };
         work && next.budget <= self.budget + BUDGET_SLACK
@@ -277,7 +362,10 @@ mod tests {
 
     fn render(pages: u32, budget_ms: u64) -> Attempt {
         Attempt {
-            work: Work::Render { pages },
+            work: Work::Render {
+                pages,
+                rerun_of: None,
+            },
             budget: Duration::from_millis(budget_ms),
         }
     }
@@ -351,6 +439,150 @@ mod tests {
         assert!(l.refuses_at(&pages, &render(40, 5_000), now), "more pages");
         assert!(!l.refuses_at(&pages, &render(5, 5_000), now), "fewer pages");
         assert!(!l.refuses_at(&pages, &render(20, 30_000), now), "more time");
+    }
+
+    #[test]
+    fn a_probed_inspect_timeout_does_not_cover_an_unprobed_inspect() {
+        let now = Instant::now();
+        let l = list(600_000);
+        let probe_200 = Probe {
+            dpi: 18,
+            pages: 200,
+        };
+        let inspect = |probe: bool, export| Attempt {
+            work: Work::Inspect {
+                probe: probe.then_some(probe_200),
+                password: None,
+                export,
+            },
+            budget: Duration::from_secs(10),
+        };
+        let probed = inspect(true, None);
+        let plain = inspect(false, None);
+        l.strike_at(&KEY, Strike::Timeout, &probed, now);
+        l.strike_at(&KEY, Strike::Timeout, &probed, now);
+        assert!(l.refuses_at(&KEY, &probed, now));
+        assert!(!l.refuses_at(&KEY, &plain, now), "less work");
+        let other = [21; 32];
+        l.strike_at(&other, Strike::Timeout, &plain, now);
+        l.strike_at(&other, Strike::Timeout, &plain, now);
+        assert!(l.refuses_at(&other, &plain, now));
+        assert!(l.refuses_at(&other, &probed, now), "more work");
+        // Another export of the same upload is another PDF.
+        let notes = ExportOptions {
+            notes: crate::domain::conversion::SlideNotes::Append,
+            ..ExportOptions::default()
+        };
+        let slides = Some(ExportOptions::default());
+        let third = [22; 32];
+        l.strike_at(&third, Strike::Timeout, &inspect(false, slides), now);
+        l.strike_at(&third, Strike::Timeout, &inspect(false, slides), now);
+        assert!(l.refuses_at(&third, &inspect(false, slides), now));
+        assert!(
+            !l.refuses_at(&third, &inspect(false, Some(notes)), now),
+            "another export"
+        );
+        assert!(
+            !l.refuses_at(&third, &inspect(false, None), now),
+            "not an export"
+        );
+        // A password inspect opens the file twice: its timeout does not
+        // cover one without a password.
+        let with_password = Attempt {
+            work: Work::Inspect {
+                probe: None,
+                password: Some(password_fingerprint("secret")),
+                export: None,
+            },
+            budget: Duration::from_secs(10),
+        };
+        let fourth = [23; 32];
+        l.strike_at(&fourth, Strike::Timeout, &with_password, now);
+        l.strike_at(&fourth, Strike::Timeout, &with_password, now);
+        assert!(l.refuses_at(&fourth, &with_password, now));
+        assert!(
+            !l.refuses_at(&fourth, &inspect(false, None), now),
+            "one open"
+        );
+        // A wrong password stops at the open: it is another attempt.
+        let wrong = Attempt {
+            work: Work::Inspect {
+                probe: None,
+                password: Some(password_fingerprint("wrong")),
+                export: None,
+            },
+            budget: Duration::from_secs(10),
+        };
+        assert!(!l.refuses_at(&fourth, &wrong, now), "another password");
+        // A probe of fewer pages, or at a lower DPI, is less work.
+        let smaller = |dpi, pages| Attempt {
+            work: Work::Inspect {
+                probe: Some(Probe { dpi, pages }),
+                password: None,
+                export: None,
+            },
+            budget: Duration::from_secs(10),
+        };
+        assert!(
+            !l.refuses_at(&KEY, &smaller(18, 1), now),
+            "fewer probe pages"
+        );
+        assert!(
+            !l.refuses_at(&KEY, &smaller(9, 200), now),
+            "another probe DPI"
+        );
+        assert!(
+            !l.refuses_at(&KEY, &smaller(36, 400), now),
+            "another probe DPI"
+        );
+        assert!(
+            l.refuses_at(&KEY, &smaller(18, 400), now),
+            "more probe pages"
+        );
+    }
+
+    #[test]
+    fn a_decrypt_timeout_covers_only_the_same_password() {
+        let now = Instant::now();
+        let l = list(600_000);
+        let decrypt = |password: &str| Attempt {
+            work: Work::Decrypt {
+                password: password_fingerprint(password),
+                check_owner: true,
+            },
+            budget: Duration::from_secs(10),
+        };
+        l.strike_at(&KEY, Strike::Timeout, &decrypt("owner"), now);
+        l.strike_at(&KEY, Strike::Timeout, &decrypt("owner"), now);
+        assert!(l.refuses_at(&KEY, &decrypt("owner"), now));
+        assert!(
+            !l.refuses_at(&KEY, &decrypt("user"), now),
+            "another password"
+        );
+        assert_eq!(password_fingerprint("owner"), password_fingerprint("owner"));
+    }
+
+    #[test]
+    fn a_rerun_timeout_covers_only_the_same_rerun() {
+        let now = Instant::now();
+        let l = list(600_000);
+        let render = |pages, rerun_of| Attempt {
+            work: Work::Render { pages, rerun_of },
+            budget: Duration::from_secs(3),
+        };
+        let rerun = render(4, Some(8));
+        l.strike_at(&KEY, Strike::Timeout, &rerun, now);
+        l.strike_at(&KEY, Strike::Timeout, &rerun, now);
+        assert!(l.refuses_at(&KEY, &rerun, now), "the same rerun");
+        assert!(
+            !l.refuses_at(&KEY, &render(4, None), now),
+            "a standalone render"
+        );
+        assert!(!l.refuses_at(&KEY, &render(8, None), now), "the whole job");
+        assert!(
+            !l.refuses_at(&KEY, &render(4, Some(12)), now),
+            "another job's rerun"
+        );
     }
 
     #[test]
