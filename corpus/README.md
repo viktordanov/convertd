@@ -20,7 +20,7 @@ Know these facts before you change anything here:
 <!-- memoria:section id="overview" files="generate.py expected.json" -->
 ## What the corpus proves
 
-Each file in the corpus exercises one path through the service. The public corpus has one file for each engine path and container, except the legacy `doc`, `xls` and `ppt` formats that step 7 adds. It also has a positive and a negative case for each warning, an encrypted DOCX, deck and sheet, three macro files with a VBA project, five hostile files and three network canaries. Two DOCX files carry a data descriptor on `word/document.xml`, as Go's `archive/zip` writes it. LibreOffice 26.8.3.1 cannot load the stored one, so `docx-stored-descriptor` expects `422 CONVERSION_FAILED` until a fix lands. `docx-deflated-descriptor` marks the boundary and expects 200.
+Each file in the corpus exercises one path through the service. The public corpus has one file for each engine path and container, except the legacy `doc`, `xls` and `ppt` formats that step 7 adds. It also has a positive and a negative case for each warning, an encrypted DOCX, deck and sheet, three macro files with a VBA project, five hostile files and three network canaries. Two DOCX files carry a data descriptor on `word/document.xml`, as Go's `archive/zip` writes it. LibreOffice 26.8.3.1 cannot load the stored one, so `docx-stored-descriptor` expects `422 CONVERSION_FAILED` until a fix lands. `docx-deflated-descriptor` marks the boundary and expects 200. The image's engines confirmed both answers on 2026-11-26.
 
 `corpus-bench check` runs every case against the service. A pass of every case will prove these facts:
 
