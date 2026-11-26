@@ -184,6 +184,9 @@ pub struct InspectJob {
     /// The upload's SHA-256, also for a converted or decrypted PDF: the
     /// poison memory's key, one entry per document across all operations.
     pub sha256: [u8; 32],
+    /// The office export that made this PDF, `None` for a PDF upload. Two
+    /// exports of one upload are different PDFs for an inspect timeout.
+    pub export: Option<crate::domain::conversion::ExportOptions>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -432,6 +435,7 @@ mod tests {
             collect_fonts: false,
             probe_max_pages: u32::MAX,
             sha256: [0; 32],
+            export: None,
         };
         let inspection =
             futures_util::FutureExt::now_or_never(pdf.inspect(job, Admission::Queue, deadline))

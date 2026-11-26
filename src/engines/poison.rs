@@ -14,6 +14,8 @@
 //! it off.
 
 use std::collections::HashMap;
+
+use crate::domain::conversion::ExportOptions;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -40,9 +42,13 @@ pub enum Work {
     /// An office conversion: always the whole document.
     Convert,
     /// A PDF inspect of the whole document: the page sizes, and with
-    /// `probe` the blank-page probe renders too. `bytes` is the PDF's size:
-    /// two exports of one office upload differ in it.
-    Inspect { probe: bool, bytes: u64 },
+    /// `probe` the blank-page probe renders too. `export` is the office
+    /// export that made the PDF (`None` for a PDF upload): two exports of
+    /// one upload are different PDFs.
+    Inspect {
+        probe: bool,
+        export: Option<ExportOptions>,
+    },
     /// A PDF decrypt: a copy of the whole document.
     Decrypt,
     /// A render of this many pages.
@@ -71,15 +77,15 @@ impl Attempt {
     pub fn covers(&self, next: &Attempt) -> bool {
         let work = match (self.work, next.work) {
             (Work::Convert, Work::Convert) | (Work::Decrypt, Work::Decrypt) => true,
-            // A probed inspect, or a larger PDF, is more work: its timeout
-            // does not cover an inspect without the probe or of a smaller PDF.
+            // A probed inspect is more work, and another export is another
+            // PDF: a timeout covers only the same export, probed if it was.
             (
                 Work::Inspect {
                     probe: timed_out,
-                    bytes: timed_out_bytes,
+                    export: timed_out_export,
                 },
-                Work::Inspect { probe, bytes },
-            ) => probe >= timed_out && bytes >= timed_out_bytes,
+                Work::Inspect { probe, export },
+            ) => probe >= timed_out && export == timed_out_export,
             (Work::Render { pages: timed_out }, Work::Render { pages }) => pages >= timed_out,
             _ => false,
         };
@@ -372,12 +378,12 @@ mod tests {
     fn a_probed_inspect_timeout_does_not_cover_an_unprobed_inspect() {
         let now = Instant::now();
         let l = list(600_000);
-        let inspect = |probe, bytes| Attempt {
-            work: Work::Inspect { probe, bytes },
+        let inspect = |probe, export| Attempt {
+            work: Work::Inspect { probe, export },
             budget: Duration::from_secs(10),
         };
-        let probed = inspect(true, 1_000);
-        let plain = inspect(false, 1_000);
+        let probed = inspect(true, None);
+        let plain = inspect(false, None);
         l.strike_at(&KEY, Strike::Timeout, &probed, now);
         l.strike_at(&KEY, Strike::Timeout, &probed, now);
         assert!(l.refuses_at(&KEY, &probed, now));
@@ -387,14 +393,23 @@ mod tests {
         l.strike_at(&other, Strike::Timeout, &plain, now);
         assert!(l.refuses_at(&other, &plain, now));
         assert!(l.refuses_at(&other, &probed, now), "more work");
-        // Another export of the same upload: a smaller PDF is not covered.
+        // Another export of the same upload is another PDF.
+        let notes = ExportOptions {
+            notes: crate::domain::conversion::SlideNotes::Append,
+            ..ExportOptions::default()
+        };
+        let slides = Some(ExportOptions::default());
+        let third = [22; 32];
+        l.strike_at(&third, Strike::Timeout, &inspect(false, slides), now);
+        l.strike_at(&third, Strike::Timeout, &inspect(false, slides), now);
+        assert!(l.refuses_at(&third, &inspect(false, slides), now));
         assert!(
-            !l.refuses_at(&other, &inspect(false, 600), now),
-            "a smaller PDF"
+            !l.refuses_at(&third, &inspect(false, Some(notes)), now),
+            "another export"
         );
         assert!(
-            l.refuses_at(&other, &inspect(false, 4_000), now),
-            "a larger PDF"
+            !l.refuses_at(&third, &inspect(false, None), now),
+            "not an export"
         );
     }
 

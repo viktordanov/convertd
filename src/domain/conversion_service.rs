@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::conversion::{ConversionRequest, ConversionResult, Output, PdfOrigin, StageTimings};
+use super::conversion::{
+    ConversionRequest, ConversionResult, ExportOptions, Output, PdfOrigin, StageTimings,
+};
 use super::detection::Detection;
 use super::document::{DocType, Family, Format};
 use super::engine::{
@@ -216,6 +218,7 @@ impl ConversionService {
                         job.deadline,
                         probe,
                         job.upload.sha256,
+                        Some(job.request.export),
                         timings,
                     )
                     .await
@@ -236,6 +239,7 @@ impl ConversionService {
                         job.deadline,
                         probe,
                         job.upload.sha256,
+                        None,
                         timings,
                     )
                     .await
@@ -432,8 +436,8 @@ impl ConversionService {
         Ok(rendered.pages)
     }
 
-    // One more argument than clippy's default: the upload's hash for the
-    // poison memory. A struct for one call site would only move the list.
+    // Two more arguments than clippy's default: the upload's hash and the
+    // export, for the poison memory. A struct would only move the list.
     #[allow(clippy::too_many_arguments)]
     async fn inspect(
         &self,
@@ -443,6 +447,7 @@ impl ConversionService {
         deadline: Instant,
         probe: bool,
         sha256: [u8; 32],
+        export: Option<ExportOptions>,
         timings: &mut StageTimings,
     ) -> Result<Inspection, EngineError> {
         let probe_dpi = if probe { self.probe_dpi } else { None };
@@ -457,6 +462,7 @@ impl ConversionService {
                     collect_fonts: false,
                     probe_max_pages: self.probe_max_pages,
                     sha256,
+                    export,
                 },
                 adm,
                 deadline,

@@ -102,6 +102,11 @@ pub async fn call_with_poison(
             )
         {
             drop(lease);
+            // A crash whose retry is refused counts once, as when the retry
+            // gets no worker.
+            if retried {
+                p.list.strike(&p.key, Strike::Crash(1), attempt);
+            }
             return Err(EngineError::Poisoned);
         }
         let queue = *first_queue.get_or_insert(lease.queued());

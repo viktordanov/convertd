@@ -147,6 +147,7 @@ fn inspect_job(pdf: &Path, password: Option<&str>, probe_dpi: Option<u16>) -> In
         collect_fonts: false,
         probe_max_pages: u32::MAX,
         sha256: [0; 32],
+        export: None,
     }
 }
 
