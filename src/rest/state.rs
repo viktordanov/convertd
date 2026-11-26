@@ -146,7 +146,8 @@ impl AppState {
                 config.server.verify_probe_render,
             )
             .with_probe_max_pages(config.server.verify_probe_max_pages)
-            .with_fonts(catalog),
+            .with_fonts(catalog)
+            .with_paper_copy(config.engines.default_paper == crate::engines::config::Paper::A4),
             inflight: Arc::new(Semaphore::new(config.server.max_concurrent_requests)),
             max_inflight: config.server.max_concurrent_requests,
             draining: AtomicBool::new(false),

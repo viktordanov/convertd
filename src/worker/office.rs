@@ -9,6 +9,10 @@
 //! - The password callback is registered once. It shares a counter with
 //!   the job loop, which tells "required" (no password, one prompt) from
 //!   "invalid" (a password, a second prompt).
+//! - A DOCX, DOCM or DOTX whose sections name no page size is loaded from
+//!   a copy that names the `DEFAULT_PAPER` size (`docx_paper`), swapped
+//!   into the source's place for the load. The worker learns the paper
+//!   from its `LC_PAPER`, which the supervisor sets.
 
 use std::cell::RefCell;
 use std::mem::ManuallyDrop;
@@ -19,10 +23,12 @@ use std::time::Instant;
 use libreofficekit::{CallbackType, DocUrl, DocumentType, Office, OfficeOptionalFeatures};
 
 use crate::domain::document::Family as DomainFamily;
+use crate::engines::config::Paper;
 use crate::ipc::{
     ConvertArgs, ConvertedOut, EngineTimes, ExportOptions, Family, Init, Op, Output, SlideNotes,
     SourceFactsWire, WorkerError, WorkerErrorKind,
 };
+use crate::worker::docx_paper;
 use crate::worker::output::io_error;
 use crate::worker::sys;
 use crate::worker::{Engine, Handled, micros};
@@ -72,6 +78,9 @@ pub struct OfficeWorker {
     office: ManuallyDrop<Office>,
     state: Rc<RefCell<PasswordState>>,
     version: String,
+    /// `DEFAULT_PAPER`, from `LC_PAPER`; `None` leaves Word packages as
+    /// they came.
+    paper: Option<Paper>,
 }
 
 impl OfficeWorker {
@@ -138,10 +147,14 @@ impl OfficeWorker {
                 )
             })
             .unwrap_or_default();
+        let paper = std::env::var("LC_PAPER")
+            .ok()
+            .and_then(|value| Paper::from_lc_paper(&value));
         let mut worker = Self {
             office,
             state,
             version,
+            paper,
         };
         if init.warmup {
             worker.warm_up();
@@ -195,10 +208,89 @@ impl OfficeWorker {
         times: &mut EngineTimes,
     ) -> Result<Output, WorkerError> {
         let preflight = Instant::now();
+        // A worker that died during a swap may have left the source set
+        // aside: it goes back before anything reads it.
+        if docx_paper::is_word_package(&args.input)
+            && let Some(swap) = Swap::new(&args.input)
+        {
+            swap.recover()?;
+        }
         let facts = crate::preflight::scan(&args.input, domain_family(args.family));
+        // The copy with page sizes counts as pre-flight: it reads the source
+        // before LibreOffice does.
+        let swap = self.paper_swap(args);
         times.preflight_us = micros(preflight.elapsed());
+        let swap = swap?;
+        let result = self.convert_from(&args.input, args, times);
+        // The source goes back before the job answers: the supervisor then
+        // stops reserving the copy's bytes.
+        if let Some(swap) = &swap {
+            swap.restore().inspect_err(|_| {
+                let _ = std::fs::remove_file(&args.output);
+            })?;
+        }
+        let doc_type = result?;
+        let pdf_bytes = std::fs::metadata(&args.output)
+            .map_err(|err| io_error("read the converted PDF", &err))?
+            .len();
+        if pdf_bytes > args.max_output_bytes {
+            let _ = std::fs::remove_file(&args.output);
+            return Err(limit_exceeded());
+        }
+        Ok(Output::Converted(ConvertedOut {
+            pdf_bytes,
+            doc_type: doc_type.into(),
+            facts: Some(Box::new(SourceFactsWire::from(&facts))),
+        }))
+    }
 
-        let input = doc_url(&args.input)?;
+    /// For a Word package whose sections name no page size, swaps a copy
+    /// that names the `DEFAULT_PAPER` size into the source's place, so
+    /// LibreOffice loads it under the source's own name and folder: a
+    /// FILENAME field and relative links stay as they were. `None` loads
+    /// the source as it came. Only A4 needs a copy: the importer's own
+    /// default is Letter. A failed write or rename (a full disk) fails the
+    /// job, so that the paper never depends on the disk.
+    fn paper_swap(&self, args: &ConvertArgs) -> Result<Option<Swap>, WorkerError> {
+        let Some(paper) = self.paper.filter(|paper| *paper != Paper::Letter) else {
+            return Ok(None);
+        };
+        if args.family != Family::Document || !docx_paper::is_word_package(&args.input) {
+            return Ok(None);
+        }
+        let Some(swap) = Swap::new(&args.input) else {
+            return Ok(None);
+        };
+        // convert() has already put a set-aside source back.
+        match docx_paper::repack(&args.input, &swap.fresh, paper) {
+            Ok(()) => {}
+            Err(skip) => {
+                swap.discard()?;
+                return match skip {
+                    docx_paper::Skip::Io(err) => Err(io_error("write the paper copy", &err)),
+                    _ => Ok(None),
+                };
+            }
+        }
+        if let Err(err) = std::fs::rename(&args.input, &swap.backup) {
+            swap.discard()?;
+            return Err(io_error("set the source aside", &err));
+        }
+        if let Err(err) = std::fs::rename(&swap.fresh, &args.input) {
+            swap.restore()?;
+            return Err(io_error("put the paper copy in place", &err));
+        }
+        Ok(Some(swap))
+    }
+
+    /// Loads `source` (the job's input or its copy) and exports the PDF.
+    fn convert_from(
+        &mut self,
+        source: &Path,
+        args: &ConvertArgs,
+        times: &mut EngineTimes,
+    ) -> Result<&'static str, WorkerError> {
+        let input = doc_url(source)?;
         let output = doc_url(&args.output)?;
         let password = args
             .password
@@ -225,25 +317,9 @@ impl OfficeWorker {
             state.url = None;
         }
 
-        let doc_type = match result {
-            Ok(doc_type) => doc_type,
-            Err(err) => {
-                let _ = std::fs::remove_file(&args.output);
-                return Err(err);
-            }
-        };
-        let pdf_bytes = std::fs::metadata(&args.output)
-            .map_err(|err| io_error("read the converted PDF", &err))?
-            .len();
-        if pdf_bytes > args.max_output_bytes {
+        result.inspect_err(|_| {
             let _ = std::fs::remove_file(&args.output);
-            return Err(limit_exceeded());
-        }
-        Ok(Output::Converted(ConvertedOut {
-            pdf_bytes,
-            doc_type: doc_type.into(),
-            facts: Some(Box::new(SourceFactsWire::from(&facts))),
-        }))
+        })
     }
 
     fn load_and_export(
@@ -323,6 +399,76 @@ impl Engine for OfficeWorker {
                 format!("the office worker does not answer {}", other.name()),
             )),
         }
+    }
+}
+
+/// The files of a swap: the copy is written to `fresh`, the source is set
+/// aside as `backup`, and `fresh` takes the source's place. Both live in
+/// `docx_paper::COPY_DIR` next to the source.
+struct Swap {
+    source: std::path::PathBuf,
+    dir: std::path::PathBuf,
+    fresh: std::path::PathBuf,
+    backup: std::path::PathBuf,
+}
+
+impl Swap {
+    fn new(source: &Path) -> Option<Self> {
+        let (fresh, backup) = docx_paper::swap_paths(source)?;
+        Some(Self {
+            source: source.to_path_buf(),
+            dir: backup.parent()?.to_path_buf(),
+            fresh,
+            backup,
+        })
+    }
+
+    /// Whether the copy folder is a real folder: anything else at its path
+    /// is not ours and is left alone.
+    fn dir_is_ours(&self) -> Result<bool, WorkerError> {
+        match std::fs::symlink_metadata(&self.dir) {
+            Ok(meta) => Ok(meta.file_type().is_dir()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(io_error("look for the paper copy", &err)),
+        }
+    }
+
+    /// After a crash: puts a set-aside source back, and drops a copy.
+    fn recover(&self) -> Result<(), WorkerError> {
+        if !self.dir_is_ours()? {
+            return Ok(());
+        }
+        match std::fs::symlink_metadata(&self.backup) {
+            Ok(_) => std::fs::rename(&self.backup, &self.source)
+                .map_err(|err| io_error("put the source back", &err))?,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(io_error("look for the set-aside source", &err)),
+        }
+        self.discard()
+    }
+
+    /// Puts the source back over the copy, then drops what is left.
+    fn restore(&self) -> Result<(), WorkerError> {
+        std::fs::rename(&self.backup, &self.source)
+            .map_err(|err| io_error("put the source back", &err))?;
+        self.discard()
+    }
+
+    /// Removes an unused copy, then the folder if it is empty. A copy that
+    /// is gone already is fine; any other failure is the job's I/O error,
+    /// because the supervisor stops reserving the copy's bytes when the job
+    /// answers.
+    fn discard(&self) -> Result<(), WorkerError> {
+        if !self.dir_is_ours()? {
+            return Ok(());
+        }
+        match std::fs::remove_file(&self.fresh) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(io_error("remove the paper copy", &err)),
+        }
+        let _ = std::fs::remove_dir(&self.dir);
+        Ok(())
     }
 }
 
@@ -422,6 +568,79 @@ pub fn filter_options(family: Family, export: &ExportOptions) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A swap in a fresh folder, with `source` holding `original`.
+    fn swap_in(name: &str, original: &[u8]) -> (std::path::PathBuf, Swap) {
+        let root = std::env::temp_dir().join(format!(
+            "convertd-office-swap-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.docx");
+        std::fs::write(&source, original).unwrap();
+        let swap = Swap::new(&source).unwrap();
+        (root, swap)
+    }
+
+    /// Sets the source aside and puts `copy` in its place, as paper_swap
+    /// does after a successful repack.
+    fn swap_into_place(swap: &Swap, copy: &[u8]) {
+        std::fs::create_dir(&swap.dir).unwrap();
+        std::fs::write(&swap.fresh, copy).unwrap();
+        std::fs::rename(&swap.source, &swap.backup).unwrap();
+        std::fs::rename(&swap.fresh, &swap.source).unwrap();
+    }
+
+    #[test]
+    fn a_swap_puts_the_source_back_and_leaves_nothing() {
+        let (root, swap) = swap_in("restore", b"original");
+        swap_into_place(&swap, b"copy");
+        assert_eq!(std::fs::read(&swap.source).unwrap(), b"copy");
+        swap.restore().unwrap();
+        assert_eq!(std::fs::read(&swap.source).unwrap(), b"original");
+        assert!(!swap.dir.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_retry_recovers_from_every_crash_point() {
+        // After the copy was written, before the swap.
+        let (root, swap) = swap_in("fresh", b"original");
+        std::fs::create_dir(&swap.dir).unwrap();
+        std::fs::write(&swap.fresh, b"partial").unwrap();
+        swap.recover().unwrap();
+        assert_eq!(std::fs::read(&swap.source).unwrap(), b"original");
+        assert!(!swap.dir.exists());
+        let _ = std::fs::remove_dir_all(&root);
+        // Between the two renames: the source is set aside.
+        let (root, swap) = swap_in("between", b"original");
+        std::fs::create_dir(&swap.dir).unwrap();
+        std::fs::write(&swap.fresh, b"copy").unwrap();
+        std::fs::rename(&swap.source, &swap.backup).unwrap();
+        swap.recover().unwrap();
+        assert_eq!(std::fs::read(&swap.source).unwrap(), b"original");
+        assert!(!swap.dir.exists());
+        let _ = std::fs::remove_dir_all(&root);
+        // With the copy in place.
+        let (root, swap) = swap_in("placed", b"original");
+        swap_into_place(&swap, b"copy");
+        swap.recover().unwrap();
+        assert_eq!(std::fs::read(&swap.source).unwrap(), b"original");
+        assert!(!swap.dir.exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn something_else_at_the_copy_folder_is_left_alone() {
+        let (root, swap) = swap_in("file", b"original");
+        std::fs::write(&swap.dir, b"not ours").unwrap();
+        swap.recover().unwrap();
+        swap.discard().unwrap();
+        assert_eq!(std::fs::read(&swap.dir).unwrap(), b"not ours");
+        assert_eq!(std::fs::read(&swap.source).unwrap(), b"original");
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn load_errors_tell_required_from_invalid() {

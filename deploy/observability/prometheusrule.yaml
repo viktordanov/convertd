@@ -1,0 +1,111 @@
+# deploy/observability/prometheusrule.yaml. An example for the Prometheus Operator, not part of
+# the kustomize base: copy it into the deployment and adjust the thresholds there.
+# The metric names come from src/observability/metrics.rs and src/engines/; tests/observability.rs
+# fails when a name here is not on /metrics.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: convertd
+  labels:
+    app.kubernetes.io/name: convertd
+    # The Prometheus ruleSelector of the cluster must match these labels. kube-prometheus-stack
+    # selects `release: <helm release name>` by default; change or add the label for yours.
+    release: kube-prometheus-stack
+# The rate windows (5m, 15m) assume a scrape interval of 1 minute or less: a window needs at least
+# four scrapes. Widen them for a slower scrape.
+spec:
+  groups:
+    - name: convertd
+      rules:
+        # 429 TOO_MANY_REQUESTS: the queue was full, the queue wait ran out, or MAX_CONCURRENT_REQUESTS
+        # was reached. Clients retry 429, so a short burst is normal. More than 5 % of the requests for
+        # 10 minutes means the pod is too small for its load. The second condition (at least
+        # 5 refusals in the window) keeps a single refusal on an idle service from firing the
+        # alert, and still fires on a low but steady load that is all refused.
+        - alert: ConvertdTooManyRequests
+          expr: |
+            (
+              sum by (namespace, job) (rate(convert_requests_total{code="TOO_MANY_REQUESTS"}[5m]))
+                /
+              sum by (namespace, job) (rate(convert_requests_total[5m]))
+            ) > 0.05
+            and
+            sum by (namespace, job) (increase(convert_requests_total{code="TOO_MANY_REQUESTS"}[5m])) >= 5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: convertd refuses more than 5 % of the requests with 429.
+            description: >-
+              {{ $value | humanizePercentage }} of the requests to {{ $labels.job }} in
+              {{ $labels.namespace }} got 429 TOO_MANY_REQUESTS for 10 minutes. Add replicas or
+              workers, or look at the queue depth on the convertd dashboard.
+
+        # 422 LIMIT_EXCEEDED: a document passed a limit, usually the kill RSS of its worker pool.
+        # On 276 real documents (2026-11-26) the base profile gave 422 for 4 to 13 % of the files,
+        # by the kill limit (deploy/README.md, Sizing). So the threshold is 15 % for 30 minutes:
+        # above it the documents are heavier than the profile allows for. The second condition
+        # (at least 5 such failures in the window) ignores an isolated failure, also at low load.
+        - alert: ConvertdLimitExceeded
+          expr: |
+            (
+              sum by (namespace, job) (rate(convert_requests_total{code="LIMIT_EXCEEDED"}[15m]))
+                /
+              sum by (namespace, job) (rate(convert_requests_total[15m]))
+            ) > 0.15
+            and
+            sum by (namespace, job) (increase(convert_requests_total{code="LIMIT_EXCEEDED"}[15m])) >= 5
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: More than 15 % of the convertd requests fail with 422 LIMIT_EXCEEDED.
+            description: >-
+              {{ $value | humanizePercentage }} of the requests to {{ $labels.job }} in
+              {{ $labels.namespace }} got 422 LIMIT_EXCEEDED for 30 minutes. Compare the
+              documents with the kill RSS limits, or use the Coverage profile in deploy/README.md.
+
+        # The queue of a pool is at its capacity. convertd does not export the capacity, so the
+        # thresholds are the values of the base: the office queue holds QUEUE_CAPACITY
+        # (default 2 x OFFICE_WORKERS = 4) and the render queue 2 x RENDER_WORKERS = 4. Change each
+        # threshold when an overlay changes these values. The gauge also counts the later engine
+        # calls of admitted requests (for example the render calls after an office conversion),
+        # and only first calls count against the capacity. So this is sustained queue pressure:
+        # new requests can get 429, and ConvertdTooManyRequests says whether they do.
+        # The expressions select every convertd that the Prometheus scrapes, in all namespaces.
+        # If deployments with other capacities share that Prometheus, add a namespace or job
+        # matcher to each selector, for example convert_queue_depth{namespace="convertd", pool="office"}.
+        - alert: ConvertdQueueAtCapacity
+          expr: |
+            max by (namespace, pod, pool) (convert_queue_depth{pool="office"}) >= 4
+            or
+            max by (namespace, pod, pool) (convert_queue_depth{pool="render"}) >= 4
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: A convertd worker queue is at its capacity.
+            description: >-
+              The {{ $labels.pool }} queue on {{ $labels.pod }} in {{ $labels.namespace }} holds
+              {{ $value }} waiting leases for 2 minutes, as many as its capacity in the base.
+              New requests can get 429.
+
+        # The disk budget (TMP_MAX_BYTES) is more than 90 % reserved for 5 minutes. A reservation that
+        # does not fit gives 503 SERVICE_UNAVAILABLE. The budget is 3 GiB in the base, so 90 % leaves
+        # about 300 MiB: one or two large uploads. The "> 0" leaves out a pod without a budget. The
+        # ratio is taken per scrape target first, so two targets with one pod label never mix.
+        - alert: ConvertdDiskBudgetNearFull
+          expr: |
+            max by (namespace, pod) (
+              convert_disk_budget_bytes{state="used"}
+                / ignoring(state)
+              (convert_disk_budget_bytes{state="max"} > 0)
+            ) > 0.9
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: The convertd disk budget is more than 90 % reserved.
+            description: >-
+              {{ $labels.pod }} in {{ $labels.namespace }} has {{ $value | humanizePercentage }} of
+              TMP_MAX_BYTES reserved for 5 minutes. Requests that do not fit get 503.

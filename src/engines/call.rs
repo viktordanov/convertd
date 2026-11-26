@@ -82,6 +82,18 @@ pub async fn call_with_poison(
     let mut first_queue = None;
     let mut retried = false;
     loop {
+        // A crash retry checks before it waits for a worker, as well as
+        // after: a covered retry fails fast, and the crash counts once.
+        if retried
+            && let Some((p, attempt)) = &poison
+            && p.list.refuses(
+                &p.key,
+                &Attempt::new(attempt.work, deadline, Instant::now()),
+            )
+        {
+            p.list.strike(&p.key, Strike::Crash(1), attempt);
+            return Err(EngineError::Poisoned);
+        }
         let mut lease = match pool.lease(deadline, adm).await {
             Ok(lease) => lease,
             Err(err) => {
@@ -93,9 +105,26 @@ pub async fn call_with_poison(
                 return Err(EngineFailure::from(err).into());
             }
         };
+        // Check again with the time the worker gets now (see the render
+        // path): a timeout strike covers a request with no more time.
+        if let Some((p, attempt)) = &poison
+            && p.list.refuses(
+                &p.key,
+                &Attempt::new(attempt.work, deadline, Instant::now()),
+            )
+        {
+            drop(lease);
+            // A crash whose retry is refused counts once, as when the retry
+            // gets no worker.
+            if retried {
+                p.list.strike(&p.key, Strike::Crash(1), attempt);
+            }
+            return Err(EngineError::Poisoned);
+        }
         let queue = *first_queue.get_or_insert(lease.queued());
         let lease_time = lease.leased().saturating_sub(lease.queued());
         let spawned = lease.spawned_on_path();
+        let call_started = Instant::now();
         match lease.call(op.clone(), deadline).await {
             Ok(reply) => {
                 let worker = lease.worker_ref().map(worker_ref).unwrap_or(NO_WORKER);
@@ -158,7 +187,10 @@ pub async fn call_with_poison(
                 if let Some((p, attempt)) = &poison
                     && let Some(strike) = strike_for(&err, retried)
                 {
-                    p.list.strike(&p.key, strike, attempt);
+                    // The time the worker had, not the time spent queueing:
+                    // a timeout strike covers only requests with no more.
+                    let ran = Attempt::new(attempt.work, deadline, call_started);
+                    p.list.strike(&p.key, strike, &ran);
                 }
                 return Err(EngineFailure::from(err).into());
             }

@@ -91,11 +91,53 @@ fn u64_at(b: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
+/// Where the central directory is: `(entries, offset, size, zip64)`, under
+/// the same checks as [`list`]. `zip64` when the archive has a ZIP64 end
+/// record, whether or not the classic one needed it. For the office
+/// worker's DOCX repack.
+pub fn directory<R: Read + Seek>(
+    file: &mut R,
+    file_size: u64,
+) -> Result<(u64, u64, u64, bool), ScanError> {
+    let directory = read_directory(file, file_size)?;
+    // The directory must end before the end record, not run into it.
+    if directory.offset + directory.size > directory.eocd_pos {
+        return Err(ScanError::Malformed);
+    }
+    let mut zip64 = directory.zip64;
+    // An optional locator: only after the central directory, and only
+    // when it points to a ZIP64 end record.
+    if !zip64
+        && let Some(locator_pos) = directory.eocd_pos.checked_sub(20)
+        && locator_pos >= directory.offset + directory.size
+    {
+        file.seek(SeekFrom::Start(locator_pos))?;
+        let mut locator = [0; 20];
+        file.read_exact(&mut locator)?;
+        if u32_at(&locator, 0) == ZIP64_LOCATOR_SIG {
+            let record_pos = u64_at(&locator, 8);
+            let mut signature = [0; 4];
+            if record_pos
+                .checked_add(4)
+                .is_some_and(|end| end <= locator_pos)
+            {
+                file.seek(SeekFrom::Start(record_pos))?;
+                file.read_exact(&mut signature)?;
+            }
+            zip64 = u32_at(&signature, 0) == ZIP64_EOCD_SIG;
+        }
+    }
+    Ok((directory.entries, directory.offset, directory.size, zip64))
+}
+
 /// Where the central directory is.
 struct Directory {
     entries: u64,
     offset: u64,
     size: u64,
+    zip64: bool,
+    /// Where the classic end record starts.
+    eocd_pos: u64,
 }
 
 fn read_directory<R: Read + Seek>(file: &mut R, file_size: u64) -> Result<Directory, ScanError> {
@@ -156,6 +198,8 @@ fn read_directory<R: Read + Seek>(file: &mut R, file_size: u64) -> Result<Direct
         entries,
         offset,
         size,
+        zip64,
+        eocd_pos: tail_start + at as u64,
     })
 }
 

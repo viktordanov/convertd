@@ -153,7 +153,7 @@ Each folder in this list has a README for its own readers.
 ### Deploying it
 
 - [docker/README.md](docker/README.md) covers the image: the pinned LibreOffice, PDFium and fonts, and the build targets.
-- [deploy/README.md](deploy/README.md) covers the Kubernetes manifests and the settings that any container platform needs.
+- [deploy/README.md](deploy/README.md) covers the Kubernetes manifests, the settings that any container platform needs, and the example Grafana dashboard and Prometheus alerts. `tools/observability/gen_dashboard.py` generates the dashboard.
 - `build_docker.sh` builds the image for linux/amd64 and linux/arm64 and pushes it to a repository that you name.
 
 <!-- memoria:section id="contributing" files="generate.sh scripts/contract_test.sh .github/workflows/image.yml .github/workflows/corpus.yml .config/nextest.toml" -->

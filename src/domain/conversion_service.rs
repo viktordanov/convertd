@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::conversion::{ConversionRequest, ConversionResult, Output, PdfOrigin, StageTimings};
+use super::conversion::{
+    ConversionRequest, ConversionResult, ExportOptions, Output, PdfOrigin, StageTimings,
+};
 use super::detection::Detection;
 use super::document::{DocType, Family, Format};
 use super::engine::{
@@ -62,6 +64,10 @@ pub struct UploadFacts {
 pub trait OutputBudget: Send + Sync {
     /// `false` when other jobs hold the budget.
     fn reserve(&self, bytes: u64) -> bool;
+
+    /// Gives back up to `bytes` of what this job reserved, for a file that
+    /// is already gone.
+    fn release(&self, bytes: u64);
 }
 
 /// Routes by family: office files to the office engine, PDFs to inspect
@@ -76,6 +82,9 @@ pub struct ConversionService {
     pub(super) probe_max_pages: u32,
     /// For `FONT_SUBSTITUTED`; empty until [`ConversionService::with_fonts`].
     pub(super) fonts: FontCatalog,
+    /// The office worker writes a copy of a Word package with page sizes
+    /// (`DEFAULT_PAPER=A4`); see [`ConversionService::with_paper_copy`].
+    pub(super) paper_copy: bool,
 }
 
 /// The DPI of the probe render for `BLANK_PAGE` (V3).
@@ -98,7 +107,16 @@ impl ConversionService {
             probe_dpi: verify_probe_render.then_some(PROBE_DPI),
             probe_max_pages: DEFAULT_PROBE_MAX_PAGES,
             fonts: FontCatalog::default(),
+            paper_copy: false,
         }
+    }
+
+    /// The office worker writes a copy of a DOCX, DOCM or DOTX that names
+    /// its page sizes, so its office conversion reserves the copy too. Only
+    /// with `DEFAULT_PAPER=A4`: Letter is the importer's own default.
+    pub fn with_paper_copy(mut self, paper_copy: bool) -> Self {
+        self.paper_copy = paper_copy;
+        self
     }
 
     /// At most `pages` probed pages count for V3 (`VERIFY_PROBE_MAX_PAGES`).
@@ -173,10 +191,26 @@ impl ConversionService {
                 if job.detection.encrypted && job.request.password.is_none() {
                     return Err(ConversionError::Engine(EngineError::PasswordRequired));
                 }
-                let max_output_bytes = self.reserve(
-                    job.budget,
-                    self.limits.pdf_output_bytes(job.upload.size_bytes),
-                )?;
+                // The office worker may write a copy of a Word package that
+                // gives its sections a page size (DEFAULT_PAPER=A4): reserved
+                // too, but not part of the PDF's cap. An encrypted package
+                // is not a ZIP, and gets no copy.
+                let copy = if self.paper_copy
+                    && !job.detection.encrypted
+                    && matches!(format, Format::Docx | Format::Docm | Format::Dotx)
+                {
+                    self.limits.paper_copy_bytes(job.upload.size_bytes)
+                } else {
+                    0
+                };
+                let max_output_bytes = self
+                    .reserve(
+                        job.budget,
+                        self.limits
+                            .pdf_output_bytes(job.upload.size_bytes)
+                            .saturating_add(copy),
+                    )?
+                    .saturating_sub(copy);
                 let called = Instant::now();
                 let converted = self
                     .office
@@ -196,6 +230,9 @@ impl ConversionService {
                     .await
                     .inspect_err(|err| charge_queue(timings, called, err))
                     .map_err(engine_error)?;
+                // The worker removed its copy before it answered: the render
+                // must not be charged for it.
+                job.budget.release(copy);
                 timings.add_call(&converted.timing);
                 if job.detection.encrypted {
                     format = match converted.doc_type {
@@ -215,6 +252,13 @@ impl ConversionService {
                         Admission::Continue,
                         job.deadline,
                         probe,
+                        job.upload.sha256,
+                        // The family the worker exported with: the loaded
+                        // type, else the requested one (export_family).
+                        Some(effective_export(
+                            Some(converted.doc_type.family().unwrap_or(family)),
+                            job.request.export,
+                        )),
                         timings,
                     )
                     .await
@@ -234,6 +278,8 @@ impl ConversionService {
                         Admission::Queue,
                         job.deadline,
                         probe,
+                        job.upload.sha256,
+                        None,
                         timings,
                     )
                     .await
@@ -264,6 +310,7 @@ impl ConversionService {
                                 output: paths.document_pdf.clone(),
                                 max_output_bytes,
                                 check_owner: true,
+                                sha256: job.upload.sha256,
                             },
                             Admission::Continue,
                             job.deadline,
@@ -429,6 +476,9 @@ impl ConversionService {
         Ok(rendered.pages)
     }
 
+    // Two more arguments than clippy's default: the upload's hash and the
+    // export, for the poison memory. A struct would only move the list.
+    #[allow(clippy::too_many_arguments)]
     async fn inspect(
         &self,
         pdf: &Path,
@@ -436,6 +486,8 @@ impl ConversionService {
         adm: Admission,
         deadline: Instant,
         probe: bool,
+        sha256: [u8; 32],
+        export: Option<ExportOptions>,
         timings: &mut StageTimings,
     ) -> Result<Inspection, EngineError> {
         let probe_dpi = if probe { self.probe_dpi } else { None };
@@ -449,6 +501,8 @@ impl ConversionService {
                     probe_dpi,
                     collect_fonts: false,
                     probe_max_pages: self.probe_max_pages,
+                    sha256,
+                    export,
                 },
                 adm,
                 deadline,
@@ -539,8 +593,53 @@ pub fn render_reservation(
     total.min(cap)
 }
 
+/// The export settings that LibreOffice applies to a document of `family`,
+/// as `worker::office::filter_options` reads them: the others make no
+/// difference to the PDF, so they must not make another poison key.
+fn effective_export(family: Option<Family>, export: ExportOptions) -> ExportOptions {
+    match family {
+        Some(Family::Presentation) => ExportOptions {
+            one_page_per_sheet: false,
+            ..export
+        },
+        Some(Family::Spreadsheet) => ExportOptions {
+            one_page_per_sheet: export.one_page_per_sheet,
+            ..ExportOptions::default()
+        },
+        _ => ExportOptions::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_the_settings_an_export_uses_make_its_poison_key() {
+        use super::super::conversion::SlideNotes;
+        let all = ExportOptions {
+            notes: SlideNotes::Only,
+            include_hidden_slides: true,
+            one_page_per_sheet: true,
+        };
+        assert_eq!(
+            effective_export(Some(Family::Document), all),
+            ExportOptions::default()
+        );
+        assert_eq!(
+            effective_export(Some(Family::Spreadsheet), all),
+            ExportOptions {
+                one_page_per_sheet: true,
+                ..ExportOptions::default()
+            }
+        );
+        assert_eq!(
+            effective_export(Some(Family::Presentation), all),
+            ExportOptions {
+                one_page_per_sheet: false,
+                ..all
+            }
+        );
+    }
+
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -734,6 +833,10 @@ mod tests {
                     left.checked_sub(bytes)
                 })
                 .is_ok()
+        }
+
+        fn release(&self, bytes: u64) {
+            self.left.fetch_add(bytes, Ordering::Relaxed);
         }
     }
 

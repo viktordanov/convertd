@@ -70,6 +70,8 @@ libreofficekit = "0.5.0"
 pdfium-render = { version = "0.9.6", default-features = false, features = ["pdfium_latest"] }
 jpeg-encoder = "0.7.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+# PNG rows stream into the encoder, so a page is never copied to RGB whole (P2).
+png = "0.18.1"
 
 [dev-dependencies]
 # The router tests drive it with ServiceExt::oneshot.

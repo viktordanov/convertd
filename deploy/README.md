@@ -14,7 +14,8 @@ Know two facts before you use these files. First, the `runtime` image is proved 
 4. [Deployment](#deployment)
 5. [Shutdown and rollout](#shutdown-and-rollout)
 6. [Worker isolation](#worker-isolation)
-7. [What is verified](#what-is-verified)
+7. [Observability](#observability)
+8. [What is verified](#what-is-verified)
 
 <!-- memoria:section id="contract" files="k8s/base/deployment.yaml k8s/base/service.yaml k8s/base/networkpolicy.yaml k8s/overlays/gvisor/kustomization.yaml" -->
 ## Pod
@@ -124,6 +125,71 @@ The service needs no outbound connection, not even DNS. The deployment must bloc
 The pod security settings limit what a worker can do on the node: a non-root user, a read-only root, no capabilities, no privilege escalation, `RuntimeDefault` seccomp and no service-account token. They do not separate the workers from each other.
 <!-- /memoria:section -->
 
+<!-- memoria:section id="observability" files="observability/grafana-dashboard.json observability/prometheusrule.yaml" -->
+## Observability
+
+convertd serves Prometheus metrics on `GET /metrics` on the `http` port, without the API key. `deploy/observability/` holds two examples that read them:
+
+- **`grafana-dashboard.json`**: a Grafana dashboard, made by `tools/observability/gen_dashboard.py`. It shows the `/v1/convert` requests by status and error code, and p50 and p99 per stage. It also shows the queue, workers and restarts of each pool, supervisor memory, the disk budget and the warnings.
+- **`prometheusrule.yaml`**: a `PrometheusRule` for the Prometheus Operator with four alerts. They fire on 429, on 422 `LIMIT_EXCEEDED`, on a queue at its capacity and on a disk budget that is 90 % reserved. A comment above each alert gives the reason for its threshold.
+
+The scrape configuration belongs to the deployment, not to this repository. With the Prometheus Operator, a `ServiceMonitor` like this one selects the Service of the base:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: convertd
+  labels:
+    release: kube-prometheus-stack   # must match the serviceMonitorSelector of your Prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: convertd
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+```
+
+To use the examples:
+
+1. Apply the `ServiceMonitor` in the namespace of convertd.
+2. In Grafana, open **Dashboards**, then **New**, then **Import**. Upload `grafana-dashboard.json`.
+3. Open the dashboard and select the Prometheus data source of convertd in the **Prometheus** list.
+4. If your scrape interval is not 15 s, type it in the **Scrape interval** box.
+5. Adapt `prometheusrule.yaml` with the list that follows. Then apply it in the same namespace.
+
+Adapt the rules to the deployment:
+
+- Set the `release` label to the value that the `ruleSelector` of your Prometheus selects.
+- If an overlay changes `OFFICE_WORKERS`, `RENDER_WORKERS` or `QUEUE_CAPACITY`, change the queue thresholds. If `QUEUE_CAPACITY` is 0, remove the office branch of the queue alert.
+- If deployments with other capacities share one Prometheus, add a `namespace` matcher to each queue selector.
+- If your scrape interval is longer than 1 minute, widen the 5 m and 15 m rate windows to at least four scrape intervals.
+
+If Prometheus runs in another namespace, its `serviceMonitorNamespaceSelector` and `ruleNamespaceSelector` must select the namespace of convertd. Otherwise the Operator does not load the `ServiceMonitor` or the rules.
+
+### Dashboard
+
+To change the dashboard, edit `tools/observability/gen_dashboard.py`, not the JSON. Then run `python3 -I tools/observability/gen_dashboard.py deploy/observability/grafana-dashboard.json` and commit both files.
+
+The dashboard computes rates over `$__rate_interval`, which is at least four scrape intervals. Each query takes its minimum step from the `scrape_interval` variable, and Grafana uses that step as the scrape interval. With 15 s, a rate window can be as short as 1 minute. The dashboard tells processes apart by their `namespace` and `pod` labels, which a `ServiceMonitor` adds. A scrape without them merges the counters of all processes.
+
+The "Conversions in flight" and "Time in each stage" panels estimate the concurrency from the stage time sums. Thus a burst between two scrapes still counts. Each request adds its time when it finishes, so the estimate is exact only under steady load. An upload that fails records no stage time. A stage and family series starts at its first request, so the first burst of a new pod or family has no rate.
+
+### Alerts
+
+convertd does not export the queue capacity, so the queue alert has a fixed threshold of 4 for each pool. The queue gauge also counts the later engine calls of admitted requests, which the capacity does not limit. Thus the queue alert shows queue pressure, and the 429 alert shows the refusals. The 429 and 422 alerts also need 5 such responses in their window, so one refusal on an idle pod does not fire them.
+
+### Name check
+
+`tests/observability.rs` keeps the files and the code in sync. It starts convertd at level B, sends requests until the metric families exist, and reads `/metrics`. It compares two kinds of name with the samples of the scrape: each `convert_*` name in the files, and each metric that a query selects. A missing name fails the test, and so does a misspelled prefix such as `covert_workers`. The test runs in the CI test job, with `test-hooks`.
+
+Two names are exceptions. `tests/convert_pdf.rs` makes a stalled response and asserts `convert_responses_cut_total` on its own scrape. On a host that is not Linux, the test looks for the supervisor gauges in `src/observability/metrics.rs`. The test also limits the form of the rules file: each `expr` is a block or a plain value on its own `expr:` line.
+
+The test checks metric names only. It does not check label values, a Grafana import or a load by the Prometheus Operator.
+<!-- /memoria:section -->
+
 <!-- memoria:section id="verification" files="k8s/base/deployment.yaml k8s/overlays/gvisor/kustomization.yaml k8s/overlays/gvisor/runtimeclass.yaml" -->
 ## What is verified
 
@@ -131,6 +197,7 @@ Plan 003 step 8 (Kubernetes) and step 10 (gVisor) do the live checks, on the clu
 
 - **Render:** `kubectl kustomize` (v1.33.9) renders the base and the `gvisor` overlay.
 - **Schema:** `kubeconform -strict` (v0.8.0) passed for all 7 resources on 2026-11-26, after the base got `TIMEOUT_DEFAULT_SECONDS`.
+- **Observability examples:** on 2026-11-26, by hand, the dashboard JSON and the rules YAML parsed, and all 50 queries parsed with the PromQL parser of Prometheus v0.54.1. No Grafana import, `promtool` check or Prometheus Operator load has run. Two Grafana behaviors are not checked live: a query Min step replaces the scrape interval of the data source in `$__rate_interval`, and Min step accepts the `$scrape_interval` variable.
 - **Not done:** a live deployment and a gVisor run. Also not checked are the native `preStop` sleep on the Kubernetes version of the owner and egress denial by the CNI of the cluster. Time to ready and worker memory under gVisor are not measured.
 
 A passing render and schema check proves that the files are valid Kubernetes objects. It does not prove that the probes, limits or network policy behave as intended on a real cluster.

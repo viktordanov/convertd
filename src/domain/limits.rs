@@ -31,10 +31,22 @@ impl Limits {
             .min(self.max_output_bytes)
     }
 
+    /// What the office worker's copy of a Word package may write, the copy
+    /// that gives its sections a page size (`worker::docx_paper`): the
+    /// source size plus 1 MiB. Reserved beside the PDF, not part of its cap.
+    pub fn paper_copy_bytes(&self, source_bytes: u64) -> u64 {
+        paper_copy_bytes(source_bytes)
+    }
+
     /// What decrypting a PDF may write: the source size plus 1 MiB.
     pub fn decrypt_output_bytes(&self, source_bytes: u64) -> u64 {
         source_bytes.saturating_add(MIB).min(self.max_output_bytes)
     }
+}
+
+/// [`Limits::paper_copy_bytes`], for the worker, which holds no `Limits`.
+pub const fn paper_copy_bytes(source_bytes: u64) -> u64 {
+    source_bytes.saturating_add(MIB)
 }
 
 #[cfg(test)]
@@ -60,6 +72,8 @@ mod tests {
         assert_eq!(limits.pdf_output_bytes(1000), 64 * MIB);
         assert_eq!(limits.pdf_output_bytes(10 * MIB), 80 * MIB);
         assert_eq!(limits.pdf_output_bytes(200 * MIB), 768 * MIB);
+        assert_eq!(limits.paper_copy_bytes(10), MIB + 10);
+        assert_eq!(limits.paper_copy_bytes(u64::MAX), u64::MAX);
         assert_eq!(limits.decrypt_output_bytes(10), MIB + 10);
         assert_eq!(limits.decrypt_output_bytes(u64::MAX), 768 * MIB);
     }
