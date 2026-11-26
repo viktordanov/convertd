@@ -79,7 +79,7 @@ The files that a worker writes itself go through `OutputBudget`. The budget hold
 For `DiskFull` and `LimitExceeded`, `io_error` writes a fixed message with no path in it.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="office" files="office.rs warmup.rs" -->
+<!-- memoria:section id="office" files="office.rs warmup.rs docx_paper.rs" -->
 ## Office worker
 
 `OfficeWorker::start` creates the one `Office` of the process and keeps it in a `ManuallyDrop` from the next line on, so no error path drops it. Then it does these steps:
@@ -99,6 +99,10 @@ A `Convert` runs `preflight::scan` on the source first, timed apart as `prefligh
 - **Presentations**: `ExportNotesPages`, `ExportOnlyNotesPages` and `ExportHiddenSlides`.
 - **Spreadsheets**: `SinglePageSheets`.
 - **Text documents**: `ExportNotes` off.
+
+The DOCX importer of LibreOffice 26.8.3 starts every section on Letter and never reads `LC_PAPER`. So for a DOCX, DOCM or DOTX, `docx_paper` gives each section without a `w:pgSz` one with the `DEFAULT_PAPER` size before the load. The worker learns the paper from its `LC_PAPER`. The sections are the `w:sectPr` of the body and of a paragraph's `w:pPr`, and a body without one gets one. The new element goes after the header and footer references, `w:footnotePr`, `w:endnotePr` and `w:type`, where the schema puts it. A section that has a `w:pgSz` keeps it, and a package in which every section has one is loaded as it came.
+
+The worker writes the changed package to `paper/<source name>` in the job directory, loads it, and removes it after the export. Only the main part changes, with its own compression method. Every other entry is copied byte for byte, data descriptors included. The copy may be at most the source size plus 1 MiB, which the supervisor reserves beside the PDF. The main part is read under the pre-flight's per-request cap of 64 MiB, and the archive under detection's caps. A package outside these bounds is loaded as it came, on Letter: ZIP64, an encrypted main part, a part that is not UTF-8, or nesting deeper than 4096 elements. The time counts as `preflight_us`.
 
 Only an encrypted DOCX has a test of this path (`tests/engines_office.rs`). An encrypted spreadsheet or presentation is not tested.
 
