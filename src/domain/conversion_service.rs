@@ -496,8 +496,10 @@ const RENDER_SLACK: u64 = 1024 * 1024;
 /// much of the disk budget rather than the whole per-job cap: per page, the
 /// raw 4-byte-per-pixel bitmap at `dpi` and under `max_edge`, plus an
 /// eighth and [`RENDER_PAGE_SLACK`]; plus [`RENDER_SLACK`]; at most `cap`
-/// (`max_output_bytes`), which the engine still enforces. A page the
-/// inspection did not size counts as `max_edge` square.
+/// (`max_output_bytes`). The render job gets this as its `max_output_bytes`,
+/// so it is the engine's hard limit: an encoder that writes more fails the
+/// request with `LimitExceeded`. A page the inspection did not size counts
+/// as `max_edge` square.
 pub fn render_reservation(
     pages: &[PageSize],
     numbers: &[u32],
