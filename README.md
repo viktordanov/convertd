@@ -151,7 +151,7 @@ Each folder in this list has a README for its own readers.
 ### Deploying it
 
 - [docker/README.md](docker/README.md) covers the image: the pinned LibreOffice, PDFium and fonts, and the build targets.
-- [deploy/README.md](deploy/README.md) covers the manifests for Kubernetes and Azure Container Apps.
+- [deploy/README.md](deploy/README.md) covers the Kubernetes manifests and the settings that any container platform needs.
 - `build_docker.sh` builds the image for linux/amd64 and linux/arm64 and pushes it to a repository that you name.
 
 <!-- memoria:section id="contributing" files="generate.sh scripts/contract_test.sh .github/workflows/image.yml .github/workflows/corpus.yml .config/nextest.toml" -->

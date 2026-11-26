@@ -13,7 +13,7 @@ README.md                  the service, the quick start, the catalog       lead
 ├── tests/README.md        test levels, fakes, nextest profiles            lead
 ├── client/README.md       the Go client and its contract tests            004
 ├── docker/README.md       the image: engines, fonts, pins, targets        003
-├── deploy/README.md       Kubernetes and Azure Container Apps             003
+├── deploy/README.md       Kubernetes, and any container platform          003
 ├── corpus/README.md       the test corpus and its expectations            005
 ├── tools/corpus/README.md corpus-bench                                     005
 └── docs/README.md         the documentation map                           lead
@@ -53,7 +53,7 @@ Explain what the image holds and why: LibreOffice with only the parts the servic
 
 ## deploy/README.md
 
-Write for an operator. Give the Kubernetes and Azure Container Apps setups side by side where they differ: probes, termination grace, the temp volume and `TMP_MAX_BYTES`, the 240 s request limit and `TIMEOUT_MAX_SECONDS`, and the optional gVisor runtime class. Say what is verified on each platform and what is not.
+Write for an operator. Give the Kubernetes setup: probes, termination grace, the temp volume and `TMP_MAX_BYTES`, the request limit and `TIMEOUT_MAX_SECONDS`, the worker memory limits, and the optional gVisor runtime class. Say which of these settings any other container platform needs too. Say what is verified and what is not.
 
 ## corpus/README.md and tools/corpus/README.md
 
