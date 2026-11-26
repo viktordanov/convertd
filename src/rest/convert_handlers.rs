@@ -551,6 +551,9 @@ fn record_metrics(
     for warning in &result.warnings {
         metrics::warning(warning.code.as_str());
     }
+    if result.probe_skipped_pages > 0 {
+        metrics::verify_skipped_by("blank_page", "pages", u64::from(result.probe_skipped_pages));
+    }
     for (check, reason) in &result.skipped {
         metrics::verify_skipped(check.as_str(), reason);
     }

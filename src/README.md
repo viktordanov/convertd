@@ -126,7 +126,7 @@ Warnings compare what an office source declares with what the engines produced. 
 
 - **`PAGE_COUNT_MISMATCH`**: PPTX family only, when the declared count differs from the PDF. It is skipped when hidden slides or notes pages are included, and for a template with no slides.
 - **`FONT_SUBSTITUTED`**: a requested family that `build-info.json` does not list, unless `fonts.json` marks it metric-compatible and its substitute is installed. At most 32 per request. Without `build-info.json`, as outside the image, the check is skipped. The substitute that the warning names is the one fontconfig predicted when the image was built (`font_substitutes` and `default_substitute` in `build-info.json`). It is not read from the PDF, so it is right only while the fonts are those of that build. For a run on a host, `build-info.json` must come from that host's fontconfig, or the names can be wrong.
-- **`BLANK_PAGE`**: a page with content that rendered as one flat color, from the rendered page or the probe render.
+- **`BLANK_PAGE`**: a page with content that rendered as one flat color, from the rendered page or the probe render. With a page selection and page images, nothing is probed: the rendered pages decide. Otherwise at most `VERIFY_PROBE_MAX_PAGES` (200) probed pages count, and the rest are counted in `convert_verify_skipped_total{check="blank_page",reason="pages"}`. The worker still probes every page until lane 002's side of the bound lands.
 - **`MACROS_IGNORED`**: a VBA project, an Excel 4 macro sheet, an ODF `Basic/` module or `Scripts/` entry, or an OLE2 macro storage.
 - **`RENDER_CLAMPED`**: `MAX_DPI` or `MAX_EDGE_PX` lowered the requested resolution.
 

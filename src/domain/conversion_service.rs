@@ -12,6 +12,7 @@ use super::engine::{
     OfficeJob, PageSize, PdfEngine, RenderJob, RenderedPage,
 };
 use super::limits::Limits;
+use super::pages::PageSelection;
 use super::secret::Password;
 use super::verification::{self, FontCatalog, VerifyInput};
 
@@ -72,12 +73,17 @@ pub struct ConversionService {
     pub(super) limits: Limits,
     /// `Some(18)` with `VERIFY_PROBE_RENDER`.
     pub(super) probe_dpi: Option<u16>,
+    /// `VERIFY_PROBE_MAX_PAGES`: the probed pages that count.
+    pub(super) probe_max_pages: u32,
     /// For `FONT_SUBSTITUTED`; empty until [`ConversionService::with_fonts`].
     pub(super) fonts: FontCatalog,
 }
 
 /// The DPI of the probe render for `BLANK_PAGE` (V3).
 pub const PROBE_DPI: u16 = 18;
+
+/// `VERIFY_PROBE_MAX_PAGES` by default.
+pub const DEFAULT_PROBE_MAX_PAGES: u32 = 200;
 
 impl ConversionService {
     pub fn new(
@@ -91,8 +97,15 @@ impl ConversionService {
             pdf,
             limits,
             probe_dpi: verify_probe_render.then_some(PROBE_DPI),
+            probe_max_pages: DEFAULT_PROBE_MAX_PAGES,
             fonts: FontCatalog::default(),
         }
+    }
+
+    /// At most `pages` probed pages count for V3 (`VERIFY_PROBE_MAX_PAGES`).
+    pub fn with_probe_max_pages(mut self, pages: u32) -> Self {
+        self.probe_max_pages = pages;
+        self
     }
 
     /// The installed families and their substitutes, for V2.
@@ -147,7 +160,12 @@ impl ConversionService {
         // Encrypted OOXML: provisional until the engine reports its type.
         let mut format = job.detection.format;
 
-        let (pdf, origin, inspection, facts) = match family {
+        // The blank-page probe, unless page images of a selection will be
+        // rendered: those decide BLANK_PAGE for the pages they show.
+        let probe = self.probe_dpi.is_some()
+            && (job.request.output == Output::Pdf
+                || matches!(job.request.pages, PageSelection::All));
+        let (pdf, origin, mut inspection, facts) = match family {
             Family::Document | Family::Presentation | Family::Spreadsheet => {
                 // Fail fast: an encrypted package cannot open without one.
                 if job.detection.encrypted && job.request.password.is_none() {
@@ -192,6 +210,7 @@ impl ConversionService {
                         None,
                         Admission::Continue,
                         job.deadline,
+                        probe,
                         timings,
                     )
                     .await
@@ -210,6 +229,7 @@ impl ConversionService {
                         job.request.password.clone(),
                         Admission::Queue,
                         job.deadline,
+                        probe,
                         timings,
                     )
                     .await
@@ -290,6 +310,7 @@ impl ConversionService {
                         None,
                         Admission::Continue,
                         job.deadline,
+                        probe,
                         timings,
                     )
                     .await
@@ -307,6 +328,15 @@ impl ConversionService {
                 "the PDF has no pages".into(),
             )));
         }
+        // At most VERIFY_PROBE_MAX_PAGES probed pages count; the rest of
+        // the document is counted as skipped.
+        let probe_skipped_pages = if probe {
+            let max = self.probe_max_pages;
+            inspection.probe.retain(|page| page.number <= max);
+            inspection.page_count.saturating_sub(max)
+        } else {
+            0
+        };
 
         let pages = if job.request.output == Output::Pdf {
             Vec::new()
@@ -343,6 +373,7 @@ impl ConversionService {
             pages,
             warnings: verdict.warnings,
             skipped: verdict.skipped,
+            probe_skipped_pages,
         })
     }
 
@@ -414,15 +445,17 @@ impl ConversionService {
         password: Option<Password>,
         adm: Admission,
         deadline: Instant,
+        probe: bool,
         timings: &mut StageTimings,
     ) -> Result<Inspection, EngineError> {
+        let probe_dpi = if probe { self.probe_dpi } else { None };
         let inspection = self
             .pdf
             .inspect(
                 InspectJob {
                     pdf: pdf.to_path_buf(),
                     password,
-                    probe_dpi: self.probe_dpi,
+                    probe_dpi,
                     collect_fonts: false,
                 },
                 adm,
@@ -431,7 +464,7 @@ impl ConversionService {
             .await?;
         timings.add_call(&inspection.timing);
         timings.inspect = Some(inspection.timing.wall);
-        let probe = self.probe_dpi.map(|_| inspection.probe_engine);
+        let probe = probe_dpi.map(|_| inspection.probe_engine);
         timings.inspect_engine = Some(
             inspection
                 .timing
@@ -548,6 +581,7 @@ mod tests {
         drop_a_page: bool,
         doc_type: Option<DocType>,
         rendered: Mutex<Option<RenderJob>>,
+        inspected: Mutex<Option<InspectJob>>,
     }
 
     impl Script {
@@ -590,18 +624,31 @@ mod tests {
             _: Instant,
         ) -> Result<Inspection, EngineError> {
             self.record("inspect", adm);
+            *self.inspected.lock().unwrap() = Some(job.clone());
             if let Some(err) = &self.inspect_error {
                 return Err(err.clone());
             }
+            let page_count = self.page_count.unwrap_or(1);
             Ok(Inspection {
-                page_count: self.page_count.unwrap_or(1),
+                page_count,
                 encrypted: self.needs_password,
                 needs_password: self.needs_password,
                 pages: vec![PageSize {
                     width_pt: 595.0,
                     height_pt: 842.0,
                 }],
-                probe: Vec::new(),
+                // As the worker does today: every page.
+                probe: match job.probe_dpi {
+                    Some(_) => (1..=page_count)
+                        .map(|number| crate::domain::engine::ProbedPage {
+                            number,
+                            objects: 1,
+                            flat: false,
+                            colour: [255, 255, 255],
+                        })
+                        .collect(),
+                    None => Vec::new(),
+                },
                 probe_engine: job
                     .probe_dpi
                     .map_or(Duration::ZERO, |_| Duration::from_millis(2)),
@@ -731,6 +778,40 @@ mod tests {
         };
         let result = service.convert(job, &mut timings).now_or_never().unwrap();
         Run { result, timings }
+    }
+
+    /// Without a page selection the probe covers at most
+    /// VERIFY_PROBE_MAX_PAGES pages, and the rest are counted as skipped.
+    /// With a selection and page images, the rendered pages decide
+    /// BLANK_PAGE, so nothing is probed (review, lane 001 item 9).
+    #[test]
+    fn the_probe_is_bounded_and_the_rest_counted() {
+        let script = Arc::new(Script {
+            page_count: Some(300),
+            ..Default::default()
+        });
+        let result = run(script.clone(), Format::Pdf, RawOptions::default(), u64::MAX)
+            .result
+            .unwrap();
+        let job = script.inspected.lock().unwrap().clone().unwrap();
+        assert_eq!(job.probe_dpi, Some(PROBE_DPI));
+        assert_eq!(result.probe_skipped_pages, 100);
+
+        let script = Arc::new(Script {
+            page_count: Some(300),
+            ..Default::default()
+        });
+        let raw = RawOptions {
+            output: Some(Output::Images),
+            pages: Some("1-3".into()),
+            ..Default::default()
+        };
+        let result = run(script.clone(), Format::Pdf, raw, u64::MAX)
+            .result
+            .unwrap();
+        let job = script.inspected.lock().unwrap().clone().unwrap();
+        assert_eq!(job.probe_dpi, None, "the rendered pages decide");
+        assert_eq!(result.probe_skipped_pages, 0);
     }
 
     #[test]
