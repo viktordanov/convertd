@@ -638,7 +638,7 @@ fn deck(hidden: &[bool]) -> Vec<u8> {
         (
             "ppt/presentation.xml".to_owned(),
             format!(
-                r#"<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst>{list}</p:sldIdLst></p:presentation>"#
+                r#"<p:presentation xmlns:p="p" xmlns:r="{REL}"><p:sldIdLst>{list}</p:sldIdLst></p:presentation>"#
             ),
         ),
     ];
