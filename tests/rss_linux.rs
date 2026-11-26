@@ -124,7 +124,10 @@ mod measured {
                     Err("RSS_ENGINE=fake needs --features test-hooks".into())
                 };
             }
-            Ok("real") | Err(_) => {}
+            Ok("real") | Err(std::env::VarError::NotPresent) => {}
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err("RSS_ENGINE is not UTF-8: give real or fake".into());
+            }
             Ok(other) => return Err(format!("RSS_ENGINE={other:?}: give real or fake")),
         }
         // As the supervisor reads them: an empty value is unset.
@@ -282,7 +285,8 @@ mod measured {
         // RSS_ROUNDS, checked before the server starts: a malformed or too
         // small count fails rather than running a shorter measurement.
         let rounds: usize = match std::env::var("RSS_ROUNDS") {
-            Err(_) => 3,
+            Err(std::env::VarError::NotPresent) => 3,
+            Err(std::env::VarError::NotUnicode(_)) => panic!("RSS_ROUNDS is not UTF-8"),
             Ok(value) => match value.parse() {
                 Ok(n) if n >= 2 => n,
                 _ => panic!("RSS_ROUNDS={value:?}: give a whole number of at least 2"),
