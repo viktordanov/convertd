@@ -279,7 +279,6 @@ struct Section {
     depth: usize,
     prefix: Vec<u8>,
     ns: &'static [u8],
-    sized: bool,
     /// Before the first child that comes after `w:pgSz` in the schema.
     insert_at: Option<u64>,
 }
@@ -331,9 +330,6 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     // The body: its depth, prefix and namespace.
     let mut body: Option<(usize, Vec<u8>, &'static [u8])> = None;
     let mut body_has_section = false;
-    // A section that names its size: then the others may take theirs from
-    // it (a continuous break), and adding sizes would be a guess.
-    let mut any_sized = false;
     // Open `mc:AlternateContent` elements.
     let mut alternates = 0usize;
     // Open `w:sectPrChange` elements: a section's former properties.
@@ -394,7 +390,11 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     }
                     if depth == s.depth + 1 {
                         if ns.is_some() && local == b"pgSz" {
-                            s.sized = true;
+                            // Then the others may take their size from it (a
+                            // continuous break): adding sizes would be a
+                            // guess, so the part loads as it came, and the
+                            // rest need not be read.
+                            return Err(Skip::Sized);
                         } else if s.insert_at.is_none()
                             && !(ns.is_some() && BEFORE_PAGE_SIZE.contains(&local))
                         {
@@ -426,7 +426,6 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                             depth,
                             prefix: prefix.to_vec(),
                             ns,
-                            sized: false,
                             insert_at: None,
                         });
                     }
@@ -468,11 +467,8 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                 history -= usize::from(closed == Some(Tag::SectPrChange));
                 let depth = stack.len();
                 if let Some(s) = open.take_if(|s| s.depth == depth) {
-                    any_sized |= s.sized;
-                    if !s.sized {
-                        let at = s.insert_at.unwrap_or(before);
-                        plan.push(at, at, page_size(&s.prefix, s.ns, paper))?;
-                    }
+                    let at = s.insert_at.unwrap_or(before);
+                    plan.push(at, at, page_size(&s.prefix, s.ns, paper))?;
                 }
                 if closed == Some(Tag::Body)
                     && let Some((body_depth, prefix, ns)) = &body
@@ -505,11 +501,6 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     }
     if !stack.is_empty() {
         return Err(Skip::Unreadable);
-    }
-    // Some sections sized and some not: LibreOffice's choice for the
-    // unsized ones stays.
-    if any_sized && !plan.is_empty() {
-        return Err(Skip::Unsupported);
     }
     Ok(plan)
 }
@@ -544,7 +535,10 @@ pub fn apply(mut part: impl Read, plan: &Plan, out: &mut impl Write) -> io::Resu
 /// `xml` with every section sized, or `None` when nothing changes. For
 /// tests and for callers that hold the part in memory.
 pub fn fix_part(xml: &[u8], paper: Paper) -> Result<Option<Vec<u8>>, Skip> {
-    let plan = plan(xml, paper, MAIN_PART_CAP)?;
+    let plan = match plan(xml, paper, MAIN_PART_CAP) {
+        Err(Skip::Sized) => return Ok(None),
+        other => other?,
+    };
     if plan.is_empty() {
         return Ok(None);
     }
@@ -558,8 +552,13 @@ pub fn fix_part(xml: &[u8], paper: Paper) -> Result<Option<Vec<u8>>, Skip> {
 /// origin is [`Skip::Unsupported`]: a changed main part would break its
 /// signature, wherever the signature parts are.
 pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Result<String, Skip> {
-    let Some((_, rels)) = entries.iter().find(|(name, _)| name == "_rels/.rels") else {
-        return Ok("word/document.xml".to_owned());
+    let mut found = entries
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("_rels/.rels"));
+    let rels = match (found.next(), found.next()) {
+        (None, _) => return Ok("word/document.xml".to_owned()),
+        (Some((_, rels)), None) => rels,
+        (Some(_), Some(_)) => return Err(Skip::Unsupported),
     };
     let bytes = zip_scan::read_entry(file, rels, crate::preflight::PART_CAP as usize)
         .map_err(scan_error)?
@@ -586,11 +585,15 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
                 (key == b"xmlns" || key.starts_with(b"xmlns:")) && a.value.contains(&b'&')
             });
             let bad_root = !root_seen && !(in_rels && e.local_name().as_ref() == b"Relationships");
-            if escaped || bad_root || depth >= 8 {
+            // A branch could make another relationship the active one.
+            let branch = e.local_name().as_ref() == b"AlternateContent";
+            if escaped || bad_root || branch || depth >= 8 {
                 return Err(Skip::Unsupported);
             }
             root_seen = true;
         }
+        // Relationship elements count only as children of the root.
+        let child_of_root = depth == 1;
         match &event {
             Event::Start(_) => depth += 1,
             Event::End(_) => depth = depth.saturating_sub(1),
@@ -598,7 +601,7 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
         }
         match event {
             Event::Start(e) | Event::Empty(e)
-                if in_rels && e.local_name().as_ref() == b"Relationship" =>
+                if child_of_root && in_rels && e.local_name().as_ref() == b"Relationship" =>
             {
                 // Only the unqualified attributes: `xmlns:Type` or `x:Type`
                 // are not the relationship's type.
@@ -723,6 +726,7 @@ struct Record {
     flags: u16,
     method: u16,
     crc: u32,
+    compressed: u64,
     local_offset: u64,
     is_main: bool,
 }
@@ -769,6 +773,7 @@ fn records(directory: &[u8], entries: u64, main: &str) -> Option<Vec<Record>> {
             flags: u16_at(header, 8),
             method: u16_at(header, 10),
             crc: u32_at(header, 16),
+            compressed: u64::from(compressed),
             local_offset: u64::from(local_offset),
             is_main: name == main.as_bytes(),
         });
@@ -945,6 +950,26 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
             .is_some_and(|&i| records[i].local_offset >= cd_offset)
     {
         return Err(Skip::Unsupported);
+    }
+
+    // Each local record (header, name, extra field and data) must fit
+    // before the next one, or the spans below would cut or mix entries.
+    for (k, &i) in order.iter().enumerate() {
+        let record = &records[i];
+        let end = order
+            .get(k + 1)
+            .map_or(cd_offset, |&j| records[j].local_offset);
+        file.seek(SeekFrom::Start(record.local_offset))
+            .map_err(source_io)?;
+        let mut header = [0u8; 30];
+        file.read_exact(&mut header).map_err(source_io)?;
+        let needed = 30
+            + u64::from(u16_at(&header, 26))
+            + u64::from(u16_at(&header, 28))
+            + record.compressed;
+        if u32_at(&header, 0) != 0x0403_4b50 || record.local_offset + needed > end {
+            return Err(Skip::Unsupported);
+        }
     }
 
     // The copy's folder is made only now that there is a copy to write.

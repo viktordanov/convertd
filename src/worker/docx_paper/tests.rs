@@ -90,9 +90,10 @@ fn every_section_break_is_sized() {
 fn sized_and_unsized_sections_together_are_left_to_libreoffice() {
     // A continuous section may take its size from a sized neighbour.
     let body = r#"<w:p><w:pPr><w:sectPr><w:type w:val="continuous"/><w:cols w:num="2"/></w:sectPr></w:pPr></w:p><w:p/><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>"#;
+    assert_eq!(fix_part(doc(body).as_bytes(), Paper::A4), Ok(None));
     assert_eq!(
-        fix_part(doc(body).as_bytes(), Paper::A4),
-        Err(Skip::Unsupported)
+        plan(doc(body).as_bytes(), Paper::A4, MAIN_PART_CAP),
+        Err(Skip::Sized)
     );
 }
 
@@ -901,4 +902,46 @@ fn no_folder_is_made_when_there_is_nothing_to_copy() {
     std::fs::write(&input, crate::worker::warmup::docx("x")).unwrap();
     assert_eq!(repack(&input, &copy, Paper::A4), Ok(()));
     assert!(copy.exists());
+}
+
+#[test]
+fn relationships_count_only_at_the_root_and_without_branches() {
+    let check = |name: &str, rels: &[u8]| {
+        let bytes = zip(&[(name, rels, true, false)]);
+        let dir = Scratch::new();
+        let path = dir.path().join("p.docx");
+        std::fs::write(&path, &bytes).unwrap();
+        let mut file = File::open(&path).unwrap();
+        main_part(&mut file, &entries(&bytes))
+    };
+    let nested = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><x:ext xmlns:x="e"><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="wrong.xml"/></x:ext><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/main.xml"/></Relationships>"#;
+    assert_eq!(
+        check("_rels/.rels", nested).ok().as_deref(),
+        Some("word/main.xml")
+    );
+    let branch = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:AlternateContent/></Relationships>"#;
+    assert_eq!(check("_rels/.rels", branch), Err(Skip::Unsupported));
+    // The part name without case.
+    assert_eq!(
+        check("_RELS/.rels", nested).ok().as_deref(),
+        Some("word/main.xml")
+    );
+}
+
+#[test]
+fn an_entry_whose_data_runs_into_the_next_is_not_copied() {
+    let main = doc("<w:p/>");
+    let mut source = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, false, false),
+        ("word/document.xml", main.as_bytes(), true, false),
+        ("_rels/.rels", RELS, false, false),
+    ]);
+    // Grow the stored first entry's size in its directory record by 8, so
+    // its data would overlap the main part's local header.
+    let eocd = source.len() - 22;
+    let cd = u32_at(&source, eocd + 16) as usize;
+    let size = u32_at(&source, cd + 20) + 8;
+    put_u32(&mut source, cd + 20, size);
+    put_u32(&mut source, cd + 24, size);
+    assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
 }
