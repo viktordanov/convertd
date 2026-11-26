@@ -54,7 +54,6 @@ crc32fast = "1.5.6"
 flate2 = "1.1.11"
 memchr = "2.8.3"
 quick-xml = "0.41.0"
-cfb = "0.16.0"
 # tar.zst bundles (001 step 8, owner 2026-11-26): one zstd frame at level 1.
 zstd = "0.14.5"
 async-trait = "0.1.92"
@@ -76,6 +75,9 @@ webp = "0.3.1"
 # Tests and the overhead example read and write OOXML packages, which are
 # ZIP files (the warm-up tests unpack the warm-up documents).
 zip = { version = "9.8.2", default-features = false }
+# Tests build OLE2 files and check the bounded reader against it; the
+# supervisor and the workers read OLE2 with detect/ole2.rs.
+cfb = "0.16.0"
 
 [profile.release]
 lto = "thin"
