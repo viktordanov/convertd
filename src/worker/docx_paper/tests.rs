@@ -912,7 +912,7 @@ fn no_folder_is_made_when_there_is_nothing_to_copy() {
 }
 
 #[test]
-fn relationships_count_only_at_the_root_and_without_branches() {
+fn relationships_below_the_root_or_in_branches_keep_the_package() {
     let check = |name: &str, rels: &[u8]| {
         let bytes = zip(&[(name, rels, true, false)]);
         let dir = Scratch::new();
@@ -922,15 +922,14 @@ fn relationships_count_only_at_the_root_and_without_branches() {
         main_part(&mut file, &entries(&bytes))
     };
     let nested = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><x:ext xmlns:x="e"><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="wrong.xml"/></x:ext><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/main.xml"/></Relationships>"#;
-    assert_eq!(
-        check("_rels/.rels", nested).ok().as_deref(),
-        Some("word/main.xml")
-    );
+    // A relationship below the root may be live: the package stays.
+    assert_eq!(check("_rels/.rels", nested), Err(Skip::Unsupported));
     let branch = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:AlternateContent/></Relationships>"#;
     assert_eq!(check("_rels/.rels", branch), Err(Skip::Unsupported));
     // The part name without case.
+    let flat = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/main.xml"/></Relationships>"#;
     assert_eq!(
-        check("_RELS/.rels", nested).ok().as_deref(),
+        check("_RELS/.rels", flat).ok().as_deref(),
         Some("word/main.xml")
     );
 }
