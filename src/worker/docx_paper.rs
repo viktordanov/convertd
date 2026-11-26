@@ -632,6 +632,8 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
     // could hide a signature origin: the package loads as it came.
     let mut depth = 0usize;
     let mut root_seen = false;
+    // The list is complete only once its one root has closed.
+    let mut root_closed = false;
     loop {
         let (ns, event) = xml
             .read_resolved_event_into(&mut buf)
@@ -646,7 +648,7 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
             let bad_root = !root_seen && !(in_rels && e.local_name().as_ref() == b"Relationships");
             // A branch could make another relationship the active one.
             let branch = in_mc && e.local_name().as_ref() == b"AlternateContent";
-            if escaped || bad_root || branch || depth >= 8 {
+            if escaped || bad_root || branch || root_closed || depth >= 8 {
                 return Err(Skip::Unsupported);
             }
             root_seen = true;
@@ -664,7 +666,11 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
         }
         match &event {
             Event::Start(_) => depth += 1,
-            Event::End(_) => depth = depth.saturating_sub(1),
+            Event::End(_) => {
+                depth = depth.saturating_sub(1);
+                root_closed |= depth == 0;
+            }
+            Event::Empty(_) => root_closed |= depth == 0,
             _ => {}
         }
         match event {
@@ -692,6 +698,8 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
                     main = Some(normalize(&target));
                 }
             }
+            // A truncated or empty part proves nothing about signatures.
+            Event::Eof if !root_closed => return Err(Skip::Unsupported),
             Event::Eof => return Ok(main.unwrap_or_else(|| "word/document.xml".to_owned())),
             _ => {}
         }
@@ -1119,6 +1127,13 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
         // so that the copy never repairs or hides what LibreOffice would see
         // in the source. With a descriptor, the local fields may be zero.
         if record.is_main {
+            // LibreOffice 26.8.3.1 refuses a stored part with a data
+            // descriptor (corpus case docx-stored-descriptor). The copy
+            // would drop the descriptor and load: the paper setting would
+            // decide whether the document converts. It loads as it came.
+            if record.method == METHOD_STORED && record.flags & 0x0008 != 0 {
+                return Err(Skip::Unsupported);
+            }
             let cd_name = &directory[record.start + 46..record.start + 46 + record.name_len];
             if &name_extra[..name_len] != cd_name || u16_at(&header, 6) != record.flags {
                 return Err(Skip::Unreadable);

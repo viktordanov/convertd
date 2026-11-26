@@ -1308,3 +1308,34 @@ fn a_foreign_alternate_content_in_relationships_is_no_branch() {
         Some("word/main.xml")
     );
 }
+
+#[test]
+fn an_incomplete_relationships_part_keeps_the_package() {
+    let check = |rels: &[u8]| {
+        let bytes = zip(&[("_rels/.rels", rels, true, false)]);
+        let dir = Scratch::new();
+        let path = dir.path().join("p.docx");
+        std::fs::write(&path, &bytes).unwrap();
+        let mut file = File::open(&path).unwrap();
+        main_part(&mut file, &entries(&bytes))
+    };
+    let truncated = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>"#;
+    assert_eq!(check(truncated), Err(Skip::Unsupported));
+    assert_eq!(check(b""), Err(Skip::Unsupported));
+    let two = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"#;
+    assert_eq!(check(two), Err(Skip::Unsupported));
+    let empty =
+        br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>"#;
+    assert_eq!(check(empty).ok().as_deref(), Some("word/document.xml"));
+}
+
+#[test]
+fn a_stored_main_part_with_a_descriptor_keeps_the_package() {
+    let main = doc("<w:p/>");
+    let source = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", main.as_bytes(), false, true),
+    ]);
+    assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
+}
