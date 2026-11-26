@@ -544,6 +544,47 @@
       ]
     },
     {
+      "id": "docx-glyphs-cjk",
+      "path": "out/docx/glyphs-cjk.docx",
+      "origin": "generated",
+      "sha256": "58f1741eb0dabdd8ad39e90389abb05fe146570fe2cbeb3b8aa4cf99646703f1",
+      "tags": [
+        "fonts"
+      ],
+      "notes": "One paragraph of Chinese, Japanese kana and Korean Hangul, which WenQuanYi Micro Hei covers. GLYPHS negative for the CJK fallback.",
+      "preflight": {
+        "format": "docx",
+        "encrypted": false,
+        "declared_pages": null,
+        "requested_fonts": [
+          "Cambria"
+        ],
+        "macros": []
+      },
+      "cases": [
+        {
+          "name": "bundle",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "docx",
+            "family": "document",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": 1,
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
       "id": "docx-encrypted",
       "path": "out/docx/encrypted.docx",
       "origin": "generated",

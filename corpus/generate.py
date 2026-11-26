@@ -310,6 +310,8 @@ def docx_headings(_ctx):
 # GLYPHS_MISSING: Cuneiform has no font in the image; Thai has Noto Sans Thai.
 CUNEIFORM_TEXT = "Cuneiform: \U00012000\U00012001\U00012002"
 THAI_TEXT = "Thai: \u0e2a\u0e27\u0e31\u0e2a\u0e14\u0e35"
+# CJK: WenQuanYi Micro Hei covers it (docker/install-engines.sh).
+CJK_TEXT = "CJK: \u4e2d\u6587\u5b57\u4f53\u3002\u3072\u3089\u304c\u306a \ud55c\uad6d\uc5b4"
 
 
 def docx_text(text):
@@ -324,6 +326,10 @@ def docx_glyphs_missing(_ctx):
 
 def docx_glyphs_thai(_ctx):
     return docx_text(THAI_TEXT)
+
+
+def docx_glyphs_cjk(_ctx):
+    return docx_text(CJK_TEXT)
 
 
 def encrypt(plain, password="secret"):
@@ -882,6 +888,7 @@ ENTRIES = [
     ("docx-headings", "docx/headings.docx", docx_headings, False),
     ("docx-glyphs-missing", "docx/glyphs-missing.docx", docx_glyphs_missing, False),
     ("docx-glyphs-thai", "docx/glyphs-thai.docx", docx_glyphs_thai, False),
+    ("docx-glyphs-cjk", "docx/glyphs-cjk.docx", docx_glyphs_cjk, False),
     ("docx-encrypted", "docx/encrypted.docx", docx_encrypted, False),
     ("docm-novba", "docx/novba.docm", docm_novba, False),
     ("docm-vba", "docx/vba.docm", docm_vba, False),
@@ -1092,8 +1099,9 @@ def check_facts(entry_id, data):
         z = members(data)
         require(z.read("ppt/presentation.xml").count(b"<p:sldId ") == 4, "sldIdLst does not list 4")
         require(b"<p:sld " not in z.read("ppt/slides/slide4.xml"), "slide 4 is still a slide")
-    elif entry_id in ("docx-glyphs-missing", "docx-glyphs-thai"):
-        text = {"docx-glyphs-missing": CUNEIFORM_TEXT, "docx-glyphs-thai": THAI_TEXT}[entry_id]
+    elif entry_id in ("docx-glyphs-missing", "docx-glyphs-thai", "docx-glyphs-cjk"):
+        text = {"docx-glyphs-missing": CUNEIFORM_TEXT, "docx-glyphs-thai": THAI_TEXT,
+                "docx-glyphs-cjk": CJK_TEXT}[entry_id]
         body = members(data).read("word/document.xml").decode()
         require(f"<w:t>{text}</w:t>" in body, "the text run")
     elif entry_id in ("docx-aptos-theme", "docx-headings"):
