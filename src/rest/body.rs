@@ -128,10 +128,15 @@ fn spawn_pump(
     let (tx, rx) = mpsc::channel::<Piece>(BODY_QUEUE_CHUNKS);
     let handle = Handle::current();
     tokio::task::spawn_blocking(move || {
-        let end = work(&tx, &handle, pump.idle, Meter::new(pump.rate));
+        let mut end = work(&tx, &handle, pump.idle, Meter::new(pump.rate));
         if end == PumpEnd::Complete {
-            // If even this send stalls, the body ends with an error.
-            let _ = handle.block_on(tokio::time::timeout(pump.idle, tx.send(Piece::Done)));
+            // If even this send stalls or the client left, the body ends
+            // with an error: say so like any other cut.
+            end = match handle.block_on(tokio::time::timeout(pump.idle, tx.send(Piece::Done))) {
+                Ok(Ok(())) => PumpEnd::Complete,
+                Ok(Err(_)) => PumpEnd::Disconnected,
+                Err(_) => PumpEnd::Stalled,
+            };
         }
         drop(tx);
         // Nothing reads the job directory any more: remove it here, on a
@@ -415,6 +420,32 @@ mod tests {
         assert_eq!(&tar[512..514], b"{}");
         assert_eq!(&tar[1024 + 512..1024 + 512 + data.len()], &data[..]);
         wait_for_cleanup(&root, &semaphore).await;
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    /// A body that fits the queue exactly: every chunk is sent, but the
+    /// completion marker cannot be, because nobody reads. The pump gives up
+    /// after `idle`, logs the cut as a stall, frees the permit, and the
+    /// body ends with an error.
+    #[tokio::test]
+    async fn a_completion_marker_that_cannot_be_sent_is_a_cut() {
+        let (job, tmp) = job("done-stall");
+        std::fs::write(job.pdf_path(), vec![7u8; BODY_QUEUE_CHUNKS * READ_CHUNK]).unwrap();
+        let file = File::open(job.pdf_path()).unwrap();
+        let size = (BODY_QUEUE_CHUNKS * READ_CHUNK) as u64;
+        let root = job.root().to_path_buf();
+        let semaphore = Arc::new(Semaphore::new(1));
+        let pump = Pump {
+            job,
+            permit: semaphore.clone().try_acquire_owned().unwrap(),
+            idle: Duration::from_millis(200),
+            rate: MinRate::off(),
+            request_id: "t".into(),
+        };
+        let body = file_body(file, size, pump);
+        wait_for_cleanup(&root, &semaphore).await;
+        let read = axum::body::to_bytes(body, 64 << 20).await;
+        assert!(read.is_err(), "the body ended cleanly without its marker");
         std::fs::remove_dir_all(tmp).unwrap();
     }
 
