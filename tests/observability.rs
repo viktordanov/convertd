@@ -18,10 +18,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 const PREFIX: &str = "convert_";
-/// Stands for a metric named inside braces, `{__name__="x"}` or the quoted
-/// `{"x"}`, which the check does not support.
-const NAME_MATCHER: &str =
-    "{__name__} or {\"name\"} selector (write the metric name before the braces)";
+/// Stands for a `{...}` selector without a metric name before it, such as
+/// `{pool="office"}`, `{__name__="x"}` or the quoted `{"x"}`, which the
+/// check cannot verify.
+const NAME_MATCHER: &str = "a {...} selector without a metric name before it";
 
 /// Every `convert_*` identifier in `text`. An identifier starts at a
 /// character that cannot continue a name, so `rs_convert_x` is not one.
@@ -142,8 +142,15 @@ fn query_metrics(expr: &str) -> BTreeSet<String> {
     let continues = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b':';
     let b = expr.as_bytes();
     let mut names = BTreeSet::new();
+    // Whether the last token was a metric name, for the `{` that follows.
+    let mut after_metric = false;
     let mut i = 0;
     while i < b.len() {
+        if b[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        let was_metric = std::mem::replace(&mut after_metric, false);
         match b[i] {
             b'"' | b'\'' | b'`' => i = skip_string(b, i),
             // A comment runs to the end of its line.
@@ -154,10 +161,11 @@ fn query_metrics(expr: &str) -> BTreeSet<String> {
             }
             b'{' => {
                 let end = skip_group(b, i, b'}');
-                // A name inside the braces selects a metric that the scan
-                // does not read; record a name that no scrape has, so it
-                // fails. A quoted name sits where a label name would be.
-                if expr[i..end].contains("__name__") || quoted_name(&b[i..end]) {
+                // Braces without a metric name before them select every
+                // metric, and a name inside them (`__name__`, or a quoted
+                // name where a label name goes) escapes the scan. Record a
+                // name that no scrape has, so the check fails.
+                if !was_metric || expr[i..end].contains("__name__") || quoted_name(&b[i..end]) {
                     names.insert(NAME_MATCHER.to_owned());
                 }
                 i = end;
@@ -186,6 +194,7 @@ fn query_metrics(expr: &str) -> BTreeSet<String> {
                     }
                 } else if !call && !KEYWORDS.contains(&word) {
                     names.insert(word.to_owned());
+                    after_metric = true;
                 }
             }
             _ => i += 1,
@@ -396,9 +405,8 @@ fn the_name_scan_reports_a_misspelled_metric() {
     let query = r#"histogram_quantile(0.99, sum by (le, stage) (rate(convert_stage_duration_seconds_bucket{stage=~"a|b", x="y,}"}[$__rate_interval])))
         / ignoring(state) (covert_workers{state="max"} > 0) * 1e4
         + (sum(rate(convert_requests_total{code!="OK"}[5m])) or vector(0))
-        + max_over_time(sum by (pool) (convert_workers{state="busy"})[1m:]) and on (pod) up or {__name__="covert_workers"} # office capacity
-        + {"covert_x", pod="a"}
-        + convert_workers"#;
+        + max_over_time(sum by (pool) (convert_workers{state="busy"})[1m:]) and on (pod) up # office capacity
+        + convert_workers {pool="render"}"#;
     let selected = query_metrics(query);
     assert_eq!(
         selected,
@@ -408,15 +416,21 @@ fn the_name_scan_reports_a_misspelled_metric() {
             "convert_workers",
             "covert_workers",
             "up",
-            NAME_MATCHER,
         ]
         .map(String::from)
         .into()
     );
-    assert_eq!(
-        missing(&selected, &have),
-        ["covert_workers", "up", NAME_MATCHER]
-    );
+    assert_eq!(missing(&selected, &have), ["covert_workers", "up"]);
+    // A selector that names no metric before its braces cannot be checked.
+    for bare in [
+        r#"convert_workers or {__name__="covert_workers"}"#,
+        r#"convert_workers + {"covert_x", pod="a"}"#,
+        r#"sum({pool="office"}) / sum(convert_workers)"#,
+    ] {
+        let names = query_metrics(bare);
+        assert!(names.contains(NAME_MATCHER), "{bare}: {names:?}");
+        assert!(missing(&names, &have).contains(&NAME_MATCHER.to_owned()));
+    }
 }
 
 #[test]
