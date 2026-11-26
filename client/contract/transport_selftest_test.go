@@ -67,15 +67,6 @@ func cannedServer(t *testing.T, c canned) *httptest.Server {
 	return srv
 }
 
-// spec31Form is a hand-made OpenAPI 3.1 translation of the reference in the
-// form utoipa emits. The transport cases run against it too, so the 3.1 code
-// paths of kin-openapi (JSON Schema 2020-12) are proven before lane 001's
-// emitted spec exists.
-const spec31Form = "cmd/speccheck/testdata/emitted-part.json"
-
-// referenceSpec is the hand-written OpenAPI 3.0 reference.
-const referenceSpec = "../../api/openapi.yaml"
-
 func selfTestTransport(t *testing.T) (*validatingTransport, *recorder) {
 	t.Helper()
 	s, err := theSpec()
@@ -331,35 +322,20 @@ func TestSelfTestTransport(t *testing.T) {
 			[]string{"getCapabilities 200:", "engine"}},
 	}
 
-	// The reference, not the committed emitted spec: the self-tests prove the
-	// transport, so they must not depend on what the current server emits.
-	reference, err := loadContractSpec(referenceSpec)
+	// The committed spec is the contract (OpenAPI 3.1, emitted by convertd).
+	committed, err := theSpec()
 	if err != nil {
-		t.Fatalf("failed to load the reference spec: %v", err)
+		t.Fatalf("failed to load the committed spec: %v", err)
 	}
-	form31, err := loadContractSpec(spec31Form)
-	if err != nil {
-		t.Fatalf("failed to load the 3.1 spec: %v", err)
-	}
-	for _, sc := range []struct {
-		name string
-		spec *contractSpec
-	}{{"reference spec", reference}, {"3.1 form", form31}} {
-		t.Run(sc.name, func(t *testing.T) {
-			for _, tc := range cases {
-				t.Run(tc.name, func(t *testing.T) {
-					runTransportCase(t, sc.spec, tc.call, tc.resp, tc.want)
-				})
-			}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runTransportCase(t, committed, tc.call, tc.resp, tc.want)
 		})
 	}
 }
 
 func runTransportCase(t *testing.T, s *contractSpec, call string, resp canned, want []string) {
 	t.Helper()
-	if call == callMetrics && s.doc.Paths.Find("/metrics") == nil {
-		t.Skip("this spec has no /metrics")
-	}
 	srv := cannedServer(t, resp)
 	rt, rec := selfTestTransportFor(s)
 	makeCall(t, call, srv.URL, rt)
