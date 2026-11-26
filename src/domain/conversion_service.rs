@@ -173,10 +173,25 @@ impl ConversionService {
                 if job.detection.encrypted && job.request.password.is_none() {
                     return Err(ConversionError::Engine(EngineError::PasswordRequired));
                 }
-                let max_output_bytes = self.reserve(
-                    job.budget,
-                    self.limits.pdf_output_bytes(job.upload.size_bytes),
-                )?;
+                // The office worker may write a copy of a Word package that
+                // gives its sections a page size (DEFAULT_PAPER): reserved
+                // too, but not part of the PDF's cap. An encrypted package
+                // is not a ZIP, and gets no copy.
+                let copy = if !job.detection.encrypted
+                    && matches!(format, Format::Docx | Format::Docm | Format::Dotx)
+                {
+                    self.limits.paper_copy_bytes(job.upload.size_bytes)
+                } else {
+                    0
+                };
+                let max_output_bytes = self
+                    .reserve(
+                        job.budget,
+                        self.limits
+                            .pdf_output_bytes(job.upload.size_bytes)
+                            .saturating_add(copy),
+                    )?
+                    .saturating_sub(copy);
                 let called = Instant::now();
                 let converted = self
                     .office
