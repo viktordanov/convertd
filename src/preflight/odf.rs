@@ -5,8 +5,8 @@
 //!
 //! The same pass reads the text: `office:body` in `content.xml` and
 //! `office:master-styles` (headers and footers) in `styles.xml`, without
-//! annotations, tracked changes and presentation notes, which are not
-//! printed.
+//! annotations, tracked changes, presentation notes and the alternative
+//! text of frames (`svg:title`, `svg:desc`), which are not printed.
 
 use std::collections::BTreeSet;
 
@@ -15,7 +15,13 @@ use super::{PART_CAP, TextCollector, TextScope, add_font};
 use crate::domain::verification::{Check, MacroFact, MacroKind, SkipReason, SourceFacts};
 
 /// Elements whose text is not printed.
-const NOT_PRINTED: &[&[u8]] = &[b"annotation", b"tracked-changes", b"notes"];
+const NOT_PRINTED: &[&[u8]] = &[
+    b"annotation",
+    b"tracked-changes",
+    b"notes",
+    b"title",
+    b"desc",
+];
 
 pub(super) fn scan(package: &mut Package, text: &mut TextCollector, facts: &mut SourceFacts) {
     facts.macros = macros(package);

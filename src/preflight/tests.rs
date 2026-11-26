@@ -1223,9 +1223,9 @@ fn xlsx_text_code_points_from_shared_and_inline_strings() {
 
 #[test]
 fn odf_text_code_points_from_the_body_and_the_master_pages() {
-    // Text in the body and in a footer of styles.xml counts; annotations
-    // and tracked deletions are not printed.
-    let content = r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><office:automatic-styles/><office:body><office:text><text:tracked-changes><text:changed-region><text:deletion><text:p>Ж</text:p></text:deletion></text:changed-region></text:tracked-changes><text:p>a<text:span>ก</text:span><office:annotation><dc:creator>中</dc:creator><text:p>中</text:p></office:annotation></text:p></office:text></office:body></office:document-content>"#;
+    // Text in the body and in a footer of styles.xml counts; annotations,
+    // tracked deletions and alternative text are not printed.
+    let content = r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><office:automatic-styles/><office:body><office:text><text:tracked-changes><text:changed-region><text:deletion><text:p>Ж</text:p></text:deletion></text:changed-region></text:tracked-changes><text:p>a<text:span>ก</text:span><office:annotation><dc:creator>中</dc:creator><text:p>中</text:p></office:annotation></text:p><draw:frame><svg:title>Ж</svg:title><svg:desc>Ж</svg:desc></draw:frame></office:text></office:body></office:document-content>"#;
     let styles = r#"<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:styles><style:style style:name="x"/></office:styles><office:master-styles><style:master-page style:name="Standard"><style:footer><text:p>ሀ</text:p></style:footer></style:master-page></office:master-styles></office:document-styles>"#;
     let bytes = zip(&[
         ("mimetype", b"application/vnd.oasis.opendocument.text"),

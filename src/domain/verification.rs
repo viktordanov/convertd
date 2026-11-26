@@ -323,10 +323,15 @@ fn glyphs(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdict) {
         .map(|(script, count)| format!("{script} {count}"))
         .collect();
     let count = missing.len();
+    let noun = if count == 1 {
+        "character has"
+    } else {
+        "characters have"
+    };
     verdict.warnings.push(Warning {
         code: WarningCode::GlyphsMissing,
         message: format!(
-            "{count} characters have no font in this image: {}",
+            "{count} {noun} no font in this image: {}",
             summary.join(", ")
         ),
         page: None,
@@ -901,6 +906,31 @@ mod tests {
         };
         assert_eq!(listed.len(), 8);
         assert_eq!(listed[0], "U+0E01");
+    }
+
+    #[test]
+    fn glyphs_missing_for_one_character_and_despite_an_embedded_font() {
+        // The image's coverage decides: an embedded font may cover the
+        // character, but its cmap is not read, so the warning stays (a false
+        // warning is better than silent boxes).
+        let fonts = latin_coverage();
+        let facts = SourceFacts {
+            requested_fonts: vec!["Noto Sans Thai".into()],
+            embedded_fonts: vec!["Noto Sans Thai".into()],
+            text_code_points: vec![0x41, 0x0e01],
+            ..Default::default()
+        };
+        let verdict = case(Format::Docx, facts, 1, &fonts).verdict();
+        let w: Vec<&Warning> = verdict
+            .warnings
+            .iter()
+            .filter(|w| w.code == WarningCode::GlyphsMissing)
+            .collect();
+        assert_eq!(w.len(), 1, "{:?}", verdict.warnings);
+        assert_eq!(
+            w[0].message,
+            "1 character has no font in this image: Thai 1"
+        );
     }
 
     #[test]

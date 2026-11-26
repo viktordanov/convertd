@@ -6,6 +6,7 @@
 //! reads as `"other"` (the lead's ruling for Round A; the domain type
 //! becomes a `String` in Round B).
 
+use crate::domain::text::needs_glyph;
 use crate::domain::verification::{
     Check, DeclaredPages, MAX_CODE_POINTS, MacroFact, MacroKind, SkipReason, SourceFacts,
 };
@@ -108,9 +109,10 @@ impl From<&SourceFactsWire> for SourceFacts {
 }
 
 /// The worker parses hostile files, so the supervisor keeps its own bound:
-/// sorted, distinct, at most [`MAX_CODE_POINTS`].
+/// only code points that need a glyph, sorted, distinct, at most
+/// [`MAX_CODE_POINTS`].
 fn code_points(wire: &[u32]) -> Vec<u32> {
-    let mut out: Vec<u32> = wire.to_vec();
+    let mut out: Vec<u32> = wire.iter().copied().filter(|&cp| needs_glyph(cp)).collect();
     out.sort_unstable();
     out.dedup();
     out.truncate(MAX_CODE_POINTS);
@@ -156,13 +158,17 @@ mod tests {
         // A compromised worker can send anything; the supervisor sorts,
         // dedups and caps.
         let wire = SourceFactsWire {
-            text_code_points: (0..10_000u32).rev().chain([5, 5]).collect(),
+            text_code_points: (0x4E00..0x4E00 + 10_000u32)
+                .rev()
+                .chain([0x4E05, 0x4E05, 0x0A, 0xE000, 0x11_0000, u32::MAX])
+                .collect(),
             ..Default::default()
         };
         let facts = SourceFacts::from(&wire);
         assert_eq!(facts.text_code_points.len(), MAX_CODE_POINTS);
         assert!(facts.text_code_points.windows(2).all(|w| w[0] < w[1]));
-        assert_eq!(facts.text_code_points[0], 0);
+        assert_eq!(facts.text_code_points[0], 0x4E00);
+        assert!(facts.text_code_points.iter().all(|&cp| cp < 0x11_0000));
     }
 
     #[test]

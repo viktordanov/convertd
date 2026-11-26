@@ -191,7 +191,9 @@ const SCRIPTS: &[(u32, u32, &str)] = &[
     (0xABC0, 0xABFF, "Meetei Mayek"),
     (0xAC00, 0xD7FF, "Hangul"),
     (0xF900, 0xFAFF, "Han"),
-    (0xFB00, 0xFB4F, "Latin"),
+    (0xFB00, 0xFB12, "Latin"),
+    (0xFB13, 0xFB1C, "Armenian"),
+    (0xFB1D, 0xFB4F, "Hebrew"),
     (0xFB50, 0xFDFF, "Arabic"),
     (0xFE00, 0xFE6F, "Common"),
     (0xFE70, 0xFEFF, "Arabic"),
@@ -257,6 +259,8 @@ mod tests {
         assert_eq!(script_name(0x12000), "Cuneiform");
         assert_eq!(script_name(0x10450), "Shavian");
         assert_eq!(script_name(0x1F600), "Common");
+        assert_eq!(script_name(0xFB2A), "Hebrew");
+        assert_eq!(script_name(0xFB01), "Latin");
         assert_eq!(script_name(0x10E60), "Other");
     }
 
