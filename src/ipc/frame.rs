@@ -203,11 +203,6 @@ mod tests {
                 out_dir: "/j/pages".into(),
                 max_output_bytes: 1000,
             })),
-            call(Op::Assemble(AssembleArgs {
-                images: vec!["/j/source.png".into()],
-                output: "/j/document.pdf".into(),
-                max_output_bytes: 1,
-            })),
             call(Op::Decrypt(DecryptArgs {
                 pdf: "/j/source.pdf".into(),
                 password: Secret::new("x"),
@@ -302,10 +297,6 @@ mod tests {
                 fonts: vec!["Carlito".into()],
             }))),
             reply(Ok(Output::Rendered(RenderedOut { pages: vec![page] }))),
-            reply(Ok(Output::Assembled(AssembledOut {
-                page_count: 1,
-                pdf_bytes: 99,
-            }))),
             reply(Ok(Output::Decrypted(DecryptedOut { pdf_bytes: 98 }))),
             reply(Ok(Output::Test(TestOutput::Slept))),
             reply(Ok(Output::Test(TestOutput::Allocated { rss_bytes: 5 }))),

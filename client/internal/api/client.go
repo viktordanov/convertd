@@ -190,7 +190,6 @@ func (e OutputKind) Valid() bool {
 
 // Defines values for PdfInfoOrigin.
 const (
-	Assembled   PdfInfoOrigin = "assembled"
 	Converted   PdfInfoOrigin = "converted"
 	Passthrough PdfInfoOrigin = "passthrough"
 )
@@ -198,8 +197,6 @@ const (
 // Valid indicates whether the value is a known member of the PdfInfoOrigin enum.
 func (e PdfInfoOrigin) Valid() bool {
 	switch e {
-	case Assembled:
-		return true
 	case Converted:
 		return true
 	case Passthrough:
@@ -566,7 +563,6 @@ type PdfInfo struct {
 	//
 	// - `converted`: produced by LibreOffice from an office file.
 	// - `passthrough`: the upload was already a PDF and is returned unchanged, or decrypted when it was encrypted.
-	// - `assembled`: built from an uploaded image.
 	Origin PdfInfoOrigin `json:"origin"`
 
 	// Path Path of the PDF inside the archive.
@@ -580,7 +576,6 @@ type PdfInfo struct {
 //
 // - `converted`: produced by LibreOffice from an office file.
 // - `passthrough`: the upload was already a PDF and is returned unchanged, or decrypted when it was encrypted.
-// - `assembled`: built from an uploaded image.
 type PdfInfoOrigin string
 
 // PoolStatus defines model for PoolStatus.

@@ -29,7 +29,7 @@ use crate::ipc::{
 pub enum Role {
     /// LibreOfficeKit: office documents to PDF.
     Office,
-    /// PDFium: inspect, render, assemble and decrypt PDFs.
+    /// PDFium: inspect, render and decrypt PDFs.
     Render,
     /// Fake answers driven by `FAKE:` markers (INTERFACES.md §10).
     #[cfg(feature = "test-hooks")]

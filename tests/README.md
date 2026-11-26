@@ -88,7 +88,7 @@ At level A, a `429` comes from a marker or from the service's own permit. A `504
 
 ### Level B
 
-Level B (`TEST_ENGINE=worker`) runs `convertd worker test` as a real worker process behind the real pool. The test worker answers `Convert`, `Inspect`, `Render`, `Assemble` and `Decrypt` with small valid files, driven by the markers. The queue, the deadline and the kill are real. The test worker also acts out the faults that the pool tests need.
+Level B (`TEST_ENGINE=worker`) runs `convertd worker test` as a real worker process behind the real pool. The test worker answers `Convert`, `Inspect`, `Render` and `Decrypt` with small valid files, driven by the markers. The queue, the deadline and the kill are real. The test worker also acts out the faults that the pool tests need.
 
 `pool.rs` and `process.rs` drive the test worker directly, through the pool and the spawner. `engines_poison.rs` drives it through the engine adapters. `convertd serve` with `TEST_ENGINE=worker` runs both pools with test workers. `ops.rs` starts it that way in `slow_sigterm_at_level_b_finishes_office_then_render`.
 

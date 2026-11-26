@@ -22,7 +22,7 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// What an office conversion or an image assembly may write:
+    /// What an office conversion may write:
     /// `min(max_output_bytes, max(64 MiB, 8 × source size))`.
     pub fn pdf_output_bytes(&self, source_bytes: u64) -> u64 {
         source_bytes

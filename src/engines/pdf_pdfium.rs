@@ -7,9 +7,8 @@ use async_trait::async_trait;
 
 use crate::domain::conversion::ImageFormat;
 use crate::domain::engine::{
-    Admission, AssembleJob, Assembled, DecryptJob, Decrypted, EngineError, EngineTiming,
-    InspectJob, Inspection, PageSize, PdfEngine, ProbedPage, RenderJob, Rendered, RenderedPage,
-    WorkerRef,
+    Admission, DecryptJob, Decrypted, EngineError, EngineTiming, InspectJob, Inspection, PageSize,
+    PdfEngine, ProbedPage, RenderJob, Rendered, RenderedPage, WorkerRef,
 };
 use crate::engines::call::{RETRY_MIN_LEFT, admission, call, unexpected, worker_ref};
 use crate::engines::error::EngineFailure;
@@ -442,18 +441,6 @@ impl PdfEngine for PdfPdfium {
             timing,
             workers,
         })
-    }
-
-    async fn assemble(
-        &self,
-        _job: AssembleJob,
-        _adm: Admission,
-        _deadline: Instant,
-    ) -> Result<Assembled, EngineError> {
-        // 422, not 500: a 500 would tell callers to retry (the lead's ruling).
-        Err(EngineError::Failed(
-            "image inputs are not supported yet".into(),
-        ))
     }
 }
 

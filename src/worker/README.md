@@ -10,7 +10,7 @@ Four duties apply to every change in this folder:
 - **Call PDFium from one thread only.** PDFium is not thread safe. A worker has no tokio runtime and no thread of its own besides the main thread.
 - **Keep every `unsafe` block and every engine call in this folder.** No other folder of the crate holds them.
 
-`convertd worker office` runs LibreOffice through LibreOfficeKit, `convertd worker render` runs PDFium, and `convertd worker test` answers with fake results. The `test` role exists only in builds with the cargo feature `test-hooks`. Image assembly is out of v1. [Not built yet](#not-built-yet) lists what is missing.
+`convertd worker office` runs LibreOffice through LibreOfficeKit, `convertd worker render` runs PDFium, and `convertd worker test` answers with fake results. The `test` role exists only in builds with the cargo feature `test-hooks`. Image inputs are out of v1, so no worker assembles images. [Not built yet](#not-built-yet) lists what is missing.
 
 The supervisor side is in [`src/engines/`](../engines/README.md), and the frames are in [`src/ipc/`](../ipc/README.md).
 
@@ -128,7 +128,7 @@ A missing password is `PasswordRequired`, and a wrong one is `InvalidPassword`. 
 
 `convertd worker test` has no engine. It serves the pool tests and level B (`TEST_ENGINE=worker`). `Init.test` can make its start fail (`fatal`) or slow (`ready_delay_ms`, which counts as `bind_us`).
 
-It answers `Convert`, `Inspect`, `Render`, `Assemble` and `Decrypt` with small valid files. The `FAKE:` markers in the first 1 MiB of the input file control the answer, and the first marker wins:
+It answers `Convert`, `Inspect`, `Render` and `Decrypt` with small valid files. The `FAKE:` markers in the first 1 MiB of the input file control the answer, and the first marker wins:
 
 - `FAKE:DELAY_MS=<n>` sleeps, then succeeds. The pool's deadline turns a long delay into a timeout.
 - `FAKE:PAGES=<n>` succeeds with `n` pages. `FAKE:HANG` never answers. `FAKE:PANIC` ends the worker with status 101.
@@ -159,4 +159,3 @@ These parts of plan 002 do not exist yet:
 
 - The font list of `Inspect` with `collect_fonts`. It is always empty.
 
-Image assembly is out of v1, so the render worker answers `Assemble` with `Unsupported`.

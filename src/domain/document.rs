@@ -301,7 +301,7 @@ impl Format {
     /// Whether v1 converts this format. Image inputs are out of v1 (owner,
     /// 2026-11-26): detection still names them, so that a PNG is never
     /// taken for the PDF it may contain, and then refuses them with 415.
-    /// Their rows stay for the engines' assembly, which v1 does not reach.
+    /// Their rows stay so that detection can name them.
     pub fn accepted(self) -> bool {
         self.family() != Family::Image
     }

@@ -220,8 +220,6 @@ pub enum PdfOrigin {
     Converted,
     /// The upload was a PDF: returned unchanged, or decrypted.
     Passthrough,
-    /// Built from an uploaded image.
-    Assembled,
 }
 
 /// Where the time went, per stage. `None` means the stage did not run.

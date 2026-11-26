@@ -171,8 +171,7 @@ pub struct Converted {
 #[derive(Debug, Clone)]
 pub struct InspectJob {
     pub pdf: PathBuf,
-    /// Only for PDF uploads; converted and assembled PDFs are never
-    /// encrypted.
+    /// Only for PDF uploads; converted PDFs are never encrypted.
     pub password: Option<Password>,
     /// `Some(18)` when `VERIFY_PROBE_RENDER` is on: a grayscale probe
     /// render for V3 at this DPI.
@@ -308,23 +307,6 @@ pub struct Rendered {
     pub workers: Vec<WorkerRef>,
 }
 
-#[derive(Debug, Clone)]
-pub struct AssembleJob {
-    /// v1: one.
-    pub images: Vec<PathBuf>,
-    /// `<job>/document.pdf`.
-    pub output: PathBuf,
-    pub max_output_bytes: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct Assembled {
-    pub page_count: u32,
-    pub pdf_bytes: u64,
-    pub timing: EngineTiming,
-    pub worker: WorkerRef,
-}
-
 // ------------------------------------------------------------- traits ----
 // Used as Arc<dyn …>, so TEST_ENGINE picks real or fake engines at run
 // time. The cost is one boxed future per call.
@@ -361,13 +343,6 @@ pub trait PdfEngine: Send + Sync {
         adm: Admission,
         deadline: Instant,
     ) -> Result<Rendered, EngineError>;
-
-    async fn assemble(
-        &self,
-        job: AssembleJob,
-        adm: Admission,
-        deadline: Instant,
-    ) -> Result<Assembled, EngineError>;
 }
 
 #[cfg(test)]
@@ -436,14 +411,6 @@ mod tests {
             _: Admission,
             _: Instant,
         ) -> Result<Rendered, EngineError> {
-            Err(EngineError::Unavailable)
-        }
-        async fn assemble(
-            &self,
-            _: AssembleJob,
-            _: Admission,
-            _: Instant,
-        ) -> Result<Assembled, EngineError> {
             Err(EngineError::Unavailable)
         }
     }

@@ -164,7 +164,7 @@ After a load, export, empty-document, limit or internal error, `OfficeLok` recyc
 
 `PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`, so the files on disk stay within the job's reservation. The chunks run together. A crashed chunk is retried once on a fresh lease, if at least 1 s is left. A chunk that goes over its share runs again on one lease, with the cap minus the bytes of the finished chunks, if at least 1 s is left. A job thus fails on its cap exactly when one worker fails, and the cap never adds a poison strike. The pages come back in order. `engine` is the longest chunk, plus the rerun. The most severe chunk error wins: a timeout, then a crash, then a password error.
 
-`PdfPdfium::assemble` returns `Failed("image inputs are not supported yet")`, which gives 422 `CONVERSION_FAILED`. A 500 tells callers to retry. Image inputs are out of v1 (the owner's decision).
+There is no image assembly: image inputs are out of v1 (the owner's decision), and detection refuses them with 415 before any engine call.
 
 Poison memory (`poison.rs`) protects the workers from documents that hang or crash them. It is keyed by the upload's SHA-256 and shared by both pools, and it works like this:
 
@@ -314,4 +314,4 @@ These parts of plan 002 do not exist yet:
 
 - The fault run of step 13. The soak run of step 13 used HTTP ([Soak, 2026-11-26](#soak-2026-11-26)).
 
-Image assembly (step 11) is out of v1, so `PdfPdfium::assemble` returns `Failed`.
+Image assembly (step 11) is out of v1, and the seam for it is removed.

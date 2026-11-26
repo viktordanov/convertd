@@ -132,13 +132,11 @@ pub struct PdfInfo {
 ///
 /// - `converted`: produced by LibreOffice from an office file.
 /// - `passthrough`: the upload was already a PDF and is returned unchanged, or decrypted when it was encrypted.
-/// - `assembled`: built from an uploaded image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PdfOriginDto {
     Converted,
     Passthrough,
-    Assembled,
 }
 
 impl From<PdfOrigin> for PdfOriginDto {
@@ -146,7 +144,6 @@ impl From<PdfOrigin> for PdfOriginDto {
         match origin {
             PdfOrigin::Converted => PdfOriginDto::Converted,
             PdfOrigin::Passthrough => PdfOriginDto::Passthrough,
-            PdfOrigin::Assembled => PdfOriginDto::Assembled,
         }
     }
 }

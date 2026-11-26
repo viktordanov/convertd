@@ -26,9 +26,9 @@ use tokio::io::AsyncReadExt;
 use crate::domain::conversion::ImageFormat;
 use crate::domain::document::{DocType, Family};
 use crate::domain::engine::{
-    Admission, AssembleJob, Assembled, Converted, DecryptJob, Decrypted, EngineError, EngineTiming,
-    InspectJob, Inspection, OfficeEngine, OfficeJob, PageSize, PdfEngine, ProbedPage, RenderJob,
-    Rendered, RenderedPage, WorkerRef,
+    Admission, Converted, DecryptJob, Decrypted, EngineError, EngineTiming, InspectJob, Inspection,
+    OfficeEngine, OfficeJob, PageSize, PdfEngine, ProbedPage, RenderJob, Rendered, RenderedPage,
+    WorkerRef,
 };
 use crate::domain::readiness::{PoolStatus, Readiness, ReadinessSnapshot, ReadinessStatus};
 
@@ -348,7 +348,7 @@ impl OfficeEngine for FakeOffice {
     }
 }
 
-/// Inspect, decrypt, render and assemble on fake PDFs.
+/// Inspect, decrypt and render on fake PDFs.
 #[derive(Debug)]
 pub struct FakePdf {
     settings: Settings,
@@ -576,33 +576,6 @@ impl PdfEngine for FakePdf {
             workers: vec![self.settings.worker("fake-render")],
         })
     }
-
-    async fn assemble(
-        &self,
-        job: AssembleJob,
-        _adm: Admission,
-        deadline: Instant,
-    ) -> Result<Assembled, EngineError> {
-        let started = Instant::now();
-        let input = job
-            .images
-            .first()
-            .ok_or_else(|| EngineError::Failed("no image to assemble".into()))?;
-        let behavior = self.settings.behavior_for(input).await?;
-        let played = self.settings.play(behavior, deadline).await?;
-        let pdf_bytes = write_capped(
-            &job.output,
-            &pdf_with_pages(played.pages),
-            job.max_output_bytes,
-        )
-        .await?;
-        Ok(Assembled {
-            page_count: played.pages.unwrap_or(1),
-            pdf_bytes,
-            timing: self.settings.timing(started, played.engine),
-            worker: self.settings.worker("fake-render"),
-        })
-    }
 }
 
 /// A white 1×1 image in `format`.
@@ -699,14 +672,6 @@ impl PdfEngine for Unwired {
         _: Admission,
         _: Instant,
     ) -> Result<Rendered, EngineError> {
-        Err(EngineError::Unavailable)
-    }
-    async fn assemble(
-        &self,
-        _: AssembleJob,
-        _: Admission,
-        _: Instant,
-    ) -> Result<Assembled, EngineError> {
         Err(EngineError::Unavailable)
     }
 }

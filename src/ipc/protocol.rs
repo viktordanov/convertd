@@ -81,7 +81,6 @@ pub enum Op {
     Convert(ConvertArgs),
     Inspect(InspectArgs),
     Render(RenderArgs),
-    Assemble(AssembleArgs),
     Decrypt(DecryptArgs),
     /// Fault injection; only the `test` role accepts it.
     Test(TestOp),
@@ -95,7 +94,6 @@ impl Op {
             Op::Convert(_) => "convert",
             Op::Inspect(_) => "inspect",
             Op::Render(_) => "render",
-            Op::Assemble(_) => "assemble",
             Op::Decrypt(_) => "decrypt",
             Op::Test(_) => "test",
         }
@@ -206,13 +204,6 @@ pub struct RenderArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AssembleArgs {
-    pub images: Vec<PathBuf>,
-    pub output: PathBuf,
-    pub max_output_bytes: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DecryptArgs {
     pub pdf: PathBuf,
     pub password: Secret,
@@ -315,7 +306,6 @@ pub enum Output {
     Converted(ConvertedOut),
     Inspected(InspectedOut),
     Rendered(RenderedOut),
-    Assembled(AssembledOut),
     Decrypted(DecryptedOut),
     Test(TestOutput),
 }
@@ -435,12 +425,6 @@ pub struct RenderedPage {
     /// CRC-32 of the file, computed from the bytes that were written.
     #[serde(default)]
     pub crc32: Option<u32>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AssembledOut {
-    pub page_count: u32,
-    pub pdf_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
