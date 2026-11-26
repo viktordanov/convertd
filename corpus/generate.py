@@ -82,6 +82,7 @@ from docx.oxml.ns import nsdecls, qn
 from docx.shared import Pt
 from PIL import Image, ImageFilter
 from pptx import Presentation
+from pptx.dml.color import RGBColor
 from pptx.util import Inches
 
 CORPUS_DIR = Path(__file__).resolve().parent
@@ -389,11 +390,14 @@ def pptx_hidden(_ctx):
 
 
 def pptx_hidden3(_ctx):
+    # The hidden slide has a red background, so a test can find its pages.
     p = Presentation()
     for i in range(3):
         s = text_slide(p, f"Slide {i + 1}" + (" (hidden)" if i == 1 else ""))
         if i == 1:
             s._element.set("show", "0")
+            s.background.fill.solid()
+            s.background.fill.fore_color.rgb = RGBColor(0xFF, 0x00, 0x00)
     return pptx_bytes(p)
 
 
@@ -620,7 +624,8 @@ def odp_hidden(_ctx):
 
 def odp_deck(hidden):
     """Three slides; the 1-based pages in `hidden` use a drawing-page style
-    with presentation:visibility="hidden", as LibreOffice writes one."""
+    with presentation:visibility="hidden", as LibreOffice writes one, and a
+    red fill, so a test can find their pages."""
     def page_style(n):
         return ' draw:style-name="dpHidden"' if n in hidden else ""
     pages = "".join(
@@ -629,7 +634,8 @@ def odp_deck(hidden):
         f'<text:p><text:span text:style-name="T1">Slide {n}</text:span></text:p>'
         "</draw:text-box></draw:frame></draw:page>" for n in range(1, 4))
     hidden_style = ('<style:style style:name="dpHidden" style:family="drawing-page">'
-                    '<style:drawing-page-properties presentation:visibility="hidden"/></style:style>'
+                    '<style:drawing-page-properties presentation:visibility="hidden" draw:fill="solid" '
+                    'draw:fill-color="#ff0000" presentation:background-visible="true"/></style:style>'
                     if hidden else "")
     content = (f'{XML_DECL}<office:document-content {odf_ns()} office:version="1.3">'
                f'{font_decls("Liberation Sans", "swiss")}<office:automatic-styles>'
@@ -1086,6 +1092,8 @@ def check_facts(entry_id, data):
                   and re.search(rb'<p:sld [^>]*show="0"', z.read(n))]
         require(len(hidden) == len(HIDDEN_SLIDES), f"hidden slides {hidden}")
     elif entry_id == "pptx-hidden3":
+        require(b'<a:srgbClr val="FF0000"/>' in members(data).read("ppt/slides/slide2.xml"),
+                "slide 2 has no red background")
         z = members(data)
         hidden = [n for n in z.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)
                   and re.search(rb'<p:sld [^>]*show="0"', z.read(n))]

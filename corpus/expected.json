@@ -1000,11 +1000,11 @@
       "id": "pptx-hidden3",
       "path": "out/pptx/hidden3.pptx",
       "origin": "generated",
-      "sha256": "fe37ad1d2f19942380fe74fc360c89bf5d90d5ae56d8f5dc2f72fae1af789ed4",
+      "sha256": "79e2f246ce24000eb6b0fbd1a62817d9f03aa42f6d4ab4575b0394c60dab309c",
       "tags": [
         "pages"
       ],
-      "notes": "3 slides, slide 2 with show=0. Default: 2 pages. With slides.include_hidden: 3 pages in slide order, and only page 2 has hidden: true.",
+      "notes": "3 slides, slide 2 with show=0 and a red background, so a test can find its pages. Default: 2 pages. With slides.include_hidden: 3 pages in slide order, and only page 2 has hidden: true.",
       "preflight": {
         "format": "pptx",
         "encrypted": false,
@@ -1384,12 +1384,12 @@
       "id": "odp-hidden",
       "path": "out/odf/hidden.odp",
       "origin": "generated",
-      "sha256": "7dad256f0b6ce72ef3ee46f144fc6b100657dbdb301e2a69ef64bf7cdd8c0d7a",
+      "sha256": "8e4e72da255aba44c27eede1713af1f94902b007f8aa8b162bb616d72bcc36ef",
       "tags": [
         "formats",
         "pages"
       ],
-      "notes": "The odp deck with page 2 on a drawing-page style with presentation:visibility=\"hidden\". Default: 2 pages. With slides.include_hidden: 3 pages, and only page 2 has hidden: true.",
+      "notes": "The odp deck with page 2 on a drawing-page style with presentation:visibility=\"hidden\" and a red fill. Default: 2 pages. With slides.include_hidden: 3 pages, and only page 2 has hidden: true.",
       "preflight": {
         "format": "odp",
         "encrypted": false,
