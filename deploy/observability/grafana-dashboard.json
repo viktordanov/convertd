@@ -367,7 +367,7 @@
       "type": "stat",
       "id": 5,
       "title": "Conversions in flight (estimate)",
-      "description": "The rate of the summed receive and total stage times (Little's law): from the start of the handler to the response head. The download of the body is not counted. Each request adds its time when it finishes, so under steady load this is the mean number of conversions in progress. A conversion longer than the rate window counts in the window where it ends.",
+      "description": "The rate of the summed receive and total stage times (Little's law): from the start of the handler to the response head. The download of the body is not counted, and neither is an upload that fails (it records no stage). Each request adds its time when it finishes, so under steady load this is the mean number of conversions in progress. A conversion longer than the rate window counts in the window where it ends.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
