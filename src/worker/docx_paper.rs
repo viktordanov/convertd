@@ -263,6 +263,7 @@ fn qualified(prefix: &[u8], local: &[u8]) -> Vec<u8> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tag {
+    Document,
     Body,
     P,
     PPr,
@@ -358,6 +359,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     .map(|p| p.into_inner())
                     .unwrap_or_default();
                 let tag = match (ns, local) {
+                    (Some(_), b"document") => Tag::Document,
                     (Some(_), b"body") => Tag::Body,
                     (Some(_), b"p") => Tag::P,
                     (Some(_), b"pPr") => Tag::PPr,
@@ -441,9 +443,11 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     && body.is_none()
                     && let Some(ns) = ns
                 {
-                    // A body per branch: which one LibreOffice takes is its
-                    // choice, so both would need the same section.
-                    if alternates > 0 || prefix.len() > MAX_PREFIX {
+                    // The body is the root w:document's child; one anywhere
+                    // else (in an extension, or a body per branch) makes the
+                    // one LibreOffice reads unclear.
+                    let under_root = depth == 1 && stack.first() == Some(&Tag::Document);
+                    if !under_root || alternates > 0 || prefix.len() > MAX_PREFIX {
                         return Err(Skip::Unsupported);
                     }
                     if empty {
@@ -1187,19 +1191,16 @@ fn write_main(
 /// The folder of the copies, next to the source.
 pub const COPY_DIR: &str = ".convertd-paper";
 
-/// Where the repacked copy of `source` goes: a [`COPY_DIR`] folder next to
-/// it, under the same file name, so LibreOffice sees the same name (a
-/// FILENAME field, for example).
-///
-/// The directory differs, so a relative hyperlink resolves under
-/// [`COPY_DIR`].
-/// That costs nothing: without the copy it resolves under the job
-/// directory, whose name is a random UUID per request (`jobs/job_dir.rs`)
-/// and which is removed after the response. Such a link target was never
-/// stable or reachable for a client. Writing the copy over the source
-/// instead would make a retry after a crash depend on which file is which.
-pub fn copy_path(source: &Path) -> Option<PathBuf> {
-    Some(source.parent()?.join(COPY_DIR).join(source.file_name()?))
+/// The paths of a swap for `source`: where the copy is written (`fresh`),
+/// and where the source waits while the copy is in its place (`backup`).
+/// Both are in [`COPY_DIR`] next to the source, on its file system, so
+/// each move is a rename.
+pub fn swap_paths(source: &Path) -> Option<(PathBuf, PathBuf)> {
+    let dir = source.parent()?.join(COPY_DIR);
+    let name = source.file_name()?;
+    let mut fresh = name.to_os_string();
+    fresh.push(".paper");
+    Some((dir.join(fresh), dir.join(name)))
 }
 
 /// Whether `source` is a package that LibreOffice reads with its DOCX

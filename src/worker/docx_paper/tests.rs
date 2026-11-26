@@ -470,10 +470,9 @@ fn word_packages_are_told_by_extension() {
     assert!(is_word_package(Path::new("/j/source.dotx")));
     assert!(!is_word_package(Path::new("/j/source.doc")));
     assert!(!is_word_package(Path::new("/j/source.rtf")));
-    assert_eq!(
-        copy_path(Path::new("/j/source.docx")).unwrap(),
-        Path::new("/j/.convertd-paper/source.docx")
-    );
+    let (fresh, backup) = swap_paths(Path::new("/j/source.docx")).unwrap();
+    assert_eq!(fresh, Path::new("/j/.convertd-paper/source.docx.paper"));
+    assert_eq!(backup, Path::new("/j/.convertd-paper/source.docx"));
 }
 
 #[test]
@@ -895,7 +894,7 @@ fn no_folder_is_made_when_there_is_nothing_to_copy() {
     let dir = Scratch::new();
     let input = dir.path().join("source.docx");
     std::fs::write(&input, &source).unwrap();
-    let copy = copy_path(&input).unwrap();
+    let copy = swap_paths(&input).unwrap().0;
     assert_eq!(repack(&input, &copy, Paper::A4), Err(Skip::Sized));
     assert!(!copy.parent().unwrap().exists());
     // With something to copy, the folder is made.
@@ -1002,7 +1001,16 @@ fn a_linked_copy_folder_is_refused() {
     std::fs::write(&input, crate::worker::warmup::docx("x")).unwrap();
     let outside = Scratch::new();
     std::os::unix::fs::symlink(outside.path(), dir.path().join(COPY_DIR)).unwrap();
-    let copy = copy_path(&input).unwrap();
+    let copy = swap_paths(&input).unwrap().0;
     assert!(matches!(repack(&input, &copy, Paper::A4), Err(Skip::Io(_))));
     assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn only_the_root_documents_body_counts() {
+    // A w:body in an extension before the real one.
+    let xml = format!(
+        r#"<w:document xmlns:w="{W}" xmlns:x="ext"><x:ext><w:body><w:p/></w:body></x:ext><w:body><w:p/></w:body></w:document>"#
+    );
+    assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
 }

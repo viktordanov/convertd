@@ -760,6 +760,11 @@ async fn first_pages(
                 !job_dir.join(".convertd-paper").exists(),
                 "the copy stayed behind"
             );
+            assert_eq!(
+                &std::fs::read(job_dir.join(file)).unwrap(),
+                bytes,
+                "the source is not back"
+            );
         }
         sizes.push(per_paper);
         pool.shutdown(Duration::from_secs(5)).await;
