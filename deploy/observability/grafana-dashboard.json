@@ -85,6 +85,26 @@
         ]
       },
       {
+        "name": "cpu_window",
+        "label": "CPU window",
+        "type": "textbox",
+        "description": "The longer rate window of the Cores per pool panel. Keep it at least four scrape intervals and longer than a typical call.",
+        "query": "5m",
+        "hide": 0,
+        "current": {
+          "selected": false,
+          "text": "5m",
+          "value": "5m"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "5m",
+            "value": "5m"
+          }
+        ]
+      },
+      {
         "name": "namespace",
         "label": "Namespace",
         "type": "query",
@@ -2252,14 +2272,14 @@
       "type": "timeseries",
       "id": 36,
       "title": "Cores per pool",
-      "description": "CPU seconds per second of the finished worker calls: the cores each pool used. A call adds all of its CPU time when its reply arrives, so a call longer than the rate window shows as idle while it runs and above its real cores when it ends. A call that times out, crashes or passes its kill RSS sends no reply and records nothing. The 5 m series smooths long calls.",
+      "description": "CPU seconds per second of the finished worker calls: the cores each pool used. A call adds all of its CPU time when its reply arrives, so a call longer than the rate window shows as idle while it runs and above its real cores when it ends. A call that times out, crashes or passes its kill RSS sends no reply and records nothing. The second series rates over the cpu_window variable (5m by default, at least four scrape intervals), which smooths long calls.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
+        "w": 6,
         "x": 0,
         "y": 82
       },
@@ -2313,8 +2333,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (pool) (rate(convert_worker_cpu_seconds_sum{namespace=~\"$namespace\", pod=~\"$pod\"}[5m]))",
-          "legendFormat": "{{pool}} (5 m)",
+          "expr": "sum by (pool) (rate(convert_worker_cpu_seconds_sum{namespace=~\"$namespace\", pod=~\"$pod\"}[$cpu_window]))",
+          "legendFormat": "{{pool}} ($cpu_window)",
           "refId": "B",
           "range": true,
           "interval": "$scrape_interval"
@@ -2325,15 +2345,15 @@
       "type": "timeseries",
       "id": 37,
       "title": "CPU per call, p50 and p99",
-      "description": "CPU time (user plus system) of one worker call, per pool and operation. A conversion makes one or more calls (convert, inspect, render). A call adds all of its CPU time when its reply arrives, so a call longer than the rate window shows as idle while it runs and above its real cores when it ends. A call that times out, crashes or passes its kill RSS sends no reply and records nothing.",
+      "description": "CPU time (user plus system) of one worker call, per pool and operation. A conversion makes one or more calls (convert, inspect, render). Each call counts once, in the window where its reply arrives. The highest bucket bound is 60 s, so a quantile above it shows as 60 s.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
+        "w": 6,
+        "x": 6,
         "y": 82
       },
       "fieldConfig": {
@@ -2405,8 +2425,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
+        "w": 6,
+        "x": 12,
         "y": 82
       },
       "fieldConfig": {
@@ -2450,6 +2470,68 @@
           },
           "expr": "sum by (pool, op) (rate(convert_worker_cpu_seconds_sum{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval])) / sum by (pool, op) (rate(convert_worker_cpu_seconds_count{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
           "legendFormat": "{{pool}} {{op}}",
+          "refId": "A",
+          "range": true,
+          "interval": "$scrape_interval"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 39,
+      "title": "CPU seconds since the process started",
+      "description": "The counter itself, per pod, pool and operation. A series starts at the first reply of its pool and operation, so a rate does not show an isolated first call; this panel does.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 82
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (namespace, pod, pool, op) (convert_worker_cpu_seconds_sum{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{pool}} {{op}} {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true,
           "interval": "$scrape_interval"
