@@ -45,18 +45,26 @@ wait_ready() { # <name>
 }
 
 run() { # <name> <label> -> writes ${out}/<label>.txt
-  local name="$1" list="${out}/${2}.txt"
+  local name="$1" list="${out}/${2}.txt" i=0
   : > "${list}"
   while IFS= read -r -d '' f; do
-    local rel="${f#"${corpus}"/}" body="${out}/x/body" pages="${out}/pages"
-    rm -rf "${body}" "${pages}"; mkdir -p "${pages}"
-    local status
+    # A new body file per request: a file deleted on the host can still be visible through the
+    # bind mount, and curl then fails to write it (exit 23).
+    i=$((i + 1))
+    local rel="${f#"${corpus}"/}" body_name="body-${2}-${i}" pages="${out}/pages"
+    local body="${out}/x/${body_name}"
+    rm -rf "${pages}"; mkdir -p "${pages}"
+    local status rc=0
     status="$(docker run --rm --network "container:${name}" -v "${corpus}:/in:ro" -v "${out}/x:/x" \
-      "${curl_image}" -sS -m 240 -o /x/body -w '%{http_code}' \
+      "${curl_image}" -sS -m 240 -o "/x/${body_name}" -w '%{http_code}' \
       -H "Authorization: Bearer ${key}" \
       -F "file=@/in/${rel}" \
       -F 'options={"output":"images","images":{"format":"png","dpi":72}};type=application/json' \
-      http://127.0.0.1:8080/v1/convert 2>/dev/null || echo 000)"
+      http://127.0.0.1:8080/v1/convert 2>"${out}/err")" || rc=$?
+    if [[ "${rc}" != 0 ]]; then
+      printf '%s\t%s\tcurl exit %s: %s\n' "${2}" "${rel}" "${rc}" "$(tr '\n' ' ' < "${out}/err")" >> "${out}/errors.txt"
+      status="curl-exit-${rc}"
+    fi
     if [[ "${status}" == 200 ]] && zstd -dcq "${body}" | tar -xf - -C "${pages}" 2>/dev/null; then
       local n
       n="$(find "${pages}/pages" -type f 2>/dev/null | wc -l | tr -d ' ')"
