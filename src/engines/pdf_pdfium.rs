@@ -13,7 +13,7 @@ use crate::domain::engine::{
 };
 use crate::engines::call::{RETRY_MIN_LEFT, admission, call, unexpected, worker_ref};
 use crate::engines::error::EngineFailure;
-use crate::engines::poison::{PoisonList, TIMEOUT_STRIKES, strikes_for};
+use crate::engines::poison::{Attempt, PoisonList, Strike, Work, strike_for, worse};
 use crate::engines::pool::{Admission as PoolAdmission, CallError, Lease, Pool};
 use crate::ipc::{
     self, DecryptArgs, InspectArgs, Op, Output, RenderArgs, Reply, Secret, WorkerErrorKind,
@@ -131,22 +131,25 @@ fn severity(err: &EngineError) -> u8 {
 /// What one render chunk gives back.
 type ChunkOk = (Vec<ipc::RenderedPage>, Duration, WorkerRef);
 
-/// A failed render chunk, with the poison strikes it earned.
+/// A failed render chunk, with the poison strike it earned.
 struct ChunkFailure {
     error: EngineError,
-    strikes: u32,
+    strike: Option<Strike>,
 }
 
 impl ChunkFailure {
     fn of(err: CallError, retried: bool) -> Self {
         Self {
-            strikes: strikes_for(&err, retried),
+            strike: strike_for(&err, retried),
             error: EngineFailure::from(err).into(),
         }
     }
 
     fn engine(error: EngineError) -> Self {
-        Self { error, strikes: 0 }
+        Self {
+            error,
+            strike: None,
+        }
     }
 }
 
@@ -176,7 +179,7 @@ fn chunk_reply(lease: &mut Lease, reply: Reply, pool: &Pool) -> Result<ChunkOk, 
 
 /// One render chunk on a lease the caller already holds, with at most one
 /// retry: after a crash with at least `RETRY_MIN_LEFT` left, once more on a
-/// fresh lease with `Continue`. The strikes follow `poison::strikes_for`,
+/// fresh lease with `Continue`. The strike follows `poison::strike_for`,
 /// the same rule as every other call.
 async fn render_chunk(
     pool: &Pool,
@@ -203,7 +206,7 @@ async fn render_chunk(
         Err(err) => {
             return Err(ChunkFailure {
                 error: EngineFailure::from(err).into(),
-                strikes: TIMEOUT_STRIKES,
+                strike: Some(Strike::Crash(1)),
             });
         }
     };
@@ -296,12 +299,19 @@ impl PdfEngine for PdfPdfium {
         adm: Admission,
         deadline: Instant,
     ) -> Result<Rendered, EngineError> {
+        let started = Instant::now();
+        let attempt = Attempt::new(
+            Work::Render {
+                pages: job.pages.len() as u32,
+            },
+            deadline,
+            started,
+        );
         if let Some(list) = &self.poison
-            && list.is_poisoned(&job.sha256)
+            && list.refuses(&job.sha256, &attempt)
         {
             return Err(EngineError::Poisoned);
         }
-        let started = Instant::now();
         let first = self
             .pool
             .lease(deadline, admission(adm))
@@ -342,7 +352,7 @@ impl PdfEngine for PdfPdfium {
         let mut workers = Vec::new();
         let mut longest = Duration::ZERO;
         let mut failure: Option<EngineError> = None;
-        let mut strikes = 0;
+        let mut strike: Option<Strike> = None;
         // Pages of the chunks that went over their share: an equal share
         // keeps the disk within the reservation, but the job's cap is the
         // whole budget, so these get what the other chunks left.
@@ -360,11 +370,11 @@ impl PdfEngine for PdfPdfium {
                     over_error = Some(chunk.error);
                 }
                 Err(chunk) => {
-                    strikes = strikes.max(chunk.strikes);
-                    let worse = failure
+                    strike = worse(strike, chunk.strike);
+                    let more_severe = failure
                         .as_ref()
                         .is_none_or(|old| severity(&chunk.error) < severity(old));
-                    if worse {
+                    if more_severe {
                         failure = Some(chunk.error);
                     }
                 }
@@ -384,7 +394,7 @@ impl PdfEngine for PdfPdfium {
                     workers.push(worker);
                 }
                 Err(chunk) => {
-                    strikes = chunk.strikes;
+                    strike = chunk.strike;
                     failure = Some(chunk.error);
                 }
             }
@@ -393,9 +403,9 @@ impl PdfEngine for PdfPdfium {
             // One document: the strikes of its worst chunk, by the same rule
             // as call_with_poison.
             if let Some(list) = &self.poison
-                && strikes > 0
+                && let Some(strike) = strike
             {
-                list.strike(&job.sha256, strikes);
+                list.strike(&job.sha256, strike, &attempt);
             }
             return Err(err);
         }

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::domain::engine::{Admission as DomainAdmission, EngineError, EngineTiming, WorkerRef};
 use crate::engines::error::EngineFailure;
-use crate::engines::poison::{Poison, TIMEOUT_STRIKES, strikes_for};
+use crate::engines::poison::{Attempt, Poison, Strike, strike_for};
 use crate::engines::pool::{Admission, CallError, Pool};
 use crate::ipc::{Op, Output, Reply, WorkerErrorKind};
 
@@ -58,9 +58,10 @@ pub async fn call(
     call_with_poison(pool, op, adm, deadline, recycle, None).await
 }
 
-/// [`call`] with poison memory: a poisoned document is refused before the
-/// lease, a timeout adds one strike, and a crash adds two when it survived
-/// the retry (one when there was no time for a retry).
+/// [`call`] with poison memory: a refused request ends before the lease.
+/// A timeout adds one strike that covers requests with no more time, a
+/// crash two when it survived the retry (one when there was no time for a
+/// retry or the retry got no worker).
 pub async fn call_with_poison(
     pool: &Pool,
     op: Op,
@@ -69,12 +70,14 @@ pub async fn call_with_poison(
     recycle: fn(WorkerErrorKind) -> bool,
     poison: Option<&Poison>,
 ) -> Result<Called, EngineError> {
-    if let Some(p) = poison
-        && p.list.is_poisoned(&p.key)
+    let started = Instant::now();
+    // The work and the time this request has, for the timeout rule.
+    let poison = poison.map(|p| (p, Attempt::new(p.work, deadline, started)));
+    if let Some((p, attempt)) = &poison
+        && p.list.refuses(&p.key, attempt)
     {
         return Err(EngineError::Poisoned);
     }
-    let started = Instant::now();
     let mut adm = adm;
     let mut first_queue = None;
     let mut retried = false;
@@ -84,8 +87,8 @@ pub async fn call_with_poison(
             Err(err) => {
                 // A crash whose retry got no worker is a crash without a
                 // retry: one strike, as for a render chunk.
-                if retried && let Some(p) = poison {
-                    p.list.strike(&p.key, TIMEOUT_STRIKES);
+                if retried && let Some((p, attempt)) = &poison {
+                    p.list.strike(&p.key, Strike::Crash(1), attempt);
                 }
                 return Err(EngineFailure::from(err).into());
             }
@@ -152,11 +155,10 @@ pub async fn call_with_poison(
                 adm = Admission::Continue;
             }
             Err(err) => {
-                if let Some(p) = poison {
-                    let strikes = strikes_for(&err, retried);
-                    if strikes > 0 {
-                        p.list.strike(&p.key, strikes);
-                    }
+                if let Some((p, attempt)) = &poison
+                    && let Some(strike) = strike_for(&err, retried)
+                {
+                    p.list.strike(&p.key, strike, attempt);
                 }
                 return Err(EngineFailure::from(err).into());
             }

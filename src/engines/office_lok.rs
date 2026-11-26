@@ -10,7 +10,7 @@ use crate::domain::document::{DocType, Family};
 use crate::domain::engine::{Admission, Converted, EngineError, OfficeEngine, OfficeJob};
 use crate::domain::verification::SourceFacts;
 use crate::engines::call::{admission, call_with_poison, unexpected};
-use crate::engines::poison::{Poison, PoisonList};
+use crate::engines::poison::{Poison, PoisonList, Work};
 use crate::engines::pool::Pool;
 use crate::ipc::{self, ConvertArgs, Op, Output, Secret, WorkerErrorKind};
 
@@ -90,6 +90,7 @@ impl OfficeEngine for OfficeLok {
         let poison = self.poison.as_ref().map(|list| Poison {
             list: Arc::clone(list),
             key: job.sha256,
+            work: Work::Convert,
         });
         let op = Op::Convert(ConvertArgs {
             input: job.input,
