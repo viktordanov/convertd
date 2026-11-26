@@ -1409,7 +1409,7 @@
       "tags": [
         "bench"
       ],
-      "notes": "100,000 x 10 numbers in one sheet. The PDF likely exceeds MAX_RENDER_PAGES, so the bundle renders pages 1-5 only. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
+      "notes": "100,000 x 10 numbers in one sheet. The PDF likely exceeds MAX_RENDER_PAGES, so the bundle renders pages 1-5 only. Page count recorded from LibreOffice 26.8.3.1 with DEFAULT_PAPER=A4, the default, in rs-convert-003-paper:arm64 on 2026-11-26. The sheet has no page setup, so the paper decides the count: it was 2326 on Letter, before the image honoured DEFAULT_PAPER.",
       "preflight": {
         "format": "xlsx",
         "encrypted": false,
@@ -1437,7 +1437,7 @@
             "family": "spreadsheet",
             "encrypted": false,
             "pdf_origin": "converted",
-            "page_count": 2326,
+            "page_count": 2174,
             "warnings": []
           }
         },
@@ -1449,7 +1449,7 @@
           "expect": {
             "status": 200,
             "format": "xlsx",
-            "page_count": 2326,
+            "page_count": 2174,
             "warning_count": 0
           }
         }
