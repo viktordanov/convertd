@@ -27,7 +27,7 @@ The image is `debian:trixie-slim` with only what convertd uses. Each part has a 
 
 The image runs as user and group `10001:10001` (`convertd`), with `HOME=/tmp`. The Kubernetes manifest and the engine check make the root file system read-only, and `/tmp` is the only writable path. The image ships nothing under `/tmp`, because a mount there hides it. There is no init process: convertd is PID 1 and reaps its own children.
 
-Every file that the `Dockerfile` copies from the checkout gets an explicit mode with `--chmod`, because `COPY` keeps the mode of the checkout. A checkout made under umask 077 thus gives the same image. A build gate also fails if user 65534 cannot read `fonts.json`, the fontconfig files, `build-info.json`, `soffice.bin` or `libpdfium.so`. The CI image job builds from a checkout with umask 077 modes.
+Every file that the `Dockerfile` copies from the checkout gets an explicit mode with `--chmod`, because `COPY` keeps the mode of the checkout. A checkout made under umask 077 thus gives the same image. `COPY --chmod` also gives its mode to a folder that it creates, so the target folders are created first with mode 0755. A build gate also fails if user 65534 cannot read `fonts.json`, the fontconfig files, `build-info.json`, `soffice.bin` or `libpdfium.so`. The CI image job builds from a checkout with umask 077 modes.
 
 The paths and variables that other parts of the service depend on:
 
