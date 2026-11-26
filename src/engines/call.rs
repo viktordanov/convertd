@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use crate::domain::engine::{Admission as DomainAdmission, EngineError, EngineTiming, WorkerRef};
 use crate::engines::error::EngineFailure;
-use crate::engines::poison::{Poison, strikes_for};
+use crate::engines::poison::{Poison, TIMEOUT_STRIKES, strikes_for};
 use crate::engines::pool::{Admission, CallError, Pool};
 use crate::ipc::{Op, Output, Reply, WorkerErrorKind};
 
@@ -79,10 +79,17 @@ pub async fn call_with_poison(
     let mut first_queue = None;
     let mut retried = false;
     loop {
-        let mut lease = pool
-            .lease(deadline, adm)
-            .await
-            .map_err(|err| EngineError::from(EngineFailure::from(err)))?;
+        let mut lease = match pool.lease(deadline, adm).await {
+            Ok(lease) => lease,
+            Err(err) => {
+                // A crash whose retry got no worker is a crash without a
+                // retry: one strike, as for a render chunk.
+                if retried && let Some(p) = poison {
+                    p.list.strike(&p.key, TIMEOUT_STRIKES);
+                }
+                return Err(EngineFailure::from(err).into());
+            }
+        };
         let queue = *first_queue.get_or_insert(lease.queued());
         let lease_time = lease.leased().saturating_sub(lease.queued());
         let spawned = lease.spawned_on_path();

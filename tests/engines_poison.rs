@@ -50,8 +50,8 @@ impl Drop for Scratch {
     }
 }
 
-async fn pool(dir: &Path) -> Pool {
-    let spec = PoolSpec {
+fn spec(dir: &Path) -> PoolSpec {
+    PoolSpec {
         name: "test",
         role: Role::Test,
         program: PathBuf::from(env!("CARGO_BIN_EXE_convertd")),
@@ -71,8 +71,11 @@ async fn pool(dir: &Path) -> Pool {
         queue_capacity: 4,
         queue_wait: Duration::from_secs(10),
         start_timeout: Duration::from_secs(10),
-    };
-    let pool = Pool::start(spec, Spawner::new(ReaperMode::Owned).unwrap());
+    }
+}
+
+async fn pool(dir: &Path) -> Pool {
+    let pool = Pool::start(spec(dir), Spawner::new(ReaperMode::Owned).unwrap());
     assert!(pool.wait_idle(1, Duration::from_secs(20)).await);
     pool
 }
@@ -311,6 +314,61 @@ async fn a_render_crash_counts_by_the_same_rule_as_a_convert_crash() {
                 .await
                 .unwrap_err();
             assert_eq!(err, EngineError::Poisoned);
+            pool.shutdown(Duration::from_secs(1)).await;
+        },
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_convert_crash_whose_retry_gets_no_worker_counts_one_strike() {
+    within(
+        TEST,
+        "a_convert_crash_whose_retry_gets_no_worker_counts_one_strike",
+        async {
+            let dir = Scratch::new("poison-retry-lease");
+            let panics = dir.join("panic.docx");
+            std::fs::write(&panics, b"FAKE:PANIC").unwrap();
+            // Workers take 1.5 s to start, and the call has 1.2 s: the crash
+            // leaves more than 1 s for a retry, but the retry's lease runs
+            // out of time before the replacement is ready.
+            let mut spec = spec(&dir.0);
+            spec.init.test.ready_delay_ms = 1500;
+            let pool = Pool::start(spec, Spawner::new(ReaperMode::Owned).unwrap());
+            assert!(pool.wait_idle(1, Duration::from_secs(20)).await);
+            let list = PoisonList::new(Duration::from_secs(60)).unwrap();
+            let office = OfficeLok::new(pool.clone()).with_poison(Some(list.clone()));
+            let key = [7u8; 32];
+            let short = || Instant::now() + Duration::from_millis(1200);
+            let err = office
+                .convert(
+                    office_job(&panics, dir.join("a.pdf"), key),
+                    Admission::Queue,
+                    short(),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err,
+                EngineError::Timeout,
+                "the retry's lease ran out of time"
+            );
+            assert!(!list.is_poisoned(&key), "one strike, not two");
+            let err = office
+                .convert(
+                    office_job(&panics, dir.join("b.pdf"), key),
+                    Admission::Queue,
+                    short(),
+                )
+                .await
+                .unwrap_err();
+            // The second call waits for the slow replacement, then crashes
+            // with less than 1 s left: no retry, one strike either way.
+            assert!(
+                matches!(err, EngineError::Timeout | EngineError::Crashed),
+                "{err:?}"
+            );
+            assert!(list.is_poisoned(&key), "two single strikes poison");
             pool.shutdown(Duration::from_secs(1)).await;
         },
     )

@@ -168,7 +168,7 @@ After a load, export, empty-document, limit or internal error, `OfficeLok` recyc
 
 Poison memory (`poison.rs`) protects the workers from documents that hang or crash them. It is keyed by the upload's SHA-256 and shared by both pools, and it works like this:
 
-- A call that times out adds one strike. A crash that survived its retry adds two, and a crash with no time left for the retry adds one. A protocol error and the RSS kill add none. `poison::strikes_for` holds this rule for `convert` and for each render chunk.
+- A call that times out adds one strike. A crash that survived its retry adds two. A crash with no retry adds one: there was no time left for it, or the retry got no worker. A protocol error and the RSS kill add none. `poison::strikes_for` holds this rule for `convert` and for each render chunk.
 - A render strikes once, with the most strikes that one of its chunks earned.
 - At two strikes, `convert` and `render` return `Poisoned` before they lease a worker. `Poisoned` gives 422 `CONVERSION_FAILED`.
 - Each strike sets the expiry to now + `POISON_TTL_SECONDS`. An expired entry starts again from zero.
