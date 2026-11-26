@@ -690,6 +690,14 @@ fn a_signed_package_is_not_changed() {
         ("_xmlsignatures/sig1.xml", b"<Signature/>", true, false),
     ]);
     assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
+    // The folder name without case.
+    let source = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", main.as_bytes(), true, false),
+        ("_XmlSignatures/sig1.xml", b"<Signature/>", true, false),
+    ]);
+    assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
 }
 
 #[test]
@@ -1050,4 +1058,27 @@ fn a_section_in_a_wrapper_that_may_be_processed_keeps_the_package() {
         r#"<w:document xmlns:w="{W}" xmlns:mc="{mc}" xmlns:x="ext" mc:Ignorable="x" mc:ProcessContent="x:wrap"><w:body><w:p/><x:wrap><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></x:wrap></w:body></w:document>"#
     );
     assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
+}
+
+#[test]
+fn process_content_counts_only_in_its_namespace_and_scope() {
+    let mc = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+    // mc:ProcessContent on one subtree; the ignored section is in a sibling.
+    let xml = format!(
+        r#"<w:document xmlns:w="{W}" xmlns:mc="{mc}" xmlns:x="ext"><w:body><w:p mc:ProcessContent="x:wrap"/><x:other><w:p><w:pPr><w:sectPr><w:pgSz w:w="1" w:h="2"/></w:sectPr></w:pPr></w:p></x:other><w:p/></w:body></w:document>"#
+    );
+    assert!(
+        fixed(&xml, Paper::A4)
+            .unwrap()
+            .contains(&format!("<w:sectPr>{A4}</w:sectPr></w:body>"))
+    );
+    // A ProcessContent attribute in another namespace.
+    let xml = format!(
+        r#"<w:document xmlns:w="{W}" xmlns:o="other" xmlns:x="ext" o:ProcessContent="x:wrap"><w:body><x:wrap><w:p><w:pPr><w:sectPr><w:pgSz w:w="1" w:h="2"/></w:sectPr></w:pPr></w:p></x:wrap><w:p/></w:body></w:document>"#
+    );
+    assert!(
+        fixed(&xml, Paper::A4)
+            .unwrap()
+            .contains(&format!("<w:sectPr>{A4}</w:sectPr></w:body>"))
+    );
 }

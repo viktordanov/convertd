@@ -342,9 +342,11 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     // Open elements of other namespaces: a section in one is extension
     // content (often ignorable), not a section of the document.
     let mut foreign = 0usize;
-    // An mc:ProcessContent seen: then a foreign wrapper may be transparent,
-    // and a section in it may be the document's.
-    let mut process_content = false;
+    // Open elements with an mc:ProcessContent attribute: inside one, a
+    // foreign wrapper may be transparent, and a section in it may be the
+    // document's.
+    let mut processing: Vec<bool> = Vec::with_capacity(64);
+    let mut in_process = 0usize;
     // Open `w:sectPrChange` elements: a section's former properties.
     let mut history = 0usize;
     let mut before = skipped + xml.buffer_position();
@@ -380,7 +382,6 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                 let depth = stack.len();
                 let mut declares = 0usize;
                 for a in e.attributes().with_checks(false).flatten() {
-                    process_content |= a.key.local_name().as_ref() == b"ProcessContent";
                     let key = a.key.as_ref();
                     if key == b"xmlns" || key.starts_with(b"xmlns:") {
                         declares += 1;
@@ -392,6 +393,11 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                         }
                     }
                 }
+                let processes = e.attributes().with_checks(false).flatten().any(|a| {
+                    let (ns, local) = xml.resolver().resolve_attribute(a.key);
+                    local.as_ref() == b"ProcessContent"
+                        && matches!(ns, ResolveResult::Bound(Namespace(n)) if n == MC_NS)
+                });
                 if bindings + declares > MAX_BINDINGS {
                     return Err(Skip::Unsupported);
                 }
@@ -422,7 +428,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                 }
                 let parent = stack.last().copied();
                 let grandparent = depth.checked_sub(2).map(|i| stack[i]);
-                if tag == Tag::SectPr && foreign > 0 && alternates == 0 && process_content {
+                if tag == Tag::SectPr && foreign > 0 && alternates == 0 && in_process > 0 {
                     return Err(Skip::Unsupported);
                 }
                 if tag == Tag::SectPr
@@ -482,6 +488,8 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     history += usize::from(tag == Tag::SectPrChange);
                     stack.push(tag);
                     declared.push(declares as u32);
+                    processing.push(processes);
+                    in_process += usize::from(processes);
                     bindings += declares;
                     if stack.len() > MAX_DEPTH {
                         return Err(Skip::Unreadable);
@@ -491,6 +499,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
             Event::End(_) => {
                 let closed = stack.pop();
                 bindings -= declared.pop().unwrap_or(0) as usize;
+                in_process -= usize::from(processing.pop().unwrap_or(false));
                 alternates -= usize::from(closed == Some(Tag::Alternate));
                 foreign -= usize::from(closed == Some(Tag::Foreign));
                 history -= usize::from(closed == Some(Tag::SectPrChange));
@@ -908,10 +917,11 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
     }
     let entries = zip_scan::list(&mut file, size).map_err(scan_error)?;
     // A signed package: a changed main part would break its signature.
-    if entries
-        .iter()
-        .any(|(name, _)| name.starts_with("_xmlsignatures/"))
-    {
+    if entries.iter().any(|(name, _)| {
+        name.as_bytes()
+            .get(..15)
+            .is_some_and(|start| start.eq_ignore_ascii_case(b"_xmlsignatures/"))
+    }) {
         return Err(Skip::Unsupported);
     }
     // OPC part names compare without ASCII case; one entry must match.
