@@ -518,7 +518,10 @@ func TestEarlyAnswerDuringUpload(t *testing.T) {
 		wantErr(t, err, convert.ErrUnauthorized)
 	})
 	t.Run("over the cap", func(t *testing.T) {
-		_, err := newFacade(t).ConvertToPDF(ctx, "big.pdf", pdfPrefixed(randomReader(size)), convert.Options{})
+		// In image mode the cap is the deployed one (120 MiB by default), so
+		// the upload must be larger than both.
+		over := max(int64(size), uploadLimit(t)+1)
+		_, err := newFacade(t).ConvertToPDF(ctx, "big.pdf", pdfPrefixed(randomReader(over)), convert.Options{})
 		wantErr(t, err, convert.ErrFileTooLarge)
 	})
 }
