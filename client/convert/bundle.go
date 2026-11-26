@@ -26,6 +26,10 @@ const (
 	pagesDir     = "pages"
 	// manifestLimit caps the size of manifest.json.
 	manifestLimit = 16 << 20
+	// tarRecordSize is the default tar record of 20 blocks of 512 bytes. A
+	// tar writer pads an archive to whole records, so at most one record of
+	// zeros follows the end-of-archive marker.
+	tarRecordSize = 20 * 512
 )
 
 var pagePath = regexp.MustCompile(`^pages/[0-9]{4,}\.(jpg|jpeg|png|webp)$`)
@@ -205,8 +209,9 @@ func readBundle(body io.Reader, tempDir string) (*Bundle, error) {
 // load reads the archive. It accepts only what the service writes: a
 // regular manifest.json first, then exactly the regular files the manifest
 // names, each under an expected name, each once and each with the size the
-// manifest gives. It reads the zstd stream to its end, so that a frame cut
-// after the tar entries, a bad checksum or trailing data fails too.
+// manifest gives. After the tar end it allows only zero padding, then
+// requires the end of the zstd stream, so that a frame cut after the tar
+// entries, a bad checksum or trailing data fails too.
 func (b *Bundle) load(body io.Reader) error {
 	zr, err := zstd.NewReader(body, zstd.WithDecoderConcurrency(1))
 	if err != nil {
@@ -277,11 +282,31 @@ func (b *Bundle) load(body io.Reader) error {
 			return fmt.Errorf("failed to read archive: the manifest names %q, which is not in the archive", name)
 		}
 	}
-	// tar stops at its end-of-archive marker. The rest of the zstd stream
-	// holds the end of the frame and its checksum; anything after the frame
-	// is not a valid frame and fails here.
-	if _, err := io.Copy(io.Discard, zr); err != nil {
+	return checkArchiveEnd(zr)
+}
+
+// checkArchiveEnd reads what follows the tar end-of-archive marker. A tar
+// writer may pad the archive with zeros to a whole record, so at most
+// tarRecordSize zero bytes are allowed (the service writes none). Then the
+// decoder must report io.EOF, which it does only after the end of the frame
+// and its checksum. Anything else, including data compressed to a few bytes
+// that would expand without bound, fails before it is all decompressed.
+func checkArchiveEnd(zr io.Reader) error {
+	rest, err := io.ReadAll(io.LimitReader(zr, tarRecordSize+1))
+	if err != nil {
 		return fmt.Errorf("failed to read the end of the archive: %w", err)
+	}
+	if len(rest) > tarRecordSize {
+		return fmt.Errorf("failed to read the end of the archive: more than %d bytes follow the tar end", tarRecordSize)
+	}
+	for _, c := range rest {
+		if c != 0 {
+			return errors.New("failed to read the end of the archive: non-zero data follows the tar end")
+		}
+	}
+	var one [1]byte
+	if n, err := zr.Read(one[:]); n != 0 || !errors.Is(err, io.EOF) {
+		return fmt.Errorf("failed to read the end of the archive: the stream does not end after the tar end (%d bytes, %v)", n, err)
 	}
 	return nil
 }
