@@ -96,7 +96,12 @@ The pool logs these events:
 - `worker recycled`, with the reason `jobs`, `rss`, `age` or `error`, and `worker killed`, with the reason `timeout`, `cancelled` or `rss`. A kill over `kill_rss` also logs `worker over its memory limit` with `rss_bytes` and `kill_rss`.
 - `worker start failed`, with `error` and `backoff_ms`. `worker started` is a debug event.
 
-The pool sets three metrics: `convert_workers{pool,state}` for `idle`, `busy` and `starting`, `convert_worker_restarts_total{pool,reason}`, and `convert_queue_depth{pool}`. Each lease, each return and each manager event sets `convert_workers` under the idle lock, so the gauges agree with `/readyz`.
+The pool sets four metrics:
+
+- `convert_workers{pool,state}`, for `idle`, `busy` and `starting`. Each lease, each return and each manager event sets it under the idle lock, so the gauges agree with `/readyz`.
+- `convert_worker_restarts_total{pool,reason}`.
+- `convert_queue_depth{pool}`.
+- `convert_worker_cpu_seconds{pool,op}`, a histogram of the `cpu_us` of each reply, with buckets from 1 ms to 60 s. `op` is `convert`, `inspect`, `render`, `decrypt`, or `test` at level B. `Ping` is not recorded. A reply with an engine error is recorded, because the worker spent the CPU time. A call that times out, crashes or passes `kill_rss` sends no reply, so it records nothing. `rate(convert_worker_cpu_seconds_sum[1m])` gives the cores that a pool uses.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="contract" files="pool.rs" -->
@@ -160,14 +165,14 @@ Each worker process gets `<workers_dir>/<pool>-<slot>/` with the subdirectories 
 `OfficeLok` implements `OfficeEngine` over the office pool, and `PdfPdfium` implements `PdfEngine` over the render pool. Each call runs these steps through `call::call`:
 
 1. It leases a worker with the request's admission mode and sends one operation, with the request's deadline.
-2. It fills `EngineTiming` with the queue, lease, wall and engine times, and with the pre-flight time that the office worker reports (zero for other calls). When the worker started on the request's path, it adds the spawn and bind times.
+2. It fills `EngineTiming` with the queue, lease, wall and engine times, and with the pre-flight time that the office worker reports (zero for other calls). It also fills `cpu`, the worker's `cpu_us`. When the worker started on the request's path, it adds the spawn and bind times.
 3. It records `convert_engine_overhead_seconds{pool,op}`, the wall time less the engine and queue times.
 4. If the worker crashed and at least 1 s is left, it retries once on a new lease with `Continue`. It never retries after a timeout or an error that the engine reported.
 5. It maps the error through `EngineFailure` to the domain's `EngineError`, and logs the worker's message at debug only.
 
 After a load, export, empty-document, limit or internal error, `OfficeLok` recycles the office worker, because LibreOffice's state is suspect. The password errors leave the worker in the pool. `PdfPdfium` recycles a render worker only after an internal error.
 
-`PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`, so the files on disk stay within the job's reservation. The chunks run together. A crashed chunk is retried once on a fresh lease, if at least 1 s is left. A chunk that goes over its share runs again on one lease, with the cap minus the bytes of the finished chunks, if at least 1 s is left. A job thus fails on its cap exactly when one worker fails, and the cap never adds a poison strike. The pages come back in order. `engine` is the longest chunk, plus the rerun. The most severe chunk error wins: a timeout, then a crash, then a password error.
+`PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`, so the files on disk stay within the job's reservation. The chunks run together. A crashed chunk is retried once on a fresh lease, if at least 1 s is left. A chunk that goes over its share runs again on one lease, with the cap minus the bytes of the finished chunks, if at least 1 s is left. A job thus fails on its cap exactly when one worker fails, and the cap never adds a poison strike. The pages come back in order. `engine` is the longest chunk, plus the rerun. `cpu` is the sum of every chunk that answered, a chunk over its share and the rerun included. The most severe chunk error wins: a timeout, then a crash, then a password error.
 
 There is no image assembly: image inputs are out of v1 (the owner's decision), and detection refuses them with 415 before any engine call.
 
