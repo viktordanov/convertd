@@ -204,7 +204,9 @@ func readBundle(body io.Reader, tempDir string) (*Bundle, error) {
 
 // load reads the archive. It accepts only what the service writes: a
 // regular manifest.json first, then exactly the regular files the manifest
-// names, each under an expected name and each once.
+// names, each under an expected name, each once and each with the size the
+// manifest gives. It reads the zstd stream to its end, so that a frame cut
+// after the tar entries, a bad checksum or trailing data fails too.
 func (b *Bundle) load(body io.Reader) error {
 	zr, err := zstd.NewReader(body, zstd.WithDecoderConcurrency(1))
 	if err != nil {
@@ -256,14 +258,18 @@ func (b *Bundle) load(body io.Reader) error {
 		switch {
 		case hdr.Typeflag != tar.TypeReg:
 			return fmt.Errorf("failed to read archive: entry %q is not a regular file", name)
-		case !expected[name]:
+		case !hasKey(expected, name):
 			return fmt.Errorf("failed to read archive: entry %q is not in the manifest", name)
 		case seen[name]:
 			return fmt.Errorf("failed to read archive: entry %q appears twice", name)
 		}
 		seen[name] = true
-		if err := b.write(name, tr); err != nil {
+		n, err := b.write(name, tr)
+		if err != nil {
 			return err
+		}
+		if want := expected[name]; n != want {
+			return fmt.Errorf("failed to read archive: entry %q has %d bytes, the manifest says %d", name, n, want)
 		}
 	}
 	for _, name := range sortedKeys(expected) {
@@ -271,27 +277,35 @@ func (b *Bundle) load(body io.Reader) error {
 			return fmt.Errorf("failed to read archive: the manifest names %q, which is not in the archive", name)
 		}
 	}
+	// tar stops at its end-of-archive marker. The rest of the zstd stream
+	// holds the end of the frame and its checksum; anything after the frame
+	// is not a valid frame and fails here.
+	if _, err := io.Copy(io.Discard, zr); err != nil {
+		return fmt.Errorf("failed to read the end of the archive: %w", err)
+	}
 	return nil
 }
 
-func (b *Bundle) write(name string, r io.Reader) error {
+// write unpacks one entry and returns its size.
+func (b *Bundle) write(name string, r io.Reader) (int64, error) {
 	if strings.HasPrefix(name, pagesDir+"/") {
 		if err := b.root.Mkdir(pagesDir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-			return fmt.Errorf("failed to create pages directory: %w", err)
+			return 0, fmt.Errorf("failed to create pages directory: %w", err)
 		}
 	}
 	f, err := b.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return fmt.Errorf("failed to create bundle entry: %w", err)
+		return 0, fmt.Errorf("failed to create bundle entry: %w", err)
 	}
-	if _, err := io.Copy(f, r); err != nil {
+	n, err := io.Copy(f, r)
+	if err != nil {
 		_ = f.Close()
-		return fmt.Errorf("failed to unpack bundle entry: %w", err)
+		return 0, fmt.Errorf("failed to unpack bundle entry: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("failed to unpack bundle entry: %w", err)
+		return 0, fmt.Errorf("failed to unpack bundle entry: %w", err)
 	}
-	return nil
+	return n, nil
 }
 
 // checkEntryName rejects a name that could leave the bundle directory or that
@@ -308,26 +322,32 @@ func checkEntryName(name string) error {
 	return nil
 }
 
-// expectedEntries returns the files the manifest names. Each must have a
-// name the service writes, so a manifest cannot point outside the bundle.
-func expectedEntries(m Manifest) (map[string]bool, error) {
-	expected := map[string]bool{}
+// expectedEntries returns the files the manifest names, with their sizes.
+// Each must have a name the service writes, so a manifest cannot point
+// outside the bundle.
+func expectedEntries(m Manifest) (map[string]int64, error) {
+	expected := map[string]int64{}
 	if m.PDF != nil {
 		if m.PDF.Path != pdfPath {
 			return nil, fmt.Errorf("failed to read manifest: the PDF path is %q, want %s", m.PDF.Path, pdfPath)
 		}
-		expected[pdfPath] = true
+		expected[pdfPath] = m.PDF.SizeBytes
 	}
 	for _, p := range m.Pages {
 		if err := checkEntryName(p.Path); err != nil || p.Path == pdfPath {
 			return nil, fmt.Errorf("failed to read manifest: page %d has the path %q", p.Number, p.Path)
 		}
-		expected[p.Path] = true
+		expected[p.Path] = p.SizeBytes
 	}
 	return expected, nil
 }
 
-func sortedKeys(m map[string]bool) []string {
+func hasKey[V any](m map[string]V, key string) bool {
+	_, ok := m[key]
+	return ok
+}
+
+func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

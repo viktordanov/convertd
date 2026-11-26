@@ -403,6 +403,11 @@ func TestBundleFailures(t *testing.T) {
 		{"a manifest PDF path outside the bundle", tarZst(t, manifestEntry(t, badPDFPath), pdf, page), "the PDF path is"},
 		{"a manifest page path outside the bundle", tarZst(t, manifestEntry(t, badPagePath)), "page 1 has the path"},
 		{"a manifest that is not JSON", tarZst(t, entry{name: "manifest.json", data: []byte("{")}), "failed to decode manifest"},
+		{"a PDF shorter than its manifest size", tarZst(t, manifestEntry(t, testManifest(true)), entry{name: "document.pdf", data: []byte("%PDF")}, page),
+			`entry "document.pdf" has 4 bytes, the manifest says 8`},
+		{"a page longer than its manifest size", tarZst(t, manifestEntry(t, testManifest(true)), pdf, entry{name: "pages/0001.jpg", data: []byte("page-10")}),
+			`entry "pages/0001.jpg" has 7 bytes, the manifest says 6`},
+		{"trailing data after the zstd frame", append(append([]byte{}, valid...), []byte("trailing junk")...), "failed to read the end of the archive"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name+" fails and leaves no temp directory", func(t *testing.T) {
