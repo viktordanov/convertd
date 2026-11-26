@@ -734,15 +734,22 @@ mod tests {
 
     /// PDFium bound from `PDFIUM_LIB_DIR`, as in the dev image; `None`
     /// elsewhere, and the test then passes without checking.
+    /// The PDFium library in `PDFIUM_LIB_DIR`, when it is there.
+    fn pdfium_library() -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(std::env::var_os("PDFIUM_LIB_DIR")?);
+        let library = Pdfium::pdfium_platform_library_name_at_path(&dir);
+        if library.exists() {
+            Some(library)
+        } else {
+            eprintln!("skipped: no {} in PDFIUM_LIB_DIR", library.display());
+            None
+        }
+    }
+
     /// A library that is there but does not bind fails the test, so a
     /// broken dev image cannot pass by skipping.
     fn bound_pdfium() -> Option<Pdfium> {
-        let dir = std::path::PathBuf::from(std::env::var_os("PDFIUM_LIB_DIR")?);
-        let library = Pdfium::pdfium_platform_library_name_at_path(&dir);
-        if !library.exists() {
-            eprintln!("skipped: no {} in PDFIUM_LIB_DIR", library.display());
-            return None;
-        }
+        let library = pdfium_library()?;
         let bindings = Pdfium::bind_to_library(&library)
             .unwrap_or_else(|err| panic!("failed to bind {}: {err}", library.display()));
         Some(Pdfium::new(bindings))
@@ -818,10 +825,12 @@ mod tests {
     )]
     fn render_peak_rss_per_page() {
         const NAME: &str = "worker::render::tests::render_peak_rss_per_page";
-        let Some(pdfium) = bound_pdfium() else {
+        // Only the children bind PDFium: pdfium-render binds once per
+        // process, so the parent leaves the binding to them.
+        if pdfium_library().is_none() {
             eprintln!("skipped: no PDFium");
             return;
-        };
+        }
         let max_rss_kib = || {
             // SAFETY: rusage is plain integers, for which zero is valid.
             let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
@@ -835,6 +844,7 @@ mod tests {
             }
         };
         if let Ok(path) = std::env::var("P2_RENDER_PATH") {
+            let pdfium = bound_pdfium().expect("the library was found above");
             let document = square_pages(&pdfium, 4096.0, 2);
             let before = max_rss_kib();
             let mut bitmap = Vec::new();
@@ -874,7 +884,6 @@ mod tests {
             println!("\nP2 {path} {}", max_rss_kib() - before);
             return;
         }
-        drop(pdfium);
         let run = |path: &str| -> i64 {
             let out = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([

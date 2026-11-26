@@ -2,9 +2,10 @@
 //! bytes, and the flat-page check (005 §5).
 //!
 //! An [`Encoder`] keeps its buffers across the pages of a job: the encoded
-//! output and, for PNG, one RGB row. JPEG reads the BGRA bitmap as it is;
-//! PNG converts it to RGB one row at a time into the encoder, so no page
-//! is ever copied whole.
+//! output and, for PNG, the RGB rows. JPEG reads the BGRA bitmap as it is.
+//! A PNG page larger than 1 MiB converts to RGB one row at a time into the
+//! encoder, so it is never copied whole; a smaller page keeps image's
+//! whole-page encoder and its exact bytes.
 
 use std::io::Write;
 
@@ -53,8 +54,8 @@ pub enum EncodeError {
 pub struct Encoder {
     /// The encoded bytes of the last page.
     out: Vec<u8>,
-    /// One RGB row for PNG.
-    row: Vec<u8>,
+    /// One RGB row for a streamed PNG, or the whole page for a small one.
+    rgb: Vec<u8>,
 }
 
 impl Encoder {
@@ -95,6 +96,25 @@ impl Encoder {
                 jpeg_encoder::Encoder::new(&mut self.out, quality.clamp(1, 100))
                     .encode(bgra, w, h, jpeg_encoder::ColorType::Bgra)
                     .map_err(|err| failed(err.to_string()))?;
+            }
+            ImageFormat::Png if stored_png_len(width, height) <= WHOLE_PAGE_PNG => {
+                // A small page: one RGB copy of at most 1 MiB, and image's
+                // encoder, so the bytes stay as they were. Streaming feeds
+                // fdeflate in smaller calls and compresses some narrow
+                // pages worse (5 x 1000 px: 4 117 B against 2 493 B).
+                use image::ImageEncoder;
+                use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+                self.rgb.clear();
+                for p in bgra.as_chunks::<4>().0 {
+                    self.rgb.extend_from_slice(&[p[2], p[1], p[0]]);
+                }
+                PngEncoder::new_with_quality(
+                    &mut self.out,
+                    CompressionType::Fast,
+                    FilterType::Adaptive,
+                )
+                .write_image(&self.rgb, width, height, image::ExtendedColorType::Rgb8)
+                .map_err(|err| failed(err.to_string()))?;
             }
             ImageFormat::Png => {
                 self.png(bgra, width, height, png::Compression::Fast)?;
@@ -138,19 +158,23 @@ impl Encoder {
         let mut stream = writer
             .stream_writer_with_size(PNG_CHUNK)
             .map_err(|err| failed(err.to_string()))?;
-        self.row.resize(width as usize * 3, 0);
+        self.rgb.resize(width as usize * 3, 0);
         let row_bytes = width as usize * 4;
         if row_bytes > 0 {
             for line in bgra.chunks_exact(row_bytes) {
-                bgra_row_to_rgb(line, &mut self.row);
+                bgra_row_to_rgb(line, &mut self.rgb);
                 stream
-                    .write_all(&self.row)
+                    .write_all(&self.rgb)
                     .map_err(|err| failed(err.to_string()))?;
             }
         }
         stream.finish().map_err(|err| failed(err.to_string()))
     }
 }
+
+/// The largest stored PNG size that still takes the whole-page encoder:
+/// above it, the rows stream and no page copy is made.
+const WHOLE_PAGE_PNG: usize = 1024 * 1024;
 
 /// The IDAT chunk size of the streamed PNG: one buffer of this size, and
 /// 12 bytes of chunk framing for each.
@@ -325,56 +349,80 @@ mod tests {
             .collect()
     }
 
-    /// The streamed PNG holds the same pixels as the whole-page encoder,
-    /// channels in RGB order. The bytes are not the same: png's
-    /// StreamWriter feeds fdeflate the filter byte and the row apart, where
-    /// `write_image_data` feeds them together, so the deflate stream
-    /// differs. With the stored fallback for data that does not compress
-    /// (noise), the size stays within 5 % of the whole-page output.
+    /// A small PNG page keeps the bytes of the whole-page encoder. A large
+    /// one streams: it holds the same pixels, channels in RGB order, but not
+    /// the same bytes, because png's StreamWriter feeds fdeflate the filter
+    /// byte and the row apart. With the stored fallback for data that does
+    /// not compress (noise), its size stays within 5 % of the old output.
     #[test]
     fn png_keeps_the_pixels_and_the_size_of_the_whole_page_encoder() {
         let mut encoder = Encoder::new();
-        for (name, w, h, bgra) in [
-            ("gradient", 300, 200, gradient(300, 200)),
-            ("noise", 256, 256, noise(256, 256)),
-            ("white", 640, 480, bitmap(640, 480, [255, 255, 255, 255])),
-            // So small that the framing outweighs the rows.
-            ("tiny", 8, 4, bitmap(8, 4, [255, 255, 255, 255])),
+        for (name, w, h, bgra, same_bytes) in [
+            ("gradient", 300, 200, gradient(300, 200), true),
+            (
+                "narrow",
+                5,
+                1000,
+                bitmap(5, 1000, [255, 255, 255, 255]),
+                true,
+            ),
+            ("tiny", 8, 4, bitmap(8, 4, [255, 255, 255, 255]), true),
+            ("noise", 256, 256, noise(256, 256), true),
+            ("large gradient", 1200, 1000, gradient(1200, 1000), false),
+            ("large noise", 1024, 1024, noise(1024, 1024), false),
+            (
+                "large white",
+                1240,
+                1754,
+                bitmap(1240, 1754, [255, 255, 255, 255]),
+                false,
+            ),
         ] {
             let streamed = encoder
                 .encode(ImageFormat::Png, &bgra, w, h, 85)
                 .unwrap()
                 .to_vec();
             let before = png_before(&bgra, w, h);
-            let pixels = |png: &[u8]| image::load_from_memory(png).unwrap().to_rgb8().into_raw();
-            assert_eq!(
-                pixels(&streamed),
-                pixels(&before),
-                "{name}: the pixels changed"
-            );
             eprintln!(
-                "png {name} {w}x{h}: streamed {} B, whole page {} B",
+                "png {name} {w}x{h}: new {} B, whole page {} B",
                 streamed.len(),
                 before.len()
             );
-            assert!(
-                streamed.len() * 100 <= before.len() * 105,
-                "{name}: {} B against {} B",
-                streamed.len(),
-                before.len()
-            );
+            if same_bytes {
+                assert_eq!(streamed, before, "{name}: the bytes changed");
+            } else {
+                let pixels =
+                    |png: &[u8]| image::load_from_memory(png).unwrap().to_rgb8().into_raw();
+                assert_eq!(
+                    pixels(&streamed),
+                    pixels(&before),
+                    "{name}: the pixels changed"
+                );
+                assert!(
+                    streamed.len() * 100 <= before.len() * 105,
+                    "{name}: {} B against {} B",
+                    streamed.len(),
+                    before.len()
+                );
+            }
             // A second page reuses the buffers and gives the same bytes.
             let again = encoder.encode(ImageFormat::Png, &bgra, w, h, 85).unwrap();
             assert_eq!(again, &streamed[..], "{name}: the second page differs");
         }
-        let image = image::load_from_memory(
-            encoder
-                .encode(ImageFormat::Png, &gradient(300, 200), 300, 200, 85)
-                .unwrap(),
-        )
-        .unwrap()
-        .to_rgb8();
-        assert_eq!(image.get_pixel(10, 20).0, [200, 20, 10], "R and B swapped");
+        for (w, h) in [(300, 200), (1200, 1000)] {
+            let image = image::load_from_memory(
+                encoder
+                    .encode(ImageFormat::Png, &gradient(w, h), w, h, 85)
+                    .unwrap(),
+            )
+            .unwrap()
+            .to_rgb8();
+            assert_eq!(
+                image.get_pixel(10, 20).0,
+                [200, 20, 10],
+                "{w}x{h}: R and B swapped"
+            );
+        }
     }
 
     /// The peak heap of encoding one page, before and after this change.
