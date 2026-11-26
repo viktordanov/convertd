@@ -683,3 +683,117 @@ async fn a_coloured_page_keeps_its_channels() {
     })
     .await;
 }
+
+/// A page of 2 × 2 pt squares in pseudo-random colours: a PNG of it does
+/// not compress well.
+fn noise_page(size: u32, seed: u64) -> String {
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    let mut next = || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        ((state >> 33) % 1000) as f32 / 1000.0
+    };
+    let mut out = String::new();
+    for y in (0..size).step_by(2) {
+        for x in (0..size).step_by(2) {
+            out.push_str(&format!(
+                "{:.3} {:.3} {:.3} rg {x} {y} 2 2 re f\n",
+                next(),
+                next(),
+                next()
+            ));
+        }
+    }
+    out
+}
+
+/// The output cap is the job's, not the chunk's: when the heavy pages all
+/// fall in one chunk, that chunk runs again with what the others left, so
+/// two workers succeed and fail exactly where one worker does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_output_cap_does_not_depend_on_the_number_of_render_workers() {
+    let Some(pdfium) = pdfium() else {
+        return;
+    };
+    within(
+        TEST,
+        "the_output_cap_does_not_depend_on_the_number_of_render_workers",
+        async {
+            let dir = Scratch::new("render-cap-split");
+            // Pages 1-10 are noise, pages 11-20 are blank: with two workers,
+            // chunk 1 holds nearly all the bytes.
+            let contents: Vec<String> = (0..20u64)
+                .map(|i| {
+                    if i < 10 {
+                        noise_page(120, i)
+                    } else {
+                        "1 1 1 rg 0 0 1 1 re f".to_string()
+                    }
+                })
+                .collect();
+            let source = dir.join("half-heavy.pdf");
+            std::fs::write(&source, handmade_pdf(120, &contents)).unwrap();
+            let all: Vec<u32> = (1..=20).collect();
+
+            for pool_dir in ["one", "two"] {
+                std::fs::create_dir_all(dir.join(pool_dir)).unwrap();
+            }
+            let one = ready(render_spec(&dir.join("one"), &pdfium, 1)).await;
+            let rendered = PdfPdfium::new(one.clone())
+                .render(
+                    render_job(&source, all.clone(), ImageFormat::Png, 72, &dir.join("a")),
+                    Admission::Continue,
+                    deadline(),
+                )
+                .await
+                .unwrap();
+            let total: u64 = rendered.pages.iter().map(|p| p.size_bytes).sum();
+            let heavy: u64 = rendered.pages[..10].iter().map(|p| p.size_bytes).sum();
+            eprintln!("total {total} bytes, pages 1-10 {heavy} bytes");
+            assert!(
+                heavy > total / 2 + 1024,
+                "the first half must be the heavy one"
+            );
+            let cap = total + 1024;
+            let mut job = render_job(&source, all.clone(), ImageFormat::Png, 72, &dir.join("b"));
+            job.max_output_bytes = cap;
+            let alone = PdfPdfium::new(one.clone())
+                .render(job, Admission::Continue, deadline())
+                .await;
+            assert!(alone.is_ok(), "one worker: {alone:?}");
+            one.shutdown(Duration::from_secs(5)).await;
+
+            let two = ready(render_spec(&dir.join("two"), &pdfium, 2)).await;
+            let pdf = PdfPdfium::new(two.clone());
+            let mut job = render_job(&source, all.clone(), ImageFormat::Png, 72, &dir.join("c"));
+            job.max_output_bytes = cap;
+            let split = pdf
+                .render(job, Admission::Continue, deadline())
+                .await
+                .unwrap_or_else(|err| panic!("two workers, cap {cap}: {err:?}"));
+            assert_eq!(split.pages.len(), 20);
+            let numbers: Vec<u32> = split.pages.iter().map(|p| p.number).collect();
+            assert_eq!(numbers, all);
+            assert_eq!(split.pages.iter().map(|p| p.size_bytes).sum::<u64>(), total);
+            assert!(
+                split.workers.len() >= 2,
+                "the render did not split: {:?}",
+                split.workers
+            );
+
+            // One byte under the total fails on two workers as on one.
+            let mut job = render_job(&source, all.clone(), ImageFormat::Png, 72, &dir.join("d"));
+            job.max_output_bytes = total - 1;
+            let under = pdf.render(job, Admission::Continue, deadline()).await;
+            assert!(
+                matches!(under, Err(EngineError::LimitExceeded(_))),
+                "{under:?}"
+            );
+            two.shutdown(Duration::from_secs(5)).await;
+        },
+    )
+    .await;
+}
