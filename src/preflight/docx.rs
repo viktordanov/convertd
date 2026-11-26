@@ -18,7 +18,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use quick_xml::events::BytesStart;
 
-use super::package::{Package, XmlEvent, attr, attr_prefixed, rels_path, resolve};
+use super::package::{Package, XmlEvent, attr, attr_prefixed, attributes_ok, rels_path, resolve};
 use super::{FONT_SCAN_CAP, PART_CAP, add_font};
 use crate::domain::verification::{Check, SkipReason, SourceFacts};
 
@@ -272,6 +272,7 @@ fn embedded_fonts(
     // Whether the root element is `w:fonts`; `None` until one is seen. A
     // part with no element at all is malformed, not an empty table.
     let mut root: Option<bool> = None;
+    // A second root, text outside the root or a malformed attribute.
     let mut second_root = false;
     let read = package.xml_events(part, PART_CAP.min(*budget), |event| {
         let (e, opens) = match event {
@@ -297,6 +298,10 @@ fn embedded_fonts(
                 return true;
             }
         };
+        if !attributes_ok(e) {
+            second_root = true;
+            return false;
+        }
         if root.is_none() {
             root = Some(e.local_name().as_ref() == b"fonts");
             return true;

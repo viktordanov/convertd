@@ -584,6 +584,26 @@ fn docx_text_after_the_root_skips_the_font_check() {
 }
 
 #[test]
+fn docx_malformed_attribute_in_the_font_table_skips_the_font_check() {
+    // The name parses before the broken attribute; the tag is still broken.
+    let table = format!(
+        r#"<w:fonts {W} xmlns:r="r"><w:font w:name="Aptos" broken><w:embedRegular r:id="rIdF1"/></w:font></w:fonts>"#
+    );
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", &font),
+        ],
+        &runs(&["Aptos"]),
+    );
+    let facts = scan_bytes("attr.docx", &bytes, Family::Document);
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+}
+
+#[test]
 fn docx_font_relationships_need_the_font_type() {
     // A relationship whose type only ends in "/font" is not a font part.
     let custom = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://example.com/custom/font" Target="fonts/font1.ttf"/></Relationships>"#;
