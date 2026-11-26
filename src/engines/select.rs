@@ -160,6 +160,13 @@ pub async fn start(config: &Config) -> Result<Selected, String> {
     if env.lc_all_dropped {
         tracing::warn!("LC_ALL is set; it is not passed to the workers, so LC_PAPER applies");
     }
+    if !env.locale_dropped.is_empty() {
+        tracing::warn!(
+            dropped = ?env.locale_dropped,
+            "locale variables are not passed to the workers; they format with LANG=C.UTF-8 \
+             and take the paper from DEFAULT_PAPER"
+        );
+    }
     let engines = &config.engines;
     let init = Init {
         protocol: PROTOCOL_VERSION,
