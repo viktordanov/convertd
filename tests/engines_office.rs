@@ -698,28 +698,29 @@ async fn a_full_disk_gives_disk_full() {
     .await;
 }
 
-/// `DEFAULT_PAPER` reaches LibreOffice as `LC_PAPER`. A DOCX with no page
-/// size takes LibreOffice's default page. (An RTF is no probe: RTF defines
-/// Letter as its own default page size.)
+/// `DEFAULT_PAPER` reaches LibreOffice as `LC_PAPER`, and decides the page of
+/// a document that leaves the page to LibreOffice: here an XLSX without
+/// `<pageSetup>`, which keeps the default page style of Calc. LibreOffice
+/// takes that page from `PaperInfo::getSystemDefaultPaper()`, which reads
+/// `LC_PAPER` through `newlocale(LC_PAPER_MASK, "")`. The locale data must be
+/// installed (the image ships en_GB.UTF-8 and en_US.UTF-8 for this).
 ///
-/// Finding (dev image, LibreOffice 26.8.3, 2026-11-26): the default page is
-/// Letter whatever `LC_PAPER` or `LANG` say, with the en_GB.UTF-8 locale
-/// installed. LibreOfficeKit does not take the paper from the locale, so
-/// `DEFAULT_PAPER` has no effect. The fix belongs to the profile template
-/// (003/M3). Run this test with `--ignored` to see the current behavior.
+/// A DOCX is no probe: the DOCX importer of LibreOffice 26.8.3 sets Letter
+/// for a section without `w:pgSz` and never asks the locale
+/// (`sw/source/writerfilter/dmapper/PropertyMap.cxx`, `SectionPropertyMap`).
+/// An RTF is no probe either: RTF defines Letter as its own default page size.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "finding: LibreOfficeKit ignores LC_PAPER; the default page is Letter (003/M3)"]
-async fn default_paper_sets_the_page_size_of_a_docx_without_one() {
+async fn default_paper_sets_the_page_size_of_a_sheet_without_one() {
     let (Some(lo), Some(pdfium)) = (lo(), pdfium()) else {
         return;
     };
     within(
         TEST,
-        "default_paper_sets_the_page_size_of_a_docx_without_one",
+        "default_paper_sets_the_page_size_of_a_sheet_without_one",
         async {
             let dir = Scratch::new("office-paper");
-            let source = dir.join("source.docx");
-            std::fs::write(&source, warmup::docx("No page size.")).unwrap();
+            let source = dir.join("source.xlsx");
+            std::fs::write(&source, warmup::xlsx("No page setup.")).unwrap();
             let render_pool = ready(render_spec(dir.path(), &pdfium)).await;
             let pdf = PdfPdfium::new(render_pool.clone());
             let mut sizes = Vec::new();
@@ -735,7 +736,7 @@ async fn default_paper_sets_the_page_size_of_a_docx_without_one() {
                 let output = dir.join(&format!("{name}.pdf"));
                 OfficeLok::new(pool.clone())
                     .convert(
-                        job(source.clone(), output.clone(), Family::Document),
+                        job(source.clone(), output.clone(), Family::Spreadsheet),
                         DomainAdmission::Queue,
                         deadline(),
                     )
