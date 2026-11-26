@@ -56,14 +56,18 @@ fn theme(major: &str, minor: &str) -> String {
     )
 }
 
-/// Writes `bytes` to a scratch file and scans it.
+/// Writes `bytes` to a scratch file in a directory of its own, scans it,
+/// and removes the directory. One directory per call, so tests that run in
+/// parallel in one process never remove each other's files.
 fn scan_bytes(name: &str, bytes: &[u8], family: Family) -> SourceFacts {
-    let dir = std::env::temp_dir().join(format!("convertd-preflight-{}", std::process::id()));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("convertd-preflight-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path: PathBuf = dir.join(name);
     std::fs::write(&path, bytes).unwrap();
     let facts = scan(&path, family);
-    let _ = std::fs::remove_file(&path);
+    std::fs::remove_dir_all(&dir).unwrap();
     facts
 }
 
