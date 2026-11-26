@@ -166,7 +166,7 @@ These sizes are measurements without CJK fonts, on an arm64 Mac (Docker 29.8.2, 
 | `runtime`, amd64 (estimate) | 705.7 MB | 577.7 MB | not measured |
 | `dev`, arm64 | 2.78 GB | 2.65 GB | not measured |
 
-Uncompressed sizes come from `docker image inspect`. The working target for the product image is at most 600 MB uncompressed, on amd64, the production architecture. The trims save 128 MB on each architecture. The largest parts are the icon themes (72 MB), the gallery (14 MB), the offline help (11 MB of content in 5334 files), the duplicate fonts and the templates (8 MB). The spike image of `docs/m0-spikes.md` was 708 MB, without the Noto fonts.
+Uncompressed sizes come from `docker image inspect`. The working target for the product image is at most 600 MB uncompressed, on amd64, the production architecture. The trims save 128 MB on each architecture. The largest savings are the icon themes (72 MB), the gallery (14 MB), the offline help (11 MB of content in 5334 files), the duplicate fonts and the templates (8 MB). The spike image of `docs/m0-spikes.md` was 708 MB, without the Noto fonts.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="verification" files="Dockerfile smoke.sh ab-pages.sh" -->
@@ -216,7 +216,7 @@ On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a basel
 The amd64 proof at native speed needs the CI image job on the amd64 runners of GitHub. The job runs only by hand and monthly. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`:
 
 ```sh
-docker/smoke.sh rs-convert:ci docker/smoke/small.docx 770
+docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
 ```
 
 `smoke.sh` runs the image with the production limits and checks five things:

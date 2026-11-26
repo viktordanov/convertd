@@ -136,8 +136,8 @@ jobs:
           push: false
           tags: rs-convert:ci
       # The size budget is the measured arm64 runtime image (605 MB, 2026-11-26, after the
-      # LibreOffice trims) plus 5 %. The
-      # 600 MB working target in docker/README.md is the goal of the size trims, not this gate.
+      # LibreOffice trims) plus 5 %. The 600 MB working target in docker/README.md is the goal
+      # of the size trims, not this gate.
       - name: Smoke (size, time to ready, one DOCX, font cache)
         env:
           CURL_IMAGE: curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
