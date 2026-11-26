@@ -24,10 +24,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use tokio::runtime::Handle;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
+use super::chunks::Chunks;
 use super::throughput::{Meter, MinRate};
 use crate::bundle::TarPlan;
 use crate::jobs::JobDir;
@@ -192,35 +193,6 @@ fn spawn_pump(
 /// A `Write` that sends 64 KiB chunks to the body, each under the idle
 /// timeout. A stalled or vanished client makes `write` fail and records
 /// why in `end`.
-/// The 64 KiB buffers of one pump, reused. A chunk sent to hyper shares
-/// the allocation of its slot. When hyper drops the chunk, `try_reclaim`
-/// gives the slot its allocation back. So a response allocates one slot
-/// per chunk in flight, once: at most `BODY_QUEUE_CHUNKS` + 2 when the
-/// reader drops each chunk at once, 13 behind hyper for an 8 MiB PDF over
-/// loopback. Before, it allocated one buffer per chunk.
-#[derive(Default)]
-struct Chunks {
-    slots: Vec<BytesMut>,
-}
-
-impl Chunks {
-    /// The index of an empty slot with room for `len` bytes that no chunk
-    /// in flight uses: room left after a short chunk, or the whole buffer
-    /// once its chunks are gone. A new slot of `len` bytes when none is
-    /// free, so a PDF shorter than a chunk gets no 64 KiB.
-    fn free(&mut self, len: usize) -> usize {
-        if let Some(index) = self
-            .slots
-            .iter_mut()
-            .position(|slot| slot.is_empty() && slot.try_reclaim(len))
-        {
-            return index;
-        }
-        self.slots.push(BytesMut::with_capacity(len));
-        self.slots.len() - 1
-    }
-}
-
 struct ChannelWriter<'a> {
     chunks: &'a mut Chunks,
     /// The slot that collects the next chunk.
@@ -339,35 +311,6 @@ mod tests {
     use super::*;
     use crate::bundle::TarPlan;
     use crate::jobs::DiskBudget;
-
-    #[test]
-    fn a_slot_is_reused_once_hyper_drops_its_chunk() {
-        let mut chunks = Chunks::default();
-        let first = chunks.free(READ_CHUNK);
-        chunks.slots[first].resize(READ_CHUNK, 1);
-        let chunk = chunks.slots[first].split().freeze();
-        let address = chunk.as_ptr();
-        // The chunk is in flight: its slot is busy.
-        let second = chunks.free(READ_CHUNK);
-        assert_ne!(second, first);
-        assert_eq!(
-            chunks.free(READ_CHUNK),
-            second,
-            "an empty free slot is reused"
-        );
-        drop(chunk);
-        assert_eq!(chunks.free(READ_CHUNK), first);
-        chunks.slots[first].resize(READ_CHUNK, 0);
-        assert_eq!(chunks.slots[first].as_ptr(), address, "same allocation");
-        assert_eq!(chunks.slots.len(), 2);
-        // A short read gets a buffer of its size when no slot is free.
-        let _busy = chunks.slots[first].split().freeze();
-        chunks.slots[second].resize(READ_CHUNK, 0);
-        let _also_busy = chunks.slots[second].split().freeze();
-        let short = chunks.free(1000);
-        assert_eq!(short, 2);
-        assert_eq!(chunks.slots[short].capacity(), 1000);
-    }
 
     fn job(name: &str) -> (Arc<JobDir>, std::path::PathBuf) {
         let tmp = std::env::temp_dir().join(format!("convertd-body-{name}-{}", std::process::id()));

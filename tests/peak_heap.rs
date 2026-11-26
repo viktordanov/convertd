@@ -213,12 +213,12 @@ fn peak_for(server: &Server, size: usize, chunk: &mut [u8; 64 * 1024]) -> usize 
 /// grow with the size.
 ///
 /// The growth is checked between 16 and 100 MiB, not from 1 MiB as the
-/// plan states. hyper reads up to about 496 KiB at a time, and up to four
-/// such chunks wait in the upload queue. A 1 MiB upload is two or three
-/// chunks, so it never fills the queue: it peaks at about 3.1 MB, and every
-/// longer upload at 3.6 to 4.1 MB. With a queue of one chunk, every size
-/// peaks at 3.06 MB (macOS arm64, debug, 2026-11-26). About 4 s in a debug
-/// build.
+/// plan states. Every size peaks at 3.06 to 3.15 MB (macOS arm64, debug,
+/// 2026-11-26). The two levels are one buffer of multer or hyper more or
+/// less at the peak. Before the upload was copied into pieces of its own,
+/// each queued slice kept a whole multer buffer of about 496 KiB alive:
+/// 3.6 to 4.1 MB on macOS, and on Linux 638 540 bytes more at 100 MiB than
+/// at 16 MiB. About 4 s in a debug build.
 #[test]
 fn slow_peak_heap_does_not_grow_with_the_upload() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());

@@ -15,6 +15,7 @@
 //! parsed and validated as soon as it arrives, so a bad option fails
 //! before the upload is stored.
 
+use super::chunks::Chunks;
 use super::framing::{FramingBody, FramingTooLarge, framing_too_large};
 use super::throughput::{MeteredBody, MinRate, too_slow};
 use std::error::Error as StdError;
@@ -41,6 +42,9 @@ use crate::jobs::JobDir;
 
 /// Chunks queued between the handler and the sink.
 const UPLOAD_QUEUE_CHUNKS: usize = 4;
+/// The most bytes of one queued piece of the upload. 128 KiB costs about
+/// a memcpy of the upload; 64 KiB pieces cost more in queue hand-offs.
+const UPLOAD_PIECE: usize = 128 * 1024;
 /// The largest accepted `options` part.
 pub const OPTIONS_PART_MAX: u64 = 64 * 1024;
 /// Room for the multipart framing around the parts.
@@ -245,6 +249,10 @@ where
     S: futures_util::Stream<Item = Result<Bytes, multer::Error>> + Unpin,
 {
     use futures_util::StreamExt;
+    let mut pieces = Chunks::default();
+    // The slot that collects the next piece, chosen when bytes arrive.
+    let mut current: Option<usize> = None;
+    let mut seen = 0usize;
     loop {
         // A sink that stopped (its open or a write failed) drops its
         // receiver: stop now, not when the client sends the next chunk,
@@ -256,11 +264,42 @@ where
         };
         match next {
             Some(Ok(chunk)) => {
-                if tx.send(SinkMessage::Chunk(chunk)).await.is_err() {
-                    return Ok(());
+                // Copied into pieces of our own, and dropped before multer
+                // is polled again: a queued slice of multer's buffer would
+                // keep the whole buffer alive (about 496 KiB each), and how
+                // many it kept depended on hyper's read sizes.
+                let mut rest = &chunk[..];
+                while !rest.is_empty() {
+                    // A new slot grows with the bytes seen so far, so a
+                    // small upload gets no 128 KiB, and a large one has
+                    // only a few small slots before its full pieces.
+                    let at = match current {
+                        Some(at) => at,
+                        None => {
+                            *current.insert(pieces.free(UPLOAD_PIECE.min(rest.len().max(seen))))
+                        }
+                    };
+                    let buf = &mut pieces.slots[at];
+                    let n = (buf.capacity() - buf.len()).min(rest.len());
+                    buf.extend_from_slice(&rest[..n]);
+                    rest = &rest[n..];
+                    seen += n;
+                    if buf.len() == buf.capacity() {
+                        let piece = buf.split().freeze();
+                        current = None;
+                        if tx.send(SinkMessage::Chunk(piece)).await.is_err() {
+                            return Ok(());
+                        }
+                    }
                 }
             }
             None => {
+                if let Some(at) = current {
+                    let last = pieces.slots[at].split().freeze();
+                    if !last.is_empty() && tx.send(SinkMessage::Chunk(last)).await.is_err() {
+                        return Ok(());
+                    }
+                }
                 let _ = tx.send(SinkMessage::Done).await;
                 return Ok(());
             }
@@ -452,6 +491,66 @@ mod tests {
         let forwarded =
             tokio::time::timeout(Duration::from_secs(2), forward(&mut silent, &tx, 10)).await;
         assert!(matches!(forwarded, Ok(Ok(()))), "{forwarded:?}");
+    }
+
+    /// Owns the bytes of one input chunk and records when it drops.
+    struct Tracked(Vec<u8>, Arc<std::sync::atomic::AtomicUsize>);
+
+    impl AsRef<[u8]> for Tracked {
+        fn as_ref(&self) -> &[u8] {
+            &self.0
+        }
+    }
+
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// The pieces hold the same bytes in order, none passes 128 KiB, and
+    /// every input chunk is dropped before the next is asked for: a queued
+    /// slice of multer's buffer would keep the whole buffer alive.
+    #[tokio::test]
+    async fn forward_copies_into_pieces_and_drops_each_chunk() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let sizes = [10usize, 496 * 1024, 3, 200 * 1024, 128 * 1024];
+        let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut expected = Vec::new();
+        let mut asked = 0usize;
+        let chunks: Vec<Bytes> = sizes
+            .iter()
+            .enumerate()
+            .map(|(at, &len)| {
+                let data: Vec<u8> = (0..len).map(|i| (i * 7 + at) as u8).collect();
+                expected.extend_from_slice(&data);
+                Bytes::from_owner(Tracked(data, Arc::clone(&dropped)))
+            })
+            .collect();
+        let seen = Arc::clone(&dropped);
+        let mut input = futures_util::stream::iter(chunks.into_iter().map(move |chunk| {
+            assert_eq!(seen.load(SeqCst), asked, "the last chunk is still held");
+            asked += 1;
+            Ok::<_, multer::Error>(chunk)
+        }));
+        let (tx, mut rx) = mpsc::channel(64);
+        forward(&mut input, &tx, u64::MAX).await.unwrap();
+        drop(tx);
+        let mut got = Vec::new();
+        let mut done = false;
+        while let Some(message) = rx.recv().await {
+            match message {
+                SinkMessage::Chunk(piece) => {
+                    assert!(!done);
+                    assert!(piece.len() <= UPLOAD_PIECE, "{}", piece.len());
+                    got.extend_from_slice(&piece);
+                }
+                SinkMessage::Done => done = true,
+            }
+        }
+        assert!(done);
+        assert!(got == expected, "the bytes differ");
+        assert_eq!(dropped.load(SeqCst), sizes.len());
     }
 
     #[test]

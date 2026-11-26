@@ -102,7 +102,7 @@ An encrypted OOXML package is an OLE2 file whose type is inside the encryption. 
 
 An encrypted PDF that needs a password to open answers 422 `PASSWORD_REQUIRED` without one and `INVALID_PASSWORD` with a wrong one. With the right one, the render worker writes a decrypted copy that the rest of the request reads. A PDF with only an owner password opens without one, so with no password it passes through unchanged. If a password is given for it, the worker checks it as the owner password: right, the PDF is decrypted; wrong, 422 `INVALID_PASSWORD`. Every decrypt keeps owner restrictions that the password did not unlock. When only the user password of a restricted PDF is given, the worker writes no copy. The original encrypted PDF then goes on: it is the `pdf` output, and the render opens it with the password.
 
-The upload never sits whole in memory. multer buffers the bytes before the first boundary and each part's headers until it finds their end, so `rest/framing.rs` bounds both at 16 KiB and answers 400 past that. The handler sends the chunks of the file part through a queue of four to one blocking sink. The sink computes SHA-256 while it writes, then runs detection while the file is still in the page cache.
+The upload never sits whole in memory. multer buffers the bytes before the first boundary and each part's headers until it finds their end, so `rest/framing.rs` bounds both at 16 KiB and answers 400 past that. The handler copies the file part into reused pieces of at most 128 KiB and sends them through a queue of four to one blocking sink. The sink computes SHA-256 while it writes, then runs detection while the file is still in the page cache.
 
 Some answers come while the client is still uploading: 401, 413, 415, 429 and 503. If the server then closed the socket with unread bytes, the kernel would send a reset. A client such as Go's `http.Transport` would then often report a broken pipe instead of the answer. So `middleware/linger.rs` wraps every request body. When a body is dropped before its end, a task of its own reads and discards the rest. The task stops at the end of the body, after 256 MiB, after 10 s, or after 2 s without data. At most 32 bodies drain at once, and the task holds no permit and no job directory.
 
@@ -174,10 +174,10 @@ The numbers that follow come from macOS on arm64 with the level-A fakes, measure
 | 001's share, 15 KB PDF, engine time 30 ms | 0.26 ms p50, 0.61 ms p99 |
 | `overhead`, 15 KB DOCX, engine time 0 | 0.27 ms p50, 0.45 ms p99 |
 | `overhead`, 15 KB PDF, engine time 0 | 0.15 ms p50, 0.28 ms p99 |
-| Peak heap per upload, 1 MiB / 16 MiB / 100 MiB | 3.1 MB / 3.6 to 4.1 MB / 3.6 to 4.1 MB |
-| Allocations per 15 KB `output=pdf` request | 340 |
+| Peak heap per upload, 1 MiB / 16 MiB / 100 MiB | 3.06 to 3.15 MB at every size |
+| Allocations per 15 KB `output=pdf` request | 360 |
 
-hyper reads up to about 496 KiB at a time, and up to four such chunks wait in the upload queue. A 1 MiB upload never fills the queue, so its peak is lower. With a queue of one chunk, every size peaks at 3.06 MB.
+The peak does not depend on the size of the upload. multer hands out slices of its own buffer, about 496 KiB each. A queued slice kept that whole buffer alive. So the peak depended on how many slices waited at that moment, and on hyper's read sizes: 3.6 to 4.1 MB on macOS, and on Linux 638 540 bytes more at 100 MiB than at 16 MiB. The handler now copies the file part into pieces of at most 128 KiB, and drops multer's slice before multer reads again. The copy costs about 3 to 6 ms per 100 MiB in a release build.
 
 The benchmark of record ran the same example against the real image (`rs-convert-lead-runtime:wave2b`, linux/arm64) on 2026-11-26. The container had 4 of the host's 14 CPUs and 2 office and 2 render workers. It measured 6 000 warm requests per case, one at a time. The Mac ran on battery, at a load average of about 4.1 from other apps. [bench/results/2026-11-26-wave2b.md](../bench/results/2026-11-26-wave2b.md) has every stage and the conditions.
 
