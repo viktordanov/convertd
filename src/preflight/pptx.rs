@@ -117,6 +117,7 @@ pub(super) fn scan(
     let mut budget = FONT_SCAN_CAP;
     let mut found = BTreeSet::new();
     let mut notes_budget = FONT_SCAN_CAP;
+    let mut notes_failed = false;
     for (slide, hidden) in &slides {
         let printed_slide = !hidden || printed.hidden_slides;
         let layout = related(package, slide, "/slideLayout");
@@ -170,10 +171,13 @@ pub(super) fn scan(
                 }
             }
         }
+        // After one failure the glyph check is skipped: no more notes.
         if printed.notes
             && printed_slide
+            && !notes_failed
             && let Err(reason) = notes_text(package, slide, &mut notes_budget, text)
         {
+            notes_failed = true;
             facts.skipped.push((Check::Glyphs, reason));
         }
     }

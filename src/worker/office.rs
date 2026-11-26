@@ -218,6 +218,7 @@ impl OfficeWorker {
         let printed = crate::preflight::Printed {
             notes: args.export.notes != SlideNotes::None,
             hidden_slides: args.export.include_hidden_slides,
+            hidden_sheets: args.export.one_page_per_sheet,
         };
         let facts = crate::preflight::scan(&args.input, domain_family(args.family), printed);
         // The copy with page sizes counts as pre-flight: it reads the source

@@ -1476,6 +1476,7 @@ fn odp_notes_and_hidden_pages_count_when_printed() {
     let all = Printed {
         notes: true,
         hidden_slides: true,
+        ..Printed::default()
     };
     let facts = scan_printed("notes.odp", &bytes, Family::Presentation, all);
     assert_eq!(facts.text_code_points, cps("x\u{0E01}\u{1200}"));
@@ -1528,6 +1529,13 @@ fn xlsx_hidden_sheets_are_not_read() {
     let facts = scan_bytes("hidden.xlsx", &bytes, Family::Spreadsheet);
     assert_eq!(facts.text_code_points, cps("a"));
     assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+    // One page per sheet exports hidden sheets too; an unlisted one never.
+    let whole = Printed {
+        hidden_sheets: true,
+        ..Printed::default()
+    };
+    let facts = scan_printed("hidden.xlsx", &bytes, Family::Spreadsheet, whole);
+    assert_eq!(facts.text_code_points, cps("a\u{0E01}"));
 }
 
 #[test]
@@ -1566,6 +1574,121 @@ fn a_second_root_skips_the_glyph_check() {
             || facts
                 .skipped
                 .contains(&(Check::Fonts, SkipReason::MalformedXml)),
+        "{:?}",
+        facts.skipped
+    );
+}
+
+/// A workbook whose `workbook.xml` is `workbook`, with sheets `rId2` and
+/// `rId3` in its relationships.
+fn xlsx_workbook(workbook: &str) -> Vec<u8> {
+    let root = rels(&[("rId1", "officeDocument", "xl/workbook.xml")]);
+    let wb_rels = rels(&[
+        ("rId2", "worksheet", "worksheets/sheet1.xml"),
+        ("rId3", "worksheet", "worksheets/sheet2.xml"),
+    ]);
+    let sheet = r#"<worksheet><sheetData><row><c t="inlineStr"><is><t>a</t></is></c></row></sheetData></worksheet>"#;
+    let content_types = types("");
+    zip(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", root.as_bytes()),
+        ("xl/workbook.xml", workbook.as_bytes()),
+        ("xl/_rels/workbook.xml.rels", wb_rels.as_bytes()),
+        ("xl/worksheets/sheet1.xml", sheet.as_bytes()),
+        ("xl/worksheets/sheet2.xml", sheet.as_bytes()),
+    ])
+}
+
+const R_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+
+#[test]
+fn xlsx_a_cut_workbook_sheet_list_skips_the_glyph_check() {
+    let workbook =
+        format!(r#"<workbook xmlns:r="{R_NS}"><sheets><sheet name="A" sheetId="1" r:id="rId2"/>"#);
+    let facts = scan_bytes(
+        "cutbook.xlsx",
+        &xlsx_workbook(&workbook),
+        Family::Spreadsheet,
+    );
+    assert!(facts.text_code_points.is_empty());
+    assert!(
+        facts
+            .skipped
+            .contains(&(Check::Glyphs, SkipReason::MalformedXml)),
+        "{:?}",
+        facts.skipped
+    );
+}
+
+#[test]
+fn xlsx_sheet_entries_naming_one_target_read_it_once() {
+    // A sheet outside <sheets> is not a sheet; many entries for one
+    // relationship read it once.
+    let mut list = String::new();
+    for n in 0..1000 {
+        list.push_str(&format!(
+            r#"<sheet name="S{n}" sheetId="{n}" r:id="rId2"/>"#
+        ));
+    }
+    let workbook = format!(
+        r#"<workbook xmlns:r="{R_NS}"><sheets>{list}</sheets><extLst><sheet r:id="rId9"/></extLst></workbook>"#
+    );
+    let facts = scan_bytes("same.xlsx", &xlsx_workbook(&workbook), Family::Spreadsheet);
+    assert_eq!(facts.text_code_points, cps("a"));
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn odf_namespace_aliases_are_bounded() {
+    // Many prefixes for the SVG namespace: the first ones are kept, and an
+    // element under a later one counts as text (a spurious warning at
+    // worst), at a constant cost per element.
+    let mut decls = String::new();
+    for n in 0..200 {
+        decls.push_str(&format!(
+            r#" xmlns:s{n}="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0""#
+        ));
+    }
+    let content = format!(
+        r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"{decls}><office:body><office:text><s0:desc>Ж</s0:desc><s199:desc>ก</s199:desc><text:p>a</text:p></office:text></office:body></office:document-content>"#
+    );
+    let bytes = zip(&[
+        ("mimetype", b"application/vnd.oasis.opendocument.text"),
+        ("content.xml", content.as_bytes()),
+    ]);
+    let facts = scan_bytes("aliases.odt", &bytes, Family::Document);
+    assert_eq!(facts.text_code_points, cps("a\u{0E01}"));
+}
+
+#[test]
+fn docx_headers_past_the_cap_skip_the_glyph_check() {
+    let mut doc_rels: Vec<(String, String, String)> = Vec::new();
+    for n in 0..65 {
+        doc_rels.push((
+            format!("rIdH{n}"),
+            "header".into(),
+            format!("header{n}.xml"),
+        ));
+    }
+    let doc_rels: Vec<(&str, &str, &str)> = doc_rels
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str()))
+        .collect();
+    let doc_rels = rels(&doc_rels);
+    let root = rels(&[("rId1", "officeDocument", "word/document.xml")]);
+    let content_types = types("");
+    let document = body("<w:p><w:r><w:t>a</w:t></w:r></w:p>");
+    let bytes = zip(&[
+        ("[Content_Types].xml", content_types.as_bytes()),
+        ("_rels/.rels", root.as_bytes()),
+        ("word/_rels/document.xml.rels", doc_rels.as_bytes()),
+        ("word/document.xml", document.as_bytes()),
+    ]);
+    let facts = scan_bytes("headers.docx", &bytes, Family::Document);
+    assert!(
+        facts
+            .skipped
+            .contains(&(Check::Glyphs, SkipReason::CapReached)),
         "{:?}",
         facts.skipped
     );

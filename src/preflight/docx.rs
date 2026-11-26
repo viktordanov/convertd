@@ -137,6 +137,10 @@ pub(super) fn scan(
     let mut headers_footers: Vec<String> = target("/header");
     headers_footers.extend(target("/footer"));
     headers_footers.sort();
+    if headers_footers.len() > MAX_HEADERS_FOOTERS {
+        // The text of the parts past the cap is not read.
+        facts.skipped.push((Check::Glyphs, SkipReason::CapReached));
+    }
     headers_footers.truncate(MAX_HEADERS_FOOTERS);
     parts.extend(headers_footers);
     parts.extend(target("/footnotes"));

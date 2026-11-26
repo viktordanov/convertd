@@ -322,6 +322,7 @@ impl OfficeEngine for FakeOffice {
         let printed = crate::preflight::Printed {
             notes: job.export.notes != crate::domain::conversion::SlideNotes::None,
             hidden_slides: job.export.include_hidden_slides,
+            hidden_sheets: job.export.one_page_per_sheet,
         };
         let (facts, preflight) = tokio::task::spawn_blocking(move || {
             let scanned = Instant::now();

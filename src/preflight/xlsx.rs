@@ -7,11 +7,11 @@
 //! their cells reference, without phonetic runs (`rPh`). Formula results
 //! are not read.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::docx::{main_part, theme_fonts};
 use super::package::{Package, XmlEvent, attr, attr_prefixed, rels_path};
-use super::{FONT_SCAN_CAP, PART_CAP, TextCollector, TextScope, add_font};
+use super::{FONT_SCAN_CAP, PART_CAP, Printed, TextCollector, TextScope, add_font};
 use crate::domain::verification::{Check, SkipReason, SourceFacts};
 
 /// At most this many sheets are listed; more skip the glyph check.
@@ -21,6 +21,7 @@ pub(super) fn scan(
     package: &mut Package,
     fonts: &mut BTreeSet<String>,
     text: &mut TextCollector,
+    printed: Printed,
     facts: &mut SourceFacts,
 ) {
     let workbook = main_part(package).unwrap_or_else(|| "xl/workbook.xml".to_owned());
@@ -49,7 +50,7 @@ pub(super) fn scan(
     };
     let styles = target("/styles", "xl/styles.xml");
     let shared = target("/sharedStrings", "xl/sharedStrings.xml");
-    let complete = complete.and_then(|()| printed_sheets(package, &workbook, &rels));
+    let complete = complete.and_then(|()| printed_sheets(package, &workbook, &rels, printed));
     let theme = theme_fonts(package, &target("/theme", "xl/theme/theme1.xml"));
 
     // One <font> at a time: its <name> and <scheme> children.
@@ -99,40 +100,68 @@ pub(super) fn scan(
     }
 }
 
-/// The worksheets that the workbook's `sheets` list names and does not
-/// hide (`state` `hidden` or `veryHidden`), in order: the ones the PDF
-/// prints. A listed sheet without its relationship is an error.
+/// The worksheets that the workbook's `sheets` list names, in order and
+/// each once: the ones the PDF prints. A hidden sheet (`state` `hidden` or
+/// `veryHidden`) counts only when the export puts each sheet on one page,
+/// which prints hidden sheets too. A listed sheet without its relationship,
+/// and a workbook part that does not read as a whole, are errors.
 fn printed_sheets(
     package: &mut Package,
     workbook: &str,
-    rels: &std::collections::HashMap<String, (String, String)>,
+    rels: &HashMap<String, (String, String)>,
+    printed: Printed,
 ) -> Result<Vec<String>, SkipReason> {
-    let mut ids = Vec::new();
+    let mut ids: Vec<Option<String>> = Vec::new();
     let mut too_many = false;
-    package.xml(workbook, PART_CAP, |e| {
-        if e.local_name().as_ref() == b"sheet" {
-            let state = attr(e, b"state");
-            if matches!(state.as_deref(), Some("hidden" | "veryHidden")) {
-                return true;
+    let mut scope = TextScope::new(&[], None, &[]);
+    let mut depth = 0usize;
+    let mut in_list = false;
+    package.xml_events(workbook, PART_CAP, |event| {
+        scope.on(&event);
+        match event {
+            XmlEvent::Start(e) | XmlEvent::Empty(e) => {
+                let local = e.local_name();
+                if depth == 1 && local.as_ref() == b"sheets" {
+                    in_list = matches!(event, XmlEvent::Start(_));
+                } else if depth == 2 && in_list && local.as_ref() == b"sheet" {
+                    let state = attr(e, b"state");
+                    let hidden = matches!(state.as_deref(), Some("hidden" | "veryHidden"));
+                    if !hidden || printed.hidden_sheets {
+                        if ids.len() >= MAX_SHEETS {
+                            too_many = true;
+                            return false;
+                        }
+                        ids.push(attr_prefixed(e, b"id"));
+                    }
+                }
+                if matches!(event, XmlEvent::Start(_)) {
+                    depth += 1;
+                }
             }
-            if ids.len() >= MAX_SHEETS {
-                too_many = true;
-                return false;
+            XmlEvent::End => {
+                depth = depth.saturating_sub(1);
+                if depth == 1 {
+                    in_list = false;
+                }
             }
-            ids.push(attr_prefixed(e, b"id"));
+            _ => {}
         }
         true
     })?;
     if too_many {
         return Err(SkipReason::CapReached);
     }
-    let mut sheets = Vec::with_capacity(ids.len());
-    for id in ids {
+    scope.complete()?;
+    // Each relationship once: many sheet entries may name one target.
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut sheets = Vec::new();
+    for id in &ids {
         let (kind, target) = id
-            .and_then(|id| rels.get(&id))
+            .as_ref()
+            .and_then(|id| rels.get(id))
             .ok_or(SkipReason::MissingPart)?;
         // A chart sheet has no cells.
-        if kind.ends_with("/worksheet") {
+        if kind.ends_with("/worksheet") && seen.insert(target.as_str()) {
             sheets.push(target.clone());
         }
     }

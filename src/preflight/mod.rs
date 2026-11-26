@@ -64,6 +64,9 @@ pub struct Printed {
     pub notes: bool,
     /// The hidden slides (`slides.include_hidden`).
     pub hidden_slides: bool,
+    /// The hidden sheets: `sheets.one_page_per_sheet` exports whole
+    /// sheets, hidden ones included.
+    pub hidden_sheets: bool,
 }
 
 /// Reads the facts that the warning rules need from an office source.
@@ -123,7 +126,7 @@ fn scan_package(mut package: Package, family: Family, printed: Printed, facts: &
     match family {
         Family::Document => docx::scan(&mut package, &mut fonts, &mut text, facts),
         Family::Presentation => pptx::scan(&mut package, &mut fonts, &mut text, printed, facts),
-        Family::Spreadsheet => xlsx::scan(&mut package, &mut fonts, &mut text, facts),
+        Family::Spreadsheet => xlsx::scan(&mut package, &mut fonts, &mut text, printed, facts),
         Family::Pdf | Family::Image => {}
     }
     facts.requested_fonts = fonts.into_iter().collect();
@@ -204,6 +207,9 @@ impl TextCollector {
     }
 }
 
+/// The most qualified names that [`TextScope`] keeps for `skip_ns`.
+const MAX_ALIASES: usize = 8;
+
 /// Picks the drawn text out of one part's events: the text of an element
 /// named in `text` (by local name), or with `text` empty of any element
 /// inside `within`, and never inside an element named in `skip` (by local
@@ -283,7 +289,9 @@ impl TextScope {
     }
 
     /// Records the prefixes that the root binds to the namespaces of
-    /// `skip_ns`.
+    /// `skip_ns`, at most [`MAX_ALIASES`] names: a part that binds one
+    /// namespace to more prefixes keeps the first ones, and an element under
+    /// another alias counts as printed text.
     fn bind(&mut self, root: &BytesStart<'_>) {
         for attribute in root.attributes().with_checks(false).flatten() {
             let key = attribute.key.as_ref();
@@ -295,13 +303,16 @@ impl TextScope {
                 continue;
             };
             for (namespace, local) in self.skip_ns {
-                if attribute.value.as_ref() == *namespace {
+                if attribute.value.as_ref() == *namespace && self.skip_qualified.len() < MAX_ALIASES
+                {
                     let mut name = prefix.to_vec();
                     if !name.is_empty() {
                         name.push(b':');
                     }
                     name.extend_from_slice(local);
-                    self.skip_qualified.push(name);
+                    if !self.skip_qualified.contains(&name) {
+                        self.skip_qualified.push(name);
+                    }
                 }
             }
         }
@@ -359,12 +370,14 @@ impl TextScope {
         let name = local.as_ref();
         let depth = self.depth;
         let qualified = e.name();
-        if self.skip.contains(&name)
-            || self
+        // The aliases are looked at only for an element whose local name
+        // is one of `skip_ns`, so the cost per element stays constant.
+        let by_namespace = self.skip_ns.iter().any(|(_, local)| *local == name)
+            && self
                 .skip_qualified
                 .iter()
-                .any(|skip| skip.as_slice() == qualified.as_ref())
-        {
+                .any(|skip| skip.as_slice() == qualified.as_ref());
+        if self.skip.contains(&name) || by_namespace {
             self.skip_at.get_or_insert(depth);
         }
         if self.within == Some(name) {
