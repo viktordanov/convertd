@@ -42,11 +42,13 @@ pub enum Work {
     /// An office conversion: always the whole document.
     Convert,
     /// A PDF inspect of the whole document: the page sizes, and with
-    /// `probe` the blank-page probe renders too. `export` is the office
-    /// export that made the PDF (`None` for a PDF upload): two exports of
-    /// one upload are different PDFs.
+    /// `probe` the blank-page probe renders too. With `password` the worker
+    /// also opens the file once without it. `export` is the office export
+    /// that made the PDF (`None` for a PDF upload): two exports of one
+    /// upload are different PDFs.
     Inspect {
         probe: bool,
+        password: bool,
         export: Option<ExportOptions>,
     },
     /// A PDF decrypt: a copy of the whole document.
@@ -82,10 +84,15 @@ impl Attempt {
             (
                 Work::Inspect {
                     probe: timed_out,
+                    password: timed_out_password,
                     export: timed_out_export,
                 },
-                Work::Inspect { probe, export },
-            ) => probe >= timed_out && export == timed_out_export,
+                Work::Inspect {
+                    probe,
+                    password,
+                    export,
+                },
+            ) => probe >= timed_out && password >= timed_out_password && export == timed_out_export,
             (Work::Render { pages: timed_out }, Work::Render { pages }) => pages >= timed_out,
             _ => false,
         };
@@ -379,7 +386,11 @@ mod tests {
         let now = Instant::now();
         let l = list(600_000);
         let inspect = |probe, export| Attempt {
-            work: Work::Inspect { probe, export },
+            work: Work::Inspect {
+                probe,
+                password: false,
+                export,
+            },
             budget: Duration::from_secs(10),
         };
         let probed = inspect(true, None);
@@ -410,6 +421,24 @@ mod tests {
         assert!(
             !l.refuses_at(&third, &inspect(false, None), now),
             "not an export"
+        );
+        // A password inspect opens the file twice: its timeout does not
+        // cover one without a password.
+        let with_password = Attempt {
+            work: Work::Inspect {
+                probe: false,
+                password: true,
+                export: None,
+            },
+            budget: Duration::from_secs(10),
+        };
+        let fourth = [23; 32];
+        l.strike_at(&fourth, Strike::Timeout, &with_password, now);
+        l.strike_at(&fourth, Strike::Timeout, &with_password, now);
+        assert!(l.refuses_at(&fourth, &with_password, now));
+        assert!(
+            !l.refuses_at(&fourth, &inspect(false, None), now),
+            "one open"
         );
     }
 
