@@ -228,6 +228,8 @@ fn detail_schema() -> impl Into<RefOr<Schema>> {
 }
 
 /// - `FONT_SUBSTITUTED`: a font the document asks for is not installed.
+///   `detail.substitute` is the font that the image's fontconfig picked
+///   for it when the image was built, not one read from the PDF.
 ///   Text may reflow. `detail` has `requested` and `substitute`.
 /// - `PAGE_COUNT_MISMATCH`: the PDF has a different number of pages than
 ///   the source declares. `detail` has `expected` and `actual`.
