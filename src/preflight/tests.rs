@@ -575,6 +575,9 @@ fn docx_text_after_the_root_skips_the_font_check() {
     // The same in the font table's relationships.
     let facts = aptos_embedded(&(table_rels.clone() + "stray"), &font);
     assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+    // A character reference after the root is character data too.
+    let facts = aptos_embedded(&(table_rels.clone() + "&#65;"), &font);
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
     // White space after the root is fine.
     let facts = aptos_embedded(&(table_rels + "\n  \n"), &font);
     assert_eq!(facts.embedded_fonts, ["Aptos"]);

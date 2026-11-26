@@ -24,7 +24,8 @@ pub enum XmlEvent<'a, 'b> {
     Start(&'a BytesStart<'b>),
     Empty(&'a BytesStart<'b>),
     End,
-    /// Character data that is not only white space.
+    /// Character data that is not only white space, a CDATA section or
+    /// an entity or character reference.
     Text,
 }
 
@@ -107,7 +108,8 @@ impl Package {
                 Ok(Event::Text(t)) if t.iter().any(|b| !b.is_ascii_whitespace()) => {
                     on_event(XmlEvent::Text)
                 }
-                Ok(Event::CData(_)) => on_event(XmlEvent::Text),
+                // An entity or character reference is character data too.
+                Ok(Event::CData(_) | Event::GeneralRef(_)) => on_event(XmlEvent::Text),
                 Ok(Event::Eof) => break Ok(()),
                 Ok(_) => true,
                 Err(_) if count.get() > cap => break Err(SkipReason::CapReached),
