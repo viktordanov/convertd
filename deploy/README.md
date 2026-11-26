@@ -167,6 +167,8 @@ Adapt the rules to the deployment:
 - If deployments with other capacities share one Prometheus, add a `namespace` matcher to each queue selector.
 - If your scrape interval is longer than 1 minute, widen the 5 m and 15 m rate windows to at least four scrape intervals.
 
+If Prometheus runs in another namespace, its `serviceMonitorNamespaceSelector` and `ruleNamespaceSelector` must select the namespace of convertd. Otherwise the Operator does not load the `ServiceMonitor` or the rules.
+
 ### Dashboard
 
 The dashboard computes rates over `$__rate_interval`, which is at least four scrape intervals. Each query takes its minimum step from the `scrape_interval` variable, and Grafana uses that step as the scrape interval. With 15 s, a rate window can be as short as 1 minute. The dashboard tells processes apart by their `namespace` and `pod` labels, which a `ServiceMonitor` adds. A scrape without them merges the counters of all processes.
