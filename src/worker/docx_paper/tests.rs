@@ -485,6 +485,11 @@ fn a_section_in_a_compatibility_branch_is_left_to_libreoffice() {
         r#"<w:document xmlns:w="{W}" {mc}><w:body><w:p><mc:AlternateContent><mc:Choice Requires="w14"><w:r/></mc:Choice></mc:AlternateContent></w:p></w:body></w:document>"#
     );
     assert!(fixed(&xml, Paper::A4).unwrap().contains(A4));
+    // A body in each branch.
+    let xml = format!(
+        r#"<w:document xmlns:w="{W}" {mc}><mc:AlternateContent><mc:Choice Requires="w14"><w:body><w:p/></w:body></mc:Choice><mc:Fallback><w:body><w:p/></w:body></mc:Fallback></mc:AlternateContent></w:document>"#
+    );
+    assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
     // A section in a paragraph's properties outside a paragraph.
     let xml = doc("<w:tbl><w:pPr><w:sectPr/></w:pPr></w:tbl><w:sectPr/>");
     assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
@@ -537,4 +542,19 @@ fn a_damaged_main_part_is_not_given_a_new_checksum() {
     damaged[at] = b'd';
     assert_eq!(repacked(&damaged, Paper::A4), (Err(Skip::Unreadable), None));
     assert_eq!(repacked(&source, Paper::A4).0, Ok(()));
+}
+
+#[test]
+fn a_file_already_at_the_destination_is_kept() {
+    let dir = Scratch::new();
+    let input = dir.path().join("source.docx");
+    std::fs::write(&input, crate::worker::warmup::docx("x")).unwrap();
+    let out = dir.path().join("taken.docx");
+    std::fs::write(&out, b"not ours").unwrap();
+    assert!(matches!(repack(&input, &out, Paper::A4), Err(Skip::Io(_))));
+    assert_eq!(std::fs::read(&out).unwrap(), b"not ours");
+    // A skip before the copy is opened leaves it too.
+    std::fs::write(&input, b"{\\rtf1}").unwrap();
+    assert_eq!(repack(&input, &out, Paper::A4), Err(Skip::Unsupported));
+    assert_eq!(std::fs::read(&out).unwrap(), b"not ours");
 }

@@ -254,9 +254,10 @@ struct Section {
 /// inflated bytes. At most `cap` bytes are read.
 ///
 /// A `w:sectPr` anywhere but in the body, in a paragraph's `w:pPr` or in a
-/// `w:sectPrChange`, a `w:sectPr` inside an `mc:AlternateContent`, and an
-/// `mc:AlternateContent` inside a section, make the section that
-/// LibreOffice uses ambiguous: the part loads as it came.
+/// `w:sectPrChange`, a `w:sectPr` or `w:body` inside an
+/// `mc:AlternateContent`, and an `mc:AlternateContent` inside a section,
+/// make the section that LibreOffice uses ambiguous: the part loads as it
+/// came.
 pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     let mut part = part.take(cap.saturating_add(1));
     // quick-xml drops a UTF-8 byte order mark without counting it in its
@@ -362,7 +363,9 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     && body.is_none()
                     && let Some(ns) = ns
                 {
-                    if prefix.len() > MAX_PREFIX {
+                    // A body per branch: which one LibreOffice takes is its
+                    // choice, so both would need the same section.
+                    if alternates > 0 || prefix.len() > MAX_PREFIX {
                         return Err(Skip::Unsupported);
                     }
                     if empty {
@@ -580,14 +583,16 @@ impl<W: Write> Write for Crc<W> {
 /// written. An error leaves no file at `out`: the caller loads `source`,
 /// except after [`Skip::Io`], which fails the job.
 pub fn repack(source: &Path, out: &Path, paper: Paper) -> Result<(), Skip> {
-    let result = write_copy(source, out, paper);
-    if result.is_err() {
+    let mut created = false;
+    let result = write_copy(source, out, paper, &mut created);
+    // Only a file that this call created is removed.
+    if result.is_err() && created {
         let _ = std::fs::remove_file(out);
     }
     result
 }
 
-fn write_copy(source: &Path, out: &Path, paper: Paper) -> Result<(), Skip> {
+fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Result<(), Skip> {
     let unsupported = |_| Skip::Unsupported;
     let mut file = File::open(source).map_err(|_| Skip::Unsupported)?;
     let size = file.metadata().map_err(|_| Skip::Unsupported)?.len();
@@ -610,6 +615,11 @@ fn write_copy(source: &Path, out: &Path, paper: Paper) -> Result<(), Skip> {
         .ok_or(Skip::Unsupported)?;
     if entry.method != METHOD_STORED && entry.method != METHOD_DEFLATED {
         return Err(Skip::Unsupported);
+    }
+    // Declared too large: no pass could finish. The streaming cap still
+    // catches a part that declares less than it holds.
+    if entry.uncompressed > MAIN_PART_CAP {
+        return Err(Skip::Unreadable);
     }
 
     // The central directory, whole: at most DIRECTORY_CAP bytes.
@@ -672,6 +682,7 @@ fn write_copy(source: &Path, out: &Path, paper: Paper) -> Result<(), Skip> {
     }
 
     let target = File::create_new(out).map_err(written)?;
+    *created = true;
     let mut writer = Capped {
         inner: BufWriter::with_capacity(64 * 1024, target),
         written: 0,
