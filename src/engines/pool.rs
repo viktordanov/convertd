@@ -1280,52 +1280,6 @@ impl Manager {
     }
 }
 
-/// The cost of one worker start, as [`start_once`] measures it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StartTimes {
-    /// Recreating the slot directory.
-    pub prepare: Duration,
-    /// From the spawn request to `Ready`, the bind included.
-    pub spawn: Duration,
-    /// The engine bind inside the worker, from `Ready`.
-    pub bind: Duration,
-    pub rss_bytes: u64,
-}
-
-/// Starts one worker of `spec` in `slot` the way the pool does, measures
-/// it and kills it. For `engine bench`.
-pub async fn start_once(
-    spec: &PoolSpec,
-    spawner: &Spawner,
-    slot: u16,
-) -> Result<StartTimes, String> {
-    let (events, _rx) = mpsc::unbounded_channel();
-    let started = Instant::now();
-    let start = Start {
-        spec: Arc::new(spec.clone()),
-        spawner: spawner.clone(),
-        events,
-        handles: Arc::default(),
-        draining: Arc::new(AtomicBool::new(false)),
-        starts: Arc::new(AtomicUsize::new(1)),
-        slot,
-        generation: 0,
-        fate: Arc::new(Fate::default()),
-    };
-    let mut worker = start.start().await?;
-    let times = StartTimes {
-        prepare: started.elapsed().saturating_sub(worker.spawn),
-        spawn: worker.spawn,
-        bind: worker.bind,
-        rss_bytes: worker.rss,
-    };
-    worker.reason = Reason::Shutdown;
-    let child = worker.child.clone();
-    drop(worker);
-    child.wait().await;
-    Ok(times)
-}
-
 /// One worker start: slot, spawn, `Init`, `Ready`.
 struct Start {
     spec: Arc<PoolSpec>,

@@ -110,7 +110,7 @@ A fixture that must get to the office queue is a DOCX with the marker in a store
 `test-hooks` is the one cargo feature for test code in the crate. It is off by default, and the image build never turns it on. It controls three things:
 
 - The `TEST_ENGINE` variable. If `TEST_ENGINE` is set in a build without the feature, `convertd serve` stops at start-up with `failed to parse TEST_ENGINE: test engines need a build with cargo feature test-hooks`.
-- The `convertd worker test` subcommand, and the `test` role of `convertd engine`.
+- The `convertd worker test` subcommand.
 - The `FAKE:` marker parsers. Without the feature, no code reads markers.
 
 ## nextest profiles

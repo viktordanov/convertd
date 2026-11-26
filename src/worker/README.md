@@ -126,7 +126,7 @@ A missing password is `PasswordRequired`, and a wrong one is `InvalidPassword`. 
 <!-- memoria:section id="test-role" files="test_worker.rs" -->
 ## Test role
 
-`convertd worker test` has no engine. It serves the pool tests, the `engine bench` command and level B (`TEST_ENGINE=worker`). `Init.test` can make its start fail (`fatal`) or slow (`ready_delay_ms`, which counts as `bind_us`).
+`convertd worker test` has no engine. It serves the pool tests and level B (`TEST_ENGINE=worker`). `Init.test` can make its start fail (`fatal`) or slow (`ready_delay_ms`, which counts as `bind_us`).
 
 It answers `Convert`, `Inspect`, `Render`, `Assemble` and `Decrypt` with small valid files. The `FAKE:` markers in the first 1 MiB of the input file control the answer, and the first marker wins:
 
