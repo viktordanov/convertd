@@ -1042,3 +1042,12 @@ fn a_zip64_local_header_on_any_entry_keeps_the_package() {
     put_u16(&mut source, 30 + name_len, 0x0001);
     assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
 }
+
+#[test]
+fn a_section_in_a_wrapper_that_may_be_processed_keeps_the_package() {
+    let mc = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+    let xml = format!(
+        r#"<w:document xmlns:w="{W}" xmlns:mc="{mc}" xmlns:x="ext" mc:Ignorable="x" mc:ProcessContent="x:wrap"><w:body><w:p/><x:wrap><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></x:wrap></w:body></w:document>"#
+    );
+    assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
+}

@@ -342,6 +342,9 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     // Open elements of other namespaces: a section in one is extension
     // content (often ignorable), not a section of the document.
     let mut foreign = 0usize;
+    // An mc:ProcessContent seen: then a foreign wrapper may be transparent,
+    // and a section in it may be the document's.
+    let mut process_content = false;
     // Open `w:sectPrChange` elements: a section's former properties.
     let mut history = 0usize;
     let mut before = skipped + xml.buffer_position();
@@ -377,6 +380,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                 let depth = stack.len();
                 let mut declares = 0usize;
                 for a in e.attributes().with_checks(false).flatten() {
+                    process_content |= a.key.local_name().as_ref() == b"ProcessContent";
                     let key = a.key.as_ref();
                     if key == b"xmlns" || key.starts_with(b"xmlns:") {
                         declares += 1;
@@ -418,6 +422,9 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                 }
                 let parent = stack.last().copied();
                 let grandparent = depth.checked_sub(2).map(|i| stack[i]);
+                if tag == Tag::SectPr && foreign > 0 && alternates == 0 && process_content {
+                    return Err(Skip::Unsupported);
+                }
                 if tag == Tag::SectPr
                     && parent != Some(Tag::SectPrChange)
                     && (alternates > 0 || foreign == 0)

@@ -438,9 +438,11 @@ impl Swap {
         if !self.dir_is_ours()? {
             return Ok(());
         }
-        if std::fs::symlink_metadata(&self.backup).is_ok() {
-            std::fs::rename(&self.backup, &self.source)
-                .map_err(|err| io_error("put the source back", &err))?;
+        match std::fs::symlink_metadata(&self.backup) {
+            Ok(_) => std::fs::rename(&self.backup, &self.source)
+                .map_err(|err| io_error("put the source back", &err))?,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(io_error("look for the set-aside source", &err)),
         }
         self.discard()
     }
