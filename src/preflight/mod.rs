@@ -46,6 +46,10 @@ pub const FONT_SCAN_CAP: u64 = 32 * 1024 * 1024;
 pub const REQUEST_CAP: u64 = 64 * 1024 * 1024;
 /// Requested families kept.
 pub const MAX_FONTS: usize = 256;
+/// The longest family name kept, in bytes. OOXML and ODF names are far
+/// shorter (Word allows 31 characters); a longer one is not a font name,
+/// and it would only grow the facts that cross IPC.
+pub const MAX_FONT_NAME: usize = 256;
 
 /// Reads the facts that the warning rules need from an office source.
 ///
@@ -109,10 +113,15 @@ fn scan_package(mut package: Package, family: Family, facts: &mut SourceFacts) {
 }
 
 /// Adds a family name read from a part, unless it is empty, a theme
-/// reference such as `+mn-lt`, or over [`MAX_FONTS`].
+/// reference such as `+mn-lt`, longer than [`MAX_FONT_NAME`], or over
+/// [`MAX_FONTS`].
 fn add_font(fonts: &mut BTreeSet<String>, name: &str) {
     let name = name.trim();
-    if !name.is_empty() && !name.starts_with('+') && fonts.len() < MAX_FONTS {
+    if !name.is_empty()
+        && !name.starts_with('+')
+        && name.len() <= MAX_FONT_NAME
+        && fonts.len() < MAX_FONTS
+    {
         fonts.insert(name.to_owned());
     }
 }

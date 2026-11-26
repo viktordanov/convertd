@@ -99,6 +99,11 @@ pub struct SourceFacts {
     pub declared_pages: Option<DeclaredPages>,
     /// Sorted, without duplicates, at most 256.
     pub requested_fonts: Vec<String>,
+    /// The requested families whose font file the source embeds, which
+    /// LibreOffice uses instead of a substitute (the DOCX font table that the
+    /// main part links). Sorted, without duplicates, a subset of
+    /// `requested_fonts` up to case and white space.
+    pub embedded_fonts: Vec<String>,
     pub macros: Option<MacroFact>,
     pub skipped: Vec<(Check, SkipReason)>,
 }
@@ -217,8 +222,9 @@ fn page_count(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdic
 }
 
 /// V2 · `FONT_SUBSTITUTED`. A requested family that is not installed
-/// warns, unless it is metric-compatible and its substitute is installed.
-/// Without a font catalog (no `build-info.json`) the check is skipped.
+/// warns, unless the source embeds it, or it is metric-compatible and its
+/// substitute is installed. Without a font catalog (no `build-info.json`)
+/// the check is skipped.
 fn fonts(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdict) {
     if facts.requested_fonts.is_empty() {
         return;
@@ -228,12 +234,13 @@ fn fonts(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdict) {
         verdict.skipped.push((Check::Fonts, "no_font_catalog"));
         return;
     }
+    let embedded: HashSet<String> = facts.embedded_fonts.iter().map(|f| fold(f)).collect();
     let mut requested: Vec<&String> = facts.requested_fonts.iter().collect();
     requested.sort();
     requested.dedup();
     let mut raised = 0;
     for family in requested {
-        if catalog.is_installed(family) {
+        if catalog.is_installed(family) || embedded.contains(&fold(family)) {
             continue;
         }
         let (substitute, source) = catalog.substitute(family);
@@ -693,6 +700,22 @@ mod tests {
             ("substitute_source", DetailValue::Str("default".into()))
         );
         assert_eq!(got[1].1[0], ("requested", DetailValue::Str("Zzyzx".into())));
+    }
+
+    #[test]
+    fn v2_skips_a_family_the_document_embeds() {
+        // F1: LibreOffice uses the font that the DOCX embeds, so nothing is
+        // substituted. Names compare as the catalog compares them.
+        let fonts = catalog();
+        let facts = SourceFacts {
+            requested_fonts: vec!["Aptos".into(), "Zzyzx".into()],
+            embedded_fonts: vec!["aptos".into()],
+            ..Default::default()
+        };
+        let verdict = case(Format::Docx, facts, 1, &fonts).verdict();
+        let requested: Vec<&DetailValue> =
+            verdict.warnings.iter().map(|w| &w.detail[0].1).collect();
+        assert_eq!(requested, [&DetailValue::Str("Zzyzx".into())]);
     }
 
     #[test]

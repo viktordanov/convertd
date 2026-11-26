@@ -556,6 +556,54 @@ fn aptos_docx(vba: bool) -> Vec<u8> {
     package(&entries)
 }
 
+/// `aptos_docx(false)` with Aptos embedded in `word/fontTable.xml`: a font
+/// part behind `w:embedRegular` with the directory of a minimal TrueType
+/// font. The pre-flight unit tests cover obfuscated parts.
+fn aptos_embedded_docx() -> Vec<u8> {
+    let main = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
+    package(&[
+        ("[Content_Types].xml", content_types(main)),
+        ("_rels/.rels", rels(&[("rId1", "officeDocument", "word/document.xml")])),
+        (
+            "word/_rels/document.xml.rels",
+            rels(&[("rId1", "theme", "theme/theme1.xml"), ("rId2", "fontTable", "fontTable.xml")]),
+        ),
+        (
+            "word/document.xml",
+            r#"<w:document xmlns:w="w"><w:body><w:p><w:r><w:rPr><w:rFonts w:asciiTheme="minorHAnsi"/></w:rPr></w:r></w:p></w:body></w:document>"#.to_owned(),
+        ),
+        (
+            "word/theme/theme1.xml",
+            r#"<a:theme xmlns:a="a"><a:majorFont><a:latin typeface="Calibri"/></a:majorFont><a:minorFont><a:latin typeface="Aptos"/></a:minorFont></a:theme>"#.to_owned(),
+        ),
+        (
+            "word/fontTable.xml",
+            r#"<w:fonts xmlns:w="w" xmlns:r="r"><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1"/></w:font></w:fonts>"#.to_owned(),
+        ),
+        ("word/_rels/fontTable.xml.rels", rels(&[("rIdF1", "font", "fonts/font1.ttf")])),
+        ("word/fonts/font1.ttf", minimal_font()),
+    ])
+}
+
+/// The directory of a minimal TrueType font, as text: its offset table
+/// and the seven table records the pre-flight check asks for, then filler.
+/// Every byte is below 0x80, so the part can be a `String`.
+fn minimal_font() -> String {
+    let tables: [&[u8; 4]; 7] = [
+        b"cmap", b"glyf", b"head", b"hhea", b"hmtx", b"loca", b"maxp",
+    ];
+    let mut bytes = b"true\0\x07\0\x10\0\0\0\0".to_vec();
+    for (i, tag) in tables.iter().enumerate() {
+        bytes.extend_from_slice(*tag);
+        bytes.extend_from_slice(&[0; 4]);
+        // Offsets 256, 512, …: no byte of the record reaches 0x80.
+        bytes.extend_from_slice(&(256 * (u32::try_from(i).unwrap() + 1)).to_be_bytes());
+        bytes.extend_from_slice(&64u32.to_be_bytes());
+    }
+    bytes.resize(2048, 0);
+    String::from_utf8(bytes).unwrap()
+}
+
 /// A deck that declares 3 visible slides; the fake PDF has 1 page.
 fn three_slide_pptx() -> Vec<u8> {
     let main = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml";
@@ -666,4 +714,43 @@ async fn warnings_reach_the_manifest_and_the_header() {
         "V1 is skipped with hidden slides"
     );
     app.assert_no_jobs().await;
+}
+
+#[tokio::test]
+async fn an_embedded_font_raises_no_font_warning() {
+    // F1: the same catalog as the test above, where Aptos is not installed;
+    // the DOCX embeds Aptos, so LibreOffice substitutes nothing.
+    let files = Path::new(env!("CARGO_TARGET_TMPDIR")).join("convert_zip-embedded-files");
+    std::fs::create_dir_all(&files).unwrap();
+    let build_info = files.join("build-info.json");
+    let fonts = files.join("fonts.json");
+    std::fs::write(
+        &build_info,
+        r#"{"libreoffice":"26.8.3.1","pdfium":"8179","fonts":["Carlito","DejaVu Sans"],
+            "font_substitutes":{"Aptos":"DejaVu Sans","Calibri":"Carlito"},"default_substitute":"DejaVu Sans"}"#,
+    )
+    .unwrap();
+    std::fs::write(&fonts, r#"{"Calibri": true, "Aptos": false}"#).unwrap();
+    let env = [
+        ("BUILD_INFO_PATH", build_info.to_str().unwrap()),
+        ("FONTS_PATH", fonts.to_str().unwrap()),
+    ];
+    let app = App::new("embedded", &env, FakeBehavior::Succeed);
+
+    // AGENT-RULES 13a: every await in a test has a deadline.
+    let (response, body) = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        app.send("e.docx", &aptos_embedded_docx(), r#"{"output":"bundle"}"#),
+    )
+    .await
+    .expect("the embedded-font conversion did not answer within 30 s");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(header_str(&response, "convert-warning-count"), "0");
+    let manifest: Value = serde_json::from_slice(&read_bundle(&body)[0].1).unwrap();
+    assert_eq!(manifest["warnings"], serde_json::json!([]));
 }

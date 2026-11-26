@@ -72,13 +72,23 @@ fn scan_bytes(name: &str, bytes: &[u8], family: Family) -> SourceFacts {
 }
 
 fn docx(extra_entries: &[(&str, &[u8])], document: &str) -> Vec<u8> {
+    docx_linking(extra_entries, document, true)
+}
+
+/// `docx`, with or without the main part's relationship to
+/// `word/fontTable.xml`.
+fn docx_linking(extra_entries: &[(&str, &[u8])], document: &str, font_table: bool) -> Vec<u8> {
     let content_types = types("");
     let root = rels(&[("rId1", "officeDocument", "word/document.xml")]);
-    let doc_rels = rels(&[
+    let mut doc_rels = vec![
         ("rId1", "styles", "styles.xml"),
         ("rId2", "theme", "theme/theme1.xml"),
         ("rId3", "header", "header1.xml"),
-    ]);
+    ];
+    if font_table {
+        doc_rels.push(("rId4", "fontTable", "fontTable.xml"));
+    }
+    let doc_rels = rels(&doc_rels);
     let styles = format!(
         r#"<w:styles {W}><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi" w:eastAsiaTheme="minorEastAsia"/></w:rPr></w:rPrDefault></w:docDefaults><w:latentStyles/><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:basedOn w:val="Normal"/><w:rPr><w:rFonts w:asciiTheme="majorHAnsi" w:hAnsiTheme="majorHAnsi"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:basedOn w:val="Heading1"/><w:rPr><w:rFonts w:ascii="Calibri Light" w:hAnsi="Calibri Light"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Unused"><w:rPr><w:rFonts w:ascii="Zzyzx" w:hAnsi="Zzyzx"/></w:rPr></w:style></w:styles>"#
     );
@@ -132,6 +142,615 @@ fn docx_referenced_styles_their_chain_runs_and_headers() {
             "Verdana"
         ]
     );
+}
+
+/// The `w:fontKey` of the test fonts, as Word writes it.
+const KEY: &str = "{5F3C1A2B-9D4E-4C6F-8A7B-0E1D2C3B4A59}";
+
+/// A font part that starts with the sfnt version `magic`: an offset
+/// table with one table record, then filler.
+fn sfnt(magic: &[u8; 4]) -> Vec<u8> {
+    sfnt_with(magic, &FONT_TABLES)
+}
+
+/// The tables of a minimal TrueType font.
+const FONT_TABLES: [&[u8; 4]; 7] = [
+    b"cmap", b"glyf", b"head", b"hhea", b"hmtx", b"loca", b"maxp",
+];
+
+/// A font part with an offset table listing `tables`, each 64 bytes long
+/// after the directory, then filler.
+fn sfnt_with(magic: &[u8; 4], tables: &[&[u8; 4]]) -> Vec<u8> {
+    let count = u16::try_from(tables.len()).unwrap();
+    let mut out = magic.to_vec();
+    out.extend_from_slice(&count.to_be_bytes());
+    out.extend_from_slice(&[0, 16, 0, 0, 0, 0]);
+    let start = 12 + 16 * u32::from(count);
+    for (i, tag) in tables.iter().enumerate() {
+        out.extend_from_slice(*tag);
+        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(&(start + 64 * u32::try_from(i).unwrap()).to_be_bytes());
+        out.extend_from_slice(&64u32.to_be_bytes());
+    }
+    out.extend_from_slice(&vec![0x5a; 64 * tables.len()]);
+    out
+}
+
+/// ECMA-376 Part 1, 17.8.1, written independently of the scanner: the
+/// first 32 bytes XORed with the key's GUID bytes, read from the end.
+fn obfuscate(data: &[u8], key: &str) -> Vec<u8> {
+    let hex: String = key.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    let k: Vec<u8> = (0..16)
+        .map(|i| u8::from_str_radix(&hex[30 - 2 * i..32 - 2 * i], 16).unwrap())
+        .collect();
+    let mut out = data.to_vec();
+    for (i, byte) in out.iter_mut().take(32).enumerate() {
+        *byte ^= k[i % 16];
+    }
+    out
+}
+
+/// One embed element of a test font: (element, relationship id, font key).
+type Embed<'a> = (&'a str, &'a str, Option<&'a str>);
+
+/// A `word/fontTable.xml`: each font with its embed elements.
+fn font_table(fonts: &[(&str, &[Embed<'_>])]) -> String {
+    let mut out = format!(
+        r#"<w:fonts {W} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#
+    );
+    for (name, embeds) in fonts {
+        out.push_str(&format!(
+            r#"<w:font w:name="{name}"><w:family w:val="swiss"/>"#
+        ));
+        for (element, id, key) in *embeds {
+            let key = key
+                .map(|k| format!(r#" w:fontKey="{k}""#))
+                .unwrap_or_default();
+            out.push_str(&format!(r#"<w:{element} r:id="{id}"{key}/>"#));
+        }
+        out.push_str("</w:font>");
+    }
+    out.push_str("</w:fonts>");
+    out
+}
+
+/// A body whose runs request each of `families`.
+fn runs(families: &[&str]) -> String {
+    let runs: String = families
+        .iter()
+        .map(|f| format!(r#"<w:r><w:rPr><w:rFonts w:ascii="{f}" w:hAnsi="{f}"/></w:rPr></w:r>"#))
+        .collect();
+    body(&format!("<w:p>{runs}</w:p>"))
+}
+
+#[test]
+fn docx_embedded_fonts_from_the_font_table() {
+    // F1: a requested family counts as embedded only when one of its embed
+    // elements points at a font part that the package holds and that is an
+    // sfnt font once deobfuscated with the element's key.
+    let other_key = "{00000000-1111-2222-3333-444444444444}";
+    let table = font_table(&[
+        ("Calibri", &[]),
+        ("Aptos", &[("embedRegular", "rIdF1", Some(KEY))]),
+        ("Embed Plain", &[("embedBold", "rIdF2", None)]),
+        ("Gone Part", &[("embedItalic", "rIdF3", None)]),
+        ("No Relationship", &[("embedBoldItalic", "rIdF9", None)]),
+        ("Not Requested", &[("embedRegular", "rIdF1", Some(KEY))]),
+        ("Empty Font", &[("embedRegular", "rIdF4", None)]),
+        ("Junk Font", &[("embedRegular", "rIdF5", None)]),
+        ("Wrong Key", &[("embedRegular", "rIdF1", Some(other_key))]),
+        ("Bad Key", &[("embedRegular", "rIdF2", Some("not a guid"))]),
+        (
+            "Second Try",
+            &[
+                ("embedRegular", "rIdF4", None),
+                ("embedBold", "rIdF2", None),
+            ],
+        ),
+        ("Cut Font", &[("embedRegular", "rIdF6", None)]),
+        ("No Tables", &[("embedRegular", "rIdF7", None)]),
+    ]);
+    let table_rels = rels(&[
+        ("rIdF1", "font", "fonts/font1.odttf"),
+        ("rIdF2", "font", "fonts/font2.otf"),
+        ("rIdF3", "font", "fonts/font3.odttf"),
+        ("rIdF4", "font", "fonts/font4.ttf"),
+        ("rIdF5", "font", "fonts/font5.ttf"),
+        ("rIdF6", "font", "fonts/font6.otf"),
+        ("rIdF7", "font", "fonts/font7.ttf"),
+    ]);
+    let obfuscated = obfuscate(&sfnt(&[0, 1, 0, 0]), KEY);
+    let plain = sfnt(b"OTTO");
+    let mut no_tables = sfnt(b"true");
+    no_tables[4..6].copy_from_slice(&[0, 0]);
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.odttf", &obfuscated),
+            ("word/fonts/font2.otf", &plain),
+            ("word/fonts/font4.ttf", b""),
+            (
+                "word/fonts/font5.ttf",
+                b"not a font at all, not a font at all",
+            ),
+            ("word/fonts/font6.otf", b"OTTO"),
+            ("word/fonts/font7.ttf", &no_tables),
+        ],
+        &runs(&[
+            "aptos",
+            "Embed Plain",
+            "Gone Part",
+            "No Relationship",
+            "Empty Font",
+            "Junk Font",
+            "Wrong Key",
+            "Bad Key",
+            "Second Try",
+            "Cut Font",
+            "No Tables",
+        ]),
+    );
+    let facts = scan_bytes("embedded.docx", &bytes, Family::Document);
+    // The run's spelling: names compare case-folded, as the catalog does.
+    assert_eq!(facts.embedded_fonts, ["Embed Plain", "Second Try", "aptos"]);
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_embed_elements_count_only_inside_their_font() {
+    // An embed element after a `w:font` closed, after a self-closing
+    // `w:font`, or below another child is not that family's embed.
+    let table = format!(
+        r#"<w:fonts {W} xmlns:r="r"><w:font w:name="Aptos"><w:family w:val="swiss"/></w:font><w:embedRegular r:id="rIdF1"/><w:font w:name="Georgia"/><w:embedRegular r:id="rIdF1"/><w:font w:name="Verdana"><w:sig><w:embedRegular r:id="rIdF1"/></w:sig></w:font></w:fonts>"#
+    );
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", &font),
+        ],
+        &runs(&["Aptos", "Georgia", "Verdana"]),
+    );
+    let facts = scan_bytes("scoped.docx", &bytes, Family::Document);
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_font_table_cut_at_a_tag_boundary_skips_the_font_check() {
+    // The XML ends after a complete tag with elements still open: quick-xml
+    // reports EOF, and the scan must not take the partial table.
+    let table = format!(
+        r#"<w:fonts {W} xmlns:r="r"><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1"/>"#
+    );
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", &font),
+        ],
+        &runs(&["Aptos"]),
+    );
+    let facts = scan_bytes("cut.docx", &bytes, Family::Document);
+    assert!(
+        facts.requested_fonts.is_empty(),
+        "{:?}",
+        facts.requested_fonts
+    );
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+}
+
+#[test]
+fn docx_unreadable_font_part_skips_the_font_check() {
+    // The part is present but in a compression method the reader does not
+    // support: not evidence that the family is missing.
+    let table = font_table(&[("Aptos", &[("embedRegular", "rIdF1", None)])]);
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let mut bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", &font),
+        ],
+        &runs(&["Aptos"]),
+    );
+    set_method(&mut bytes, "word/fonts/font1.ttf", 12);
+    let facts = scan_bytes("unreadable.docx", &bytes, Family::Document);
+    assert!(
+        facts.requested_fonts.is_empty(),
+        "{:?}",
+        facts.requested_fonts
+    );
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MissingPart)]);
+}
+
+/// A DOCX whose runs ask for Aptos and whose linked font table embeds it
+/// through `table_rels` with `font` as `word/fonts/font1.ttf`.
+fn aptos_embedded(table_rels: &str, font: &[u8]) -> SourceFacts {
+    let table = font_table(&[("Aptos", &[("embedRegular", "rIdF1", None)])]);
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", font),
+        ],
+        &runs(&["Aptos"]),
+    );
+    scan_bytes("aptos.docx", &bytes, Family::Document)
+}
+
+#[test]
+fn docx_font_whose_tables_leave_the_part_is_not_embedded() {
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    assert_eq!(aptos_embedded(&table_rels, &font).embedded_fonts, ["Aptos"]);
+    // Cut right after the directory: the one table it lists is not there.
+    let facts = aptos_embedded(&table_rels, &font[..28]);
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    // A collection: Word embeds single fonts, so it does not count.
+    let mut collection = b"ttcf\0\x01\0\0\0\0\0\x01\0\0\x10\0".to_vec();
+    collection.extend_from_slice(&[0; 16]);
+    let facts = aptos_embedded(&table_rels, &collection);
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_font_without_a_required_table_is_not_embedded() {
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    // Only `head`: no character map, no metrics, no outlines.
+    let facts = aptos_embedded(&table_rels, &sfnt_with(&[0, 1, 0, 0], &[b"head"]));
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    // CFF outlines instead of glyf and loca count.
+    let cff = sfnt_with(
+        b"OTTO",
+        &[b"CFF ", b"cmap", b"head", b"hhea", b"hmtx", b"maxp"],
+    );
+    assert_eq!(aptos_embedded(&table_rels, &cff).embedded_fonts, ["Aptos"]);
+}
+
+#[test]
+fn docx_font_table_needs_a_fonts_root() {
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let with_table = |table: &str| {
+        let bytes = docx(
+            &[
+                ("word/fontTable.xml", table.as_bytes()),
+                ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+                ("word/fonts/font1.ttf", &font),
+            ],
+            &runs(&["Aptos"]),
+        );
+        scan_bytes("root.docx", &bytes, Family::Document)
+    };
+    // Empty, or only the declaration: malformed, not an empty table.
+    for table in ["", r#"<?xml version="1.0"?>"#] {
+        let facts = with_table(table);
+        assert_eq!(
+            facts.skipped,
+            [(Check::Fonts, SkipReason::MalformedXml)],
+            "{table:?}"
+        );
+    }
+    // A `w:font` that is not a child of the `w:fonts` root does not count.
+    let nested = format!(
+        r#"<w:fonts {W} xmlns:r="r"><w:ext><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1"/></w:font></w:ext></w:fonts>"#
+    );
+    let other_root = format!(
+        r#"<w:other {W} xmlns:r="r"><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1"/></w:font></w:other>"#
+    );
+    for table in [nested, other_root] {
+        let facts = with_table(&table);
+        assert!(facts.embedded_fonts.is_empty(), "{table}");
+        assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+    }
+    // An empty but well-formed table embeds nothing and runs the check.
+    let facts = with_table(&format!("<w:fonts {W}/>"));
+    assert!(facts.embedded_fonts.is_empty());
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_font_table_with_a_second_root_skips_the_font_check() {
+    let table = format!(
+        r#"<w:fonts {W}/><w:x {W} xmlns:r="r"><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1"/></w:font></w:x>"#
+    );
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", &font),
+        ],
+        &runs(&["Aptos"]),
+    );
+    let facts = scan_bytes("roots.docx", &bytes, Family::Document);
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+}
+
+#[test]
+fn docx_font_with_a_short_required_table_is_not_embedded() {
+    // `head` is 54 bytes at least; 16 is a cut table.
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let mut font = sfnt(&[0, 1, 0, 0]);
+    // The `head` record is the third; its length is at 12 + 16 * 2 + 12.
+    font[56..60].copy_from_slice(&16u32.to_be_bytes());
+    let facts = aptos_embedded(&table_rels, &font);
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+}
+
+#[test]
+fn docx_font_table_relationships_over_the_cap_skip_the_font_check() {
+    // More relationships than the reader keeps: a dropped one would read
+    // as one never made, so the check is skipped.
+    let entries: Vec<(String, &str, &str)> = (0..20_001)
+        .map(|i| (format!("rIdX{i}"), "font", "fonts/font1.ttf"))
+        .collect();
+    let entries: Vec<(&str, &str, &str)> = entries
+        .iter()
+        .map(|(id, kind, target)| (id.as_str(), *kind, *target))
+        .collect();
+    let facts = aptos_embedded(&rels(&entries), &sfnt(&[0, 1, 0, 0]));
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::CapReached)]);
+}
+
+#[test]
+fn docx_font_table_relationships_with_a_second_root_skip_the_font_check() {
+    // Only the direct children of the one `Relationships` root count.
+    let two_roots = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font1.ttf"/></Relationships>"#;
+    let facts = aptos_embedded(two_roots, &sfnt(&[0, 1, 0, 0]));
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+    // A part whose root is not `Relationships` is malformed, not empty.
+    let wrong_root = r#"<?xml version="1.0"?><Other><Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font1.ttf"/></Other>"#;
+    let facts = aptos_embedded(wrong_root, &sfnt(&[0, 1, 0, 0]));
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+    // A relationship nested below another element is not one.
+    let nested = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><x><Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font1.ttf"/></x></Relationships>"#;
+    let facts = aptos_embedded(nested, &sfnt(&[0, 1, 0, 0]));
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_family_names_over_256_bytes_are_not_kept() {
+    // Such a name is not a font name; kept, it would only grow the facts
+    // that cross IPC, twice when it is also embedded.
+    let long = "A".repeat(257);
+    let facts = scan_bytes(
+        "long.docx",
+        &docx(&[], &runs(&[&long, "Georgia"])),
+        Family::Document,
+    );
+    assert!(facts.requested_fonts.contains(&"Georgia".to_owned()));
+    assert!(!facts.requested_fonts.contains(&long));
+}
+
+#[test]
+fn docx_text_after_the_root_skips_the_font_check() {
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let table = font_table(&[("Aptos", &[("embedRegular", "rIdF1", None)])]) + "stray";
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", &font),
+        ],
+        &runs(&["Aptos"]),
+    );
+    let facts = scan_bytes("text.docx", &bytes, Family::Document);
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+    // The same in the font table's relationships.
+    let facts = aptos_embedded(&(table_rels.clone() + "stray"), &font);
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+    // A character reference after the root is character data too.
+    let facts = aptos_embedded(&(table_rels.clone() + "&#65;"), &font);
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+    // White space after the root is fine.
+    let facts = aptos_embedded(&(table_rels + "\n  \n"), &font);
+    assert_eq!(facts.embedded_fonts, ["Aptos"]);
+}
+
+#[test]
+fn docx_malformed_attribute_in_the_font_table_skips_the_font_check() {
+    // The name parses before the broken attribute; the tag is still broken.
+    let table = format!(
+        r#"<w:fonts {W} xmlns:r="r"><w:font w:name="Aptos" broken><w:embedRegular r:id="rIdF1"/></w:font></w:fonts>"#
+    );
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", &font),
+        ],
+        &runs(&["Aptos"]),
+    );
+    let facts = scan_bytes("attr.docx", &bytes, Family::Document);
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+}
+
+#[test]
+fn docx_undecodable_relationship_target_skips_the_font_check() {
+    // An undeclared entity in Target: the relationship cannot be read, so
+    // it is not taken as absent.
+    let bad = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/&nope;.ttf"/></Relationships>"#;
+    let facts = aptos_embedded(bad, &sfnt(&[0, 1, 0, 0]));
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+}
+
+#[test]
+fn docx_font_relationships_need_the_font_type() {
+    // A relationship whose type only ends in "/font" is not a font part.
+    let custom = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://example.com/custom/font" Target="fonts/font1.ttf"/></Relationships>"#;
+    let facts = aptos_embedded(custom, &sfnt(&[0, 1, 0, 0]));
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    // The strict OOXML type counts.
+    let strict = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://purl.oclc.org/ooxml/officeDocument/relationships/font" Target="fonts/font1.ttf"/></Relationships>"#;
+    assert_eq!(
+        aptos_embedded(strict, &sfnt(&[0, 1, 0, 0])).embedded_fonts,
+        ["Aptos"]
+    );
+}
+
+#[test]
+fn docx_font_table_relationships_cut_short_skip_the_font_check() {
+    // Cut at a tag boundary with `Relationships` still open.
+    let cut = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font9.ttf"/>"#;
+    let facts = aptos_embedded(cut, &sfnt(&[0, 1, 0, 0]));
+    assert!(
+        facts.requested_fonts.is_empty(),
+        "{:?}",
+        facts.requested_fonts
+    );
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+}
+
+#[test]
+fn docx_unreadable_main_relationships_skip_the_font_check() {
+    // Without the main part's relationships the font table cannot be found,
+    // so the check does not run as if nothing were embedded.
+    let mut bytes = docx(&[], &runs(&["Aptos"]));
+    set_method(&mut bytes, "word/_rels/document.xml.rels", 12);
+    let facts = scan_bytes("norels.docx", &bytes, Family::Document);
+    assert!(
+        facts.requested_fonts.is_empty(),
+        "{:?}",
+        facts.requested_fonts
+    );
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MissingPart)]);
+}
+
+#[test]
+fn docx_font_table_counts_only_when_the_main_part_links_it() {
+    // A leftover table that no relationship of the main part names is not
+    // loaded by LibreOffice, so it embeds nothing.
+    let table = font_table(&[("Aptos", &[("embedRegular", "rIdF1", Some(KEY))])]);
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.odttf")]);
+    let font = obfuscate(&sfnt(&[0, 1, 0, 0]), KEY);
+    let entries: [(&str, &[u8]); 3] = [
+        ("word/fontTable.xml", table.as_bytes()),
+        ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+        ("word/fonts/font1.odttf", &font),
+    ];
+    let unlinked = docx_linking(&entries, &runs(&["Aptos"]), false);
+    let facts = scan_bytes("stale.docx", &unlinked, Family::Document);
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+    // The same parts, linked: Aptos is embedded.
+    let facts = scan_bytes(
+        "linked.docx",
+        &docx(&entries, &runs(&["Aptos"])),
+        Family::Document,
+    );
+    assert_eq!(facts.embedded_fonts, ["Aptos"]);
+}
+
+#[test]
+fn docx_without_a_font_table_embeds_nothing() {
+    let facts = scan_bytes("small.docx", &docx(&[], &body("<w:p/>")), Family::Document);
+    assert!(facts.embedded_fonts.is_empty());
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+/// Sets the compression method of entry `name` in both its local and its
+/// central header, to make an entry that is present but cannot be read.
+fn set_method(zip: &mut [u8], name: &str, method: u16) {
+    let mut patched = 0;
+    for at in 0..zip.len().saturating_sub(46) {
+        let signature = &zip[at..at + 4];
+        let (method_at, name_at) = match signature {
+            b"PK\x03\x04" => (at + 8, at + 30),
+            b"PK\x01\x02" => (at + 10, at + 46),
+            _ => continue,
+        };
+        if zip.get(name_at..name_at + name.len()) == Some(name.as_bytes()) {
+            zip[method_at..method_at + 2].copy_from_slice(&method.to_le_bytes());
+            patched += 1;
+        }
+    }
+    assert_eq!(patched, 2, "{name} not found");
+}
+
+#[test]
+fn docx_font_table_present_but_unreadable_skips_the_font_check() {
+    // An entry in a compression method the reader does not support is not
+    // absent: the check is skipped instead of running without the table.
+    let table = font_table(&[("Aptos", &[("embedRegular", "rIdF1", Some(KEY))])]);
+    let mut bytes = docx(
+        &[("word/fontTable.xml", table.as_bytes())],
+        &runs(&["Aptos"]),
+    );
+    set_method(&mut bytes, "word/fontTable.xml", 12);
+    let facts = scan_bytes("bzip2.docx", &bytes, Family::Document);
+    assert!(
+        facts.requested_fonts.is_empty(),
+        "{:?}",
+        facts.requested_fonts
+    );
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MissingPart)]);
+}
+
+#[test]
+fn docx_malformed_font_table_skips_the_font_check() {
+    // The table feeds the font check: unreadable, the check is skipped
+    // rather than run without knowing which families are embedded.
+    let bytes = docx(
+        &[(
+            "word/fontTable.xml",
+            b"<w:fonts><w:font w:name=\"A\"><broken",
+        )],
+        &body("<w:p/>"),
+    );
+    let facts = scan_bytes("broken.docx", &bytes, Family::Document);
+    assert!(
+        facts.requested_fonts.is_empty(),
+        "{:?}",
+        facts.requested_fonts
+    );
+    assert!(facts.embedded_fonts.is_empty());
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
 }
 
 #[test]

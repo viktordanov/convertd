@@ -242,7 +242,7 @@ impl OfficeWorker {
         Ok(Output::Converted(ConvertedOut {
             pdf_bytes,
             doc_type: doc_type.into(),
-            facts: Some(SourceFactsWire::from(&facts)),
+            facts: Some(Box::new(SourceFactsWire::from(&facts))),
         }))
     }
 
