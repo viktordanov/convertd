@@ -946,6 +946,12 @@ async fn a_client_that_stops_reading_releases_the_permit_after_the_idle_timeout(
         stalls.iter().any(|l| l["message"] == "response stalled"),
         "{stalls:?}"
     );
+    // The dashboard reads this counter; tests/observability.rs relies on this check.
+    let metrics = convertd::observability::metrics::handle().render();
+    assert!(
+        metrics.contains(r#"convert_responses_cut_total{code="RESPONSE_STALLED"}"#),
+        "{metrics}"
+    );
     app.assert_no_jobs().await;
     drop(stream);
 }

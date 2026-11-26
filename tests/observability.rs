@@ -386,12 +386,15 @@ fn the_dashboard_parses_and_reads_the_datasource_variable() {
 }
 
 #[cfg(feature = "test-hooks")]
-/// Names that the scrape test cannot make cheaply, with the reason. Each
-/// must still be a literal in `src/observability/metrics.rs`.
-fn not_scraped() -> Vec<(&'static str, &'static str)> {
+/// Names that the scrape test cannot make cheaply: the name, the reason,
+/// and the file that must name it instead.
+fn not_scraped() -> Vec<(&'static str, &'static str, &'static str)> {
+    // A stalled response takes a 64 MiB upload and a 1 s idle timeout;
+    // that test asserts the counter on its own scrape.
     let mut names = vec![(
         "convert_responses_cut_total",
-        "needs a 200 whose body stalls or aborts",
+        "needs a 200 whose body stalls",
+        "tests/convert_pdf.rs",
     )];
     if !cfg!(target_os = "linux") {
         for name in [
@@ -400,7 +403,11 @@ fn not_scraped() -> Vec<(&'static str, &'static str)> {
             "convert_supervisor_open_fds",
             "convert_supervisor_threads",
         ] {
-            names.push((name, "read from /proc/self, Linux only"));
+            names.push((
+                name,
+                "read from /proc/self, Linux only",
+                "src/observability/metrics.rs",
+            ));
         }
     }
     names
@@ -589,17 +596,18 @@ fn every_metric_the_dashboard_and_rules_name_is_emitted() {
     assert!(scrape.starts_with("HTTP/1.1 200"), "{scrape}");
     let have = exposed(&scrape);
 
-    let source = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/observability/metrics.rs"),
-    )
-    .unwrap();
     let mut absent = Vec::new();
     for name in missing(&named, &have) {
-        match not_scraped().into_iter().find(|(n, _)| *n == name) {
-            Some((_, reason)) => assert!(
-                source.contains(&format!("\"{name}\"")),
-                "{name} is not scraped ({reason}) and src/observability/metrics.rs does not define it"
-            ),
+        match not_scraped().into_iter().find(|(n, _, _)| *n == name) {
+            Some((_, reason, file)) => {
+                let text =
+                    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(file))
+                        .unwrap();
+                assert!(
+                    text.contains(name.as_str()),
+                    "{name} is not scraped ({reason}) and {file} does not name it"
+                );
+            }
             None => absent.push(name),
         }
     }
