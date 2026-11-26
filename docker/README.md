@@ -170,7 +170,7 @@ These sizes are measurements without CJK fonts, on an arm64 Mac (Docker 29.8.2, 
 Uncompressed sizes come from `docker image inspect`. The working target for the product image is at most 600 MB uncompressed, on amd64, the production architecture. The trims save 128 MB on each architecture. The largest savings are the icon themes (72 MB), the gallery (14 MB), the offline help (11 MB of content in 5334 files), the duplicate fonts and the templates (8 MB). The spike image of `docs/m0-spikes.md` was 708 MB, without the Noto fonts.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="verification" files="Dockerfile smoke.sh ab-pages.sh" -->
+<!-- memoria:section id="verification" files="Dockerfile smoke.sh ab-pages.sh corpus-check.sh" -->
 ## What is verified
 
 The `engine-check` image proves the engines under the production limits. Each run uses a read-only root, a tmpfs on `/tmp`, user `10001:10001`, no capabilities, `no-new-privileges` and no network:
@@ -214,7 +214,7 @@ On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a basel
 - **Engine tests:** in the trimmed `dev` image, `engines_office`, `engines_render` and `engines_poison` passed (20 tests, one ignored). Two tests skipped: one needs `CONVERTD_SMALL_DISK`, and one finds no `encrypted/deck20.pptx` in the corpus.
 - **Build and smoke:** `build-info.json` is the same, `lib-check` passes, and `smoke.sh` passes.
 
-The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs only by hand and monthly. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The run after the trims (45796989297) measured 578 MB on amd64 and 604 MB on arm64. The amd64 image was ready after 764 ms and converted the DOCX in 61 ms. The command:
+The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs by hand, monthly, and on pull requests that touch `docker/`, `src/engines/`, `src/worker/`, `src/preflight/`, `corpus/` or `Cargo.lock`. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The run after the trims (45796989297) measured 578 MB on amd64 and 604 MB on arm64. The amd64 image was ready after 764 ms and converted the DOCX in 61 ms. The command:
 
 ```sh
 docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
@@ -224,9 +224,11 @@ docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
 
 - The image size against the budget. The job uses 635 MB, the measured 605 MB of the arm64 `runtime` image plus 5 %, or the `IMAGE_MAX_MB` variable.
 - The time to ready.
-- One DOCX to PDF over HTTP, with the conversion time and the `Server-Timing` header.
+- One DOCX to PDF over HTTP. curl must exit 0, the body must have its `Content-Length` and end with `%%EOF`, and `Convert-Page-Count` must be 2. The script prints the conversion time and the `Server-Timing` header.
 - That no job directory is left after the response.
 - That no fontconfig user cache is written.
+
+After the smoke test, the job runs `corpus-check.sh`: the `corpus-bench check` of lane 005, every case of `corpus/expected.json`, against the image. The harness runs in a pinned Debian container inside the network namespace of the service, because only there does the canary listener see a connection from LibreOffice. On 2026-11-26 this check passed 59 of 59 cases on the arm64 image by hand. The job has not run it yet.
 
 `smoke/small.docx` is the corpus entry `docx-small`, 36986 bytes. `corpus/generate.py` makes the same bytes, and its SHA-256 is in `corpus/expected.json`.
 
