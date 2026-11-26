@@ -10,8 +10,9 @@
 //!   a paragraph's `w:pPr` (a section break). A body without one gets one;
 //! - `w:pgSz` goes where the schema puts it: after the header and footer
 //!   references, `w:footnotePr`, `w:endnotePr` and `w:type`;
-//! - a section that has a `w:pgSz` keeps it, and a package in which every
-//!   section has one is not copied;
+//! - a package in which any section has a `w:pgSz` is not copied: its
+//!   other sections may take their size from that one (a continuous
+//!   break), so adding sizes there would be a guess;
 //! - only the main part changes, with its own compression method. Every
 //!   other entry is copied byte for byte, data descriptors included, and
 //!   the central directory keeps its order.
@@ -330,6 +331,9 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     // The body: its depth, prefix and namespace.
     let mut body: Option<(usize, Vec<u8>, &'static [u8])> = None;
     let mut body_has_section = false;
+    // A section that names its size: then the others may take theirs from
+    // it (a continuous break), and adding sizes would be a guess.
+    let mut any_sized = false;
     // Open `mc:AlternateContent` elements.
     let mut alternates = 0usize;
     // Open `w:sectPrChange` elements: a section's former properties.
@@ -463,11 +467,12 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                 alternates -= usize::from(closed == Some(Tag::Alternate));
                 history -= usize::from(closed == Some(Tag::SectPrChange));
                 let depth = stack.len();
-                if let Some(s) = open.take_if(|s| s.depth == depth)
-                    && !s.sized
-                {
-                    let at = s.insert_at.unwrap_or(before);
-                    plan.push(at, at, page_size(&s.prefix, s.ns, paper))?;
+                if let Some(s) = open.take_if(|s| s.depth == depth) {
+                    any_sized |= s.sized;
+                    if !s.sized {
+                        let at = s.insert_at.unwrap_or(before);
+                        plan.push(at, at, page_size(&s.prefix, s.ns, paper))?;
+                    }
                 }
                 if closed == Some(Tag::Body)
                     && let Some((body_depth, prefix, ns)) = &body
@@ -500,6 +505,11 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     }
     if !stack.is_empty() {
         return Err(Skip::Unreadable);
+    }
+    // Some sections sized and some not: LibreOffice's choice for the
+    // unsized ones stays.
+    if any_sized && !plan.is_empty() {
+        return Err(Skip::Unsupported);
     }
     Ok(plan)
 }
@@ -861,12 +871,15 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
     {
         return Err(Skip::Unsupported);
     }
-    let main = main_part(&mut file, &entries)?;
-    let entry = entries
+    // OPC part names compare without ASCII case; one entry must match.
+    let wanted = main_part(&mut file, &entries)?;
+    let mut matching = entries
         .iter()
-        .find(|(name, _)| *name == main)
-        .map(|(_, entry)| *entry)
-        .ok_or(Skip::Unsupported)?;
+        .filter(|(name, _)| name.eq_ignore_ascii_case(&wanted));
+    let (Some((main, entry)), None) = (matching.next(), matching.next()) else {
+        return Err(Skip::Unsupported);
+    };
+    let (main, entry) = (main.clone(), *entry);
     if entry.method != METHOD_STORED && entry.method != METHOD_DEFLATED {
         return Err(Skip::Unsupported);
     }
@@ -934,6 +947,14 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
         return Err(Skip::Unsupported);
     }
 
+    // The copy's folder is made only now that there is a copy to write.
+    if let Some(dir) = out.parent() {
+        match std::fs::create_dir(dir) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(written(err)),
+        }
+    }
     let target = File::create_new(out).map_err(written)?;
     *created = true;
     let mut writer = Capped {

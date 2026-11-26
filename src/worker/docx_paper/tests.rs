@@ -74,14 +74,25 @@ fn an_empty_section_is_expanded() {
 }
 
 #[test]
-fn every_section_break_is_sized_and_a_sized_one_kept() {
-    let body = r#"<w:p><w:pPr><w:sectPr><w:pgMar w:top="1"/></w:sectPr></w:pPr></w:p><w:p><w:pPr><w:sectPr><w:pgSz w:w="15840" w:h="12240" w:orient="landscape"/></w:sectPr></w:pPr></w:p><w:p/><w:sectPr/>"#;
+fn every_section_break_is_sized() {
+    let body =
+        r#"<w:p><w:pPr><w:sectPr><w:pgMar w:top="1"/></w:sectPr></w:pPr></w:p><w:p/><w:sectPr/>"#;
     let out = fixed(&doc(body), Paper::A4).unwrap();
     assert_eq!(
         out,
         doc(&format!(
-            r#"<w:p><w:pPr><w:sectPr>{A4}<w:pgMar w:top="1"/></w:sectPr></w:pPr></w:p><w:p><w:pPr><w:sectPr><w:pgSz w:w="15840" w:h="12240" w:orient="landscape"/></w:sectPr></w:pPr></w:p><w:p/><w:sectPr>{A4}</w:sectPr>"#
+            r#"<w:p><w:pPr><w:sectPr>{A4}<w:pgMar w:top="1"/></w:sectPr></w:pPr></w:p><w:p/><w:sectPr>{A4}</w:sectPr>"#
         ))
+    );
+}
+
+#[test]
+fn sized_and_unsized_sections_together_are_left_to_libreoffice() {
+    // A continuous section may take its size from a sized neighbour.
+    let body = r#"<w:p><w:pPr><w:sectPr><w:type w:val="continuous"/><w:cols w:num="2"/></w:sectPr></w:pPr></w:p><w:p/><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>"#;
+    assert_eq!(
+        fix_part(doc(body).as_bytes(), Paper::A4),
+        Err(Skip::Unsupported)
     );
 }
 
@@ -534,12 +545,13 @@ fn a_failed_write_fails_the_job_but_the_copy_cap_does_not() {
         applied(io::Error::from_raw_os_error(libc::ENOSPC)),
         Skip::Io(_)
     ));
-    // A copy into a directory that does not exist is a write error.
+    // A copy whose folder is a file is a write error (ENOTDIR).
     let source = crate::worker::warmup::docx("x");
     let dir = Scratch::new();
     let input = dir.path().join("source.docx");
     std::fs::write(&input, &source).unwrap();
-    let result = repack(&input, &dir.path().join("missing/copy.docx"), Paper::A4);
+    std::fs::write(dir.path().join("taken"), b"").unwrap();
+    let result = repack(&input, &dir.path().join("taken/copy.docx"), Paper::A4);
     assert!(matches!(result, Err(Skip::Io(_))), "{result:?}");
 }
 
@@ -854,4 +866,39 @@ fn a_locator_signature_inside_the_directory_is_no_zip64() {
         zip_scan::directory(&mut std::io::Cursor::new(&bytes), bytes.len() as u64).unwrap();
     assert!(!zip64);
     assert_eq!(repacked(&bytes, Paper::A4).0, Ok(()));
+}
+
+#[test]
+fn part_names_compare_without_case() {
+    let rels = br#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="/Word/Document.xml"/></Relationships>"#;
+    let main = doc("<w:p/>");
+    let source = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", rels, true, false),
+        ("word/document.xml", main.as_bytes(), true, false),
+    ]);
+    let (result, copy) = repacked(&source, Paper::A4);
+    assert_eq!(result, Ok(()));
+    let part = String::from_utf8(read(&copy.unwrap(), "word/document.xml")).unwrap();
+    assert!(part.contains(A4));
+}
+
+#[test]
+fn no_folder_is_made_when_there_is_nothing_to_copy() {
+    let sized = doc(r#"<w:p/><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>"#);
+    let source = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", sized.as_bytes(), true, false),
+    ]);
+    let dir = Scratch::new();
+    let input = dir.path().join("source.docx");
+    std::fs::write(&input, &source).unwrap();
+    let copy = copy_path(&input).unwrap();
+    assert_eq!(repack(&input, &copy, Paper::A4), Err(Skip::Sized));
+    assert!(!copy.parent().unwrap().exists());
+    // With something to copy, the folder is made.
+    std::fs::write(&input, crate::worker::warmup::docx("x")).unwrap();
+    assert_eq!(repack(&input, &copy, Paper::A4), Ok(()));
+    assert!(copy.exists());
 }

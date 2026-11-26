@@ -102,7 +102,7 @@ A `Convert` runs `preflight::scan` on the source first, timed apart as `prefligh
 
 Only an encrypted DOCX has a test of this path (`tests/engines_office.rs`). An encrypted spreadsheet or presentation is not tested.
 
-The DOCX importer of LibreOffice 26.8.3 starts every section on Letter and never reads `LC_PAPER`. So for a DOCX, DOCM or DOTX, `docx_paper` gives each section without a `w:pgSz` one with the `DEFAULT_PAPER` size before the load. The worker learns the paper from its `LC_PAPER`. The sections are the `w:sectPr` of the body and of a paragraph's `w:pPr`, and a body without one gets one. The new element goes after the header and footer references, `w:footnotePr`, `w:endnotePr` and `w:type`, where the schema puts it. A section that has a `w:pgSz` keeps it, and a package in which every section has one is loaded as it came.
+The DOCX importer of LibreOffice 26.8.3 starts every section on Letter and never reads `LC_PAPER`. So for a DOCX, DOCM or DOTX, `docx_paper` gives each section without a `w:pgSz` one with the `DEFAULT_PAPER` size before the load. The worker learns the paper from its `LC_PAPER`. The sections are the `w:sectPr` of the body and of a paragraph's `w:pPr`, and a body without one gets one. The new element goes after the header and footer references, `w:footnotePr`, `w:endnotePr` and `w:type`, where the schema puts it. A package in which any section has a `w:pgSz` is loaded as it came. Its other sections may take their size from that one, as a continuous break does.
 
 The worker writes the changed package to `.convertd-paper/<source name>` in the job directory, loads it, and removes it after the export. A retry after a crashed worker removes that copy first. The worker removes nothing else in that folder.
 

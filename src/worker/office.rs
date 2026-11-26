@@ -247,20 +247,14 @@ impl OfficeWorker {
         if args.family != Family::Document || !docx_paper::is_word_package(&args.input) {
             return Ok(None);
         }
-        let Some((copy, dir)) = docx_paper::copy_path(&args.input)
-            .and_then(|copy| Some((copy.clone(), copy.parent()?.to_path_buf())))
-        else {
+        let Some(copy) = docx_paper::copy_path(&args.input) else {
             return Ok(None);
         };
         // A worker that died during an earlier attempt of this job may have
         // left a partial copy: the retry starts from the source again. Only
         // this input's copy is touched, never other files in the folder.
         remove_copy(&copy)?;
-        match std::fs::create_dir(&dir) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(err) => return Err(io_error("create the paper copy", &err)),
-        }
+        // repack() makes the copy's folder only when it writes a copy.
         match docx_paper::repack(&args.input, &copy, paper) {
             Ok(()) => Ok(Some(copy)),
             Err(skip) => {
