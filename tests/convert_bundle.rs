@@ -581,10 +581,14 @@ fn aptos_embedded_docx() -> Vec<u8> {
             r#"<w:fonts xmlns:w="w" xmlns:r="r"><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1"/></w:font></w:fonts>"#.to_owned(),
         ),
         ("word/_rels/fontTable.xml.rels", rels(&[("rIdF1", "font", "fonts/font1.ttf")])),
-        // An offset table with one table record, then filler.
+        // An offset table with one table record (offset 28, length 54),
+        // then filler.
         (
             "word/fonts/font1.ttf",
-            format!("true\0\u{1}\0\u{10}\0\0\0\0head{}", "\0".repeat(76)),
+            format!(
+                "true\0\u{1}\0\u{10}\0\0\0\0head\0\0\0\0\0\0\0\u{1c}\0\0\0\u{36}{}",
+                "\0".repeat(76)
+            ),
         ),
     ])
 }

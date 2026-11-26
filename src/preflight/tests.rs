@@ -356,6 +356,76 @@ fn docx_unreadable_font_part_skips_the_font_check() {
     assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MissingPart)]);
 }
 
+/// A DOCX whose runs ask for Aptos and whose linked font table embeds it
+/// through `table_rels` with `font` as `word/fonts/font1.ttf`.
+fn aptos_embedded(table_rels: &str, font: &[u8]) -> SourceFacts {
+    let table = font_table(&[("Aptos", &[("embedRegular", "rIdF1", None)])]);
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.ttf", font),
+        ],
+        &runs(&["Aptos"]),
+    );
+    scan_bytes("aptos.docx", &bytes, Family::Document)
+}
+
+#[test]
+fn docx_font_whose_tables_leave_the_part_is_not_embedded() {
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    assert_eq!(aptos_embedded(&table_rels, &font).embedded_fonts, ["Aptos"]);
+    // Cut right after the directory: the one table it lists is not there.
+    let facts = aptos_embedded(&table_rels, &font[..28]);
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    // A collection whose member offset points past the end.
+    let mut collection = b"ttcf\0\x01\0\0\0\0\0\x01\0\0\x10\0".to_vec();
+    collection.extend_from_slice(&[0; 16]);
+    let facts = aptos_embedded(&table_rels, &collection);
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_font_relationships_need_the_font_type() {
+    // A relationship whose type only ends in "/font" is not a font part.
+    let custom = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://example.com/custom/font" Target="fonts/font1.ttf"/></Relationships>"#;
+    let facts = aptos_embedded(custom, &sfnt(&[0, 1, 0, 0]));
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    // The strict OOXML type counts.
+    let strict = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF1" Type="http://purl.oclc.org/ooxml/officeDocument/relationships/font" Target="fonts/font1.ttf"/></Relationships>"#;
+    assert_eq!(
+        aptos_embedded(strict, &sfnt(&[0, 1, 0, 0])).embedded_fonts,
+        ["Aptos"]
+    );
+}
+
+#[test]
+fn docx_font_table_relationships_cut_short_skip_the_font_check() {
+    // Cut at a tag boundary with `Relationships` still open.
+    let cut = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdF9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font9.ttf"/>"#;
+    let facts = aptos_embedded(cut, &sfnt(&[0, 1, 0, 0]));
+    assert!(
+        facts.requested_fonts.is_empty(),
+        "{:?}",
+        facts.requested_fonts
+    );
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+}
+
 #[test]
 fn docx_unreadable_main_relationships_skip_the_font_check() {
     // Without the main part's relationships the font table cannot be found,

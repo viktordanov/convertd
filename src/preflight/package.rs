@@ -169,7 +169,21 @@ impl Package {
     pub fn rels(&mut self, part: &str) -> Result<HashMap<String, (String, String)>, SkipReason> {
         let rels_name = rels_path(part);
         let mut map = HashMap::new();
-        self.xml(&rels_name, super::PART_CAP, |e| {
+        // A part cut at a tag boundary reads as EOF with elements still
+        // open: a partial map would pass for the whole one.
+        let mut open = 0usize;
+        self.xml_events(&rels_name, super::PART_CAP, |event| {
+            let e = match event {
+                XmlEvent::Start(e) => {
+                    open += 1;
+                    e
+                }
+                XmlEvent::Empty(e) => e,
+                XmlEvent::End => {
+                    open = open.saturating_sub(1);
+                    return true;
+                }
+            };
             if e.local_name().as_ref() == b"Relationship"
                 && attr(e, b"TargetMode").as_deref() != Some("External")
                 && let (Some(id), Some(kind), Some(target)) =
@@ -180,6 +194,9 @@ impl Package {
             }
             true
         })?;
+        if open != 0 {
+            return Err(SkipReason::MalformedXml);
+        }
         Ok(map)
     }
 }

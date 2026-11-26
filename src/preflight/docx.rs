@@ -112,8 +112,18 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
         .into_iter()
         .next()
         .unwrap_or_else(|| "word/styles.xml".to_owned());
-    // Only a table the main part links: a leftover table is not loaded.
-    let font_table_part = target("/fontTable").into_iter().next();
+    // Only a table the main part links by the font-table type: a leftover
+    // table is not loaded. Sorted, so that the choice never depends on map
+    // order.
+    let font_table_part = {
+        let mut tables: Vec<&String> = rels
+            .values()
+            .filter(|(kind, _)| FONT_TABLE_TYPES.contains(&kind.as_str()))
+            .map(|(_, target)| target)
+            .collect();
+        tables.sort();
+        tables.first().map(|target| (*target).clone())
+    };
     let theme = theme_fonts(package, &theme_part);
 
     // The parts with runs: the main part, then headers, footers, notes.
@@ -236,17 +246,23 @@ fn embedded_fonts(
     // Relationship id to font part, for the parts the package holds.
     let font_parts: HashMap<String, String> = rels
         .into_iter()
-        .filter(|(_, (kind, target))| kind.ends_with("/font") && package.has(target))
+        .filter(|(_, (kind, target))| FONT_TYPES.contains(&kind.as_str()) && package.has(target))
         .map(|(id, (_, target))| (id, target))
         .collect();
-    let wanted: HashMap<String, &String> =
-        requested.iter().map(|name| (fold(name), name)).collect();
+    // Requested families by index, so that an embed element costs no hash
+    // of a family name.
+    let families: Vec<&String> = requested.iter().collect();
+    let wanted: HashMap<String, usize> = families
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (fold(name), index))
+        .collect();
 
-    // (family, font part, obfuscation key), at most four per family.
-    let mut candidates: Vec<(&String, &String, Option<[u8; 16]>)> = Vec::new();
-    let mut per_family: HashMap<&String, usize> = HashMap::new();
+    // (family index, font part, obfuscation key), at most four per family.
+    let mut candidates: Vec<(usize, &String, Option<[u8; 16]>)> = Vec::new();
+    let mut per_family = vec![0u8; families.len()];
     // The requested family of the open `w:font`, and the depth below it.
-    let mut current: Option<(Option<&String>, usize)> = None;
+    let mut current: Option<(Option<usize>, usize)> = None;
     // Elements open in the whole table: a table cut short reads as EOF
     // with some still open, and is malformed rather than complete.
     let mut open = 0usize;
@@ -281,7 +297,7 @@ fn embedded_fonts(
                         e.local_name().as_ref(),
                         b"embedRegular" | b"embedBold" | b"embedItalic" | b"embedBoldItalic"
                     )
-                    && per_family.get(family).copied().unwrap_or(0) < 4
+                    && per_family[family] < 4
                 {
                     let target = attr_prefixed(e, b"id").and_then(|id| font_parts.get(&id));
                     let key = match attr(e, b"fontKey") {
@@ -290,7 +306,7 @@ fn embedded_fonts(
                     };
                     if let (Some(target), Some(key)) = (target, key) {
                         candidates.push((family, target, key));
-                        *per_family.entry(family).or_default() += 1;
+                        per_family[family] += 1;
                     }
                 }
                 if opens {
@@ -304,29 +320,40 @@ fn embedded_fonts(
         return Err(SkipReason::MalformedXml);
     }
 
-    let mut embedded = BTreeSet::new();
+    let mut found = vec![false; families.len()];
     for (family, target, key) in candidates {
-        if embedded.contains(family) {
+        if found[family] {
             continue;
         }
         // The part is in the package: a read that fails is not evidence
         // that the family is missing, so it skips the check.
-        let mut head = package.head(target, SFNT_HEADER)?;
-        if let Some(key) = key {
-            for (i, byte) in head.iter_mut().enumerate() {
-                *byte ^= key[i % 16];
-            }
-        }
-        if is_font(&head, package.size(target).unwrap_or(0)) {
-            embedded.insert(family.clone());
-        }
+        found[family] = is_font(package, target, key)?;
     }
-    Ok(embedded)
+    Ok(families
+        .iter()
+        .zip(found)
+        .filter(|(_, found)| *found)
+        .map(|(name, _)| (*name).clone())
+        .collect())
 }
 
-/// Bytes read from a font part: the obfuscated span (ECMA-376 Part 1,
-/// 17.8.1), which holds the sfnt version.
-const SFNT_HEADER: usize = 32;
+/// The relationship types of a font table, transitional and strict.
+const FONT_TABLE_TYPES: [&str; 2] = [
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable",
+    "http://purl.oclc.org/ooxml/officeDocument/relationships/fontTable",
+];
+
+/// The relationship types of an embedded font part, transitional and strict.
+const FONT_TYPES: [&str; 2] = [
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/font",
+    "http://purl.oclc.org/ooxml/officeDocument/relationships/font",
+];
+
+/// The span that obfuscation covers (ECMA-376 Part 1, 17.8.1).
+const OBFUSCATED: usize = 32;
+
+/// At most this many table records or collection entries are read.
+const MAX_DIRECTORY: u64 = 1024;
 
 /// The 16 bytes of a `w:fontKey` GUID, read from its end (ECMA-376 Part 1,
 /// 17.8.1). `None` for a malformed key.
@@ -347,29 +374,61 @@ fn font_key(key: &str) -> Option<[u8; 16]> {
     Some(out)
 }
 
-/// Whether `head`, the first bytes of a part of `size` bytes, starts a
-/// font: an sfnt version (TrueType, OpenType with CFF, Apple TrueType) with
-/// at least one table whose directory fits in the part, or a font
-/// collection with at least one font whose offsets fit. This is a header
-/// check, not a parse: it rejects empty, cut or unrelated parts.
-fn is_font(head: &[u8], size: u64) -> bool {
-    let u16_at = |at: usize| {
-        head.get(at..at + 2)
-            .map(|b| u16::from_be_bytes([b[0], b[1]]))
-    };
-    let u32_at = |at: usize| {
-        head.get(at..at + 4)
-            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
-    };
-    match head.get(..4) {
-        Some([0x00, 0x01, 0x00, 0x00] | b"OTTO" | b"true") => {
-            u16_at(4).is_some_and(|tables| tables > 0 && size >= 12 + 16 * u64::from(tables))
+/// Whether the font part `target`, deobfuscated with `key`, starts a font
+/// whose directory fits in the part: an sfnt version (TrueType, OpenType
+/// with CFF, Apple TrueType) with 1 to 1024 table records, each pointing
+/// inside the part, or a font collection with 1 to 1024 member offsets
+/// inside the part. This reads the directory only; it is not a parse, but
+/// it rejects empty, cut and unrelated parts.
+fn is_font(package: &mut Package, target: &str, key: Option<[u8; 16]>) -> Result<bool, SkipReason> {
+    let size = package.size(target).unwrap_or(0);
+    let read = |package: &mut Package, len: u64| -> Result<Vec<u8>, SkipReason> {
+        let mut bytes = package.head(target, usize::try_from(len).unwrap_or(usize::MAX))?;
+        if let Some(key) = key {
+            for (i, byte) in bytes.iter_mut().take(OBFUSCATED).enumerate() {
+                *byte ^= key[i % 16];
+            }
         }
-        Some(b"ttcf") => {
-            u32_at(8).is_some_and(|fonts| fonts > 0 && size >= 12 + 4 * u64::from(fonts))
-        }
-        _ => false,
+        Ok(bytes)
+    };
+    let head = read(package, OBFUSCATED as u64)?;
+    let be16 = |b: &[u8], at: usize| {
+        b.get(at..at + 2)
+            .map(|x| u64::from(u16::from_be_bytes([x[0], x[1]])))
+    };
+    let be32 = |b: &[u8], at: usize| {
+        b.get(at..at + 4)
+            .map(|x| u64::from(u32::from_be_bytes([x[0], x[1], x[2], x[3]])))
+    };
+    // (number of entries, bytes per entry, where an entry's offset is,
+    // where its length is, if it has one).
+    let (count, entry, offset_at, length_at) = match head.get(..4) {
+        Some([0x00, 0x01, 0x00, 0x00] | b"OTTO" | b"true") => (be16(&head, 4), 16, 8, Some(12)),
+        Some(b"ttcf") => (be32(&head, 8), 4, 0, None),
+        _ => return Ok(false),
+    };
+    let Some(count) = count.filter(|n| (1..=MAX_DIRECTORY).contains(n)) else {
+        return Ok(false);
+    };
+    let directory = 12 + entry * count;
+    if size < directory {
+        return Ok(false);
     }
+    let bytes = read(package, directory)?;
+    if (bytes.len() as u64) < directory {
+        return Ok(false);
+    }
+    let fits = (0..count).all(|i| {
+        let at = usize::try_from(12 + entry * i).unwrap_or(usize::MAX);
+        let offset = be32(&bytes, at + offset_at).unwrap_or(u64::MAX);
+        // A collection member needs at least its own offset table.
+        let length = match length_at {
+            Some(length_at) => be32(&bytes, at + length_at).unwrap_or(u64::MAX),
+            None => 12,
+        };
+        offset >= 12 && offset.saturating_add(length) <= size
+    });
+    Ok(fits)
 }
 
 /// Trimmed, case-folded, runs of whitespace collapsed to one space: the
