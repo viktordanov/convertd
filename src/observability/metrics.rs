@@ -141,8 +141,7 @@ pub fn response_cut(code: &'static str) {
 /// an engine error included; a call that times out, crashes or is killed
 /// sends no reply and records nothing.
 pub fn worker_cpu(pool: &'static str, op: &'static str, cpu: Duration) {
-    histogram!("convert_worker_cpu_seconds", "pool" => pool, "op" => op)
-        .record(cpu.as_secs_f64());
+    histogram!("convert_worker_cpu_seconds", "pool" => pool, "op" => op).record(cpu.as_secs_f64());
 }
 
 /// The four supervisor gauges of INTERFACES §11, from `/proc/self`

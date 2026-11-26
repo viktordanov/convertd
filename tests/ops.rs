@@ -783,7 +783,11 @@ fn level_b_metrics_show_worker_cpu() {
         .lines()
         .filter(|l| l.starts_with("convert_worker_cpu_seconds_bucket{"))
         .collect();
-    for (pool, op) in [("office", "convert"), ("render", "inspect"), ("render", "render")] {
+    for (pool, op) in [
+        ("office", "convert"),
+        ("render", "inspect"),
+        ("render", "render"),
+    ] {
         let pool = format!(r#"pool="{pool}""#);
         let op = format!(r#"op="{op}""#);
         let series: Vec<&&str> = buckets
