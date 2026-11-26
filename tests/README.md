@@ -2,7 +2,7 @@
 
 The tests of the `convertd` crate run on the host. Most of them use fakes in place of LibreOffice and PDFium. The engine tests use the real engines when they find them, and skip when they do not.
 
-Build the tests with the cargo feature `test-hooks`. Without it, `pool.rs`, `process.rs`, `worker_test_role.rs` and `engines_poison.rs` compile to empty test binaries, and nothing in them runs. CI always runs the tests with the feature.
+Build the tests with the cargo feature `test-hooks`. Without it, `pool.rs`, `process.rs`, `reap_race.rs`, `worker_test_role.rs` and `engines_poison.rs` compile to empty test binaries, and nothing in them runs. CI always runs the tests with the feature.
 
 ## Contents
 
@@ -36,7 +36,7 @@ Build the tests with the cargo feature `test-hooks`. Without it, `pool.rs`, `pro
 
 `cargo test --features test-hooks` also runs every test, but it has no per-test time limit and it runs the `slow_` tests. To run the engine tests for real, run them in the `dev` image that [docker/README.md](../docker/README.md) describes. That image sets `LO_PROGRAM_DIR` and `PDFIUM_LIB_DIR`. Next: read [Fakes](#fakes) before you write a test that needs an engine.
 
-<!-- memoria:section id="levels" files="convert_pdf.rs convert_bundle.rs detect.rs errors.rs ops.rs openapi_spec.rs upload.rs pool.rs process.rs worker_test_role.rs engines_poison.rs engines_office.rs engines_render.rs peak_heap.rs rss_linux.rs" -->
+<!-- memoria:section id="levels" files="convert_pdf.rs convert_bundle.rs detect.rs errors.rs ops.rs openapi_spec.rs upload.rs pool.rs process.rs reap_race.rs worker_test_role.rs engines_poison.rs engines_office.rs engines_render.rs peak_heap.rs rss_linux.rs" -->
 ## Test levels
 
 The tests have three levels:
@@ -58,6 +58,7 @@ The integration tests:
 | `upload.rs` | The streamed upload: digests, part rules, caps, the disk budget, and stalled and vanished clients | No |
 | `pool.rs` | The worker pool with `test` workers (level B), including the RSS kill of a worker during its call | Yes |
 | `process.rs` | Spawning, scoped reaping and process-group kills. Some cases run on Linux only | Yes |
+| `reap_race.rs` | A worker that the process-wide reaper finds only in its stray pass still has its process group killed. Linux only, in a binary of its own, because the stray pass waits on every child of the test process | Yes |
 | `worker_test_role.rs` | `convertd worker test`, driven over its pipes | Yes |
 | `engines_poison.rs` | The poison memory in the `OfficeLok` and `PdfPdfium` adapters, with `test` workers (level B) | Yes |
 | `engines_office.rs` | The office worker with the real LibreOffice, through the pool and the `OfficeEngine` adapter | No |
@@ -65,7 +66,7 @@ The integration tests:
 | `peak_heap.rs` | Heap per request with a counting allocator: the peak does not grow from 16 MiB to 100 MiB uploads, and a small request stays under 408 allocations | No |
 | `rss_linux.rs` | The idle RSS of the supervisor on Linux, at most 30 MB. The measurement is `#[ignore]`, so only its parsers run by default | The measurement only |
 
-The engine tests need `LO_PROGRAM_DIR` with `soffice.bin`, `PDFIUM_LIB_DIR` with `libpdfium.so`, or both. Some also need `CONVERTD_CORPUS_DIR`, the output folder of `corpus/generate.py`. If a variable is not set, or its folder does not hold that file, the test prints `skipped` and passes without a check. Thus a pass on a host without the engines proves nothing about the engines.
+The engine tests need `LO_PROGRAM_DIR` with `soffice.bin`, `PDFIUM_LIB_DIR` with `libpdfium.so`, or both. Some also need `CONVERTD_CORPUS_DIR`, the output folder of `corpus/generate.py`. If a variable is not set, or its folder does not hold that file, the test prints `skipped` and passes without a check. One exception: when `CONVERTD_CORPUS_DIR` is set, a missing corpus file fails the encrypted-file test in `engines_office.rs`, so a renamed corpus file cannot hide. Thus a pass on a host without the engines proves nothing about the engines.
 
 The RSS measurement runs only on request, in a Linux container: `cargo test --features test-hooks --test rss_linux -- --ignored --nocapture`. It has no recorded result yet.
 
