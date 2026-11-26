@@ -73,9 +73,9 @@ pub struct PageInfo {
     pub width_px: u32,
     pub height_px: u32,
     pub blank: bool,
-    /// Absent unless the page comes from a hidden slide.
+    /// Absent unless the page comes from a hidden slide; never `false`.
     #[serde(default)]
-    pub hidden: bool,
+    pub hidden: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -199,13 +199,22 @@ pub fn evaluate(case: &Case, obs: &Observed, ctx: &Context) -> Verdict {
                 .push(format!("blank pages {got:?}, expected {want:?}"));
         }
     }
+    // The service leaves `hidden` out of an unmarked page, in every case.
+    if let (true, Some(m)) = (archive, manifest) {
+        for page in m.pages.iter().filter(|p| p.hidden == Some(false)) {
+            v.failures.push(format!(
+                "page {} has hidden: false; an unmarked page has no hidden key",
+                page.number
+            ));
+        }
+    }
     if let (Some(want), true) = (&expect.hidden_pages, archive)
         && let Some(m) = manifest
     {
         let got: BTreeSet<u32> = m
             .pages
             .iter()
-            .filter(|p| p.hidden)
+            .filter(|p| p.hidden == Some(true))
             .map(|p| p.number)
             .collect();
         let want: BTreeSet<u32> = want.iter().copied().collect();
@@ -523,7 +532,7 @@ mod tests {
                         width_px: 413,
                         height_px: 584,
                         blank: false,
-                        hidden: false,
+                        hidden: None,
                     })
                     .collect(),
                 warnings,
@@ -765,9 +774,20 @@ mod tests {
         let mut obs = bundle(3, vec![]);
         assert_eq!(failures(&c, &obs), ["hidden pages {}, expected {2}"]);
         if let Some(m) = obs.manifest.as_mut() {
-            m.pages[1].hidden = true;
+            m.pages[1].hidden = Some(true);
         }
         assert!(failures(&c, &obs).is_empty());
+        // The manifest leaves the key out of an unmarked page.
+        if let Some(m) = obs.manifest.as_mut() {
+            m.pages[0].hidden = Some(false);
+        }
+        assert_eq!(
+            failures(&c, &obs),
+            ["page 1 has hidden: false; an unmarked page has no hidden key"]
+        );
+        if let Some(m) = obs.manifest.as_mut() {
+            m.pages[0].hidden = None;
+        }
         // An empty list: no page may carry the mark.
         let none = case(
             json!({"output": "bundle"}),

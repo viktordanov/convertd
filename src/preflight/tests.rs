@@ -1106,6 +1106,53 @@ fn odp_styles_resolve_only_in_their_own_scope() {
 }
 
 #[test]
+fn odp_properties_apply_only_inside_their_open_style() {
+    // A self-closing slide style has no properties. The properties of a
+    // style inside an inline object must not land on it.
+    let styles = r#"<style:style style:name="dp1" style:family="drawing-page"/>"#;
+    let pages = concat!(
+        r#"<draw:page draw:style-name="dp1"><draw:frame><draw:object><office:document>"#,
+        r#"<office:automatic-styles><style:style style:name="x" style:family="drawing-page"><style:drawing-page-properties presentation:visibility="hidden"/></style:style></office:automatic-styles>"#,
+        r#"</office:document></draw:object></draw:frame></draw:page><draw:page/>"#,
+    );
+    let facts = scan_bytes(
+        "empty-style.odp",
+        &odp_parts(pages, styles, "", ""),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![]
+        })
+    );
+}
+
+#[test]
+fn odp_visibility_is_read_by_namespace() {
+    // `ext:visibility` is another vocabulary's attribute; a prefix other
+    // than `presentation` bound to the presentation namespace counts.
+    let styles = concat!(
+        r#"<style:style xmlns:ext="urn:example:ext" style:name="dp1" style:family="drawing-page"><style:drawing-page-properties ext:visibility="hidden"/></style:style>"#,
+        r#"<style:style xmlns:pr="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" style:name="dp2" style:family="drawing-page"><style:drawing-page-properties pr:visibility="hidden"/></style:style>"#,
+    );
+    let pages = r#"<draw:page draw:style-name="dp1"/><draw:page draw:style-name="dp2"/>"#;
+    let facts = scan_bytes(
+        "namespaces.odp",
+        &odp_parts(pages, styles, "", ""),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![2]
+        })
+    );
+}
+
+#[test]
 fn odp_counts_only_the_slides_of_the_presentation() {
     // An inline object inside a slide holds a draw:page of its own; it is
     // not a slide. A style inside it is not a slide style either.

@@ -11,6 +11,8 @@
 //! `styles.xml`; a parent resolves among the common styles. The automatic
 //! styles of `styles.xml` belong to master pages and never apply. A page
 //! whose style is defined in neither scope leaves the list unknown (`None`).
+//! Elements and attributes match by namespace URI, whatever the prefix,
+//! and a property applies only inside the open style that holds it.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -44,21 +46,53 @@ enum Scope {
     Common,
 }
 
+const OFFICE: &[u8] = b"urn:oasis:names:tc:opendocument:xmlns:office:1.0";
+const STYLE: &[u8] = b"urn:oasis:names:tc:opendocument:xmlns:style:1.0";
+const DRAW: &[u8] = b"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0";
+const PRESENTATION: &[u8] = b"urn:oasis:names:tc:opendocument:xmlns:presentation:1.0";
+
+/// An open element: its namespace, its local name and the prefixes it
+/// declares.
+#[derive(Debug)]
+struct Open {
+    ns: Option<Vec<u8>>,
+    local: Vec<u8>,
+    bindings: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
 /// The pages of a presentation and the drawing-page styles that can apply
-/// to them.
+/// to them. Elements and attributes match by namespace URI and local name,
+/// whatever prefix the document binds.
 #[derive(Debug, Default)]
 struct Deck {
     /// The style name of each slide, in order.
     pages: Vec<Option<String>>,
     automatic: HashMap<String, PageStyle>,
     common: HashMap<String, PageStyle>,
-    /// The local names of the open elements of the part being read.
-    open: Vec<Vec<u8>>,
+    /// The open elements of the part being read.
+    open: Vec<Open>,
     /// Elements opened past `MAX_DEPTH`, not kept in `open`.
     deeper: usize,
-    /// The slide style whose properties come next.
-    current: Option<(Scope, String)>,
+    /// The slide style that is open, and its index in `open`.
+    current: Option<(Scope, String, usize)>,
     too_many: bool,
+}
+
+/// The prefixes that `e` declares: `xmlns` binds the empty prefix.
+fn bindings(e: &BytesStart<'_>) -> Vec<(Vec<u8>, Vec<u8>)> {
+    e.attributes()
+        .flatten()
+        .filter_map(|a| {
+            let prefix = if a.key.as_ref() == b"xmlns" {
+                Vec::new()
+            } else if a.key.prefix().map(|p| p.into_inner()) == Some(b"xmlns".as_slice()) {
+                a.key.local_name().as_ref().to_vec()
+            } else {
+                return None;
+            };
+            Some((prefix, a.value.into_owned()))
+        })
+        .collect()
 }
 
 impl Deck {
@@ -68,80 +102,148 @@ impl Deck {
         self.current = None;
     }
 
+    /// The namespace bound to `prefix`, by `own` (the element's own
+    /// declarations) or an open element, innermost first.
+    fn resolve(&self, own: &[(Vec<u8>, Vec<u8>)], prefix: &[u8]) -> Option<Vec<u8>> {
+        own.iter()
+            .chain(self.open.iter().rev().flat_map(|o| o.bindings.iter()))
+            .find(|(p, _)| p == prefix)
+            .map(|(_, uri)| uri.clone())
+    }
+
+    /// The value of the attribute `ns`:`local` of `e`.
+    fn attr_ns(
+        &self,
+        e: &BytesStart<'_>,
+        own: &[(Vec<u8>, Vec<u8>)],
+        ns: &[u8],
+        local: &[u8],
+    ) -> Option<String> {
+        e.attributes().flatten().find_map(|a| {
+            let prefix = a.key.prefix()?;
+            if a.key.local_name().as_ref() != local
+                || self.resolve(own, prefix.as_ref()).as_deref() != Some(ns)
+            {
+                return None;
+            }
+            a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .ok()
+                .map(|v| v.into_owned())
+        })
+    }
+
     fn on_event(&mut self, content: bool, event: &XmlEvent<'_, '_>) {
         match event {
             XmlEvent::Start(e) => {
-                self.on_element(content, e);
                 if self.deeper > 0 || self.open.len() >= MAX_DEPTH {
                     self.deeper += 1;
-                } else {
-                    self.open.push(e.local_name().as_ref().to_vec());
+                    return;
+                }
+                let own = bindings(e);
+                let ns = self.element_ns(e, &own);
+                self.on_element(content, e, &own, ns.as_deref(), true);
+                self.open.push(Open {
+                    ns,
+                    local: e.local_name().as_ref().to_vec(),
+                    bindings: own,
+                });
+            }
+            XmlEvent::Empty(e) => {
+                if self.deeper == 0 && self.open.len() < MAX_DEPTH {
+                    let own = bindings(e);
+                    let ns = self.element_ns(e, &own);
+                    self.on_element(content, e, &own, ns.as_deref(), false);
                 }
             }
-            XmlEvent::Empty(e) => self.on_element(content, e),
             XmlEvent::End => {
                 if self.deeper > 0 {
                     self.deeper -= 1;
-                } else if self.open.pop().as_deref() == Some(b"style") {
-                    self.current = None;
+                } else {
+                    self.open.pop();
+                    if matches!(self.current, Some((_, _, at)) if at >= self.open.len()) {
+                        self.current = None;
+                    }
                 }
             }
             XmlEvent::Text => {}
         }
     }
 
-    /// Whether the open elements, below the root, are exactly `path`.
-    fn under(&self, path: &[&[u8]]) -> bool {
-        self.deeper == 0
-            && self.open.len() == path.len() + 1
-            && self.open[1..].iter().zip(path).all(|(a, b)| a == b)
+    fn element_ns(&self, e: &BytesStart<'_>, own: &[(Vec<u8>, Vec<u8>)]) -> Option<Vec<u8>> {
+        let name = e.name();
+        let prefix = name.prefix().map(|p| p.into_inner()).unwrap_or(b"");
+        self.resolve(own, prefix)
     }
 
-    fn on_element(&mut self, content: bool, e: &BytesStart<'_>) {
-        match e.local_name().as_ref() {
-            b"style" => {
-                let scope = if content && self.under(&[b"automatic-styles"]) {
+    /// Whether the open elements, below the root, are exactly `path`.
+    fn under(&self, path: &[(&[u8], &[u8])]) -> bool {
+        self.open.len() == path.len() + 1
+            && self.open[1..]
+                .iter()
+                .zip(path)
+                .all(|(o, (ns, local))| o.ns.as_deref() == Some(*ns) && o.local == *local)
+    }
+
+    fn on_element(
+        &mut self,
+        content: bool,
+        e: &BytesStart<'_>,
+        own: &[(Vec<u8>, Vec<u8>)],
+        ns: Option<&[u8]>,
+        opens: bool,
+    ) {
+        let local = e.local_name();
+        match (ns, local.as_ref()) {
+            (Some(STYLE), b"style") => {
+                let scope = if content && self.under(&[(OFFICE, b"automatic-styles")]) {
                     Scope::Automatic
-                } else if !content && self.under(&[b"styles"]) {
+                } else if !content && self.under(&[(OFFICE, b"styles")]) {
                     Scope::Common
                 } else {
                     return;
                 };
-                if attr(e, b"family").as_deref() != Some("drawing-page") {
+                if self.attr_ns(e, own, STYLE, b"family").as_deref() != Some("drawing-page") {
                     return;
                 }
-                let Some(name) = attr(e, b"name") else {
+                let Some(name) = self.attr_ns(e, own, STYLE, b"name") else {
                     return;
                 };
+                let parent = self.attr_ns(e, own, STYLE, b"parent-style-name");
                 let styles = match scope {
                     Scope::Automatic => &mut self.automatic,
                     Scope::Common => &mut self.common,
                 };
-                let style = styles.entry(name.clone()).or_default();
-                style.parent = attr(e, b"parent-style-name");
-                self.current = Some((scope, name));
+                styles.entry(name.clone()).or_default().parent = parent;
+                // A self-closing style has no properties to read.
+                if opens {
+                    self.current = Some((scope, name, self.open.len()));
+                }
             }
-            b"drawing-page-properties" => {
-                if self.open.last().map(Vec::as_slice) != Some(b"style") {
+            (Some(STYLE), b"drawing-page-properties") => {
+                let Some((scope, name, at)) = self.current.clone() else {
+                    return;
+                };
+                if at + 1 != self.open.len() {
                     return;
                 }
-                if let Some((scope, name)) = &self.current
-                    && let Some(visibility) = attr(e, b"visibility")
-                {
+                if let Some(visibility) = self.attr_ns(e, own, PRESENTATION, b"visibility") {
                     let styles = match scope {
                         Scope::Automatic => &mut self.automatic,
                         Scope::Common => &mut self.common,
                     };
-                    if let Some(style) = styles.get_mut(name) {
+                    if let Some(style) = styles.get_mut(&name) {
                         style.hidden = Some(visibility == "hidden");
                     }
                 }
             }
-            b"page" if content && self.under(&[b"body", b"presentation"]) => {
+            (Some(DRAW), b"page")
+                if content && self.under(&[(OFFICE, b"body"), (OFFICE, b"presentation")]) =>
+            {
                 if self.pages.len() >= MAX_SLIDES {
                     self.too_many = true;
                 } else {
-                    self.pages.push(attr(e, b"style-name"));
+                    let style = self.attr_ns(e, own, DRAW, b"style-name");
+                    self.pages.push(style);
                 }
             }
             _ => {}
