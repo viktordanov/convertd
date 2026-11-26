@@ -242,13 +242,26 @@ ts("Pages rendered by format", "Image pages rendered per second.",
    [(f'sum by (format) (rate(convert_pages_rendered_total{{{S}}}[{RI}]))', "{{format}}")], "short", 18, 6, stack=True)
 y[0] += 8
 
-# ---- O2 placeholder
-row("CPU per job (O2)")
-text("CPU per job",
-     "CPU time per worker call (user plus system), by pool and operation, arrives with effort O2 of ledger item 010. "
-     "Its panels go in this row.\n\nUntil then, the stage durations above are wall time: a burst that uses six cores shows as time, not as cores.",
-     0, 24, 4)
-y[0] += 4
+# ---- CPU per job (effort O2: convert_worker_cpu_seconds{pool,op}, user plus system time per worker call)
+CPU = "convert_worker_cpu_seconds"
+CPU_NOTE = ("A call adds all of its CPU time when its reply arrives, so a call longer than the rate window shows as idle while it runs "
+            "and above its real cores when it ends. A call that times out, crashes or passes its kill RSS sends no reply and records nothing.")
+row("CPU per job")
+ts("Cores per pool",
+   "CPU seconds per second of the finished worker calls: the cores each pool used. " + CPU_NOTE + " The 5 m series smooths long calls.",
+   [(f'sum by (pool) (rate({CPU}_sum{{{S}}}[{RI}]))', "{{pool}}"),
+    (f'sum by (pool) (rate({CPU}_sum{{{S}}}[5m]))', "{{pool}} (5 m)")],
+   "short", 0, 8)
+ts("CPU per call, p50 and p99",
+   "CPU time (user plus system) of one worker call, per pool and operation. A conversion makes one or more calls (convert, inspect, render). " + CPU_NOTE,
+   [(q(0.5, CPU, "pool, op"), "p50 {{pool}} {{op}}"),
+    (q(0.99, CPU, "pool, op"), "p99 {{pool}} {{op}}")],
+   "s", 8, 8)
+ts("Mean CPU per call",
+   "The rate of the CPU time over the rate of the calls, per pool and operation: the mean CPU seconds of one call in the window.",
+   [(f'sum by (pool, op) (rate({CPU}_sum{{{S}}}[{RI}])) / sum by (pool, op) (rate({CPU}_count{{{S}}}[{RI}]))', "{{pool}} {{op}}")],
+   "s", 16, 8)
+y[0] += 8
 
 
 def var_query(name, label, query, multi=True):
