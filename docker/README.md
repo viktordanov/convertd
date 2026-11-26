@@ -180,7 +180,7 @@ These sizes are measurements without CJK fonts, on an arm64 Mac (Docker 29.8.2, 
 
 Uncompressed sizes come from `docker image inspect`. The working target for the product image is at most 600 MB uncompressed, on amd64, the production architecture. The trims save 128 MB on each architecture. The largest savings are the icon themes (72 MB), the gallery (14 MB), the offline help (11 MB of content in 5334 files), the duplicate fonts and the templates (8 MB). The spike image of `docs/m0-spikes.md` was 708 MB, without the Noto fonts.
 
-Later on 2026-11-26, the fonts for the scripts of living languages and WenQuanYi Micro Hei added 11.6 MB. The arm64 `runtime` image then measured 616.5 MB, under the CI budget of 635 MB. The same files go into the amd64 image, so it comes to about 590 MB. The next CI image job measures it natively. The final arm64 `runtime` image, built from `main` at `1eaf24b` with the performance work, measured 615.9 MB (615917307 bytes). Its convertd is 5.8 MB.
+Later on 2026-11-26, the fonts for the scripts of living languages and WenQuanYi Micro Hei added 11.6 MB. The arm64 `runtime` image then measured 616.5 MB, under the CI budget of 635 MB. The same files go into the amd64 image, so it comes to about 590 MB. The next CI image job measures it natively. The final arm64 `runtime` image, built from `main` at `1eaf24b` with the performance work, measured 615.9 MB (615917307 bytes). Its convertd is 5.8 MB. The paper locales then added about 3 MB: 618.9 MB at `1eafd89` on the branch of `DEFAULT_PAPER`.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="verification" files="Dockerfile smoke.sh ab-pages.sh corpus-check.sh" -->
