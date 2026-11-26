@@ -36,7 +36,7 @@ A `Ping` call and its reply look like this on the wire:
 {"type":"reply","id":7,"job":1,"engine":{"engine_us":0,"convert_us":0,"inspect_us":0,"probe_us":0,"render_us":0,"encode_us":0,"decrypt_us":0,"preflight_us":0},"rss_bytes":0,"result":{"Ok":{"output":"pong"}}}
 ```
 
-`Convert` names the office family of the source: `document`, `spreadsheet` or `presentation`. Its reply carries the PDF size, LibreOffice's document type and the pre-flight facts as `SourceFactsWire`. Each `RenderedPage` carries the CRC-32 of its file.
+`Convert` names the office family of the source: `document`, `spreadsheet` or `presentation`. Its reply carries the PDF size, LibreOffice's document type and the pre-flight facts as `SourceFactsWire`.
 
 A `WorkerError` has a `kind` and a message for the log. The message can hold paths, so it never reaches an HTTP body. `DiskFull` is apart from `LimitExceeded`: a full disk comes from other jobs, and `LimitExceeded` is the job's own cap. `FakeQueueFull` and `FakeUnavailable` come only from the `test` role.
 

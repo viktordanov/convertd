@@ -303,8 +303,6 @@ pub struct RenderedPage {
     /// Below the requested DPI when `max_edge` reduced the page; the domain
     /// raises `RENDER_CLAMPED` from it.
     pub effective_dpi: f32,
-    /// CRC-32 of the file, computed while encoding. Optional.
-    pub crc32: Option<u32>,
 }
 
 #[derive(Debug, Clone)]

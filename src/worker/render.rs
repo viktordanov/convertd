@@ -234,7 +234,6 @@ impl RenderWorker {
                     flat,
                     colour,
                     effective_dpi: scale * 72.0,
-                    crc32: Some(crc32fast::hash(bytes)),
                 });
             }
             Ok(())

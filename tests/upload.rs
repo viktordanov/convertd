@@ -203,7 +203,6 @@ async fn digests_of_a_five_mib_file_match() {
         received.upload.sha256,
         <[u8; 32]>::from(Sha256::digest(&data))
     );
-    assert_eq!(received.upload.crc32, crc32fast::hash(&data));
     assert_eq!(received.upload.file_name.as_deref(), Some("noise.pdf"));
     assert_eq!(received.detection.format, Format::Pdf);
     assert_eq!(received.source, job.root().join("source.pdf"));

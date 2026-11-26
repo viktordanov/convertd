@@ -231,7 +231,6 @@ pub async fn receive(
         upload: UploadFacts {
             size_bytes: result.size,
             sha256: result.sha256,
-            crc32: result.crc32,
             file_name,
         },
         detection: result.detection,
@@ -343,7 +342,6 @@ struct SinkResult {
     source: PathBuf,
     size: u64,
     sha256: [u8; 32],
-    crc32: u32,
     detection: Detection,
     detect: Duration,
 }
@@ -353,7 +351,6 @@ struct SinkResult {
 pub struct Written {
     pub size: u64,
     pub sha256: [u8; 32],
-    pub crc32: u32,
 }
 
 /// Runs on one blocking thread. Owns the file and a clone of the
@@ -384,7 +381,6 @@ fn sink(
         source,
         size: written.size,
         sha256: written.sha256,
-        crc32: written.crc32,
         detection,
         detect,
     })
@@ -398,13 +394,11 @@ fn write_chunks<W: Write>(
 ) -> Result<Option<Written>, UploadError> {
     let mut out = BufWriter::with_capacity(WRITE_BUFFER, writer);
     let mut sha = Sha256::new();
-    let mut crc = crc32fast::Hasher::new();
     let mut size = 0u64;
     loop {
         match next() {
             Some(SinkMessage::Chunk(chunk)) => {
                 sha.update(&chunk);
-                crc.update(&chunk);
                 out.write_all(&chunk).map_err(map_io)?;
                 size += chunk.len() as u64;
             }
@@ -416,7 +410,6 @@ fn write_chunks<W: Write>(
     Ok(Some(Written {
         size,
         sha256: sha.finalize().into(),
-        crc32: crc.finalize(),
     }))
 }
 
@@ -448,7 +441,6 @@ mod tests {
             written.sha256,
             <[u8; 32]>::from(Sha256::digest(b"hello world"))
         );
-        assert_eq!(written.crc32, crc32fast::hash(b"hello world"));
     }
 
     #[test]

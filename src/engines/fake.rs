@@ -573,7 +573,6 @@ impl PdfEngine for FakePdf {
                 flat: false,
                 colour: [255, 255, 255],
                 effective_dpi: f32::from(job.dpi),
-                crc32: Some(crc32fast::hash(&image)),
             });
         }
         Ok(Rendered {
@@ -724,7 +723,6 @@ mod tests {
                 let path: PathBuf = dir.join(&page.file_name);
                 let bytes = std::fs::read(&path).unwrap();
                 assert!(bytes.starts_with(magic), "{format:?}");
-                assert_eq!(page.crc32, Some(crc32fast::hash(&bytes)));
                 assert_eq!(page.size_bytes, bytes.len() as u64);
                 let decoded = image::load_from_memory(&bytes).unwrap();
                 assert_eq!((decoded.width(), decoded.height()), (1, 1));

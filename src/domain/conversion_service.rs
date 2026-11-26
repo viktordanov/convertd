@@ -52,7 +52,6 @@ pub struct JobPaths {
 pub struct UploadFacts {
     pub size_bytes: u64,
     pub sha256: [u8; 32],
-    pub crc32: u32,
     /// The sanitised base name of the part's file name, if any.
     pub file_name: Option<String>,
 }
@@ -775,7 +774,6 @@ mod tests {
                     flat: false,
                     colour: [0; 3],
                     effective_dpi: f32::from(job.dpi),
-                    crc32: None,
                 })
                 .collect();
             *self.rendered.lock().unwrap() = Some(job);
@@ -826,7 +824,6 @@ mod tests {
         let upload = UploadFacts {
             size_bytes: 1000,
             sha256: [0; 32],
-            crc32: 0,
             file_name: None,
         };
         let request = ConversionRequest::new(raw, &test_limits()).unwrap();

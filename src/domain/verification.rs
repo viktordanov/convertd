@@ -490,7 +490,6 @@ mod tests {
             flat: false,
             colour: [0, 0, 0],
             effective_dpi,
-            crc32: None,
         }
     }
 
