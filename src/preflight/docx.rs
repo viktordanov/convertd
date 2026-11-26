@@ -8,17 +8,18 @@
 //! references (`minorHAnsi`, `majorAscii`, …) resolve through the theme's
 //! `a:minorFont|a:majorFont/a:latin@typeface`.
 //!
-//! Embedded families come from `word/fontTable.xml`: a `w:font` whose
+//! Embedded families come from the font table that the main part links
+//! (`word/fontTable.xml`): a requested family whose `w:font` has a
 //! `w:embedRegular`, `w:embedBold`, `w:embedItalic` or `w:embedBoldItalic`
-//! points, through the table's relationships, at a font part the package
-//! holds. Obfuscated (`w:fontKey`) and plain parts count alike.
+//! that points, through the table's relationships, at a font part the
+//! package holds. Obfuscated (`w:fontKey`) and plain parts count alike.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use quick_xml::events::BytesStart;
 
-use super::package::{Package, attr, attr_prefixed, resolve};
-use super::{FONT_SCAN_CAP, MAX_FONTS, PART_CAP, add_font};
+use super::package::{Package, attr, attr_prefixed, rels_path, resolve};
+use super::{FONT_SCAN_CAP, PART_CAP, add_font};
 use crate::domain::verification::{Check, SkipReason, SourceFacts};
 
 /// At most this many styles are kept.
@@ -103,10 +104,8 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
         .into_iter()
         .next()
         .unwrap_or_else(|| "word/styles.xml".to_owned());
-    let font_table_part = target("/fontTable")
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| "word/fontTable.xml".to_owned());
+    // Only a table the main part links: a leftover table is not loaded.
+    let font_table_part = target("/fontTable").into_iter().next();
     let theme = theme_fonts(package, &theme_part);
 
     // The parts with runs: the main part, then headers, footers, notes.
@@ -186,7 +185,7 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
             return;
         }
     }
-    match embedded_fonts(package, &font_table_part) {
+    match embedded_fonts(package, font_table_part.as_deref(), &found) {
         Ok(embedded) => facts.embedded_fonts = embedded.into_iter().collect(),
         Err(reason) => {
             facts.skipped.push((Check::Fonts, reason));
@@ -196,47 +195,67 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
     fonts.extend(found);
 }
 
-/// The families of `part` (the font table) whose embed elements point at
-/// a font part the package holds. A missing table embeds nothing; a table
-/// or relationships part that cannot be read is an error, because the
-/// font check must not run without knowing what is embedded.
-fn embedded_fonts(package: &mut Package, part: &str) -> Result<BTreeSet<String>, SkipReason> {
-    let rels = match package.rels(part) {
-        Ok(rels) => rels,
-        Err(SkipReason::MissingPart) => Default::default(),
-        Err(reason) => return Err(reason),
+/// The requested families that `part`, the font table linked from the
+/// main part, embeds: a `w:font` with an embed element whose relationship
+/// points at a font part the package holds. Only requested families are
+/// kept, so the result is bounded by the requested set and an unrelated
+/// family cannot crowd one out. Each name is kept once. No linked table,
+/// or a linked table absent from the package, embeds nothing; a table or
+/// relationships part that is present but cannot be read is an error,
+/// because the font check must not run without knowing what is embedded.
+fn embedded_fonts(
+    package: &mut Package,
+    part: Option<&str>,
+    requested: &BTreeSet<String>,
+) -> Result<BTreeSet<String>, SkipReason> {
+    let Some(part) = part else {
+        return Ok(BTreeSet::new());
     };
-    let mut current: Option<String> = None;
-    let mut ids: Vec<(String, String)> = Vec::new();
-    let result = package.xml(part, PART_CAP, |e| {
+    if !package.has(part) {
+        return Ok(BTreeSet::new());
+    }
+    let rels = if package.has(&rels_path(part)) {
+        package.rels(part)?
+    } else {
+        Default::default()
+    };
+    // The relationship ids that point at a font part in the package.
+    let fonts: HashSet<String> = rels
+        .into_iter()
+        .filter(|(_, (kind, target))| kind.ends_with("/font") && package.has(target))
+        .map(|(id, _)| id)
+        .collect();
+    let wanted: HashMap<String, &String> =
+        requested.iter().map(|name| (fold(name), name)).collect();
+    let mut current: Option<&String> = None;
+    let mut embedded = BTreeSet::new();
+    package.xml(part, PART_CAP, |e| {
         match e.local_name().as_ref() {
-            b"font" => current = attr(e, b"name"),
+            b"font" => {
+                current = attr(e, b"name").and_then(|name| wanted.get(&fold(&name)).copied())
+            }
             b"embedRegular" | b"embedBold" | b"embedItalic" | b"embedBoldItalic" => {
-                if let (Some(name), Some(id)) = (&current, attr_prefixed(e, b"id"))
-                    && ids.len() < 4 * MAX_FONTS
+                if let Some(name) = current
+                    && !embedded.contains(name)
+                    && attr_prefixed(e, b"id").is_some_and(|id| fonts.contains(&id))
                 {
-                    ids.push((name.clone(), id));
+                    embedded.insert(name.clone());
                 }
             }
             _ => {}
         }
         true
-    });
-    match result {
-        Ok(_) => {}
-        Err(SkipReason::MissingPart) => return Ok(BTreeSet::new()),
-        Err(reason) => return Err(reason),
-    }
-    let mut embedded = BTreeSet::new();
-    for (name, id) in ids {
-        if rels
-            .get(&id)
-            .is_some_and(|(kind, target)| kind.ends_with("/font") && package.has(target))
-        {
-            add_font(&mut embedded, &name);
-        }
-    }
+    })?;
     Ok(embedded)
+}
+
+/// Trimmed, case-folded, runs of whitespace collapsed to one space: the
+/// comparison the font catalog uses.
+fn fold(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// The document defaults' families and every style: id to (style, is the

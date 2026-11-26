@@ -99,9 +99,10 @@ pub struct SourceFacts {
     pub declared_pages: Option<DeclaredPages>,
     /// Sorted, without duplicates, at most 256.
     pub requested_fonts: Vec<String>,
-    /// Families whose font file the source embeds, which LibreOffice uses
-    /// instead of a substitute (DOCX `word/fontTable.xml`). Sorted, without
-    /// duplicates, at most 256.
+    /// The requested families whose font file the source embeds, which
+    /// LibreOffice uses instead of a substitute (the DOCX font table that the
+    /// main part links). Sorted, without duplicates, a subset of
+    /// `requested_fonts` up to case and white space.
     pub embedded_fonts: Vec<String>,
     pub macros: Option<MacroFact>,
     pub skipped: Vec<(Check, SkipReason)>,

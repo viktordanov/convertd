@@ -72,13 +72,23 @@ fn scan_bytes(name: &str, bytes: &[u8], family: Family) -> SourceFacts {
 }
 
 fn docx(extra_entries: &[(&str, &[u8])], document: &str) -> Vec<u8> {
+    docx_linking(extra_entries, document, true)
+}
+
+/// `docx`, with or without the main part's relationship to
+/// `word/fontTable.xml`.
+fn docx_linking(extra_entries: &[(&str, &[u8])], document: &str, font_table: bool) -> Vec<u8> {
     let content_types = types("");
     let root = rels(&[("rId1", "officeDocument", "word/document.xml")]);
-    let doc_rels = rels(&[
+    let mut doc_rels = vec![
         ("rId1", "styles", "styles.xml"),
         ("rId2", "theme", "theme/theme1.xml"),
         ("rId3", "header", "header1.xml"),
-    ]);
+    ];
+    if font_table {
+        doc_rels.push(("rId4", "fontTable", "fontTable.xml"));
+    }
+    let doc_rels = rels(&doc_rels);
     let styles = format!(
         r#"<w:styles {W}><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi" w:eastAsiaTheme="minorEastAsia"/></w:rPr></w:rPrDefault></w:docDefaults><w:latentStyles/><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:basedOn w:val="Normal"/><w:rPr><w:rFonts w:asciiTheme="majorHAnsi" w:hAnsiTheme="majorHAnsi"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:basedOn w:val="Heading1"/><w:rPr><w:rFonts w:ascii="Calibri Light" w:hAnsi="Calibri Light"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Unused"><w:rPr><w:rFonts w:ascii="Zzyzx" w:hAnsi="Zzyzx"/></w:rPr></w:style></w:styles>"#
     );
@@ -155,16 +165,27 @@ fn font_table(fonts: &[(&str, Option<(&str, &str)>)]) -> String {
     out
 }
 
+/// A body whose runs request each of `families`.
+fn runs(families: &[&str]) -> String {
+    let runs: String = families
+        .iter()
+        .map(|f| format!(r#"<w:r><w:rPr><w:rFonts w:ascii="{f}" w:hAnsi="{f}"/></w:rPr></w:r>"#))
+        .collect();
+    body(&format!("<w:p>{runs}</w:p>"))
+}
+
 #[test]
 fn docx_embedded_fonts_from_the_font_table() {
-    // F1: a family counts as embedded only when an embed element points at
-    // a font part that the package holds, obfuscated (odttf) or plain.
+    // F1: a requested family counts as embedded only when an embed element
+    // points at a font part that the package holds, obfuscated (odttf) or
+    // plain. "Not Requested" is embedded but no run asks for it.
     let table = font_table(&[
         ("Calibri", None),
         ("Aptos", Some(("embedRegular", "rIdF1"))),
         ("Embed Plain", Some(("embedBold", "rIdF2"))),
         ("Gone Part", Some(("embedItalic", "rIdF3"))),
         ("No Relationship", Some(("embedBoldItalic", "rIdF9"))),
+        ("Not Requested", Some(("embedRegular", "rIdF1"))),
     ]);
     let table_rels = rels(&[
         ("rIdF1", "font", "fonts/font1.odttf"),
@@ -178,12 +199,40 @@ fn docx_embedded_fonts_from_the_font_table() {
             ("word/fonts/font1.odttf", b"\x00obfuscated"),
             ("word/fonts/font2.ttf", b"\x00\x01\x00\x00plain"),
         ],
-        &body("<w:p/>"),
+        &runs(&["aptos", "Embed Plain", "Gone Part", "No Relationship"]),
     );
     let facts = scan_bytes("embedded.docx", &bytes, Family::Document);
-    assert_eq!(facts.embedded_fonts, ["Aptos", "Embed Plain"]);
-    assert_eq!(facts.requested_fonts, ["Calibri", "Cambria"]);
+    // The run's spelling: names compare case-folded, as the catalog does.
+    assert_eq!(facts.embedded_fonts, ["Embed Plain", "aptos"]);
     assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_font_table_counts_only_when_the_main_part_links_it() {
+    // A leftover table that no relationship of the main part names is not
+    // loaded by LibreOffice, so it embeds nothing.
+    let table = font_table(&[("Aptos", Some(("embedRegular", "rIdF1")))]);
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.odttf")]);
+    let entries: [(&str, &[u8]); 3] = [
+        ("word/fontTable.xml", table.as_bytes()),
+        ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+        ("word/fonts/font1.odttf", b"\x00font"),
+    ];
+    let unlinked = docx_linking(&entries, &runs(&["Aptos"]), false);
+    let facts = scan_bytes("stale.docx", &unlinked, Family::Document);
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+    // The same parts, linked: Aptos is embedded.
+    let facts = scan_bytes(
+        "linked.docx",
+        &docx(&entries, &runs(&["Aptos"])),
+        Family::Document,
+    );
+    assert_eq!(facts.embedded_fonts, ["Aptos"]);
 }
 
 #[test]
@@ -191,6 +240,44 @@ fn docx_without_a_font_table_embeds_nothing() {
     let facts = scan_bytes("small.docx", &docx(&[], &body("<w:p/>")), Family::Document);
     assert!(facts.embedded_fonts.is_empty());
     assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+/// Sets the compression method of entry `name` in both its local and its
+/// central header, to make an entry that is present but cannot be read.
+fn set_method(zip: &mut [u8], name: &str, method: u16) {
+    let mut patched = 0;
+    for at in 0..zip.len().saturating_sub(46) {
+        let signature = &zip[at..at + 4];
+        let (method_at, name_at) = match signature {
+            b"PK\x03\x04" => (at + 8, at + 30),
+            b"PK\x01\x02" => (at + 10, at + 46),
+            _ => continue,
+        };
+        if zip.get(name_at..name_at + name.len()) == Some(name.as_bytes()) {
+            zip[method_at..method_at + 2].copy_from_slice(&method.to_le_bytes());
+            patched += 1;
+        }
+    }
+    assert_eq!(patched, 2, "{name} not found");
+}
+
+#[test]
+fn docx_font_table_present_but_unreadable_skips_the_font_check() {
+    // An entry in a compression method the reader does not support is not
+    // absent: the check is skipped instead of running without the table.
+    let table = font_table(&[("Aptos", Some(("embedRegular", "rIdF1")))]);
+    let mut bytes = docx(
+        &[("word/fontTable.xml", table.as_bytes())],
+        &runs(&["Aptos"]),
+    );
+    set_method(&mut bytes, "word/fontTable.xml", 12);
+    let facts = scan_bytes("bzip2.docx", &bytes, Family::Document);
+    assert!(
+        facts.requested_fonts.is_empty(),
+        "{:?}",
+        facts.requested_fonts
+    );
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MissingPart)]);
 }
 
 #[test]
