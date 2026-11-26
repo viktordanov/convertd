@@ -73,11 +73,11 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(convert_requests_total, namespace)",
+          "query": "label_values(convert_disk_budget_bytes, namespace)",
           "refId": "namespace-var",
           "qryType": 1
         },
-        "definition": "label_values(convert_requests_total, namespace)",
+        "definition": "label_values(convert_disk_budget_bytes, namespace)",
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
@@ -105,11 +105,11 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(convert_requests_total{namespace=~\"$namespace\"}, pod)",
+          "query": "label_values(convert_disk_budget_bytes{namespace=~\"$namespace\"}, pod)",
           "refId": "pod-var",
           "qryType": 1
         },
-        "definition": "label_values(convert_requests_total{namespace=~\"$namespace\"}, pod)",
+        "definition": "label_values(convert_disk_budget_bytes{namespace=~\"$namespace\"}, pod)",
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
@@ -180,7 +180,7 @@
       "type": "stat",
       "id": 2,
       "title": "Requests / s",
-      "description": "All finished POST /v1/convert requests, every status.",
+      "description": "Finished POST /v1/convert requests, every status that the handler gives. A 401 from the auth layer is not counted.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -289,7 +289,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code!=\"OK\"}[$__rate_interval])) / sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "expr": "(sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code!=\"OK\"}[$__rate_interval])) or vector(0)) / sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
           "legendFormat": "",
           "refId": "A",
           "range": true
@@ -353,7 +353,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=\"TOO_MANY_REQUESTS\"}[$__rate_interval])) / sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "expr": "(sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=\"TOO_MANY_REQUESTS\"}[$__rate_interval])) or vector(0)) / sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
           "legendFormat": "",
           "refId": "A",
           "range": true
@@ -363,8 +363,8 @@
     {
       "type": "stat",
       "id": 5,
-      "title": "Conversions in flight (mean)",
-      "description": "Mean number of requests in progress over the rate window: the rate of the summed total stage time (Little's law). It counts a burst that a gauge sampled every scrape misses.",
+      "title": "Conversions in flight (estimate)",
+      "description": "The rate of the summed total stage time (Little's law). Each request adds its whole duration when it finishes, so under steady load this is the mean number of conversions in progress. A conversion longer than the rate window counts in the window where it ends.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -420,8 +420,8 @@
     {
       "type": "stat",
       "id": 6,
-      "title": "Engines busy (mean)",
-      "description": "Mean number of engine calls in progress: the rate of the summed engine stage time. Compare with the worker count.",
+      "title": "Busy workers (mean)",
+      "description": "Mean of the sampled busy worker count over the rate window, all pools. A worker is busy from its lease to its return.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -467,7 +467,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_stage_duration_seconds_sum{namespace=~\"$namespace\", pod=~\"$pod\", stage=\"engine\"}[$__rate_interval]))",
+          "expr": "sum(avg_over_time(convert_workers{namespace=~\"$namespace\", pod=~\"$pod\", state=\"busy\"}[$__rate_interval]))",
           "legendFormat": "",
           "refId": "A",
           "range": true
@@ -542,7 +542,7 @@
       "type": "timeseries",
       "id": 8,
       "title": "Requests by HTTP status",
-      "description": "convert_requests_total has a code label, not a status label. Each series maps codes to the status from src/rest/response.rs. \"other\" catches a code that this map does not know.",
+      "description": "Outcomes of POST /v1/convert. convert_requests_total has a code label, not a status label: each series maps codes to the status from src/rest/response.rs. A 401 from the auth layer and a 404 for an unknown route are not counted. \"other\" catches a code that this map does not know.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -612,29 +612,9 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"UNAUTHORIZED\"}[$__rate_interval]))",
-          "legendFormat": "401",
-          "refId": "C",
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"NOT_FOUND\"}[$__rate_interval]))",
-          "legendFormat": "404",
-          "refId": "D",
-          "range": true
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
           "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"FILE_TOO_LARGE\"}[$__rate_interval]))",
           "legendFormat": "413",
-          "refId": "E",
+          "refId": "C",
           "range": true
         },
         {
@@ -644,7 +624,7 @@
           },
           "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"UNSUPPORTED_FORMAT\"}[$__rate_interval]))",
           "legendFormat": "415",
-          "refId": "F",
+          "refId": "D",
           "range": true
         },
         {
@@ -654,7 +634,7 @@
           },
           "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"VALIDATION_ERROR|PASSWORD_REQUIRED|INVALID_PASSWORD|LIMIT_EXCEEDED|CONVERSION_FAILED\"}[$__rate_interval]))",
           "legendFormat": "422",
-          "refId": "G",
+          "refId": "E",
           "range": true
         },
         {
@@ -664,7 +644,7 @@
           },
           "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"TOO_MANY_REQUESTS\"}[$__rate_interval]))",
           "legendFormat": "429",
-          "refId": "H",
+          "refId": "F",
           "range": true
         },
         {
@@ -674,7 +654,7 @@
           },
           "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"INTERNAL_ERROR\"}[$__rate_interval]))",
           "legendFormat": "500",
-          "refId": "I",
+          "refId": "G",
           "range": true
         },
         {
@@ -684,7 +664,7 @@
           },
           "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"SERVICE_UNAVAILABLE\"}[$__rate_interval]))",
           "legendFormat": "503",
-          "refId": "J",
+          "refId": "H",
           "range": true
         },
         {
@@ -694,7 +674,7 @@
           },
           "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"CONVERSION_TIMEOUT\"}[$__rate_interval]))",
           "legendFormat": "504",
-          "refId": "K",
+          "refId": "I",
           "range": true
         },
         {
@@ -702,9 +682,9 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code!~\"OK|BAD_REQUEST|UNAUTHORIZED|NOT_FOUND|FILE_TOO_LARGE|UNSUPPORTED_FORMAT|VALIDATION_ERROR|PASSWORD_REQUIRED|INVALID_PASSWORD|LIMIT_EXCEEDED|CONVERSION_FAILED|TOO_MANY_REQUESTS|INTERNAL_ERROR|SERVICE_UNAVAILABLE|CONVERSION_TIMEOUT\"}[$__rate_interval]))",
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code!~\"OK|BAD_REQUEST|FILE_TOO_LARGE|UNSUPPORTED_FORMAT|VALIDATION_ERROR|PASSWORD_REQUIRED|INVALID_PASSWORD|LIMIT_EXCEEDED|CONVERSION_FAILED|TOO_MANY_REQUESTS|INTERNAL_ERROR|SERVICE_UNAVAILABLE|CONVERSION_TIMEOUT\"}[$__rate_interval]))",
           "legendFormat": "other",
-          "refId": "L",
+          "refId": "J",
           "range": true
         }
       ]
@@ -1030,8 +1010,8 @@
     {
       "type": "timeseries",
       "id": 15,
-      "title": "Time in each stage (requests in that stage, mean)",
-      "description": "Rate of the summed time per stage: the mean number of requests in each stage at once. The stack sums to the requests in flight. engine, total and overhead are left out because they sum other stages.",
+      "title": "Time in each stage (seconds per second)",
+      "description": "Rate of the summed time per stage, counted when each request finishes. Under steady load it estimates the requests in that stage at once. The stages overlap (an office preflight is inside convert, and receive is outside total), so the series do not add up and the panel does not stack them.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1049,11 +1029,11 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
-            "fillOpacity": 30,
+            "fillOpacity": 10,
             "showPoints": "never",
             "spanNulls": false,
             "stacking": {
-              "mode": "normal",
+              "mode": "none",
               "group": "A"
             }
           }
@@ -1081,7 +1061,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (stage) (rate(convert_stage_duration_seconds_sum{namespace=~\"$namespace\", pod=~\"$pod\", stage=~\"receive|detect|queue|preflight|convert|inspect|render|respond\", family=~\"$family\"}[$__rate_interval]))",
+          "expr": "sum by (stage) (rate(convert_stage_duration_seconds_sum{namespace=~\"$namespace\", pod=~\"$pod\", stage=~\"receive|detect|queue|preflight|convert|inspect|render|respond|total\", family=~\"$family\"}[$__rate_interval]))",
           "legendFormat": "{{stage}}",
           "refId": "A",
           "range": true
@@ -1328,7 +1308,7 @@
       "type": "timeseries",
       "id": 20,
       "title": "Queue depth per pool (peak in each step)",
-      "description": "Leases that wait for a worker. The peak of the scraped samples in each step, so a short queue stays visible when you zoom out. A 429 starts when the depth passes QUEUE_CAPACITY (office: 2 x OFFICE_WORKERS) or 2 x RENDER_WORKERS.",
+      "description": "Leases that wait for a worker. The peak of the scraped samples in each step, so a short queue stays visible when you zoom out. The depth also counts the later engine calls of admitted requests. Only first calls count against QUEUE_CAPACITY (office: 2 x OFFICE_WORKERS) or 2 x RENDER_WORKERS, past which a request gets 429.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1450,7 +1430,7 @@
       "type": "timeseries",
       "id": 22,
       "title": "Busy workers per pool (peak in each step)",
-      "description": "The highest busy count of the scraped samples in each step.",
+      "description": "The highest busy count of the selected pods together, over the samples in each step.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1500,7 +1480,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (pool) (max_over_time(convert_workers{namespace=~\"$namespace\", pod=~\"$pod\", state=\"busy\"}[$__rate_interval]))",
+          "expr": "max_over_time(sum by (pool) (convert_workers{namespace=~\"$namespace\", pod=~\"$pod\", state=\"busy\"})[$__rate_interval:])",
           "legendFormat": "{{pool}}",
           "refId": "A",
           "range": true
