@@ -229,7 +229,9 @@ COPY --from=paper-locales /out/ /usr/lib/locale/
 # Gate: LC_PAPER must load without a diagnostic and give the paper that DEFAULT_PAPER promises
 # (glibc stores mm). The C locale is A4 too, so a missing en_GB would still print 297 210.
 # The install layer must also keep ooSetupSystemLocale finalized and empty, after main.xcd
-# (rs-convert-paper.xcd). The gate compares the file without white space.
+# (rs-convert-paper.xcd). This part is a packaging check: it compares the installed file
+# without white space with the form in the repository. The effect on the engine is proven by
+# tests/engines_office.rs, default_paper_sets_the_page_size_of_a_sheet_without_one.
 RUN xcd="$(tr -d ' \t\n' </opt/libreoffice/share/registry/rs-convert-paper.xcd)"; \
     for want in '<dependencyfile="main"/>' \
       '<oor:component-dataoor:package="org.openoffice"oor:name="Setup"><nodeoor:name="L10N"><propoor:name="ooSetupSystemLocale"oor:finalized="true"><value></value></prop></node></oor:component-data>'; do \
