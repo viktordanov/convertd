@@ -65,6 +65,38 @@
         "regex": ""
       },
       {
+        "name": "scrape_interval",
+        "label": "Scrape interval",
+        "type": "custom",
+        "description": "The scrape interval of convertd. Every query uses it as its min step, so $__rate_interval covers at least four scrapes.",
+        "query": "15s,30s,1m",
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "current": {
+          "selected": true,
+          "text": "15s",
+          "value": "15s"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "15s",
+            "value": "15s"
+          },
+          {
+            "selected": false,
+            "text": "30s",
+            "value": "30s"
+          },
+          {
+            "selected": false,
+            "text": "1m",
+            "value": "1m"
+          }
+        ]
+      },
+      {
         "name": "namespace",
         "label": "Namespace",
         "type": "query",
@@ -229,7 +261,7 @@
           "legendFormat": "",
           "refId": "A",
           "range": false,
-          "interval": "15s",
+          "interval": "$scrape_interval",
           "instant": true
         }
       ]
@@ -295,7 +327,7 @@
           "legendFormat": "",
           "refId": "A",
           "range": false,
-          "interval": "15s",
+          "interval": "$scrape_interval",
           "instant": true
         }
       ]
@@ -361,7 +393,7 @@
           "legendFormat": "",
           "refId": "A",
           "range": false,
-          "interval": "15s",
+          "interval": "$scrape_interval",
           "instant": true
         }
       ]
@@ -420,7 +452,7 @@
           "legendFormat": "",
           "refId": "A",
           "range": false,
-          "interval": "15s",
+          "interval": "$scrape_interval",
           "instant": true
         }
       ]
@@ -429,7 +461,7 @@
       "type": "stat",
       "id": 6,
       "title": "Busy workers (mean)",
-      "description": "Mean of the busy worker count of all selected pods and pools together, over the rate window, sampled every 15 s (the scrape interval of the ServiceMonitor in deploy/README.md). A worker is busy from its lease to its return.",
+      "description": "Mean of the busy worker count of all selected pods and pools together, over the rate window, sampled every $scrape_interval. A worker is busy from its lease to its return.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -475,11 +507,11 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "avg_over_time(sum(convert_workers{namespace=~\"$namespace\", pod=~\"$pod\", state=\"busy\"})[$__rate_interval:15s])",
+          "expr": "avg_over_time(sum(convert_workers{namespace=~\"$namespace\", pod=~\"$pod\", state=\"busy\"})[$__rate_interval:$scrape_interval])",
           "legendFormat": "",
           "refId": "A",
           "range": false,
-          "interval": "15s",
+          "interval": "$scrape_interval",
           "instant": true
         }
       ]
@@ -545,7 +577,7 @@
           "legendFormat": "",
           "refId": "A",
           "range": false,
-          "interval": "15s",
+          "interval": "$scrape_interval",
           "instant": true
         }
       ]
@@ -608,7 +640,7 @@
           "legendFormat": "200",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -619,7 +651,7 @@
           "legendFormat": "400",
           "refId": "B",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -630,7 +662,7 @@
           "legendFormat": "413",
           "refId": "C",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -641,7 +673,7 @@
           "legendFormat": "415",
           "refId": "D",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -652,7 +684,7 @@
           "legendFormat": "422",
           "refId": "E",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -663,7 +695,7 @@
           "legendFormat": "429",
           "refId": "F",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -674,7 +706,7 @@
           "legendFormat": "500",
           "refId": "G",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -685,7 +717,7 @@
           "legendFormat": "503",
           "refId": "H",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -696,7 +728,7 @@
           "legendFormat": "504",
           "refId": "I",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -707,7 +739,7 @@
           "legendFormat": "other",
           "refId": "J",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -769,7 +801,7 @@
           "legendFormat": "{{code}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -831,7 +863,7 @@
           "legendFormat": "{{code}} {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -893,7 +925,7 @@
           "legendFormat": "{{output}} {{family}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -955,7 +987,7 @@
           "legendFormat": "{{code}} {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1030,7 +1062,7 @@
           "legendFormat": "{{stage}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1092,7 +1124,7 @@
           "legendFormat": "{{stage}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1154,7 +1186,7 @@
           "legendFormat": "{{stage}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1216,7 +1248,7 @@
           "legendFormat": "p50 total {{family}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -1227,7 +1259,7 @@
           "legendFormat": "p99 total {{family}}",
           "refId": "B",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -1238,7 +1270,7 @@
           "legendFormat": "p50 overhead {{family}}",
           "refId": "C",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -1249,7 +1281,7 @@
           "legendFormat": "p99 overhead {{family}}",
           "refId": "D",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1311,7 +1343,7 @@
           "legendFormat": "p50 {{pool}} {{op}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -1322,7 +1354,7 @@
           "legendFormat": "p99 {{pool}} {{op}}",
           "refId": "B",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1384,7 +1416,7 @@
           "legendFormat": "p50 {{family}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -1395,7 +1427,7 @@
           "legendFormat": "p99 {{family}}",
           "refId": "B",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1470,7 +1502,7 @@
           "legendFormat": "{{pool}} {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1532,7 +1564,7 @@
           "legendFormat": "{{pool}} {{state}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1594,7 +1626,7 @@
           "legendFormat": "{{pool}} {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1656,7 +1688,7 @@
           "legendFormat": "{{pool}} {{reason}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1718,7 +1750,7 @@
           "legendFormat": "{{pool}} {{reason}} {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1793,7 +1825,7 @@
           "legendFormat": "rss {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -1804,7 +1836,7 @@
           "legendFormat": "peak {{namespace}}/{{pod}}",
           "refId": "B",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1866,7 +1898,7 @@
           "legendFormat": "threads {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -1877,7 +1909,7 @@
           "legendFormat": "fds {{namespace}}/{{pod}}",
           "refId": "B",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -1939,7 +1971,7 @@
           "legendFormat": "used {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         },
         {
           "datasource": {
@@ -1950,7 +1982,7 @@
           "legendFormat": "limit {{namespace}}/{{pod}}",
           "refId": "B",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -2025,7 +2057,7 @@
           "legendFormat": "{{code}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -2087,7 +2119,7 @@
           "legendFormat": "{{code}} {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -2149,7 +2181,7 @@
           "legendFormat": "{{check}} {{reason}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
@@ -2211,7 +2243,7 @@
           "legendFormat": "{{format}}",
           "refId": "A",
           "range": true,
-          "interval": "15s"
+          "interval": "$scrape_interval"
         }
       ]
     },
