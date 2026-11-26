@@ -11,7 +11,8 @@ Know two facts before you use these files. First, the `runtime` image is proved 
 3. [Kubernetes](#kubernetes)
 4. [Azure Container Apps](#azure-container-apps)
 5. [Shutdown and rollout](#shutdown-and-rollout)
-6. [What is verified](#what-is-verified)
+6. [Worker isolation](#worker-isolation)
+7. [What is verified](#what-is-verified)
 
 <!-- memoria:section id="contract" files="k8s/base/deployment.yaml k8s/base/service.yaml k8s/base/networkpolicy.yaml k8s/overlays/gvisor/kustomization.yaml aca/main.bicep" -->
 ## Kubernetes and Container Apps side by side
@@ -94,6 +95,20 @@ convertd gets `SIGTERM` when the platform stops a replica. The manifests set `SH
 On Kubernetes, the `preStop` sleep of 5 s comes first, so the Service removes the endpoint before `SIGTERM`. The native `sleep` action needs Kubernetes 1.30 or later. The rollout uses `maxSurge: 1` and `maxUnavailable: 0`. The new pod is ready before the old one stops, so a long grace delays only the exit of the old pod.
 
 On Container Apps, `activeRevisionsMode` is `Single`, and there is no `preStop` hook.
+<!-- /memoria:section -->
+
+<!-- memoria:section id="isolation" files="k8s/base/networkpolicy.yaml k8s/base/deployment.yaml k8s/overlays/gvisor/kustomization.yaml aca/main.bicep" -->
+## Worker isolation
+
+The supervisor and all office and render workers run in one container, as one user, UID 10001. They share the file system, `/tmp` included, and the network namespace. Thus a worker that a hostile document controls can read the job directories of other requests. It can also connect to everything that the pod can reach. Isolation between the workers, and between a worker and the supervisor, is item 006, the kernel sandbox. The owner deferred it, so the image runs with `SANDBOX=off`.
+
+The service needs no outbound connection, not even DNS. The deployment must block egress, because the image does not:
+
+- **Kubernetes:** the NetworkPolicy denies all egress, DNS included. It has an effect only if the CNI of the cluster enforces NetworkPolicy. The optional `gvisor` overlay also puts the whole pod behind a user-space kernel.
+- **Container Apps:** `aca/main.bicep` sets no egress rule. Deny egress in the VNet of the Container Apps environment.
+- **Plain Docker:** a container with a published port is on a network with egress. Block its egress with a host firewall, or put it on an internal network behind a proxy that you control.
+
+The pod security settings limit what a worker can do on the node: a non-root user, a read-only root, no capabilities, no privilege escalation, `RuntimeDefault` seccomp and no service-account token. They do not separate the workers from each other.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="verification" files="k8s/base/deployment.yaml k8s/overlays/gvisor/kustomization.yaml k8s/overlays/gvisor/runtimeclass.yaml aca/main.bicep" -->
