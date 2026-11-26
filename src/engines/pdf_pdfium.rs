@@ -278,7 +278,7 @@ impl PdfEngine for PdfPdfium {
             output: job.output,
             max_output_bytes: job.max_output_bytes,
             // Lane 001 sets it for an owner-only PDF with a password.
-            require_owner: false,
+            check_owner: false,
         });
         let called = call(&self.pool, op, admission(adm), deadline, recycles).await?;
         let Output::Decrypted(out) = called.output else {

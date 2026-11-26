@@ -429,7 +429,7 @@ fn fake_operations_write_valid_outputs() {
         password: Secret::new("pw"),
         output: decrypted_pdf.clone(),
         max_output_bytes: 1 << 20,
-        require_owner: false,
+        check_owner: false,
     })) else {
         panic!("expected decrypted");
     };

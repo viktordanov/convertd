@@ -292,14 +292,24 @@ impl RenderWorker {
                 bindings.FPDF_GetDocUserPermissions(document) as u32,
             )
         };
-        if args.require_owner && !may_strip(password, owner_permissions, user_permissions) {
+        if args.check_owner && !may_strip(password, owner_permissions, user_permissions) {
             // SAFETY: closes the document opened above, once.
             unsafe { bindings.FPDF_CloseDocument(document) };
             times.decrypt_us = micros(started.elapsed());
-            return Err(WorkerError::new(
-                WorkerErrorKind::InvalidPassword,
-                "the password is not the owner password",
-            ));
+            // A non-empty password that opens a file without unlocking the
+            // owner is its user password (CheckSecurity tries the owner
+            // first). None opened an owner-only file.
+            return Err(if password.is_some() {
+                WorkerError::new(
+                    WorkerErrorKind::Restricted,
+                    "the owner restrictions stay: the password is not the owner password",
+                )
+            } else {
+                WorkerError::new(
+                    WorkerErrorKind::InvalidPassword,
+                    "the password is not the owner password",
+                )
+            });
         }
         let mut writer = CopyWriter::new(args.max_output_bytes);
         // SAFETY: `document` is open; `writer` starts with the FPDF_FILEWRITE

@@ -874,7 +874,7 @@ fn permissions(
     }
 }
 
-/// An owner-only PDF opens without a password. `require_owner` writes the
+/// An owner-only PDF opens without a password. `check_owner` writes the
 /// unrestricted copy only for the owner password, and inspect refuses a
 /// wrong one at the open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -931,7 +931,7 @@ async fn slow_only_the_owner_password_unlocks_an_owner_only_pdf() {
                 password: Secret::new(password),
                 output,
                 max_output_bytes: 1 << 30,
-                require_owner: true,
+                check_owner: true,
             })
         };
         for (password, name) in [("wrong", "wrong.pdf"), ("", "empty.pdf")] {
@@ -951,6 +951,77 @@ async fn slow_only_the_owner_password_unlocks_an_owner_only_pdf() {
             .await
             .unwrap();
         assert!(!copy.encrypted, "the owner's copy has no security handler: {copy:?}");
+        pool.shutdown(Duration::from_secs(5)).await;
+    })
+    .await;
+}
+
+/// A PDF with a user password and owner restrictions: with `check_owner`,
+/// the user password gives `Restricted` and writes nothing, the owner
+/// password gives the copy, and a file without restrictions decrypts with
+/// its user password as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_a_user_password_keeps_the_owner_restrictions() {
+    use convertd::engines::pool::Admission as PoolAdmission;
+    use convertd::ipc::{DecryptArgs, Op, Output, Secret, WorkerErrorKind};
+    let (Some(lo), Some(pdfium)) = (lo(), pdfium()) else {
+        return;
+    };
+    within(TEST, "slow_a_user_password_keeps_the_owner_restrictions", async {
+        let dir = Scratch::new("render-user-restricted");
+        let both = soffice_pdf(
+            &lo,
+            &dir,
+            "both",
+            1,
+            r#"{"EncryptFile":{"type":"boolean","value":"true"},"DocumentOpenPassword":{"type":"string","value":"secret"},"RestrictPermissions":{"type":"boolean","value":"true"},"PermissionPassword":{"type":"string","value":"owner"},"Printing":{"type":"long","value":"0"}}"#,
+        );
+        let open = soffice_pdf(
+            &lo,
+            &dir,
+            "open",
+            1,
+            r#"{"EncryptFile":{"type":"boolean","value":"true"},"DocumentOpenPassword":{"type":"string","value":"secret"}}"#,
+        );
+        let pool = ready(render_spec(dir.path(), &pdfium, 1)).await;
+        let decrypt = |pdf: &Path, password: &str, name: &str, check_owner: bool| {
+            Op::Decrypt(DecryptArgs {
+                pdf: pdf.to_path_buf(),
+                password: Secret::new(password),
+                output: dir.join(name),
+                max_output_bytes: 1 << 30,
+                check_owner,
+            })
+        };
+        let cases = [
+            (&both, "secret", "user.pdf", true, Some(WorkerErrorKind::Restricted)),
+            (&both, "owner", "owner.pdf", true, None),
+            (&open, "secret", "open.pdf", true, None),
+            // Off: the security goes for any password that opens the file.
+            (&both, "secret", "unchecked.pdf", false, None),
+        ];
+        for (pdf, password, name, check_owner, want) in cases {
+            let mut lease = pool.lease(deadline(), PoolAdmission::Queue).await.unwrap();
+            let reply = lease
+                .call(decrypt(pdf, password, name, check_owner), deadline())
+                .await
+                .unwrap();
+            match want {
+                Some(kind) => {
+                    let err = reply.result.unwrap_err();
+                    assert_eq!(err.kind, kind, "{name}: {err:?}");
+                    assert!(!dir.join(name).exists(), "{name}: no copy");
+                }
+                None => {
+                    assert!(
+                        matches!(reply.result, Ok(Output::Decrypted(_))),
+                        "{name}: {:?}",
+                        reply.result
+                    );
+                    assert!(dir.join(name).exists(), "{name}: the copy");
+                }
+            }
+        }
         pool.shutdown(Duration::from_secs(5)).await;
     })
     .await;

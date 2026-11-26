@@ -213,7 +213,7 @@ mod tests {
                 password: Secret::new("x"),
                 output: "/j/document.pdf".into(),
                 max_output_bytes: 2,
-                require_owner: true,
+                check_owner: true,
             })),
             call(Op::Test(TestOp::Sleep { ms: 3 })),
             call(Op::Test(TestOp::Hang)),
@@ -360,7 +360,7 @@ mod tests {
             password: secret,
             output: "/b".into(),
             max_output_bytes: 1,
-            require_owner: false,
+            check_owner: false,
         };
         assert!(!format!("{args:?}").contains("hunter2"));
     }

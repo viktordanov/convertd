@@ -218,11 +218,14 @@ pub struct DecryptArgs {
     pub password: Secret,
     pub output: PathBuf,
     pub max_output_bytes: u64,
-    /// Write the copy only when `password` unlocked the document as its
-    /// owner password; otherwise `InvalidPassword`. For a PDF that opens
-    /// without a password and restricts its permissions.
+    /// Never drop owner restrictions that the caller did not unlock. The
+    /// copy is written when the user permissions grant everything or the
+    /// password unlocked the owner. Otherwise nothing is written: a
+    /// password that opened the file gives `Restricted`, and none gives
+    /// `InvalidPassword` (an owner-only PDF). Off: remove the security of
+    /// any file that opens, as before.
     #[serde(default)]
-    pub require_owner: bool,
+    pub check_owner: bool,
 }
 
 /// Faults the `test` role can act out.
@@ -494,6 +497,10 @@ pub enum WorkerErrorKind {
     /// The role does not answer this operation.
     Unsupported,
     Internal,
+    /// Decrypt with `check_owner`: the user password opened the file, but
+    /// the owner was not unlocked and the file restricts permissions. No
+    /// copy was written; the original stays as it is.
+    Restricted,
     /// Only the `test` role sends this, for `FAKE:TOO_MANY_REQUESTS`, so
     /// level-B fixtures behave as they do at level A.
     FakeQueueFull,
