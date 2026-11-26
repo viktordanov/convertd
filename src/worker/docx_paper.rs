@@ -234,6 +234,8 @@ enum Tag {
     PPr,
     SectPr,
     SectPrChange,
+    /// `mc:AlternateContent`, by local name.
+    Alternate,
     Other,
 }
 
@@ -252,8 +254,9 @@ struct Section {
 /// inflated bytes. At most `cap` bytes are read.
 ///
 /// A `w:sectPr` anywhere but in the body, in a paragraph's `w:pPr` or in a
-/// `w:sectPrChange`, and an `mc:AlternateContent` inside a section, make
-/// the section that LibreOffice uses ambiguous: the part loads as it came.
+/// `w:sectPrChange`, a `w:sectPr` inside an `mc:AlternateContent`, and an
+/// `mc:AlternateContent` inside a section, make the section that
+/// LibreOffice uses ambiguous: the part loads as it came.
 pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     let mut part = part.take(cap.saturating_add(1));
     // quick-xml drops a UTF-8 byte order mark without counting it in its
@@ -280,6 +283,8 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     // The body: its depth, prefix and namespace.
     let mut body: Option<(usize, Vec<u8>, &'static [u8])> = None;
     let mut body_has_section = false;
+    // Open `mc:AlternateContent` elements.
+    let mut alternates = 0usize;
     let mut before = skipped + xml.buffer_position();
     loop {
         let (ns, event) = xml
@@ -306,6 +311,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     (Some(_), b"pPr") => Tag::PPr,
                     (Some(_), b"sectPr") => Tag::SectPr,
                     (Some(_), b"sectPrChange") => Tag::SectPrChange,
+                    (_, b"AlternateContent") => Tag::Alternate,
                     _ => Tag::Other,
                 };
                 let depth = stack.len();
@@ -331,7 +337,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                         Some(Tag::PPr) => grandparent == Some(Tag::P),
                         _ => false,
                     };
-                    if !hosted || open.is_some() || prefix.len() > MAX_PREFIX {
+                    if !hosted || open.is_some() || alternates > 0 || prefix.len() > MAX_PREFIX {
                         return Err(Skip::Unsupported);
                     }
                     let ns = ns.unwrap_or(W_NS);
@@ -370,6 +376,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                     body = Some((depth, prefix.to_vec(), ns));
                 }
                 if !empty {
+                    alternates += usize::from(tag == Tag::Alternate);
                     stack.push(tag);
                     if stack.len() > MAX_DEPTH {
                         return Err(Skip::Unreadable);
@@ -378,6 +385,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
             }
             Event::End(_) => {
                 let closed = stack.pop();
+                alternates -= usize::from(closed == Some(Tag::Alternate));
                 let depth = stack.len();
                 if let Some(s) = open.take_if(|s| s.depth == depth)
                     && !s.sized
@@ -454,6 +462,7 @@ struct Record {
     len: usize,
     flags: u16,
     method: u16,
+    crc: u32,
     local_offset: u64,
     is_main: bool,
 }
@@ -499,6 +508,7 @@ fn records(directory: &[u8], entries: u64, main: &str) -> Option<Vec<Record>> {
             len,
             flags: u16_at(header, 8),
             method: u16_at(header, 10),
+            crc: u32_at(header, 16),
             local_offset: u64::from(local_offset),
             is_main: name == main.as_bytes(),
         });
@@ -526,6 +536,22 @@ impl<W: Write> Write for Capped<W> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.inner.flush()
+    }
+}
+
+/// Counts the bytes read and their CRC-32.
+struct CrcReader<R> {
+    inner: R,
+    crc: crc32fast::Hasher,
+    len: u64,
+}
+
+impl<R: Read> Read for CrcReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.crc.update(&buf[..n]);
+        self.len += n as u64;
+        Ok(n)
     }
 }
 
@@ -569,6 +595,12 @@ fn write_copy(source: &Path, out: &Path, paper: Paper) -> Result<(), Skip> {
     if file.read_exact(&mut head).is_err() || head != *b"PK\x03\x04" {
         return Err(Skip::Unsupported);
     }
+    // The central directory's size first: the listings below keep names.
+    let (count, cd_offset, cd_size) =
+        zip_scan::directory(&mut file, size).map_err(|_| Skip::Unsupported)?;
+    if cd_size > DIRECTORY_CAP || cd_offset > u64::from(u32::MAX) {
+        return Err(Skip::Unsupported);
+    }
     let main = crate::preflight::word_main_part(source).ok_or(Skip::Unsupported)?;
     let entries = zip_scan::list(&mut file, size).map_err(|_| Skip::Unsupported)?;
     let entry = entries
@@ -580,35 +612,49 @@ fn write_copy(source: &Path, out: &Path, paper: Paper) -> Result<(), Skip> {
         return Err(Skip::Unsupported);
     }
 
-    // The edits, from a first pass over the main part.
-    let edits = {
-        let reader = zip_scan::open_entry(&mut file, &entry)
-            .map_err(|_| Skip::Unreadable)?
-            .ok_or(Skip::Unsupported)?;
-        plan(
-            BufReader::with_capacity(64 * 1024, reader),
-            paper,
-            MAIN_PART_CAP,
-        )?
-    };
-    if edits.is_empty() {
-        return Err(Skip::Sized);
-    }
-
     // The central directory, whole: at most DIRECTORY_CAP bytes.
-    let (count, cd_offset, cd_size) =
-        zip_scan::directory(&mut file, size).map_err(|_| Skip::Unsupported)?;
-    if cd_size > DIRECTORY_CAP || cd_offset > u64::from(u32::MAX) {
-        return Err(Skip::Unsupported);
-    }
     let mut directory = vec![0u8; cd_size as usize];
     file.seek(SeekFrom::Start(cd_offset)).map_err(unsupported)?;
     file.read_exact(&mut directory).map_err(unsupported)?;
     let records = records(&directory, count, &main).ok_or(Skip::Unsupported)?;
-    if records.iter().filter(|r| r.is_main).count() != 1
-        || records.iter().any(|r| r.is_main && r.flags & 1 != 0)
-    {
+    let mut mains = records.iter().filter(|r| r.is_main);
+    let (Some(main_record), None) = (mains.next(), mains.next()) else {
         return Err(Skip::Unsupported);
+    };
+    if main_record.flags & 1 != 0 {
+        return Err(Skip::Unsupported);
+    }
+
+    // The edits, from a first pass over the main part. The pass also checks
+    // the part's CRC and size: a damaged part loads as it came, so that the
+    // copy's new CRC never hides the damage from LibreOffice.
+    let edits = {
+        let reader = zip_scan::open_entry(&mut file, &entry)
+            .map_err(|_| Skip::Unreadable)?
+            .ok_or(Skip::Unsupported)?;
+        let mut checked = CrcReader {
+            inner: reader,
+            crc: crc32fast::Hasher::new(),
+            len: 0,
+        };
+        let edits = plan(
+            BufReader::with_capacity(64 * 1024, &mut checked),
+            paper,
+            MAIN_PART_CAP,
+        )?;
+        // plan() read to the end of the part; anything left is damage too.
+        let rest =
+            io::copy(&mut (&mut checked).take(1), &mut io::sink()).map_err(|_| Skip::Unreadable)?;
+        if rest != 0
+            || checked.len != entry.uncompressed
+            || checked.crc.finalize() != main_record.crc
+        {
+            return Err(Skip::Unreadable);
+        }
+        edits
+    };
+    if edits.is_empty() {
+        return Err(Skip::Sized);
     }
     // Each entry's local record runs to the next one, the last to the
     // directory: the first starts at 0 and none overlap.

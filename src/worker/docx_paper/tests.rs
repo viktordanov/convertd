@@ -475,6 +475,16 @@ fn a_section_in_a_compatibility_branch_is_left_to_libreoffice() {
         r#"<w:document xmlns:w="{W}" {mc}><w:body><w:sectPr><mc:AlternateContent><mc:Choice Requires="w14"><w:pgSz w:w="1" w:h="2"/></mc:Choice></mc:AlternateContent></w:sectPr></w:body></w:document>"#
     );
     assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
+    // A whole paragraph with a section break in a branch.
+    let xml = format!(
+        r#"<w:document xmlns:w="{W}" {mc}><w:body><mc:AlternateContent><mc:Choice Requires="w14"><w:p><w:pPr><w:sectPr/></w:pPr></w:p></mc:Choice></mc:AlternateContent><w:sectPr/></w:body></w:document>"#
+    );
+    assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
+    // A branch elsewhere, with no section in it, changes nothing.
+    let xml = format!(
+        r#"<w:document xmlns:w="{W}" {mc}><w:body><w:p><mc:AlternateContent><mc:Choice Requires="w14"><w:r/></mc:Choice></mc:AlternateContent></w:p></w:body></w:document>"#
+    );
+    assert!(fixed(&xml, Paper::A4).unwrap().contains(A4));
     // A section in a paragraph's properties outside a paragraph.
     let xml = doc("<w:tbl><w:pPr><w:sectPr/></w:pPr></w:tbl><w:sectPr/>");
     assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
@@ -513,4 +523,18 @@ fn a_failed_write_fails_the_job_but_the_copy_cap_does_not() {
     std::fs::write(&input, &source).unwrap();
     let result = repack(&input, &dir.path().join("missing/copy.docx"), Paper::A4);
     assert!(matches!(result, Err(Skip::Io(_))), "{result:?}");
+}
+
+#[test]
+fn a_damaged_main_part_is_not_given_a_new_checksum() {
+    let source = crate::worker::warmup::docx("Damaged.");
+    // Stored, so one changed byte keeps the XML well-formed.
+    let at = source
+        .windows(b"Damaged.".len())
+        .position(|w| w == b"Damaged.")
+        .unwrap();
+    let mut damaged = source.clone();
+    damaged[at] = b'd';
+    assert_eq!(repacked(&damaged, Paper::A4), (Err(Skip::Unreadable), None));
+    assert_eq!(repacked(&source, Paper::A4).0, Ok(()));
 }
