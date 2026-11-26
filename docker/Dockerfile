@@ -335,7 +335,7 @@ LABEL org.opencontainers.image.title="rs-convert" \
 COPY --from=lib-check /lib-check.ok /opt/convertd/lib-check.ok
 COPY --from=builder /out/convertd /usr/local/bin/convertd
 EXPOSE 8080
-# Docker and compose only; Kubernetes and Container Apps use their own HTTP probes.
+# Docker and compose only; Kubernetes uses its own HTTP probes.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
     CMD ["/usr/local/bin/convertd", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/convertd"]

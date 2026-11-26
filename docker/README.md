@@ -2,7 +2,7 @@
 
 `docker/` builds the one rs-convert image: convertd, a pinned LibreOffice, a pinned PDFium, a fixed font set and `build-info.json`, for `linux/amd64` and `linux/arm64`.
 
-The product image converts documents on arm64 and amd64. On 2026-11-26 the `runtime` image converted a DOCX, a PDF and a PPTX under Docker on arm64, and the CI image job converted a DOCX with it natively on both architectures ([What is verified](#what-is-verified)). It is not run yet on Kubernetes, Container Apps or gVisor. The engines, the fonts and the library check are proved on both architectures.
+The product image converts documents on arm64 and amd64. On 2026-11-26 the `runtime` image converted a DOCX, a PDF and a PPTX under Docker on arm64, and the CI image job converted a DOCX with it natively on both architectures ([What is verified](#what-is-verified)). It is not run yet on Kubernetes or gVisor. The engines, the fonts and the library check are proved on both architectures.
 
 ## Contents
 
@@ -25,7 +25,7 @@ The image is `debian:trixie-slim` with only what convertd uses. Each part has a 
 - **No network tools.** curl, ca-certificates and procps are not in the product image. All downloads happen in the `engines` build stage.
 - **No documentation.** The dpkg excludes in `dpkg/docs.cfg` drop docs, man pages and message catalogs before dpkg unpacks them. They keep the `copyright` file of each package.
 
-The image runs as user and group `10001:10001` (`convertd`), with `HOME=/tmp`. The Kubernetes manifest and the engine check make the root file system read-only, and `/tmp` is the only writable path. Container Apps is believed to have no read-only option. The image ships nothing under `/tmp`, because a mount there hides it. There is no init process: convertd is PID 1 and reaps its own children.
+The image runs as user and group `10001:10001` (`convertd`), with `HOME=/tmp`. The Kubernetes manifest and the engine check make the root file system read-only, and `/tmp` is the only writable path. The image ships nothing under `/tmp`, because a mount there hides it. There is no init process: convertd is PID 1 and reaps its own children.
 
 The paths and variables that other parts of the service depend on:
 
@@ -170,7 +170,7 @@ These sizes are measurements without CJK fonts, on an arm64 Mac (Docker 29.8.2, 
 Uncompressed sizes come from `docker image inspect`. The working target for the product image is at most 600 MB uncompressed, on amd64, the production architecture. The trims save 128 MB on each architecture. The largest savings are the icon themes (72 MB), the gallery (14 MB), the offline help (11 MB of content in 5334 files), the duplicate fonts and the templates (8 MB). The spike image of `docs/m0-spikes.md` was 708 MB, without the Noto fonts.
 <!-- /memoria:section -->
 
-<!-- memoria:section id="verification" files="Dockerfile smoke.sh ab-pages.sh" -->
+<!-- memoria:section id="verification" files="Dockerfile smoke.sh ab-pages.sh corpus-check.sh" -->
 ## What is verified
 
 The `engine-check` image proves the engines under the production limits. Each run uses a read-only root, a tmpfs on `/tmp`, user `10001:10001`, no capabilities, `no-new-privileges` and no network:
@@ -205,7 +205,7 @@ An earlier `runtime` build of the same day, with no real engines in convertd, ga
 - **Health check:** `convertd healthcheck` exits 1 while `/readyz` answers 503, and also when nothing listens.
 - **Build cache:** after a change in `src/`, the cooked dependency layer comes from the cache, and the rebuild takes 18 s.
 
-These results prove conversion on arm64 under Docker. They do not prove Kubernetes, Container Apps or gVisor.
+These results prove conversion on arm64 under Docker. They do not prove Kubernetes or gVisor.
 
 On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a baseline image built from the same `main` without them:
 
@@ -214,7 +214,7 @@ On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a basel
 - **Engine tests:** in the trimmed `dev` image, `engines_office`, `engines_render` and `engines_poison` passed (20 tests, one ignored). Two tests skipped: one needs `CONVERTD_SMALL_DISK`, and one finds no `encrypted/deck20.pptx` in the corpus.
 - **Build and smoke:** `build-info.json` is the same, `lib-check` passes, and `smoke.sh` passes.
 
-The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs only by hand and monthly. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The run after the trims (45796989297) measured 578 MB on amd64 and 604 MB on arm64. The amd64 image was ready after 764 ms and converted the DOCX in 61 ms. The command:
+The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs by hand, monthly, and on pushes to `main` and pull requests that touch `docker/`, `src/engines/`, `src/worker/`, `src/preflight/`, `corpus/` or `Cargo.lock`. A push compares with the commit before it, and a push with no such commit runs the job. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The run after the trims (45796989297) measured 578 MB on amd64 and 604 MB on arm64. The amd64 image was ready after 764 ms and converted the DOCX in 61 ms. The command:
 
 ```sh
 docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
@@ -224,9 +224,11 @@ docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
 
 - The image size against the budget. The job uses 635 MB, the measured 605 MB of the arm64 `runtime` image plus 5 %, or the `IMAGE_MAX_MB` variable.
 - The time to ready.
-- One DOCX to PDF over HTTP, with the conversion time and the `Server-Timing` header.
+- One DOCX to PDF over HTTP. curl must exit 0, the body must have its `Content-Length` and end with `%%EOF`, and `Convert-Page-Count` must be 2. The script prints the conversion time and the `Server-Timing` header.
 - That no job directory is left after the response.
 - That no fontconfig user cache is written.
+
+After the smoke test, the job runs `corpus-check.sh`: the `corpus-bench check` of lane 005, every case of `corpus/expected.json`, against the image. The harness runs in a pinned Debian container inside the network namespace of the service, because only there does the canary listener see a connection from LibreOffice. On 2026-11-26 this check passed 59 of 59 cases on the arm64 image by hand. The job has not run it yet.
 
 `smoke/small.docx` is the corpus entry `docx-small`, 36986 bytes. `corpus/generate.py` makes the same bytes, and its SHA-256 is in `corpus/expected.json`.
 

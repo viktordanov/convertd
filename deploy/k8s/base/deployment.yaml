@@ -59,6 +59,15 @@ spec:
             # below sizeLimit minus the headroom (1 GiB for worker slots, profiles and logs):
             # TMP_MAX_BYTES <= 4Gi - 1Gi. Change them together, or a full volume evicts the pod.
             - {name: TMP_MAX_BYTES, value: "3221225472"}     # 3 GiB
+            # The memory budget of the workers. Each worker may grow to WORKER_KILL_RSS_MB (MiB)
+            # before the watchdog kills it, so all of them together MUST fit in the memory limit:
+            # (OFFICE_WORKERS + RENDER_WORKERS) x WORKER_KILL_RSS_MB + 512 MiB <= limits.memory.
+            # 3 x 1152 + 512 = 3968 MiB <= 4096 MiB. Change the worker counts, these two values and
+            # the memory limit together: a container OOM can kill every job in the pod. Measured on
+            # the 59-case corpus (2026-11-26): office peak 533 MiB, render 109 MiB, supervisor
+            # 17 MiB. WORKER_MAX_RSS_MB recycles a worker after a job above it.
+            - {name: WORKER_KILL_RSS_MB, value: "1152"}
+            - {name: WORKER_MAX_RSS_MB, value: "768"}
           resources:
             requests:
               cpu: "2"
