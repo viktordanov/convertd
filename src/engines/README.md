@@ -213,23 +213,7 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 <!-- memoria:section id="setup" files="config.rs" -->
 ## Configuration
 
-`EngineConfig::from_env` parses the engine variables, and `select.rs` builds the two `PoolSpec`s from them. The defaults are these:
-
-| Variable | Default |
-| --- | --- |
-| `OFFICE_WORKERS` | half of the CPUs, at least 1 |
-| `RENDER_WORKERS` | all of the CPUs |
-| `QUEUE_CAPACITY` | 2 × `OFFICE_WORKERS` |
-| `QUEUE_WAIT_SECONDS` | 10 |
-| `WORKER_MAX_JOBS` | 50 |
-| `WORKER_MAX_RSS_MB` | 1024 |
-| `WORKER_MAX_AGE_SECONDS` | 3600 |
-| `WORKER_KILL_RSS_MB` | 2048 |
-| `LO_PROGRAM_DIR` | `/opt/libreoffice/program` |
-| `LO_PROFILE_TEMPLATE` | unset |
-| `PDFIUM_LIB_DIR` | `/opt/pdfium/lib` |
-| `POISON_TTL_SECONDS` | 600 (0 turns poison memory off) |
-| `DEFAULT_PAPER` | `A4` (or `Letter`) |
+`EngineConfig::from_env` parses the engine variables, and `select.rs` builds the two `PoolSpec`s from them. [The configuration table in src/README.md](../README.md#configuration) lists them with their defaults, next to the supervisor's variables.
 
 The worker counts, the job, RSS and age limits, and `WORKER_KILL_RSS_MB` must be at least 1. The defaults give a 14-CPU machine 7 office and 14 render workers. An office worker holds about 250 MB at `Ready`, so a container with little memory needs explicit values.
 <!-- /memoria:section -->
