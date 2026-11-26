@@ -119,7 +119,8 @@ These packages are loaded as they came, on Letter. The conversion succeeds; only
 - A root relationships part with another root element, a relationship below the root, a branch, an escaped namespace, or more than 8 levels.
 - A main part over 64 MiB inflated, or a copy over the source size plus 1 MiB.
 - A main part that is not UTF-8, by its bytes or its declaration.
-- A main part deeper than 4096 elements, with more than 512 namespace declarations in scope, with a namespace spelled with a character reference, or with a prefix over 64 bytes.
+- A main part deeper than 4096 elements, or with more than 512 namespace declarations in scope.
+- A namespace spelled with a character reference, or a prefix over 64 bytes.
 - More than 100 000 sections, or more than 16 distinct texts to insert.
 - A section or body in an `mc:AlternateContent` branch, an `mc:AlternateContent` in a section, or a body that is not the root's child.
 - A `w:pgSz` or an earlier section child in a wrapper inside a section, or a section in a wrapper under `mc:ProcessContent`.

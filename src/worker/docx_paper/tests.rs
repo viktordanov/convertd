@@ -1111,3 +1111,82 @@ fn a_reference_in_a_wrapper_inside_a_section_keeps_the_package() {
         Err(Skip::Unsupported)
     );
 }
+
+#[test]
+fn a_descriptor_that_runs_into_the_next_record_keeps_the_package() {
+    let main = doc("<w:p/>");
+    let mut source = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, true),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", main.as_bytes(), true, false),
+    ]);
+    // Cut the first entry's 16-byte descriptor to 8 bytes: move the rest
+    // of the archive back, and every offset after it.
+    let list = entries(&source);
+    let (_, first) = list
+        .iter()
+        .find(|(n, _)| n == "[Content_Types].xml")
+        .unwrap();
+    let descriptor = first.local_offset as usize + 30 + 19 + 4 + first.compressed as usize;
+    source.drain(descriptor + 8..descriptor + 16);
+    let eocd = source.len() - 22;
+    let cd = u32_at(&source, eocd + 16) as usize - 8;
+    put_u32(&mut source, eocd + 16, cd as u32);
+    let mut at = cd;
+    while at < eocd {
+        let offset = u32_at(&source, at + 42);
+        if offset > first.local_offset as u32 {
+            put_u32(&mut source, at + 42, offset - 8);
+        }
+        at += 46
+            + u16_at(&source, at + 28) as usize
+            + u16_at(&source, at + 30) as usize
+            + u16_at(&source, at + 32) as usize;
+    }
+    assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
+}
+
+#[test]
+fn a_main_local_header_with_another_name_or_flags_keeps_the_package() {
+    let main = doc("<w:p/>");
+    let build = || {
+        zip(&[
+            ("[Content_Types].xml", CONTENT_TYPES, true, false),
+            ("_rels/.rels", RELS, true, false),
+            ("word/document.xml", main.as_bytes(), true, false),
+        ])
+    };
+    let local = |bytes: &[u8]| {
+        entries(bytes)
+            .into_iter()
+            .find(|(n, _)| n == "word/document.xml")
+            .unwrap()
+            .1
+            .local_offset as usize
+    };
+    // Another name in the local header.
+    let mut bytes = build();
+    let at = local(&bytes);
+    bytes[at + 30] = b'W';
+    assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unreadable), None));
+    // The encryption flag in the local header only.
+    let mut bytes = build();
+    let at = local(&bytes);
+    bytes[at + 6] |= 1;
+    assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unreadable), None));
+}
+
+#[test]
+fn zip64_in_a_directory_record_keeps_the_package() {
+    let main = doc("<w:p/>");
+    let mut source = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", main.as_bytes(), true, false),
+    ]);
+    let eocd = source.len() - 22;
+    let cd = u32_at(&source, eocd + 16) as usize;
+    // The disk-start sentinel on the first directory record.
+    put_u16(&mut source, cd + 34, 0xFFFF);
+    assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
+}

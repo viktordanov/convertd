@@ -782,6 +782,7 @@ struct Record {
     /// Its bytes in the directory.
     start: usize,
     len: usize,
+    name_len: usize,
     flags: u16,
     method: u16,
     crc: u32,
@@ -823,13 +824,27 @@ fn records(directory: &[u8], entries: u64, main: &str) -> Option<Vec<Record>> {
         if [compressed, uncompressed, local_offset].contains(&0xFFFF_FFFF) {
             return None;
         }
+        // ZIP64 by the disk-start sentinel, or by an extra block.
+        if u16_at(header, 34) == 0xFFFF {
+            return None;
+        }
         let name_len = usize::from(u16_at(header, 28));
-        let len = 46 + name_len + usize::from(u16_at(header, 30)) + usize::from(u16_at(header, 32));
+        let extra_len = usize::from(u16_at(header, 30));
+        let len = 46 + name_len + extra_len + usize::from(u16_at(header, 32));
         let name = directory.get(at + 46..at + 46 + name_len)?;
         directory.get(at..at + len)?;
+        let extra = directory.get(at + 46 + name_len..at + 46 + name_len + extra_len)?;
+        let mut block = 0;
+        while block + 4 <= extra.len() {
+            if u16_at(extra, block) == 0x0001 {
+                return None;
+            }
+            block += 4 + usize::from(u16_at(extra, block + 2));
+        }
         out.push(Record {
             start: at,
             len,
+            name_len,
             flags: u16_at(header, 8),
             method: u16_at(header, 10),
             crc: u32_at(header, 16),
@@ -1048,12 +1063,33 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
             }
             at += 4 + usize::from(u16_at(extra, at + 2));
         }
-        // The main part's own CRC and sizes are replaced: they must agree
-        // with the directory first, so that the copy never repairs damage
-        // that LibreOffice would see in the source.
+        // The local header must say the same about a data descriptor, and
+        // the descriptor (12 bytes, or 16 with its signature) must fit too.
+        if (u16_at(&header, 6) ^ record.flags) & 0x0008 != 0 {
+            return Err(Skip::Unreadable);
+        }
+        let mut descriptor = [0u8; 16];
+        if record.flags & 0x0008 != 0 {
+            let at = record.local_offset + needed;
+            let room = usize::try_from((end - at).min(16)).unwrap_or(16);
+            file.seek(SeekFrom::Start(at)).map_err(source_io)?;
+            file.read_exact(&mut descriptor[..room])
+                .map_err(source_io)?;
+            let signed = room >= 4 && u32_at(&descriptor, 0) == 0x0807_4b50;
+            if room < if signed { 16 } else { 12 } {
+                return Err(Skip::Unsupported);
+            }
+            if !signed {
+                descriptor.copy_within(0..12, 4);
+            }
+        }
+        // The main part's own name, flags, CRC and sizes are replaced or
+        // kept beside new data: they must agree with the directory first,
+        // so that the copy never repairs or hides what LibreOffice would see
+        // in the source.
         if record.is_main {
-            // The local header must say the same about a data descriptor.
-            if (u16_at(&header, 6) ^ record.flags) & 0x0008 != 0 {
+            let cd_name = &directory[record.start + 46..record.start + 46 + record.name_len];
+            if &name_extra[..name_len] != cd_name || u16_at(&header, 6) != record.flags {
                 return Err(Skip::Unreadable);
             }
             let fields = if record.flags & 0x0008 == 0 {
@@ -1063,21 +1099,10 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
                     u32_at(&header, 22),
                 ]
             } else {
-                let at = record.local_offset + needed;
-                let room = usize::try_from((end - at).min(16)).unwrap_or(16);
-                let mut descriptor = [0u8; 16];
-                file.seek(SeekFrom::Start(at)).map_err(source_io)?;
-                file.read_exact(&mut descriptor[..room])
-                    .map_err(source_io)?;
-                let signed = room >= 16 && u32_at(&descriptor, 0) == 0x0807_4b50;
-                let start = if signed { 4 } else { 0 };
-                if room < start + 12 {
-                    return Err(Skip::Unreadable);
-                }
                 [
-                    u32_at(&descriptor, start),
-                    u32_at(&descriptor, start + 4),
-                    u32_at(&descriptor, start + 8),
+                    u32_at(&descriptor, 4),
+                    u32_at(&descriptor, 8),
+                    u32_at(&descriptor, 12),
                 ]
             };
             let want = [
