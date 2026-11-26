@@ -27,8 +27,8 @@ const KEY: &str = "test-key";
 
 static LOGS: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
 
-/// `PLAN_DELAY_MS` is one static for the whole process: the tests that set
-/// it take this first, so two of them never run at once under `cargo test`
+/// `PLAN_DELAY_MS` and `PLAN_HOLD` are statics of the whole process: the
+/// tests that set them take this first, so two of them never run at once under `cargo test`
 /// (nextest runs each test in its own process).
 #[cfg(feature = "test-hooks")]
 static PLAN_DELAY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -994,27 +994,54 @@ async fn slow_a_bundle_whose_planning_passes_the_deadline_is_504() {
 
 /// A client that leaves while its bundle is planned does not free its
 /// slot: the planning task holds the permit until it ends (review round 2
-/// on ledger/001-perf3). About 1.3 s.
+/// on ledger/001-perf3). The plan holds until the test has dropped the
+/// request and seen the 429.
 #[cfg(feature = "test-hooks")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn slow_a_client_that_leaves_during_planning_keeps_its_slot_until_it_ends() {
-    use std::sync::atomic::Ordering;
-    let _plan_delay = PLAN_DELAY.lock().await;
+async fn a_client_that_leaves_during_planning_keeps_its_slot_until_it_ends() {
+    use convertd::rest::convert_handlers::test_hooks::{PLAN_ENTERED, PLAN_HOLD};
+    use std::sync::atomic::Ordering::SeqCst;
+    let _plan_hooks = PLAN_DELAY.lock().await;
     let app = App::new("plan-permit", &[("MAX_CONCURRENT_REQUESTS", "1")]);
-    convertd::rest::convert_handlers::test_hooks::PLAN_DELAY_MS.store(800, Ordering::Relaxed);
+    PLAN_ENTERED.store(false, SeqCst);
+    PLAN_HOLD.store(true, SeqCst);
     let bundle = with_options("a.pdf", &pdf("x"), r#"{"output":"bundle"}"#);
-    let left = tokio::time::timeout(Duration::from_millis(300), send(&app, bundle)).await;
-    convertd::rest::convert_handlers::test_hooks::PLAN_DELAY_MS.store(0, Ordering::Relaxed);
-    assert!(left.is_err(), "the bundle came back before the client left");
+    let request = tokio::spawn({
+        let router = app.router();
+        async move { router.oneshot(convert_request(bundle)).await }
+    });
+    let entered = tokio::time::timeout(Duration::from_secs(10), async {
+        while !PLAN_ENTERED.load(SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    if entered.is_err() {
+        PLAN_HOLD.store(false, SeqCst);
+        panic!("planning never started");
+    }
+    // The client leaves: the handler's future is dropped mid-plan.
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
     let (response, _) = send(&app, file("b.pdf", &pdf("y"))).await;
+    PLAN_HOLD.store(false, SeqCst);
     assert_eq!(
         response.status(),
         StatusCode::TOO_MANY_REQUESTS,
         "the slot was freed while the plan still ran"
     );
-    tokio::time::sleep(Duration::from_millis(800)).await;
-    let (response, _) = send(&app, file("b.pdf", &pdf("y"))).await;
-    assert_eq!(response.status(), StatusCode::OK);
+    // The plan ends and gives the slot back.
+    let freed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (response, _) = send(&app, file("b.pdf", &pdf("y"))).await;
+            if response.status() == StatusCode::OK {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(freed.is_ok(), "the slot never came back");
     app.assert_no_jobs().await;
 }
 

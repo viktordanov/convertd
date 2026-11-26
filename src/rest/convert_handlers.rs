@@ -504,7 +504,12 @@ fn plan_tar(
 ) -> Result<Prepared, ApiError> {
     #[cfg(feature = "test-hooks")]
     {
-        let ms = test_hooks::PLAN_DELAY_MS.load(std::sync::atomic::Ordering::Relaxed);
+        use std::sync::atomic::Ordering::SeqCst;
+        test_hooks::PLAN_ENTERED.store(true, SeqCst);
+        while test_hooks::PLAN_HOLD.load(SeqCst) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let ms = test_hooks::PLAN_DELAY_MS.load(SeqCst);
         if ms > 0 {
             std::thread::sleep(Duration::from_millis(ms));
         }
@@ -672,9 +677,14 @@ pub struct Binary(Vec<u8>);
 /// Hooks for tests (feature `test-hooks`).
 #[cfg(feature = "test-hooks")]
 pub mod test_hooks {
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicBool, AtomicU64};
 
     /// Milliseconds that planning a bundle sleeps first: a slow plan, to
     /// test the deadline check after it. Zero in every other test.
     pub static PLAN_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+    /// Set when planning a bundle starts.
+    pub static PLAN_ENTERED: AtomicBool = AtomicBool::new(false);
+    /// While set, planning waits after it set `PLAN_ENTERED`: a test acts
+    /// while the plan surely runs, then clears it.
+    pub static PLAN_HOLD: AtomicBool = AtomicBool::new(false);
 }
