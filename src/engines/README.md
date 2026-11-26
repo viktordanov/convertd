@@ -79,6 +79,7 @@ The pool keeps its idle workers in one list next to a FIFO-fair `tokio::sync::Se
 - **EOF or exit**: the lease kills the group and waits at most 100 ms for the exit status. It returns `CallError::Crashed { status }` and logs `worker crashed`.
 - **Bad frame**: a wrong `id`, invalid JSON or an oversize frame. The lease kills the worker and returns `CallError::Protocol`.
 - **Memory over `kill_rss`**: the call samples the worker's RSS every 200 ms while it waits. At `kill_rss` it kills the process group and returns `CallError::TooBig`, which maps to `LimitExceeded` and is never retried. On a platform where the supervisor cannot read the RSS, the watchdog does not run.
+- **SIGKILL near the memory limit**: a worker that dies by SIGKILL while its last RSS (the previous reply's, then each sample) is at `max_rss` or within 10 % of `kill_rss` is taken for the kernel's OOM killer. The call is `TooBig` too: 422 `LIMIT_EXCEEDED`, no crash retry and no poison strike. The log line is `worker killed by SIGKILL near its memory limit`, and the restart reason is `rss`. A SIGKILL at a lower RSS stays a crash.
 
 The `Drop` of a `Lease` decides what happens to the worker. If the call future was dropped before its reply, the worker is killed, because its reply then reaches the next lease. A dead worker, or one that failed a call, goes too. Otherwise the [recycling](#recycling) rules decide.
 
@@ -121,9 +122,11 @@ When a lease ends, `recycle_decision` uses the numbers in the worker's last repl
 4. The job count is at least `max_jobs`: replace first, reason `jobs`.
 5. The age since `Ready` is at least `max_age`: replace first, reason `age`.
 
-**Kill now** kills the worker, and the manager then starts a new one. **Replace first** keeps the old worker leasable while the manager starts its replacement in a free slot. When the replacement is `Ready`, the old worker is killed, at once if it is idle or else when its lease ends. Thus a pool of one worker is never empty during the swap. The cost is a second process for the time of one start.
+**Kill now** kills the worker, and the manager then starts a new one. **Replace first** keeps the old worker leasable while the manager starts its replacement in a free slot. When the replacement is `Ready`, the old worker is killed, at once if it is idle or else when its lease ends. Thus a pool of one worker is never empty during the swap.
 
-With `max_jobs` at 1, a process never serves two calls. A `Ping` counts as a call. The manager also checks the idle workers for `max_age` every `age_check`.
+A replacement that is `Ready` while its old worker is still leased waits outside the idle list, without a permit. It becomes leasable when the old worker leaves. A pool thus never runs more jobs at once than its size. The memory of a swap is one extra idle worker, about 250 MB for LibreOffice after its warm-up, never a second worker at its kill limit. The memory rule for a container is therefore (workers × kill) + one idle office worker + 512 MiB.
+
+With `max_jobs` at 1, a process never serves two conversions. A `Ping` and an `Inspect` are not jobs: a render pool inspects before each render, and those calls must not halve its worker's life. `OFFICE_MAX_JOBS` and `RENDER_MAX_JOBS` set each pool's limit and fall back to `WORKER_MAX_JOBS`. Without either variable, the office pool takes 200 jobs and the render pool 50. In the soak an office worker lived 20 s at 50 jobs, and its RSS at recycle did not grow with the job count. `OFFICE_MAX_RSS_MB` still recycles an office worker that grows. The manager also checks the idle workers for `max_age` every `age_check`.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="slot" files="slot.rs" -->
@@ -216,6 +219,8 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 `EngineConfig::from_env` parses the engine variables, and `select.rs` builds the two `PoolSpec`s from them. [The configuration table in src/README.md](../README.md#configuration) lists them with their defaults, next to the supervisor's variables.
 
 The worker counts, the job, RSS and age limits, and `WORKER_KILL_RSS_MB` must be at least 1. The defaults give a 14-CPU machine 7 office and 14 render workers. An office worker holds about 250 MB at `Ready`, so a container with little memory needs explicit values.
+
+Each pool can have its own memory limits. `OFFICE_MAX_RSS_MB` and `OFFICE_KILL_RSS_MB` set the office pool's recycle and kill limits, and `RENDER_MAX_RSS_MB` and `RENDER_KILL_RSS_MB` set the render pool's. A variable that is not set takes the shared `WORKER_MAX_RSS_MB` or `WORKER_KILL_RSS_MB`. LibreOffice needs about 10 times the memory of PDFium: in an ingestion of real documents, office workers needed up to 3281 MiB and render workers stayed under 280 MiB. On a small box, a low render limit leaves the memory to the office pool. The log line `engine pools starting` shows both kill limits.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="measurement" files="pool.rs process.rs" -->

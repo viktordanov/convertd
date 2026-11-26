@@ -20,7 +20,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::ExitStatus;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
@@ -42,10 +42,15 @@ pub const CRASH_STATUS_WAIT: Duration = Duration::from_millis(100);
 /// How often a call samples its worker's RSS against `kill_rss`.
 pub const KILL_RSS_TICK: Duration = Duration::from_millis(200);
 
+/// A SIGKILL at an RSS within this share of `kill_rss` (or at `max_rss`
+/// and above) is taken for the kernel's OOM killer: the call ran out of
+/// memory, it did not crash.
+pub const OOM_MARGIN_PERCENT: u64 = 10;
+
 /// Resolves once process `pid` holds at least `limit` bytes, sampled every
 /// [`KILL_RSS_TICK`]; never, when the limit is off (`u64::MAX`) or the
-/// platform cannot read the RSS.
-async fn rss_above(pid: u32, limit: u64) -> u64 {
+/// platform cannot read the RSS. Each sample is stored in `last`.
+async fn rss_above(pid: u32, limit: u64, last: &AtomicU64) -> u64 {
     if limit == u64::MAX || crate::worker::sys::rss_of(pid).is_none() {
         return std::future::pending().await;
     }
@@ -53,12 +58,20 @@ async fn rss_above(pid: u32, limit: u64) -> u64 {
     let mut tick = tokio::time::interval_at(start, KILL_RSS_TICK);
     loop {
         tick.tick().await;
-        if let Some(rss) = crate::worker::sys::rss_of(pid)
-            && rss >= limit
-        {
-            return rss;
+        if let Some(rss) = crate::worker::sys::rss_of(pid) {
+            last.store(rss, Ordering::Relaxed);
+            if rss >= limit {
+                return rss;
+            }
         }
     }
+}
+
+/// Whether a worker that died at `rss` died of memory: at or above its
+/// recycle threshold, or within [`OOM_MARGIN_PERCENT`] of its kill limit.
+pub fn near_memory_limit(rss: u64, max_rss: u64, kill_rss: u64) -> bool {
+    let margin = kill_rss / 100 * OOM_MARGIN_PERCENT;
+    rss >= max_rss || rss >= kill_rss.saturating_sub(margin)
 }
 
 /// Everything a pool needs.
@@ -220,7 +233,8 @@ pub struct WorkerRef {
     pub pool: &'static str,
     pub slot: u16,
     pub generation: u32,
-    /// Calls this process has served, the current one included.
+    /// Conversions this process has served, the current one included. A
+    /// `Ping` or an `Inspect` does not count.
     pub job: u32,
 }
 
@@ -364,6 +378,29 @@ impl Drop for Worker {
 struct Idle {
     workers: Vec<Worker>,
     busy: usize,
+    /// Ready replacements without a permit, out of `workers` so no lease
+    /// can take them: each waits until a busy incumbent it replaces has
+    /// left.
+    waiting: Vec<Worker>,
+}
+
+impl Idle {
+    /// Workers a lease can take now.
+    fn leasable(&self) -> usize {
+        self.workers.len()
+    }
+
+    /// A retired incumbent left: one waiting replacement becomes leasable.
+    /// True when the caller must add its permit.
+    fn release_one(&mut self) -> bool {
+        match self.waiting.pop() {
+            Some(worker) => {
+                self.workers.push(worker);
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 struct PoolInner {
@@ -608,7 +645,7 @@ impl Pool {
         let inner = &self.inner;
         let (idle, busy) = {
             let idle = lock(&inner.idle);
-            (idle.workers.len(), idle.busy)
+            (idle.leasable(), idle.busy)
         };
         PoolStatus {
             target: inner.spec.size,
@@ -654,7 +691,12 @@ impl Pool {
         while lock(&inner.idle).busy > 0 && Instant::now() < until {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        let idle: Vec<Worker> = std::mem::take(&mut lock(&inner.idle).workers);
+        let idle: Vec<Worker> = {
+            let mut idle = lock(&inner.idle);
+            let mut all = std::mem::take(&mut idle.workers);
+            all.append(&mut idle.waiting);
+            all
+        };
         for mut worker in idle {
             worker.reason = Reason::Shutdown;
             drop(worker);
@@ -736,7 +778,7 @@ impl PoolInner {
     fn publish_counts(&self, idle: &Idle) {
         let name = self.spec.name;
         metrics::gauge!("convert_workers", "pool" => name, "state" => "idle")
-            .set(idle.workers.len() as f64);
+            .set(idle.leasable() as f64);
         metrics::gauge!("convert_workers", "pool" => name, "state" => "busy").set(idle.busy as f64);
         metrics::gauge!("convert_workers", "pool" => name, "state" => "starting")
             .set(self.starting.load(Ordering::Acquire) as f64);
@@ -749,21 +791,29 @@ impl PoolInner {
     /// Discards a leased (busy) worker.
     fn discard(&self, mut worker: Worker, reason: Reason) {
         worker.reason = reason;
-        {
+        let release = {
             let mut idle = lock(&self.idle);
             idle.busy -= 1;
+            let release = worker.retiring() && idle.release_one();
             self.publish_counts(&idle);
-        }
+            release
+        };
         drop(worker);
+        if release {
+            self.permits.add_permits(1);
+        }
     }
 
     /// Returns a leased worker to the idle list, unless it was retired
     /// while it was out.
     fn give_back(&self, worker: Worker) {
+        let mut release = false;
         let retire = {
             let mut idle = lock(&self.idle);
             idle.busy -= 1;
             let retire = if worker.retiring() {
+                // Its replacement waited for this: it gets the permit.
+                release = idle.release_one();
                 Some(worker)
             } else {
                 idle.workers.push(worker);
@@ -776,6 +826,9 @@ impl PoolInner {
             Some(mut worker) => {
                 worker.reason = worker.fate.reason();
                 drop(worker);
+                if release {
+                    self.permits.add_permits(1);
+                }
             }
             None => self.permits.add_permits(1),
         }
@@ -813,6 +866,8 @@ impl Lease {
         let at = tokio::time::Instant::from_std(deadline);
         let pid = worker.child.pid();
         let kill_rss = self.pool.spec.kill_rss;
+        // The last RSS seen: the previous reply's, then each watchdog sample.
+        let last_rss = AtomicU64::new(worker.rss);
         let outcome = tokio::time::timeout_at(at, async {
             if let Err(err) = worker.conn.send(&request).await {
                 return Exchange::Frame(err);
@@ -827,7 +882,7 @@ impl Lease {
                     Err(err) => Exchange::Frame(err),
                 },
                 _ = worker.child.wait() => Exchange::Eof,
-                rss = rss_above(pid, kill_rss) => Exchange::TooBig(rss),
+                rss = rss_above(pid, kill_rss, &last_rss) => Exchange::TooBig(rss),
             }
         })
         .await;
@@ -880,6 +935,23 @@ impl Lease {
                     .await
                     .ok()
                     .and_then(|exit| exit.status);
+                let signal = status.and_then(|s| std::os::unix::process::ExitStatusExt::signal(&s));
+                let rss = last_rss.load(Ordering::Relaxed);
+                if signal == Some(9) && near_memory_limit(rss, self.pool.spec.max_rss, kill_rss) {
+                    // The kernel's OOM killer, most likely: a memory failure
+                    // like the watchdog's kill, so no crash retry and no strike.
+                    self.broken = Some(Reason::RssKill);
+                    tracing::warn!(
+                        pool = worker.pool,
+                        worker_id = %worker.id(),
+                        generation = worker.generation,
+                        rss_bytes = rss,
+                        max_rss = self.pool.spec.max_rss,
+                        kill_rss = kill_rss,
+                        "worker killed by SIGKILL near its memory limit"
+                    );
+                    return Err(CallError::TooBig { rss });
+                }
                 tracing::warn!(
                     pool = worker.pool,
                     worker_id = %worker.id(),
@@ -1181,9 +1253,21 @@ impl Manager {
                     child.wait().await;
                     let _ = events.send(Event::Exited { slot, generation });
                 });
-                lock(&pool.idle).workers.push(*worker);
-                pool.permits.add_permits(1);
-                self.retire_one_replaced(pool);
+                // A replacement whose incumbent is still busy waits for it:
+                // the pool never runs more jobs at once than its size.
+                let wait = self.retire_one_replaced(pool);
+                {
+                    let mut idle = lock(&pool.idle);
+                    if wait {
+                        idle.waiting.push(*worker);
+                    } else {
+                        idle.workers.push(*worker);
+                    }
+                    pool.publish_counts(&idle);
+                }
+                if !wait {
+                    pool.permits.add_permits(1);
+                }
             }
             Err(error) => {
                 if current {
@@ -1215,22 +1299,28 @@ impl Manager {
     }
 
     /// A replacement is `Ready`: the oldest worker being replaced is
-    /// retired, now if idle, else when its lease ends.
-    fn retire_one_replaced(&mut self, pool: &PoolInner) {
+    /// retired, now if idle, else when its lease ends. True when it is
+    /// still leased, so the replacement must wait for it.
+    fn retire_one_replaced(&mut self, pool: &PoolInner) -> bool {
         let Some((&slot, member)) = self
             .members
             .iter()
             .filter(|(_, m)| m.fate.state() == FATE_REPLACING)
             .min_by_key(|(_, m)| m.generation)
         else {
-            return;
+            return false;
         };
         member.fate.retire();
         let generation = member.generation;
         let reason = member.fate.reason();
-        if let Some(mut worker) = pool.take_idle(|w| w.slot == slot && w.generation == generation) {
-            worker.reason = reason;
-            drop(worker);
+        match pool.take_idle(|w| w.slot == slot && w.generation == generation) {
+            Some(mut worker) => {
+                worker.reason = reason;
+                drop(worker);
+                false
+            }
+            // Leased, or taken by a lease that will find it retired.
+            None => true,
         }
     }
 
@@ -1424,6 +1514,20 @@ mod tests {
 
     fn decide(jobs: u32, age: Duration, rss: u64, after: bool, max_jobs: u32) -> Recycle {
         recycle_decision(jobs, age, rss, after, max_jobs, H, 1000)
+    }
+
+    #[test]
+    fn a_sigkill_counts_as_memory_near_either_limit() {
+        const MIB: u64 = 1 << 20;
+        // At or above the recycle threshold.
+        assert!(near_memory_limit(1024 * MIB, 1024 * MIB, 2048 * MIB));
+        // Within 10 % of the kill limit, the recycle threshold off.
+        assert!(near_memory_limit(1850 * MIB, u64::MAX, 2048 * MIB));
+        assert!(!near_memory_limit(1800 * MIB, u64::MAX, 2048 * MIB));
+        // A low RSS is a crash.
+        assert!(!near_memory_limit(300 * MIB, 1024 * MIB, 2048 * MIB));
+        // Both limits off: never memory.
+        assert!(!near_memory_limit(64 * 1024 * MIB, u64::MAX, u64::MAX));
     }
 
     #[test]

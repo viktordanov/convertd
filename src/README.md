@@ -228,10 +228,14 @@ This is every variable that an operator can set. An empty value counts as unset.
 | `RENDER_WORKERS` | all of the CPUs | Render worker processes |
 | `QUEUE_CAPACITY` | 2 × `OFFICE_WORKERS` | Requests that may wait for an office worker |
 | `QUEUE_WAIT_SECONDS` | `10` | The longest wait in that queue; beyond it, 429 |
-| `WORKER_MAX_JOBS` | `50` | Jobs before a worker is replaced |
+| `WORKER_MAX_JOBS` | `50` | Conversions before a worker is replaced. A `Ping` and an `Inspect` do not count |
+| `OFFICE_MAX_JOBS` | `200`, or `WORKER_MAX_JOBS` when that is set | The same, for the office pool |
+| `RENDER_MAX_JOBS` | `WORKER_MAX_JOBS` | The same, for the render pool |
 | `WORKER_MAX_RSS_MB` | `1024` | Memory above which a worker is replaced after its job |
+| `OFFICE_MAX_RSS_MB`, `RENDER_MAX_RSS_MB` | `WORKER_MAX_RSS_MB` | The same, for one pool |
 | `WORKER_MAX_AGE_SECONDS` | `3600` | Age at which an idle worker is replaced |
 | `WORKER_KILL_RSS_MB` | `2048` | Memory at which a worker is killed during a job |
+| `OFFICE_KILL_RSS_MB`, `RENDER_KILL_RSS_MB` | `WORKER_KILL_RSS_MB` | The same, for one pool |
 | `LO_PROGRAM_DIR` | `/opt/libreoffice/program` | The LibreOffice program folder |
 | `LO_PROFILE_TEMPLATE` | unset | A read-only LibreOffice profile, copied per worker |
 | `PDFIUM_LIB_DIR` | `/opt/pdfium/lib` | The folder of `libpdfium.so` |

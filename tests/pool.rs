@@ -356,7 +356,10 @@ async fn max_jobs_replaces_first_and_never_empties_a_pool_of_one() {
                 let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
                 assert_eq!(lease.worker_ref().unwrap().generation, 1);
                 first_pid.get_or_insert(lease.pid().unwrap());
-                lease.call(Op::Ping, after(5000)).await.unwrap();
+                lease
+                    .call(test_op(TestOp::Sleep { ms: 0 }), after(5000))
+                    .await
+                    .unwrap();
             }
             let until = Instant::now() + Duration::from_secs(10);
             let mut generation = 1;
@@ -397,7 +400,10 @@ async fn max_jobs_one_never_serves_two_calls_from_one_process() {
                 if lease.spawned_on_path().is_some() {
                     spawned_on_path += 1;
                 }
-                let reply = lease.call(Op::Ping, after(5000)).await.unwrap();
+                let reply = lease
+                    .call(test_op(TestOp::Sleep { ms: 0 }), after(5000))
+                    .await
+                    .unwrap();
                 assert_eq!(reply.job, 1);
             }
             assert_eq!(pids.len(), 10);
@@ -839,6 +845,183 @@ async fn the_worker_gauges_follow_a_lease_and_its_return() {
             assert_eq!(pool.status().idle, 1);
             assert_eq!((gauge("idle"), gauge("busy")), (Some(1.0), Some(0.0)));
             finish(pool, "gauges").await;
+        },
+    )
+    .await;
+}
+
+/// A replacement starts beside its incumbent but is leased only after the
+/// incumbent has left, so a pool never has more busy workers than its
+/// size and never more than one worker's memory above its kill budget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replacement_is_leased_only_after_its_incumbent_leaves() {
+    within(
+        TEST,
+        "a_replacement_is_leased_only_after_its_incumbent_leaves",
+        async {
+            let mut spec = spec("overlap", 1);
+            spec.max_jobs = 2;
+            spec.init.test.ready_delay_ms = 300;
+            let pool = ready(spec).await;
+            for _ in 0..2 {
+                let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+                lease
+                    .call(test_op(TestOp::Sleep { ms: 0 }), after(5000))
+                    .await
+                    .unwrap();
+            }
+            // The second return asked for a replacement; the incumbent
+            // still serves while it starts.
+            let mut last = pool.lease(after(5000), Admission::Queue).await.unwrap();
+            assert_eq!(last.worker_ref().unwrap().generation, 1);
+            let long = tokio::spawn(async move {
+                last.call(test_op(TestOp::Sleep { ms: 1500 }), after(5000))
+                    .await
+                    .unwrap();
+                last
+            });
+            let until = Instant::now() + Duration::from_secs(5);
+            while pool.status().starting > 0 || pool.status().idle + pool.status().busy < 1 {
+                assert!(
+                    Instant::now() < until,
+                    "no replacement: {:?}",
+                    pool.status()
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            let status = pool.status();
+            assert!(!long.is_finished(), "the incumbent's job ended too early");
+            assert_eq!(status.busy, 1, "{status:?}");
+            assert_eq!(
+                status.idle, 0,
+                "the replacement is not leasable yet: {status:?}"
+            );
+            assert!(
+                pool.try_lease().is_none(),
+                "a second worker was leased beside the incumbent"
+            );
+            drop(long.await.unwrap());
+            let lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+            assert_eq!(lease.worker_ref().unwrap().generation, 2);
+            drop(lease);
+            finish(pool, "overlap").await;
+        },
+    )
+    .await;
+}
+
+/// `max_jobs` counts conversions: a `Ping` or an `Inspect` is not a job, so
+/// a busy render pool that inspects before each render does not recycle
+/// twice as often.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pings_and_inspects_do_not_count_towards_max_jobs() {
+    within(
+        TEST,
+        "pings_and_inspects_do_not_count_towards_max_jobs",
+        async {
+            let dir = base_dir("not-jobs");
+            let pdf = dir.join("source.pdf");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(&pdf, b"%PDF-1.4 FAKE:PAGES=1").unwrap();
+            let mut spec = spec("not-jobs", 1);
+            spec.max_jobs = 2;
+            let pool = ready(spec).await;
+            let inspect = Op::Inspect(InspectArgs {
+                pdf: pdf.clone(),
+                password: None,
+                probe_dpi: None,
+                probe_pages: Default::default(),
+                collect_fonts: false,
+            });
+            for op in [Op::Ping, inspect.clone(), Op::Ping, inspect] {
+                let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+                assert_eq!(lease.worker_ref().unwrap().generation, 1);
+                let reply = lease.call(op, after(5000)).await.unwrap();
+                assert_eq!(reply.job, 0, "not a job");
+            }
+            for job in 1..=2 {
+                let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+                assert_eq!(lease.worker_ref().unwrap().generation, 1);
+                let reply = lease
+                    .call(test_op(TestOp::Sleep { ms: 0 }), after(5000))
+                    .await
+                    .unwrap();
+                assert_eq!(reply.job, job);
+            }
+            // The second job reached max_jobs: the next lease gets the replacement.
+            let until = Instant::now() + Duration::from_secs(10);
+            loop {
+                let lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+                if lease.worker_ref().unwrap().generation == 2 {
+                    break;
+                }
+                drop(lease);
+                assert!(Instant::now() < until, "no replacement after two jobs");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            finish(pool, "not-jobs").await;
+        },
+    )
+    .await;
+}
+
+/// SIGKILL `pid` from outside, as the kernel's OOM killer does.
+fn sigkill(pid: u32) {
+    let pid = Pid::from_raw(pid as i32).unwrap();
+    rustix::process::kill_process(pid, rustix::process::Signal::KILL).unwrap();
+}
+
+/// A worker that dies by SIGKILL while its RSS is near its kill limit died
+/// of memory: the call is `TooBig` (422), not a crash to retry. A SIGKILL at
+/// a low RSS stays a crash.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sigkill_near_the_memory_limit_is_too_big_not_a_crash() {
+    within(
+        TEST,
+        "a_sigkill_near_the_memory_limit_is_too_big_not_a_crash",
+        async {
+            let mut spec = spec("oom-kill", 1);
+            spec.kill_rss = 160 << 20;
+            let pool = ready(spec).await;
+            // Grow to within 10 % of the kill limit, below it.
+            let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+            let reply = lease
+                .call(test_op(TestOp::Allocate { mb: 150 }), after(5000))
+                .await
+                .unwrap();
+            assert!(reply.rss_bytes >= 144 << 20, "rss {}", reply.rss_bytes);
+            drop(lease);
+            let mut lease = pool.lease(after(5000), Admission::Queue).await.unwrap();
+            let pid = lease.pid().unwrap();
+            let killer = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                sigkill(pid);
+            });
+            let err = lease
+                .call(test_op(TestOp::Sleep { ms: 3000 }), after(5000))
+                .await
+                .unwrap_err();
+            killer.await.unwrap();
+            assert!(matches!(err, CallError::TooBig { .. }), "{err:?}");
+            drop(lease);
+
+            // A fresh worker at a low RSS: the same SIGKILL is a crash.
+            let mut lease = pool.lease(after(10_000), Admission::Queue).await.unwrap();
+            assert_ne!(lease.pid().unwrap(), pid);
+            let pid = lease.pid().unwrap();
+            let killer = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                sigkill(pid);
+            });
+            let err = lease
+                .call(test_op(TestOp::Sleep { ms: 3000 }), after(5000))
+                .await
+                .unwrap_err();
+            killer.await.unwrap();
+            assert!(matches!(err, CallError::Crashed { .. }), "{err:?}");
+            drop(lease);
+            finish(pool, "oom-kill").await;
         },
     )
     .await;

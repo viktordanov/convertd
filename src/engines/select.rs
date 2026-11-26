@@ -168,7 +168,11 @@ pub async fn start(config: &Config) -> Result<Selected, String> {
         warmup: !level_b,
         test: Default::default(),
     };
-    let spec = |name: &'static str, role: Role, size: usize, queue_capacity: usize| PoolSpec {
+    let spec = |name: &'static str,
+                role: Role,
+                size: usize,
+                queue_capacity: usize,
+                limits: crate::engines::config::PoolLimits| PoolSpec {
         name,
         role,
         program: program.clone(),
@@ -177,9 +181,9 @@ pub async fn start(config: &Config) -> Result<Selected, String> {
         env: env.clone(),
         init: init.clone(),
         size: u16::try_from(size).unwrap_or(u16::MAX),
-        max_jobs: engines.worker_max_jobs,
-        max_rss: engines.worker_max_rss_mb.saturating_mul(1 << 20),
-        kill_rss: engines.worker_kill_rss_mb.saturating_mul(1 << 20),
+        max_jobs: limits.max_jobs,
+        max_rss: limits.max_rss_mb.saturating_mul(1 << 20),
+        kill_rss: limits.kill_rss_mb.saturating_mul(1 << 20),
         max_age: engines.worker_max_age,
         age_check: AGE_CHECK,
         queue_capacity,
@@ -192,6 +196,7 @@ pub async fn start(config: &Config) -> Result<Selected, String> {
             office_role,
             engines.office_workers,
             engines.queue_capacity,
+            engines.office,
         ),
         spawner.clone(),
     );
@@ -201,12 +206,15 @@ pub async fn start(config: &Config) -> Result<Selected, String> {
             render_role,
             engines.render_workers,
             engines.render_workers.saturating_mul(2),
+            engines.render,
         ),
         spawner,
     );
     tracing::info!(
         office_workers = engines.office_workers,
         render_workers = engines.render_workers,
+        office_kill_rss_mb = engines.office.kill_rss_mb,
+        render_kill_rss_mb = engines.render.kill_rss_mb,
         level_b,
         "engine pools starting"
     );

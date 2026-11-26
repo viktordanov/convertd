@@ -149,7 +149,9 @@ fn serve(
             Ok(Some(Request::Init(_))) => die(2, "failed to serve: a second init frame"),
             Err(err) => die(2, &format!("failed to read a call: {err}")),
         };
-        jobs = jobs.saturating_add(1);
+        if counts_as_job(&call.op) {
+            jobs = jobs.saturating_add(1);
+        }
         let handled = match call.op {
             Op::Ping => Handled::ok(Output::Pong),
             op => engine.handle(op),
@@ -210,4 +212,32 @@ fn die(code: i32, message: &str) -> ! {
 /// Whole microseconds, saturating.
 pub fn micros(d: Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
+}
+
+/// Whether `op` counts towards `WORKER_MAX_JOBS`: a conversion does. A
+/// `Ping` and an `Inspect` (the page count, the sizes and the probe before
+/// a render) do not, so a render pool does not recycle twice as often as
+/// its jobs. `Test` stands in for a conversion at level B.
+pub fn counts_as_job(op: &Op) -> bool {
+    !matches!(op, Op::Ping | Op::Inspect(_))
+}
+
+#[cfg(test)]
+mod job_tests {
+    use super::*;
+    use crate::ipc::{InspectArgs, TestOp};
+
+    #[test]
+    fn only_conversions_count_as_jobs() {
+        let inspect = Op::Inspect(InspectArgs {
+            pdf: "/a.pdf".into(),
+            password: None,
+            probe_dpi: Some(18),
+            probe_pages: Default::default(),
+            collect_fonts: false,
+        });
+        assert!(!counts_as_job(&Op::Ping));
+        assert!(!counts_as_job(&inspect));
+        assert!(counts_as_job(&Op::Test(TestOp::Sleep { ms: 0 })));
+    }
 }

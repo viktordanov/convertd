@@ -203,8 +203,10 @@ fn ping_then_exit_zero_on_eof() {
     assert_eq!(ready.pid, w.pid);
     let reply = w.call(Op::Ping);
     assert_eq!(reply.result, Ok(Output::Pong));
-    assert_eq!(reply.job, 1);
-    assert_eq!(w.call(Op::Ping).job, 2);
+    // A Ping is not a job (WORKER_MAX_JOBS counts conversions).
+    assert_eq!(reply.job, 0);
+    assert_eq!(w.call(Op::Test(TestOp::Sleep { ms: 0 })).job, 1);
+    assert_eq!(w.call(Op::Ping).job, 1);
     let (status, _) = w.finish();
     assert_eq!(status.code(), Some(0));
 }
