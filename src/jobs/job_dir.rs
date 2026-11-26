@@ -88,14 +88,28 @@ impl JobDir {
     /// is `max_output_bytes`, 768 MiB by default), but the response only
     /// needs what is on disk while it streams. Sizes come from this
     /// process's own `fstat` of every file under the job directory, never
-    /// from an engine. Returns the bytes on disk and the size of each
-    /// file, so the caller needs no stat of its own. Blocks briefly.
-    pub fn settle_budget(&self) -> io::Result<Settled> {
-        let mut sizes = HashMap::new();
+    /// from an engine. Returns the bytes on disk. Blocks briefly.
+    pub fn settle_budget(&self) -> io::Result<u64> {
+        let used = disk_usage(&self.root, 2, &mut None)?;
+        self.settle_to(used);
+        Ok(used)
+    }
+
+    /// [`Self::settle_budget`], which also returns the size of each file,
+    /// so the caller needs no stat of its own.
+    pub fn settle_budget_with_sizes(&self) -> io::Result<Settled> {
+        let mut sizes = Some(HashMap::new());
         let used = disk_usage(&self.root, 2, &mut sizes)?;
+        self.settle_to(used);
+        Ok(Settled {
+            used,
+            sizes: sizes.unwrap_or_default(),
+        })
+    }
+
+    fn settle_to(&self, used: u64) {
         self.budget
             .release(self.budget.reserved().saturating_sub(used));
-        Ok(Settled { used, sizes })
     }
 
     /// Removes the directory now. Call on a thread that may block, such as
@@ -136,7 +150,9 @@ pub struct Settled {
     pub sizes: HashMap<PathBuf, u64>,
 }
 
-fn disk_usage(dir: &Path, depth: u8, sizes: &mut HashMap<PathBuf, u64>) -> io::Result<u64> {
+/// The bytes of the regular files under `dir`, `depth` levels deep; each
+/// file's size goes into `sizes` when it is given.
+fn disk_usage(dir: &Path, depth: u8, sizes: &mut Option<HashMap<PathBuf, u64>>) -> io::Result<u64> {
     let mut total = 0u64;
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -146,7 +162,9 @@ fn disk_usage(dir: &Path, depth: u8, sizes: &mut HashMap<PathBuf, u64>) -> io::R
         } else if kind.is_file() {
             let len = entry.metadata()?.len();
             total = total.saturating_add(len);
-            sizes.insert(entry.path(), len);
+            if let Some(sizes) = sizes {
+                sizes.insert(entry.path(), len);
+            }
         }
     }
     Ok(total)
@@ -301,7 +319,7 @@ mod tests {
         std::fs::write(job.pdf_path(), vec![0u8; 1000]).unwrap();
         std::fs::create_dir(job.pages_dir()).unwrap();
         std::fs::write(job.pages_dir().join("0001.png"), vec![0u8; 300]).unwrap();
-        let settled = job.settle_budget().unwrap();
+        let settled = job.settle_budget_with_sizes().unwrap();
         assert_eq!(settled.used, 1300);
         // The sizes are keyed by the paths that JobDir hands out.
         assert_eq!(settled.sizes.get(&job.pdf_path()), Some(&1000));
@@ -313,7 +331,7 @@ mod tests {
         assert_eq!(budget.used(), 1300);
         // Never more than was reserved.
         std::fs::write(job.pdf_path(), vec![0u8; 900_000]).unwrap();
-        assert_eq!(job.settle_budget().unwrap().used, 900_300);
+        assert_eq!(job.settle_budget().unwrap(), 900_300);
         assert_eq!(budget.used(), 1300);
         drop(job);
         assert_eq!(budget.used(), 0);

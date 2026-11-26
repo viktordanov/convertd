@@ -14,8 +14,9 @@
 //!
 //! Why not `tokio::fs` + `ReaderStream`: every read would be its own
 //! `spawn_blocking` hop, about 1 600 for 100 MiB against one task here.
-//! Peak memory per response is about six chunks, allocated once and
-//! reused (`Chunks`).
+//! The chunks in flight are the queued ones and the ones hyper holds while
+//! it writes: 13 chunks for an 8 MiB PDF over loopback. Their buffers are
+//! allocated once per response and reused (`Chunks`).
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -183,9 +184,10 @@ fn spawn_pump(
 /// why in `end`.
 /// The 64 KiB buffers of one pump, reused. A chunk sent to hyper shares
 /// the allocation of its slot. When hyper drops the chunk, `try_reclaim`
-/// gives the slot its allocation back. The pump runs at most
-/// `BODY_QUEUE_CHUNKS` chunks ahead of hyper, so a response allocates
-/// about six slots once, not one buffer per chunk.
+/// gives the slot its allocation back. So a response allocates one slot
+/// per chunk in flight, once: at most `BODY_QUEUE_CHUNKS` + 2 when the
+/// reader drops each chunk at once, 13 behind hyper for an 8 MiB PDF over
+/// loopback. Before, it allocated one buffer per chunk.
 #[derive(Default)]
 struct Chunks {
     slots: Vec<BytesMut>,
@@ -506,6 +508,59 @@ mod tests {
         let read = axum::body::to_bytes(body, 64 << 20).await;
         assert!(read.is_err(), "the body ended cleanly without its marker");
         std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    /// Reads `body` to its end, dropping each chunk at once as hyper does
+    /// after writing it, and returns the number of distinct buffers that
+    /// the chunks started in, with the bytes read.
+    async fn distinct_buffers(mut body: Body) -> (usize, usize) {
+        let mut starts = std::collections::HashSet::new();
+        let mut read = 0;
+        while let Some(frame) =
+            std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
+        {
+            let Ok(data) = frame.unwrap().into_data() else {
+                continue;
+            };
+            // A chunk starts its slot's buffer: every chunk is a whole slot.
+            starts.insert(data.as_ptr() as usize);
+            read += data.len();
+        }
+        (starts.len(), read)
+    }
+
+    /// The pump reuses its buffers: 64 chunks come from a handful of them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pumps_reuse_a_few_buffers() {
+        const CHUNKS: usize = 64;
+        // Each pump removes its job directory at its end.
+        let (job, tmp) = job("reuse");
+        let (tar_job, tar_tmp) = self::job("reuse-tar");
+        let data = noise(CHUNKS * READ_CHUNK);
+        std::fs::write(job.pdf_path(), &data).unwrap();
+        std::fs::write(tar_job.pdf_path(), &data).unwrap();
+        let semaphore = Arc::new(Semaphore::new(2));
+        let pump = |job: Arc<JobDir>| Pump {
+            job,
+            permit: semaphore.clone().try_acquire_owned().unwrap(),
+            idle: Duration::from_secs(5),
+            rate: MinRate::off(),
+            request_id: "t".into(),
+        };
+        let file = File::open(job.pdf_path()).unwrap();
+        let body = file_body(file, data.len() as u64, pump(job));
+        let (pdf, read) = distinct_buffers(body).await;
+        assert_eq!(read, data.len());
+        let mut plan = TarPlan::new();
+        plan.add_file("document.pdf", tar_job.pdf_path()).unwrap();
+        let (tar, _) = distinct_buffers(tar_body(plan, pump(tar_job))).await;
+        eprintln!("distinct buffers for {CHUNKS} chunks: pdf {pdf}, tar.zst {tar}");
+        // Queued chunks, the one hyper holds, and the one being filled.
+        assert!(pdf <= BODY_QUEUE_CHUNKS + 2, "pdf: {pdf}");
+        // The tar writer also holds the chunk it is sending.
+        assert!(tar <= BODY_QUEUE_CHUNKS + 3, "tar.zst: {tar}");
+        std::fs::remove_dir_all(tmp).unwrap();
+        std::fs::remove_dir_all(tar_tmp).unwrap();
     }
 
     #[tokio::test]

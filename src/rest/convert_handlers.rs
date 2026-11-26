@@ -282,7 +282,7 @@ async fn success(
             let job = Arc::clone(&job);
             let pdf = result.pdf.clone();
             tokio::task::spawn_blocking(move || {
-                let _ = settle(&job);
+                settle(&job);
                 File::open(pdf).and_then(|file| Ok((file.metadata()?.len(), file)))
             })
             .await
@@ -416,16 +416,27 @@ impl ManifestInput {
 
 /// Gives back the disk reservation that the finished engine calls did not
 /// use, so a long download holds only what is on disk. On an error the
-/// whole reservation stays until the job ends, which is safe. Returns
-/// the size of every file it measured, empty on an error.
-fn settle(job: &JobDir) -> HashMap<PathBuf, u64> {
-    match job.settle_budget() {
+/// whole reservation stays until the job ends, which is safe.
+fn settle(job: &JobDir) {
+    if let Err(err) = job.settle_budget() {
+        settle_failed(&err);
+    }
+}
+
+/// [`settle`], which also returns the size of every file it measured,
+/// empty on an error.
+fn settle_with_sizes(job: &JobDir) -> HashMap<PathBuf, u64> {
+    match job.settle_budget_with_sizes() {
         Ok(settled) => settled.sizes,
         Err(err) => {
-            tracing::warn!(error = %err, "failed to measure the job directory; its reservation stays");
+            settle_failed(&err);
             HashMap::new()
         }
     }
+}
+
+fn settle_failed(err: &std::io::Error) {
+    tracing::warn!(error = %err, "failed to measure the job directory; its reservation stays");
 }
 
 /// Builds the tar.zst plan: `manifest.json`, then `document.pdf` for a
@@ -445,7 +456,7 @@ fn plan_tar(
             std::thread::sleep(Duration::from_millis(ms));
         }
     }
-    let sizes = settle(job);
+    let sizes = settle_with_sizes(job);
     let size_of = |path: &Path| match sizes.get(path) {
         Some(&len) => Ok(len),
         None => std::fs::metadata(path).map(|m| m.len()),

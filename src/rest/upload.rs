@@ -351,7 +351,8 @@ pub struct Written {
 /// open runs on the runtime. Owns a clone of the `Arc<JobDir>`, so the
 /// directory outlives it even if the handler future is dropped (hyper
 /// drops it on peer EOF mid-request). If the open fails, the receiver
-/// drops, `forward` stops, and the open's error is the result.
+/// drops, `forward` stops at the next chunk of the part, and the open's
+/// error is the result.
 fn sink(job: &JobDir, mut rx: mpsc::Receiver<SinkMessage>) -> Result<SinkResult, UploadError> {
     let mut file = OpenOptions::new()
         .read(true)
