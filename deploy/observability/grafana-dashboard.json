@@ -137,11 +137,11 @@
           "uid": "${datasource}"
         },
         "query": {
-          "query": "label_values(convert_stage_duration_seconds_count{namespace=~\"$namespace\", pod=~\"$pod\"}, family)",
+          "query": "label_values(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\"}, family)",
           "refId": "family-var",
           "qryType": 1
         },
-        "definition": "label_values(convert_stage_duration_seconds_count{namespace=~\"$namespace\", pod=~\"$pod\"}, family)",
+        "definition": "label_values(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\"}, family)",
         "refresh": 2,
         "sort": 1,
         "includeAll": true,
@@ -225,7 +225,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\"}[$__rate_interval]))",
           "legendFormat": "",
           "refId": "A",
           "range": true
@@ -289,7 +289,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "(sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code!=\"OK\"}[$__rate_interval])) or vector(0)) / sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "expr": "(sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code!=\"OK\"}[$__rate_interval])) or vector(0)) / sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\"}[$__rate_interval]))",
           "legendFormat": "",
           "refId": "A",
           "range": true
@@ -353,7 +353,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "(sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=\"TOO_MANY_REQUESTS\"}[$__rate_interval])) or vector(0)) / sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "expr": "(sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=\"TOO_MANY_REQUESTS\"}[$__rate_interval])) or vector(0)) / sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\"}[$__rate_interval]))",
           "legendFormat": "",
           "refId": "A",
           "range": true
@@ -410,7 +410,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_stage_duration_seconds_sum{namespace=~\"$namespace\", pod=~\"$pod\", stage=\"total\"}[$__rate_interval]))",
+          "expr": "sum(rate(convert_stage_duration_seconds_sum{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", stage=\"total\"}[$__rate_interval]))",
           "legendFormat": "",
           "refId": "A",
           "range": true
@@ -592,7 +592,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"OK\"}[$__rate_interval]))",
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"OK\"}[$__rate_interval]))",
           "legendFormat": "200",
           "refId": "A",
           "range": true
@@ -602,7 +602,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"BAD_REQUEST\"}[$__rate_interval]))",
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"BAD_REQUEST\"}[$__rate_interval]))",
           "legendFormat": "400",
           "refId": "B",
           "range": true
@@ -612,7 +612,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"FILE_TOO_LARGE\"}[$__rate_interval]))",
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"FILE_TOO_LARGE\"}[$__rate_interval]))",
           "legendFormat": "413",
           "refId": "C",
           "range": true
@@ -622,7 +622,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"UNSUPPORTED_FORMAT\"}[$__rate_interval]))",
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"UNSUPPORTED_FORMAT\"}[$__rate_interval]))",
           "legendFormat": "415",
           "refId": "D",
           "range": true
@@ -632,7 +632,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"VALIDATION_ERROR|PASSWORD_REQUIRED|INVALID_PASSWORD|LIMIT_EXCEEDED|CONVERSION_FAILED\"}[$__rate_interval]))",
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"VALIDATION_ERROR|PASSWORD_REQUIRED|INVALID_PASSWORD|LIMIT_EXCEEDED|CONVERSION_FAILED\"}[$__rate_interval]))",
           "legendFormat": "422",
           "refId": "E",
           "range": true
@@ -642,7 +642,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"TOO_MANY_REQUESTS\"}[$__rate_interval]))",
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"TOO_MANY_REQUESTS\"}[$__rate_interval]))",
           "legendFormat": "429",
           "refId": "F",
           "range": true
@@ -652,7 +652,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"INTERNAL_ERROR\"}[$__rate_interval]))",
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"INTERNAL_ERROR\"}[$__rate_interval]))",
           "legendFormat": "500",
           "refId": "G",
           "range": true
@@ -662,7 +662,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"SERVICE_UNAVAILABLE\"}[$__rate_interval]))",
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"SERVICE_UNAVAILABLE\"}[$__rate_interval]))",
           "legendFormat": "503",
           "refId": "H",
           "range": true
@@ -672,7 +672,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=~\"CONVERSION_TIMEOUT\"}[$__rate_interval]))",
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=~\"CONVERSION_TIMEOUT\"}[$__rate_interval]))",
           "legendFormat": "504",
           "refId": "I",
           "range": true
@@ -682,7 +682,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code!~\"OK|BAD_REQUEST|FILE_TOO_LARGE|UNSUPPORTED_FORMAT|VALIDATION_ERROR|PASSWORD_REQUIRED|INVALID_PASSWORD|LIMIT_EXCEEDED|CONVERSION_FAILED|TOO_MANY_REQUESTS|INTERNAL_ERROR|SERVICE_UNAVAILABLE|CONVERSION_TIMEOUT\"}[$__rate_interval]))",
+          "expr": "sum(rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code!~\"OK|BAD_REQUEST|FILE_TOO_LARGE|UNSUPPORTED_FORMAT|VALIDATION_ERROR|PASSWORD_REQUIRED|INVALID_PASSWORD|LIMIT_EXCEEDED|CONVERSION_FAILED|TOO_MANY_REQUESTS|INTERNAL_ERROR|SERVICE_UNAVAILABLE|CONVERSION_TIMEOUT\"}[$__rate_interval]))",
           "legendFormat": "other",
           "refId": "J",
           "range": true
@@ -743,7 +743,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (code) (rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code!=\"OK\"}[$__rate_interval]))",
+          "expr": "sum by (code) (rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code!=\"OK\"}[$__rate_interval]))",
           "legendFormat": "{{code}}",
           "refId": "A",
           "range": true
@@ -804,7 +804,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (output, family) (rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", code=\"OK\"}[$__rate_interval]))",
+          "expr": "sum by (output, family) (rate(convert_requests_total{namespace=~\"$namespace\", pod=~\"$pod\", family=~\"$family\", code=\"OK\"}[$__rate_interval]))",
           "legendFormat": "{{output}} {{family}}",
           "refId": "A",
           "range": true
@@ -1142,9 +1142,19 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
+          "expr": "histogram_quantile(0.5, sum by (le, family) (rate(convert_stage_duration_seconds_bucket{namespace=~\"$namespace\", pod=~\"$pod\", stage=\"overhead\", family=~\"$family\"}[$__rate_interval])))",
+          "legendFormat": "p50 overhead {{family}}",
+          "refId": "C",
+          "range": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "histogram_quantile(0.99, sum by (le, family) (rate(convert_stage_duration_seconds_bucket{namespace=~\"$namespace\", pod=~\"$pod\", stage=\"overhead\", family=~\"$family\"}[$__rate_interval])))",
           "legendFormat": "p99 overhead {{family}}",
-          "refId": "C",
+          "refId": "D",
           "range": true
         }
       ]
@@ -1358,8 +1368,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (pod, pool) (max_over_time(convert_queue_depth{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
-          "legendFormat": "{{pool}} {{pod}}",
+          "expr": "max by (namespace, pod, pool) (max_over_time(convert_queue_depth{namespace=~\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{pool}} {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true
         }
@@ -1429,15 +1439,15 @@
     {
       "type": "timeseries",
       "id": 22,
-      "title": "Busy workers per pool (peak in each step)",
-      "description": "The highest busy count of the selected pods together, over the samples in each step.",
+      "title": "Busy workers per pool and pod (peak in each step)",
+      "description": "The highest busy count of each pod over its scraped samples in each step.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 55
       },
@@ -1480,8 +1490,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max_over_time(sum by (pool) (convert_workers{namespace=~\"$namespace\", pod=~\"$pod\", state=\"busy\"})[$__rate_interval:])",
-          "legendFormat": "{{pool}}",
+          "expr": "max by (namespace, pod, pool) (max_over_time(convert_workers{namespace=~\"$namespace\", pod=~\"$pod\", state=\"busy\"}[$__rate_interval]))",
+          "legendFormat": "{{pool}} {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true
         }
@@ -1498,8 +1508,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 55
       },
       "fieldConfig": {
@@ -1549,8 +1559,69 @@
       ]
     },
     {
-      "type": "row",
+      "type": "timeseries",
       "id": 24,
+      "title": "Worker restarts since the pod started",
+      "description": "The counter itself. Its series starts at the first restart with the value 1, so increase() shows no isolated first restart; this panel does.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 55
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (namespace, pod, pool, reason) (convert_worker_restarts_total{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{pool}} {{reason}} {{namespace}}/{{pod}}",
+          "refId": "A",
+          "range": true
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 25,
       "title": "Supervisor and disk",
       "collapsed": false,
       "gridPos": {
@@ -1563,7 +1634,7 @@
     },
     {
       "type": "timeseries",
-      "id": 25,
+      "id": 26,
       "title": "Supervisor RSS and peak",
       "description": "Resident memory of the convertd serve process (VmRSS and VmHWM). Linux only.",
       "datasource": {
@@ -1615,8 +1686,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (pod) (convert_supervisor_rss_bytes{namespace=~\"$namespace\", pod=~\"$pod\"})",
-          "legendFormat": "rss {{pod}}",
+          "expr": "max by (namespace, pod) (convert_supervisor_rss_bytes{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "rss {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true
         },
@@ -1625,8 +1696,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (pod) (convert_supervisor_rss_peak_bytes{namespace=~\"$namespace\", pod=~\"$pod\"})",
-          "legendFormat": "peak {{pod}}",
+          "expr": "max by (namespace, pod) (convert_supervisor_rss_peak_bytes{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "peak {{namespace}}/{{pod}}",
           "refId": "B",
           "range": true
         }
@@ -1634,7 +1705,7 @@
     },
     {
       "type": "timeseries",
-      "id": 26,
+      "id": 27,
       "title": "Supervisor threads and open descriptors",
       "description": "Threads and open file descriptors of the supervisor. Linux only.",
       "datasource": {
@@ -1686,8 +1757,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (pod) (convert_supervisor_threads{namespace=~\"$namespace\", pod=~\"$pod\"})",
-          "legendFormat": "threads {{pod}}",
+          "expr": "max by (namespace, pod) (convert_supervisor_threads{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "threads {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true
         },
@@ -1696,8 +1767,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (pod) (convert_supervisor_open_fds{namespace=~\"$namespace\", pod=~\"$pod\"})",
-          "legendFormat": "fds {{pod}}",
+          "expr": "max by (namespace, pod) (convert_supervisor_open_fds{namespace=~\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "fds {{namespace}}/{{pod}}",
           "refId": "B",
           "range": true
         }
@@ -1705,7 +1776,7 @@
     },
     {
       "type": "timeseries",
-      "id": 27,
+      "id": 28,
       "title": "Disk budget used versus the limit",
       "description": "Bytes reserved under TMP_DIR against TMP_MAX_BYTES. A failed reservation gives 503.",
       "datasource": {
@@ -1757,8 +1828,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (pod) (convert_disk_budget_bytes{namespace=~\"$namespace\", pod=~\"$pod\", state=\"used\"})",
-          "legendFormat": "used {{pod}}",
+          "expr": "max by (namespace, pod) (convert_disk_budget_bytes{namespace=~\"$namespace\", pod=~\"$pod\", state=\"used\"})",
+          "legendFormat": "used {{namespace}}/{{pod}}",
           "refId": "A",
           "range": true
         },
@@ -1767,8 +1838,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (pod) (convert_disk_budget_bytes{namespace=~\"$namespace\", pod=~\"$pod\", state=\"max\"})",
-          "legendFormat": "limit {{pod}}",
+          "expr": "max by (namespace, pod) (convert_disk_budget_bytes{namespace=~\"$namespace\", pod=~\"$pod\", state=\"max\"})",
+          "legendFormat": "limit {{namespace}}/{{pod}}",
           "refId": "B",
           "range": true
         }
@@ -1776,7 +1847,7 @@
     },
     {
       "type": "row",
-      "id": 28,
+      "id": 29,
       "title": "Quality",
       "collapsed": false,
       "gridPos": {
@@ -1789,7 +1860,7 @@
     },
     {
       "type": "timeseries",
-      "id": 29,
+      "id": 30,
       "title": "Warnings by code",
       "description": "Manifest warnings, such as FONT_SUBSTITUTED or RENDER_CLAMPED.",
       "datasource": {
@@ -1850,7 +1921,7 @@
     },
     {
       "type": "timeseries",
-      "id": 30,
+      "id": 31,
       "title": "Skipped checks by check and reason",
       "description": "Verification checks that did not run. blank_page counts pages.",
       "datasource": {
@@ -1911,7 +1982,7 @@
     },
     {
       "type": "timeseries",
-      "id": 31,
+      "id": 32,
       "title": "Pages rendered by format",
       "description": "Image pages rendered per second.",
       "datasource": {
@@ -1972,7 +2043,7 @@
     },
     {
       "type": "row",
-      "id": 32,
+      "id": 33,
       "title": "CPU per job (O2)",
       "collapsed": false,
       "gridPos": {
@@ -1985,7 +2056,7 @@
     },
     {
       "type": "text",
-      "id": 33,
+      "id": 34,
       "title": "CPU per job",
       "gridPos": {
         "h": 4,
