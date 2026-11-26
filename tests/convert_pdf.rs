@@ -946,12 +946,17 @@ async fn a_client_that_stops_reading_releases_the_permit_after_the_idle_timeout(
         stalls.iter().any(|l| l["message"] == "response stalled"),
         "{stalls:?}"
     );
-    // The dashboard reads this counter; tests/observability.rs relies on this check.
-    let metrics = convertd::observability::metrics::handle().render();
-    assert!(
-        metrics.contains(r#"convert_responses_cut_total{code="RESPONSE_STALLED"}"#),
-        "{metrics}"
-    );
+    // The dashboard reads this counter; tests/observability.rs relies on this
+    // check. The pump counts the cut after its log line, so wait for it.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let metrics = convertd::observability::metrics::handle().render();
+        if metrics.contains(r#"convert_responses_cut_total{code="RESPONSE_STALLED"}"#) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no cut counted:\n{metrics}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     app.assert_no_jobs().await;
     drop(stream);
 }
