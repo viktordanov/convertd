@@ -176,7 +176,7 @@
           ]
         },
         "code": {
-          "description": "The error code (api/openapi.yaml ErrorCode) when the status is not 200.",
+          "description": "The error code (the ErrorCode schema of api/openapi.json) when the status is not 200.",
           "enum": ["BAD_REQUEST", "UNAUTHORIZED", "NOT_FOUND", "FILE_TOO_LARGE", "UNSUPPORTED_FORMAT",
                    "VALIDATION_ERROR", "PASSWORD_REQUIRED", "INVALID_PASSWORD", "LIMIT_EXCEEDED",
                    "CONVERSION_FAILED", "TOO_MANY_REQUESTS", "INTERNAL_ERROR", "SERVICE_UNAVAILABLE",
