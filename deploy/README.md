@@ -72,7 +72,7 @@ The values come from an ingestion of 276 real documents on 2026-11-26: 128 DOCX,
 - PDFium needed at most 279 MiB, at 150 and 300 DPI.
 - The second office worker raised the throughput by 50 to 61 %. A second render worker added 12 to 20 %.
 - Two concurrent requests filled the two CPUs. Four doubled the p99 and gave no more throughput.
-- With the watchdog on, no run had an OOM kill. A worker over its limit was killed, and its request got 422 `LIMIT_EXCEEDED`.
+- With the watchdog on, no ingestion run had an OOM kill. A worker over its limit was killed, and its request got 422 `LIMIT_EXCEEDED`.
 
 Pick by the documents:
 
@@ -82,6 +82,8 @@ Pick by the documents:
 | Coverage | `OFFICE_WORKERS=1`, `OFFICE_KILL_RSS_MB=2688`, `OFFICE_MAX_RSS_MB=1024`, `RENDER_WORKERS=2`, `RENDER_KILL_RSS_MB=320`, `RENDER_MAX_RSS_MB=256` | About 30 documents a minute. Only the decks over 2688 MiB get 422: 3 of the 276 test files. 1 × (2688 + 256) + 2 × 320 + 512 = 4096 MiB. |
 
 Both profiles are projections from the measured peaks. The throughput figures come from cells with one shared kill limit, and no cell ran with these per-pool values. With one office worker, a heavy deck holds it for 20 to 55 s, so the next request waits `QUEUE_WAIT_SECONDS` (10 s) and gets 429. Clients must retry 429.
+
+The watchdog samples each worker's RSS every 200 ms, so a fast burst of memory can pass the kill limit before a sample sees it. Then the kernel's OOM killer is the real backstop. convertd reads the kill from the cgroup and answers 422 `LIMIT_EXCEEDED`, as for a watchdog kill. A 35-minute soak on 2026-11-27 measured this. It ran the same 276 documents with 2 clients in 3584 MiB. The settings were 1 office worker (`OFFICE_KILL_RSS_MB=2176`, `OFFICE_MAX_RSS_MB=1024`) and 2 render workers (320 and 256 MiB). The kernel killed the office worker 3 times in 311 office jobs. 9 of the 484 requests got 422 `LIMIT_EXCEEDED`, these 3 included. For fewer kernel kills, lower `OFFICE_KILL_RSS_MB` or raise the memory limit.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="kubernetes" files="k8s/base/kustomization.yaml k8s/base/deployment.yaml k8s/overlays/gvisor/kustomization.yaml k8s/overlays/gvisor/runtimeclass.yaml" -->
