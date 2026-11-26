@@ -88,13 +88,15 @@ spec:
 
         # The disk budget (TMP_MAX_BYTES) is more than 90 % reserved for 5 minutes. A reservation that
         # does not fit gives 503 SERVICE_UNAVAILABLE. The budget is 3 GiB in the base, so 90 % leaves
-        # about 300 MiB: one or two large uploads. The "> 0" leaves out a pod without a budget.
+        # about 300 MiB: one or two large uploads. The "> 0" leaves out a pod without a budget. The
+        # ratio is taken per scrape target first, so two targets with one pod label never mix.
         - alert: ConvertdDiskBudgetNearFull
           expr: |
-            max by (namespace, pod) (convert_disk_budget_bytes{state="used"})
-              /
-            max by (namespace, pod) (convert_disk_budget_bytes{state="max"} > 0)
-              > 0.9
+            max by (namespace, pod) (
+              convert_disk_budget_bytes{state="used"}
+                / ignoring(state)
+              (convert_disk_budget_bytes{state="max"} > 0)
+            ) > 0.9
           for: 5m
           labels:
             severity: warning
