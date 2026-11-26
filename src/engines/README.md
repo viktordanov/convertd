@@ -193,7 +193,7 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 - `starting` while a pool has never had a `Ready` worker.
 - `degraded` when a pool had a `Ready` worker and has none now.
 
-`EngineHandle::drain` stops new leases in both pools at once. Thus a request in flight that needs one more engine call after the drain gets `Unavailable`, which is 503: for example, the inspect after an office convert. No test covers a drain with the real pools. `EngineHandle::shutdown(grace)` waits up to `grace` for the calls in flight, kills every worker and removes `$TMP_DIR/workers`.
+`EngineHandle::drain` stops new leases in both pools at once. `main.rs` calls it only after the requests in flight finish, or after `SHUTDOWN_GRACE_SECONDS` runs out. A request that is still running then, and needs one more engine call, gets `Unavailable`, which is 503: for example, the inspect after an office convert. The level-B test `slow_sigterm_at_level_b_finishes_office_then_render` in `tests/ops.rs` covers a drain with requests in flight. `EngineHandle::shutdown(grace)` waits up to `grace` for the calls in flight, kills every worker and removes `$TMP_DIR/workers`.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="failure" files="error.rs" -->

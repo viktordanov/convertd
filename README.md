@@ -1,8 +1,8 @@
 # rs-convert
 
-rs-convert is an HTTP service that converts office documents, PDFs and images into a PDF and per-page images.
+rs-convert is an HTTP service that converts office documents and PDFs into a PDF and per-page images.
 
-**Status: the service converts office documents and PDFs. It does not convert image inputs yet, and no container image is published.** `convertd serve` runs LibreOffice and PDFium in pools of worker processes. With the real engines, an image input (PNG, JPEG, TIFF, GIF, BMP or WebP) gets `422 CONVERSION_FAILED`. To run the real engines, build the `runtime` image from `docker/Dockerfile`. The quick start shows this image, and a build from source with the level-A fake engine. The API is a draft (`1.0.0-draft.1`) and can change.
+**Status: the service converts office documents and PDFs. No container image is published yet.** `convertd serve` runs LibreOffice and PDFium in pools of worker processes. To run the real engines, build the `runtime` image from `docker/Dockerfile`. The quick start shows this image, and a build from source with the level-A fake engine. The API is a draft (`1.0.0-draft.1`) and can change.
 
 ## Contents
 
@@ -31,6 +31,7 @@ The service has a narrow scope:
 - It does not guarantee that its output matches Microsoft Office. LibreOffice lays out each document, and the layout can differ from Word or PowerPoint.
 - It has no asynchronous jobs, webhooks or result storage. Each call is synchronous, and the caller owns retries.
 - It does not edit PDFs: no merge, split, signature or PDF/A.
+- Version 1 does not convert image files. A PNG, JPEG, TIFF, GIF, BMP or WebP upload gets `415 UNSUPPORTED_FORMAT`.
 
 <!-- memoria:section id="setup" files="Cargo.toml rust-toolchain.toml" -->
 ## Quick start

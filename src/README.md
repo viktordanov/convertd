@@ -22,7 +22,7 @@ The service runs one supervisor and two pools of workers, all from the same bina
 
 - **Supervisor**: `convertd serve`. It owns the HTTP API, the job directories, the disk budget and the pools. It never loads LibreOffice or PDFium.
 - **Office worker**: `convertd worker office`. It runs LibreOffice through LibreOfficeKit.
-- **Render worker**: `convertd worker render`. It runs PDFium to inspect, render, assemble and decrypt PDFs.
+- **Render worker**: `convertd worker render`. It runs PDFium to inspect, render and decrypt PDFs.
 
 Each engine runs in a worker process because a hostile file can crash it, hang it or make it grow without limit. At the deadline, the pool kills the worker's process group, and the supervisor keeps serving. LibreOfficeKit allows one instance per process for the life of the process, and PDFium is not thread-safe. Thus one worker holds one engine and runs one job at a time.
 
@@ -93,7 +93,6 @@ rest/server.rs                    layers, outermost first
     ├── conversion_service.rs     convert() under the backstop
     │   ├── office file           convert, then inspect
     │   ├── PDF                   inspect, then decrypt if needed
-    │   ├── image                 assemble, then inspect
     │   └── images or bundle      render the selected pages
     ├── bundle/tar_zst.rs         TarPlan: manifest, PDF, pages
     └── body.rs                   file_body() or tar_body()
@@ -103,7 +102,7 @@ An encrypted OOXML package is an OLE2 file whose type is inside the encryption. 
 
 The upload never sits whole in memory. The handler sends the chunks of the file part through a queue of four to one blocking sink. The sink computes SHA-256 and CRC-32 while it writes, then runs detection while the file is still in the page cache.
 
-Some answers come while the client is still uploading: 401, 413, 415, 429 and 503. If the server then closed the socket with unread bytes, the kernel would send a reset. A client such as Go's `http.Transport` would then often report a broken pipe instead of the answer. So `middleware/linger.rs` wraps every request body. When a body is dropped before its end, a task reads and discards the rest after the answer is sent. The task stops at the end of the body, after 256 MiB, after 10 s, or after 2 s without data. At most 32 bodies drain at once, and the task holds no permit and no job directory.
+Some answers come while the client is still uploading: 401, 413, 415, 429 and 503. If the server then closed the socket with unread bytes, the kernel would send a reset. A client such as Go's `http.Transport` would then often report a broken pipe instead of the answer. So `middleware/linger.rs` wraps every request body. When a body is dropped before its end, a task of its own reads and discards the rest. The task stops at the end of the body, after 256 MiB, after 10 s, or after 2 s without data. At most 32 bodies drain at once, and the task holds no permit and no job directory.
 
 The deadline is the end of the upload plus `timeout_seconds`. The engines enforce it inside each call, and the service makes sure that it has time left between calls. The handler drops the conversion 250 ms after the deadline and answers 504 `CONVERSION_TIMEOUT`. Dropping the future cancels the engine job.
 
@@ -113,7 +112,7 @@ Each engine call that writes reserves its cap of the disk budget first: the rend
 
 The response pump is one blocking task. It reads the PDF, or writes the tar.zst, in 64 KiB chunks and sends them to the response body through a queue of four. The pump, not the body, owns the job directory and the permit. If the client stops reading for `IO_IDLE_TIMEOUT_SECONDS`, the pump stops, logs `RESPONSE_STALLED` and releases both.
 
-Every 200 carries `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers and `Server-Timing`, and a PDF also `Content-Length`. Every error after detection also carries `Server-Timing`. `rest/timing.rs` builds the header and computes the overhead and the strict overhead for the `conversion finished` log line. The `preflight` stage is the office worker's scan, which the worker times inside `convert`. It is not engine time, so it counts as overhead.
+Every 200 carries `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers and `Server-Timing`, and a PDF also `Content-Length`. Every error after detection also carries `Server-Timing`. `rest/timing.rs` builds the header and computes the overhead and the strict overhead for the `conversion finished` log line. The `preflight` stage is the office worker's scan, which the worker times inside `convert`. Only office inputs carry it. It is not engine time, so it counts as overhead. The `conversion finished` line logs it as `preflight_us`, and `convert_stage_duration_seconds` records it as the stage `preflight`.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="warnings" files="domain/verification.rs preflight/mod.rs preflight/package.rs preflight/docx.rs preflight/pptx.rs preflight/xlsx.rs preflight/odf.rs" -->
@@ -161,7 +160,7 @@ The crate has three targets of its own. They are 1 ms p50 of overhead, 30 MB of 
 - `tests/peak_heap.rs` counts the live heap with its own allocator while it uploads PDFs of 1, 16 and 100 MiB.
 - `tests/rss_linux.rs` reads `VmRSS` of `convertd serve` before and after 1 000 requests. It runs only on Linux, with `--ignored` and `--features test-hooks`.
 
-The numbers that follow come from macOS on arm64 (release build for the example, debug for the heap), measured on 2026-11-26. Linux has not been measured.
+The numbers that follow come from macOS on arm64 with the level-A fakes, measured on 2026-11-26 and recorded in commits `1eaf4e4` and `1eafd21`. The example used a release build, and the heap and allocation tests a debug build. Linux has not been measured.
 
 | Measurement | Result |
 | --- | --- |
