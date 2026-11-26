@@ -55,6 +55,8 @@ No image is published yet, so build it from the repository root. These commands 
      -e API_KEY=dev-key -e OFFICE_WORKERS=1 -e RENDER_WORKERS=2 -p 127.0.0.1:8080:8080 rs-convert:local
    ```
 
+   This container is on Docker's default network, so it can open outbound connections. The service needs none. For anything beyond a local test, block its egress, as [deploy/README.md](deploy/README.md#worker-isolation) explains.
+
 3. Wait until `curl -sS http://127.0.0.1:8080/readyz` shows `"status":"ready"`. In the run on the Mac, this took about 1 s.
 
 4. Send a DOCX of your own:
