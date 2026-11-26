@@ -258,7 +258,7 @@ func TestSelfTestTransport(t *testing.T) {
 	capabilities := `{"service":{"name":"convert","version":"0.1.0"},
 		"engine":{"service_version":"0.1.0","pdfium":"unknown","fingerprint":"sha256:0"},
 		"inputs":[{"format":"pdf","family":"pdf","extensions":["pdf"],"media_types":["application/pdf"],"engine":"pdfium"}],
-		"outputs":["pdf","images","bundle"],"image_formats":["jpeg","png","webp"],
+		"outputs":["pdf","images","bundle"],"image_formats":["jpeg","png"],
 		"limits":{"max_upload_bytes":1048576,"max_render_pages":500,"max_dpi":300,"max_edge_px":4096,
 		          "default_timeout_seconds":120,"max_timeout_seconds":210},
 		"fonts":[]}`
