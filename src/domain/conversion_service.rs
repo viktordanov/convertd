@@ -12,7 +12,6 @@ use super::engine::{
     PdfEngine, RenderJob, RenderedPage,
 };
 use super::limits::Limits;
-use super::pages::PageSelection;
 use super::secret::Password;
 use super::verification::{self, FontCatalog, VerifyInput};
 
@@ -160,11 +159,11 @@ impl ConversionService {
         // Encrypted OOXML: provisional until the engine reports its type.
         let mut format = job.detection.format;
 
-        // The blank-page probe, unless page images of a selection will be
-        // rendered: those decide BLANK_PAGE for the pages they show.
-        let probe = self.probe_dpi.is_some()
-            && (job.request.output == Output::Pdf
-                || matches!(job.request.pages, PageSelection::All));
+        // The blank-page probe, for output=pdf only. With page images every
+        // requested page is rendered, and a rendered page decides
+        // BLANK_PAGE itself (verification.rs), so a probe would be thrown
+        // away; and a request over MAX_RENDER_PAGES is refused without one.
+        let probe = self.probe_dpi.is_some() && job.request.output == Output::Pdf;
         // Set when the original encrypted PDF goes on (decrypt answered
         // Restricted): the render opens it with the password.
         let mut render_password: Option<Password> = None;
@@ -829,6 +828,51 @@ mod tests {
         let job = script.inspected.lock().unwrap().clone().unwrap();
         assert_eq!(job.probe_dpi, None, "the rendered pages decide");
         assert_eq!(result.probe_skipped_pages, 0);
+    }
+
+    /// Page images decide BLANK_PAGE for every page they show, so with
+    /// output images or bundle the probe never runs, with or without a
+    /// selection. A request over MAX_RENDER_PAGES is then refused without
+    /// a probe of any of its pages (performance review, lane 001 item 2).
+    #[test]
+    fn page_images_need_no_probe_and_are_capped_first() {
+        for output in [Output::Images, Output::Bundle] {
+            let script = Arc::new(Script {
+                page_count: Some(300),
+                ..Default::default()
+            });
+            let raw = RawOptions {
+                output: Some(output),
+                ..Default::default()
+            };
+            let result = run(script.clone(), Format::Pdf, raw, u64::MAX)
+                .result
+                .unwrap();
+            let job = script.inspected.lock().unwrap().clone().unwrap();
+            assert_eq!(job.probe_dpi, None, "{output:?}: every page is rendered");
+            assert_eq!(result.probe_skipped_pages, 0);
+        }
+
+        let script = Arc::new(Script {
+            page_count: Some(600),
+            ..Default::default()
+        });
+        let raw = RawOptions {
+            output: Some(Output::Images),
+            ..Default::default()
+        };
+        let result = run(script.clone(), Format::Pdf, raw, u64::MAX).result;
+        assert!(
+            matches!(result, Err(ConversionError::LimitExceeded(_))),
+            "{result:?}"
+        );
+        let job = script.inspected.lock().unwrap().clone().unwrap();
+        assert_eq!(job.probe_dpi, None, "refused without a probe");
+        assert!(
+            !script.calls().iter().any(|(op, _)| *op == "render"),
+            "{:?}",
+            script.calls()
+        );
     }
 
     #[test]

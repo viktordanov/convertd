@@ -136,6 +136,12 @@ impl RenderWorker {
                 let page = pages
                     .get((number - 1) as PdfPageIndex)
                     .map_err(|err| load_failed(&err))?;
+                // A page too large to probe is left out and counted, never
+                // a failure: the probe only feeds a warning.
+                if !probe_fits(page.width().value, page.height().value, dpi) {
+                    probe_skipped += 1;
+                    continue;
+                }
                 let bitmap = page
                     .render_with_config(&config)
                     .map_err(|err| render_failed(&err))?;
@@ -531,6 +537,23 @@ impl Engine for RenderWorker {
     }
 }
 
+/// The most pixels one probe bitmap may have: 4 Mpx, 16 MB in BGRA. An A4
+/// page at the probe's 18 dpi is about 31 000; a page needs to be over
+/// 7.9 m on a side to pass it.
+pub const PROBE_MAX_PIXELS: f64 = 4_000_000.0;
+
+/// Whether a `w_pt` × `h_pt` page fits [`PROBE_MAX_PIXELS`] at `dpi`,
+/// checked before PDFium allocates the bitmap, like the full render's edge
+/// check.
+pub fn probe_fits(w_pt: f32, h_pt: f32, dpi: u16) -> bool {
+    let scale = f64::from(dpi) / 72.0;
+    let (w, h) = (
+        (f64::from(w_pt.max(0.0)) * scale).ceil(),
+        (f64::from(h_pt.max(0.0)) * scale).ceil(),
+    );
+    w.is_finite() && h.is_finite() && w * h <= PROBE_MAX_PIXELS
+}
+
 /// The 1-based pages that the probe renders, in order, and the pages that
 /// `All { max }` leaves out. `Only` drops numbers outside the document.
 pub fn probe_numbers(pages: &ProbePages, count: u32) -> (Vec<u32>, u32) {
@@ -554,7 +577,7 @@ pub fn probe_numbers(pages: &ProbePages, count: u32) -> (Vec<u32>, u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::probe_numbers;
+    use super::{probe_fits, probe_numbers};
     use crate::ipc::ProbePages;
 
     #[test]
@@ -576,6 +599,18 @@ mod tests {
         // Nothing is restricted: there is nothing to remove.
         assert!(may_strip(None, all, all));
         assert!(may_strip(Some("any"), all, all));
+    }
+
+    #[test]
+    fn the_probe_skips_a_page_too_large_for_it() {
+        // A4 at the probe's 18 dpi: about 149 x 211 px.
+        assert!(probe_fits(595.0, 842.0, 18));
+        // The PDF maximum of 14 400 pt a side: 3 600 x 3 600 px, 13 Mpx.
+        assert!(!probe_fits(14_400.0, 14_400.0, 18));
+        // A page scaled up by UserUnit, and nonsense sizes.
+        assert!(!probe_fits(1.0e9, 10.0, 18));
+        assert!(!probe_fits(f32::INFINITY, 10.0, 18));
+        assert!(probe_fits(-5.0, 10.0, 18));
     }
 
     #[test]
