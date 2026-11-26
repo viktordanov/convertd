@@ -22,6 +22,10 @@ jobs:
   hashes:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      # The same pin as image.yml: a runner image update cannot change the result.
+      SHELLCHECK_VERSION: v0.11.0
+      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -31,5 +35,13 @@ jobs:
           cache-dependency-path: corpus/requirements.txt
       - name: Corpus files match expected.json
         run: corpus/check.sh python
+      - name: Install shellcheck
+        run: |
+          curl -fsSL -o /tmp/shellcheck.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+          sudo install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
       - name: Shell scripts
-        run: shellcheck corpus/check.sh
+        run: /usr/local/bin/shellcheck corpus/check.sh

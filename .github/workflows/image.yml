@@ -263,4 +263,4 @@ jobs:
           sudo install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
           shellcheck --version
       - name: Shell scripts
-        run: /usr/local/bin/shellcheck build_docker.sh docker/*.sh
+        run: /usr/local/bin/shellcheck build_docker.sh docker/*.sh generate.sh scripts/contract_test.sh
