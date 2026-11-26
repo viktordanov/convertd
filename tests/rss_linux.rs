@@ -302,8 +302,10 @@ mod measured {
         // 15 KB to 20 MB and a small DOCX. Two checks: plan 001's target,
         // the first round against the reading after start, and a growth
         // budget after it, at most 1 MiB per later round of 1 000 requests
-        // (the soak's budget in plan 005 §9). RSS_ROUNDS sets the count, at
-        // least 2.
+        // on average (the soak's budget in plan 005 §9). Single rounds
+        // swing by more than 1 MiB, so the budget is from the first round
+        // to the last, not between neighbours. RSS_ROUNDS sets the count,
+        // at least 2.
         let [small, medium, large] = [15_000, 1 << 20, 20 << 20].map(pdf_of_size);
         // The small DOCX of the worker's warm-up runs the office path: the
         // supervisor's side of an office conversion.

@@ -164,9 +164,9 @@ The crate has three targets of its own. They are 1 ms p50 of overhead, 30 MB of 
 
 - `examples/overhead.rs` sends keep-alive requests from a raw client, one at a time. It serves in-process with the fakes, or drives a running server or image with `--url`. It prints p50, p95 and p99 of every `Server-Timing` stage and of five figures: `overhead` (`total` − `queue` − Σ `*_engine`), `overhead_strict`, 001's share (`total` − Σ engine-stage walls), 002's share and the client time. Run it with `cargo run --release --example overhead -- --help`.
 - `tests/peak_heap.rs` counts the live heap with its own allocator while it uploads PDFs of 1, 16 and 100 MiB.
-- `tests/rss_linux.rs` reads `VmRSS` of `convertd serve` after start and after each round of 1 000 requests. It runs only on Linux, with `--ignored`, against the real pools when the engines are installed, as in the dev image; `RSS_ENGINE=fake` with `--features test-hooks` runs the fakes. [The tests README](../tests/README.md) gives the command and the result.
+- `tests/rss_linux.rs` reads `VmRSS` of `convertd serve` after start and after each round of 1 000 requests. It runs only on Linux, with `--ignored`, against the real pools when the engines are installed, as in the dev image; `RSS_ENGINE=fake` with `--features test-hooks` runs the fakes. [The tests README](../tests/README.md) gives the command and the checks.
 
-The numbers that follow come from macOS on arm64 with the level-A fakes, measured on 2026-11-26 and recorded in commits `1eaf4e4` and `1eafd21`. The example used a release build, and the heap and allocation tests a debug build. The idle RSS on Linux is in [the tests README](../tests/README.md).
+The numbers that follow come from macOS on arm64 with the level-A fakes, measured on 2026-11-26 and recorded in commits `1eaf4e4` and `1eafd21`. The example used a release build, and the heap and allocation tests a debug build. The idle RSS on Linux with the current workload is not recorded yet.
 
 | Measurement | Result |
 | --- | --- |
