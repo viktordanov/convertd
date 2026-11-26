@@ -104,7 +104,7 @@ Only an encrypted DOCX has a test of this path (`tests/engines_office.rs`). An e
 
 The DOCX importer of LibreOffice 26.8.3 starts every section on Letter and never reads `LC_PAPER`. So for a DOCX, DOCM or DOTX, `docx_paper` gives each section without a `w:pgSz` one with the `DEFAULT_PAPER` size before the load. The worker learns the paper from its `LC_PAPER`. The sections are the `w:sectPr` of the body and of a paragraph's `w:pPr`, and a body without one gets one. The new element goes after the header and footer references, `w:footnotePr`, `w:endnotePr` and `w:type`, where the schema puts it. A package in which any section has a `w:pgSz` is loaded as it came. Its other sections may take their size from that one, as a continuous break does.
 
-The worker writes the changed package to `.convertd-paper/<source name>` in the job directory, loads it, and removes it after the export. A retry after a crashed worker removes that copy first. The worker removes nothing else in that folder.
+The worker writes the changed package to `.convertd-paper/<source name>` in the job directory and loads it. It exports the PDF beside the copy and then moves it to the job's output, so that a link relative to the PDF points where it would without the copy. Then it removes the copy. A retry after a crashed worker removes that copy first. The worker removes nothing else in that folder.
 
 Only the main part changes, with its own compression method. Every other entry is copied byte for byte, data descriptors included. The copy may be at most the source size plus 1 MiB, which the supervisor reserves beside the PDF. With `DEFAULT_PAPER=Letter` there is no copy and no reservation, because Letter is the importer's own default.
 

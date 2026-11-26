@@ -985,7 +985,24 @@ fn a_main_part_whose_local_header_disagrees_is_not_copied() {
     let descriptor = entry.local_offset as usize + 30 + 17 + 4 + entry.compressed as usize;
     bytes[descriptor + 4] ^= 0xFF;
     assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unreadable), None));
+    // The local header without the descriptor flag that the directory has.
+    let mut bytes = entries_of(true);
+    let local = at(&bytes).local_offset as usize;
+    bytes[local + 6] &= !0x08;
+    assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unreadable), None));
     // Both intact: copied.
     assert_eq!(repacked(&entries_of(true), Paper::A4).0, Ok(()));
     assert_eq!(repacked(&entries_of(false), Paper::A4).0, Ok(()));
+}
+
+#[test]
+fn a_linked_copy_folder_is_refused() {
+    let dir = Scratch::new();
+    let input = dir.path().join("source.docx");
+    std::fs::write(&input, crate::worker::warmup::docx("x")).unwrap();
+    let outside = Scratch::new();
+    std::os::unix::fs::symlink(outside.path(), dir.path().join(COPY_DIR)).unwrap();
+    let copy = copy_path(&input).unwrap();
+    assert!(matches!(repack(&input, &copy, Paper::A4), Err(Skip::Io(_))));
+    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
 }

@@ -213,11 +213,28 @@ impl OfficeWorker {
         let copy = self.paper_copy(args);
         times.preflight_us = micros(preflight.elapsed());
         let copy = copy?;
-        let result = self.convert_from(copy.as_deref().unwrap_or(&args.input), args, times);
+        let result = match &copy {
+            None => self.convert_from(&args.input, args, times),
+            // The PDF is exported beside the copy, then moved: a link that
+            // LibreOffice writes relative to the PDF then points where it
+            // would without the copy.
+            Some(copy) => {
+                let staged = ConvertArgs {
+                    output: staged_output(copy, &args.output),
+                    ..args.clone()
+                };
+                self.convert_from(copy, &staged, times)
+                    .and_then(|doc_type| {
+                        std::fs::rename(&staged.output, &args.output)
+                            .map(|()| doc_type)
+                            .map_err(|err| io_error("move the converted PDF", &err))
+                    })
+            }
+        };
         // The supervisor gives the copy's reservation back when this job
         // answers, so the copy must be gone by then.
         if let Some(copy) = &copy {
-            remove_copy(copy).inspect_err(|_| {
+            remove_copy(copy, &args.output).inspect_err(|_| {
                 let _ = std::fs::remove_file(&args.output);
             })?;
         }
@@ -253,12 +270,12 @@ impl OfficeWorker {
         // A worker that died during an earlier attempt of this job may have
         // left a partial copy: the retry starts from the source again. Only
         // this input's copy is touched, never other files in the folder.
-        remove_copy(&copy)?;
+        remove_copy(&copy, &args.output)?;
         // repack() makes the copy's folder only when it writes a copy.
         match docx_paper::repack(&args.input, &copy, paper) {
             Ok(()) => Ok(Some(copy)),
             Err(skip) => {
-                remove_copy(&copy)?;
+                remove_copy(&copy, &args.output)?;
                 match skip {
                     docx_paper::Skip::Io(err) => Err(io_error("write the paper copy", &err)),
                     _ => Ok(None),
@@ -386,19 +403,41 @@ impl Engine for OfficeWorker {
     }
 }
 
-/// Removes the paper copy, then its folder if that is empty. A copy that
-/// is gone already is fine; any other failure is the job's I/O error,
-/// because the supervisor stops reserving the copy's bytes when the job
-/// answers. The folder may hold another input's copy, so it stays then.
-fn remove_copy(copy: &Path) -> Result<(), WorkerError> {
-    match std::fs::remove_file(copy) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+/// Where the PDF of a copy is exported: beside the copy, under the name of
+/// the job's output.
+fn staged_output(copy: &Path, output: &Path) -> std::path::PathBuf {
+    let dir = copy.parent().unwrap_or(Path::new("."));
+    dir.join(
+        output
+            .file_name()
+            .unwrap_or_else(|| "document.pdf".as_ref()),
+    )
+}
+
+/// Removes the paper copy and its staged PDF, then their folder if that is
+/// empty. Files that are gone already are fine; any other failure is the
+/// job's I/O error, because the supervisor stops reserving the copy's
+/// bytes when the job answers. The folder may hold another input's copy,
+/// so it stays then. A folder that is a symlink is removed as a link,
+/// and nothing behind it is touched.
+fn remove_copy(copy: &Path, output: &Path) -> Result<(), WorkerError> {
+    let Some(dir) = copy.parent() else {
+        return Ok(());
+    };
+    let gone = |result: std::io::Result<()>| match result {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(io_error("remove the paper copy", &err)),
+    };
+    match std::fs::symlink_metadata(dir) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(io_error("remove the paper copy", &err)),
+        Ok(meta) if !meta.file_type().is_dir() => return gone(std::fs::remove_file(dir)),
+        Ok(_) => {}
     }
-    if let Some(dir) = copy.parent() {
-        let _ = std::fs::remove_dir(dir);
-    }
+    gone(std::fs::remove_file(copy))?;
+    gone(std::fs::remove_file(staged_output(copy, output)))?;
+    let _ = std::fs::remove_dir(dir);
     Ok(())
 }
 

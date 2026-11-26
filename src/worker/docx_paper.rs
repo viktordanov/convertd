@@ -990,6 +990,10 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
         // with the directory first, so that the copy never repairs damage
         // that LibreOffice would see in the source.
         if record.is_main {
+            // The local header must say the same about a data descriptor.
+            if (u16_at(&header, 6) ^ record.flags) & 0x0008 != 0 {
+                return Err(Skip::Unreadable);
+            }
             let fields = if record.flags & 0x0008 == 0 {
                 [
                     u32_at(&header, 14),
@@ -1025,11 +1029,17 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
         }
     }
 
-    // The copy's folder is made only now that there is a copy to write.
+    // The copy's folder is made only now that there is a copy to write. An
+    // existing one must be a real folder, not a link out of the job.
     if let Some(dir) = out.parent() {
         match std::fs::create_dir(dir) {
             Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                let meta = std::fs::symlink_metadata(dir).map_err(written)?;
+                if !meta.file_type().is_dir() {
+                    return Err(Skip::Io(io::Error::from_raw_os_error(libc::ENOTDIR)));
+                }
+            }
             Err(err) => return Err(written(err)),
         }
     }
