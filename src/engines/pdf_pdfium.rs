@@ -12,7 +12,7 @@ use crate::domain::engine::{
 };
 use crate::engines::call::{RETRY_MIN_LEFT, admission, call_with_poison, unexpected, worker_ref};
 use crate::engines::error::EngineFailure;
-use crate::engines::poison::{Attempt, Poison, PoisonList, Strike, Work, strike_for, worse};
+use crate::engines::poison::{Attempt, Poison, PoisonList, Probe, Strike, Work, strike_for, worse};
 use crate::engines::pool::{Admission as PoolAdmission, CallError, Lease, Pool};
 use crate::ipc::{
     self, DecryptArgs, InspectArgs, Op, Output, ProbePages, RenderArgs, Reply, Secret,
@@ -298,7 +298,10 @@ impl PdfEngine for PdfPdfium {
         let poison = self.poison(
             job.sha256,
             Work::Inspect {
-                probe: job.probe_dpi.is_some(),
+                probe: job.probe_dpi.map(|dpi| Probe {
+                    dpi,
+                    pages: job.probe_max_pages,
+                }),
                 password: job.password.is_some(),
                 export: job.export,
             },

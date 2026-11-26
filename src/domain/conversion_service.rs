@@ -218,7 +218,10 @@ impl ConversionService {
                         job.deadline,
                         probe,
                         job.upload.sha256,
-                        Some(job.request.export),
+                        Some(effective_export(
+                            converted.doc_type.family(),
+                            job.request.export,
+                        )),
                         timings,
                     )
                     .await
@@ -553,8 +556,53 @@ pub fn render_reservation(
     total.min(cap)
 }
 
+/// The export settings that LibreOffice applies to a document of `family`,
+/// as `worker::office::filter_options` reads them: the others make no
+/// difference to the PDF, so they must not make another poison key.
+fn effective_export(family: Option<Family>, export: ExportOptions) -> ExportOptions {
+    match family {
+        Some(Family::Presentation) => ExportOptions {
+            one_page_per_sheet: false,
+            ..export
+        },
+        Some(Family::Spreadsheet) => ExportOptions {
+            one_page_per_sheet: export.one_page_per_sheet,
+            ..ExportOptions::default()
+        },
+        _ => ExportOptions::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_the_settings_an_export_uses_make_its_poison_key() {
+        use super::super::conversion::SlideNotes;
+        let all = ExportOptions {
+            notes: SlideNotes::Only,
+            include_hidden_slides: true,
+            one_page_per_sheet: true,
+        };
+        assert_eq!(
+            effective_export(Some(Family::Document), all),
+            ExportOptions::default()
+        );
+        assert_eq!(
+            effective_export(Some(Family::Spreadsheet), all),
+            ExportOptions {
+                one_page_per_sheet: true,
+                ..ExportOptions::default()
+            }
+        );
+        assert_eq!(
+            effective_export(Some(Family::Presentation), all),
+            ExportOptions {
+                one_page_per_sheet: false,
+                ..all
+            }
+        );
+    }
+
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 

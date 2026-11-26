@@ -42,12 +42,12 @@ pub enum Work {
     /// An office conversion: always the whole document.
     Convert,
     /// A PDF inspect of the whole document: the page sizes, and with
-    /// `probe` the blank-page probe renders too. With `password` the worker
-    /// also opens the file once without it. `export` is the office export
-    /// that made the PDF (`None` for a PDF upload): two exports of one
-    /// upload are different PDFs.
+    /// `probe` the blank-page probe renders too, at `dpi` for at most
+    /// `pages` pages. With `password` the worker also opens the file once
+    /// without it. `export` is the office export that made the PDF (`None`
+    /// for a PDF upload): two exports of one upload are different PDFs.
     Inspect {
-        probe: bool,
+        probe: Option<Probe>,
         password: bool,
         export: Option<ExportOptions>,
     },
@@ -55,6 +55,20 @@ pub enum Work {
     Decrypt,
     /// A render of this many pages.
     Render { pages: u32 },
+}
+
+/// The blank-page probe of an inspect: its DPI and its page cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Probe {
+    pub dpi: u16,
+    pub pages: u32,
+}
+
+impl Probe {
+    /// Whether this probe is at least as much work as `other`.
+    fn at_least(&self, other: &Probe) -> bool {
+        self.dpi >= other.dpi && self.pages >= other.pages
+    }
 }
 
 /// One request for a document: its work and the time it had when the
@@ -92,7 +106,14 @@ impl Attempt {
                     password,
                     export,
                 },
-            ) => probe >= timed_out && password >= timed_out_password && export == timed_out_export,
+            ) => {
+                let probe_covered = match (timed_out, probe) {
+                    (None, _) => true,
+                    (Some(_), None) => false,
+                    (Some(t), Some(p)) => p.at_least(&t),
+                };
+                probe_covered && password >= timed_out_password && export == timed_out_export
+            }
             (Work::Render { pages: timed_out }, Work::Render { pages }) => pages >= timed_out,
             _ => false,
         };
@@ -385,9 +406,13 @@ mod tests {
     fn a_probed_inspect_timeout_does_not_cover_an_unprobed_inspect() {
         let now = Instant::now();
         let l = list(600_000);
-        let inspect = |probe, export| Attempt {
+        let probe_200 = Probe {
+            dpi: 18,
+            pages: 200,
+        };
+        let inspect = |probe: bool, export| Attempt {
             work: Work::Inspect {
-                probe,
+                probe: probe.then_some(probe_200),
                 password: false,
                 export,
             },
@@ -426,7 +451,7 @@ mod tests {
         // cover one without a password.
         let with_password = Attempt {
             work: Work::Inspect {
-                probe: false,
+                probe: None,
                 password: true,
                 export: None,
             },
@@ -440,6 +465,24 @@ mod tests {
             !l.refuses_at(&fourth, &inspect(false, None), now),
             "one open"
         );
+        // A probe of fewer pages, or at a lower DPI, is less work.
+        let smaller = |dpi, pages| Attempt {
+            work: Work::Inspect {
+                probe: Some(Probe { dpi, pages }),
+                password: false,
+                export: None,
+            },
+            budget: Duration::from_secs(10),
+        };
+        assert!(
+            !l.refuses_at(&KEY, &smaller(18, 1), now),
+            "fewer probe pages"
+        );
+        assert!(
+            !l.refuses_at(&KEY, &smaller(9, 200), now),
+            "a lower probe DPI"
+        );
+        assert!(l.refuses_at(&KEY, &smaller(36, 400), now), "a larger probe");
     }
 
     #[test]
