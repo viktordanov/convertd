@@ -15,7 +15,6 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -348,6 +347,28 @@ func TestUnsupportedFormat(t *testing.T) {
 	wantErr(t, err, convert.ErrUnsupportedFormat)
 }
 
+// Image uploads left v1 (owner decision): a PNG gets 415, and capabilities
+// lists no image input.
+func TestImageUploadUnsupported(t *testing.T) {
+	ctx := testContext(t)
+	f := newFacade(t)
+	_, err := f.ConvertToImages(ctx, "image.png", bytes.NewReader(pngImage()), convert.Options{})
+	wantErr(t, err, convert.ErrUnsupportedFormat)
+	if convert.Retryable(err) {
+		t.Error("ErrUnsupportedFormat is retryable")
+	}
+
+	caps, err := f.Capabilities(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range caps.Formats {
+		if format.Family == "image" || format.Engine == "image" {
+			t.Errorf("capabilities lists the image input %+v", format)
+		}
+	}
+}
+
 // uploadLimit is the server's cap: the harness's in binary mode, the
 // advertised one in image mode.
 func uploadLimit(t *testing.T) int64 {
@@ -483,14 +504,9 @@ func TestFakeTransientCodes(t *testing.T) {
 
 // Case 19: the server answers while the client is still uploading. The body
 // is far past socket buffer sizes, so the answer comes before the upload
-// ends; the client must surface the answer, not a write error.
-//
-// Known finding (ledger 004 plan, Decisions item 9): about half the runs
-// end in "write: broken pipe" instead of the answer. The 401 or 413 reaches
-// the client socket every time (a raw TCP reader sees it 30 times in 30),
-// but Go's http.Transport returns the body write error when it comes before
-// its read loop has parsed the response. Until the decision is made, a write
-// error is logged and the case is skipped; any other outcome fails.
+// ends; the client must surface the answer, not a write error. The server
+// drains the rest of an unread body after it answers (lane 001's lingering
+// close); before that, about half the runs ended in "write: broken pipe".
 func TestEarlyAnswerDuringUpload(t *testing.T) {
 	t.Parallel()
 	const size = 64 << 20
@@ -499,20 +515,12 @@ func TestEarlyAnswerDuringUpload(t *testing.T) {
 	t.Run("wrong key", func(t *testing.T) {
 		f := facadeFor(t, target.baseURL, "wrong-key", newTransport(t))
 		_, err := f.ConvertToPDF(ctx, "big.pdf", randomReader(size), convert.Options{})
-		wantEarlyAnswer(t, err, convert.ErrUnauthorized)
+		wantErr(t, err, convert.ErrUnauthorized)
 	})
 	t.Run("over the cap", func(t *testing.T) {
 		_, err := newFacade(t).ConvertToPDF(ctx, "big.pdf", pdfPrefixed(randomReader(size)), convert.Options{})
-		wantEarlyAnswer(t, err, convert.ErrFileTooLarge)
+		wantErr(t, err, convert.ErrFileTooLarge)
 	})
-}
-
-func wantEarlyAnswer(t *testing.T, err, sentinel error) {
-	t.Helper()
-	if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
-		t.Skipf("FINDING (plan 004, decision 9): the early answer surfaced as a write error, not %v: %v", sentinel, err)
-	}
-	wantErr(t, err, sentinel)
 }
 
 // pdfPrefixed makes a large upload that detection would take for a PDF.
