@@ -18,6 +18,7 @@ pub enum WarningCode {
     BlankPage,
     MacrosIgnored,
     RenderClamped,
+    GlyphsMissing,
 }
 
 impl WarningCode {
@@ -28,6 +29,7 @@ impl WarningCode {
             WarningCode::BlankPage => "BLANK_PAGE",
             WarningCode::MacrosIgnored => "MACROS_IGNORED",
             WarningCode::RenderClamped => "RENDER_CLAMPED",
+            WarningCode::GlyphsMissing => "GLYPHS_MISSING",
         }
     }
 }
@@ -38,6 +40,10 @@ pub enum DetailValue {
     Str(String),
     Int(i64),
     Float(f64),
+    /// A JSON array of strings.
+    List(Vec<String>),
+    /// A JSON object of counts, in this order.
+    Counts(Vec<(String, i64)>),
 }
 
 /// A quality signal.
@@ -81,6 +87,8 @@ pub enum Check {
     PageCount,
     Fonts,
     Macros,
+    /// `GLYPHS_MISSING`: the text code points.
+    Glyphs,
 }
 
 /// Why a check did not run. A skipped check is counted, never failed.
@@ -104,6 +112,11 @@ pub struct SourceFacts {
     /// main part links). Sorted, without duplicates, a subset of
     /// `requested_fonts` up to case and white space.
     pub embedded_fonts: Vec<String>,
+    /// The distinct code points of the document's text that a font must
+    /// draw: no controls, white space, default-ignorable or private-use
+    /// characters ([`super::text::needs_glyph`]). Sorted, at most
+    /// [`MAX_CODE_POINTS`].
+    pub text_code_points: Vec<u32>,
     pub macros: Option<MacroFact>,
     pub skipped: Vec<(Check, SkipReason)>,
 }
@@ -135,12 +148,18 @@ pub struct Verdict {
     pub skipped: Vec<(Check, &'static str)>,
 }
 
+/// At most this many distinct text code points cross from pre-flight.
+pub const MAX_CODE_POINTS: usize = 4096;
+
+/// At most this many code points are named in a `GLYPHS_MISSING` detail.
+pub const LISTED_CODE_POINTS: usize = 8;
+
 /// At most this many `FONT_SUBSTITUTED` warnings per request.
 pub const MAX_FONT_WARNINGS: usize = 32;
 
 /// Applies the warning rules. Pure: no I/O, never fails. The order is
 /// `RENDER_CLAMPED`, `PAGE_COUNT_MISMATCH`, `FONT_SUBSTITUTED` (sorted by
-/// family), `BLANK_PAGE` (by page), `MACROS_IGNORED`.
+/// family), `GLYPHS_MISSING`, `BLANK_PAGE` (by page), `MACROS_IGNORED`.
 pub fn verify(input: &VerifyInput<'_>) -> Verdict {
     let mut verdict = Verdict::default();
     if let Some(warning) = render_clamped(input) {
@@ -153,10 +172,11 @@ pub fn verify(input: &VerifyInput<'_>) -> Verdict {
             }
             page_count(input, facts, &mut verdict);
             fonts(input, facts, &mut verdict);
+            glyphs(input, facts, &mut verdict);
         }
         None if input.format.family().is_office() => {
             // The office engine ran no pre-flight.
-            for check in [Check::PageCount, Check::Fonts, Check::Macros] {
+            for check in [Check::PageCount, Check::Fonts, Check::Glyphs, Check::Macros] {
                 verdict.skipped.push((check, "no_facts"));
             }
         }
@@ -264,6 +284,72 @@ fn fonts(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdict) {
     }
 }
 
+/// `GLYPHS_MISSING`: text code points that no installed face covers
+/// (`coverage` in `build-info.json`, the union of the faces' charsets).
+/// LibreOffice then draws boxes or nothing. One warning with the count,
+/// the first [`LISTED_CODE_POINTS`] code points and a count per script.
+/// Without a coverage (outside the image) the check is skipped.
+fn glyphs(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdict) {
+    if facts.text_code_points.is_empty() {
+        return;
+    }
+    let catalog = input.fonts;
+    if !catalog.has_coverage() {
+        verdict.skipped.push((Check::Glyphs, "no_coverage"));
+        return;
+    }
+    let mut missing: Vec<u32> = facts
+        .text_code_points
+        .iter()
+        .copied()
+        .filter(|&cp| !catalog.covers(cp))
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    missing.sort_unstable();
+    missing.dedup();
+    let mut scripts: Vec<(String, i64)> = Vec::new();
+    for &cp in &missing {
+        let name = super::text::script_name(cp);
+        match scripts.iter_mut().find(|(script, _)| script == name) {
+            Some((_, count)) => *count += 1,
+            None => scripts.push((name.to_owned(), 1)),
+        }
+    }
+    scripts.sort();
+    let summary: Vec<String> = scripts
+        .iter()
+        .map(|(script, count)| format!("{script} {count}"))
+        .collect();
+    let count = missing.len();
+    verdict.warnings.push(Warning {
+        code: WarningCode::GlyphsMissing,
+        message: format!(
+            "{count} characters have no font in this image: {}",
+            summary.join(", ")
+        ),
+        page: None,
+        detail: vec![
+            (
+                "missing",
+                DetailValue::Int(i64::try_from(count).unwrap_or(i64::MAX)),
+            ),
+            (
+                "code_points",
+                DetailValue::List(
+                    missing
+                        .iter()
+                        .take(LISTED_CODE_POINTS)
+                        .map(|cp| format!("U+{cp:04X}"))
+                        .collect(),
+                ),
+            ),
+            ("scripts", DetailValue::Counts(scripts)),
+        ],
+    });
+}
+
 /// V3 · `BLANK_PAGE`: a page with content (`objects > 0`) that rendered as
 /// one flat colour. The rendered pages decide where they exist; the probe
 /// render covers the rest.
@@ -306,6 +392,8 @@ pub struct FontCatalog {
     substitutes: HashMap<String, String>,
     default_substitute: Option<String>,
     metric_compatible: HashMap<String, bool>,
+    /// Sorted, merged, inclusive code point ranges that some face covers.
+    coverage: Vec<(u32, u32)>,
 }
 
 impl FontCatalog {
@@ -328,6 +416,7 @@ impl FontCatalog {
                 .map(|(requested, substitute)| (fold(&requested), substitute))
                 .collect(),
             default_substitute: default_substitute.filter(|s| !s.trim().is_empty()),
+            coverage: Vec::new(),
             metric_compatible: metric_compatible
                 .into_iter()
                 .map(|(family, compatible)| (fold(&family), compatible))
@@ -338,6 +427,35 @@ impl FontCatalog {
     /// No installed families known: V2 cannot run.
     pub fn is_empty(&self) -> bool {
         self.installed.is_empty()
+    }
+
+    /// The catalog with the code point ranges that the faces cover
+    /// (`coverage` in `build-info.json`). They are sorted and merged here,
+    /// so their order and overlaps do not matter; a range with its end
+    /// before its start is dropped.
+    pub fn with_coverage(mut self, ranges: impl IntoIterator<Item = (u32, u32)>) -> Self {
+        let mut ranges: Vec<(u32, u32)> = ranges.into_iter().filter(|(a, b)| a <= b).collect();
+        ranges.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::with_capacity(ranges.len());
+        for (start, end) in ranges {
+            match merged.last_mut() {
+                Some((_, last)) if start <= last.saturating_add(1) => *last = (*last).max(end),
+                _ => merged.push((start, end)),
+            }
+        }
+        self.coverage = merged;
+        self
+    }
+
+    /// Whether a coverage is known: without one `GLYPHS_MISSING` cannot run.
+    pub fn has_coverage(&self) -> bool {
+        !self.coverage.is_empty()
+    }
+
+    /// Whether some face covers `cp`.
+    pub fn covers(&self, cp: u32) -> bool {
+        let at = self.coverage.partition_point(|&(_, end)| end < cp);
+        self.coverage.get(at).is_some_and(|&(start, _)| start <= cp)
     }
 
     pub fn is_installed(&self, family: &str) -> bool {
@@ -401,6 +519,7 @@ impl Check {
             Check::PageCount => "page_count",
             Check::Fonts => "fonts",
             Check::Macros => "macros",
+            Check::Glyphs => "glyphs",
         }
     }
 }
@@ -458,6 +577,7 @@ fn round(value: f32) -> String {
         DetailValue::Int(n) => n.to_string(),
         DetailValue::Float(f) => f.to_string(),
         DetailValue::Str(s) => s,
+        DetailValue::List(_) | DetailValue::Counts(_) => String::new(),
     }
 }
 
@@ -718,6 +838,96 @@ mod tests {
         assert_eq!(requested, [&DetailValue::Str("Zzyzx".into())]);
     }
 
+    /// The catalog with a coverage of Basic Latin and Latin-1 only.
+    fn latin_coverage() -> FontCatalog {
+        catalog().with_coverage(vec![(0x20, 0x7e), (0xa0, 0xff)])
+    }
+
+    #[test]
+    fn glyphs_missing_counts_per_script() {
+        // F2: Thai and Ethiopic letters that no installed face covers; the
+        // Latin text is covered.
+        let fonts = latin_coverage();
+        let facts = SourceFacts {
+            text_code_points: vec![0x41, 0x42, 0x1200, 0x1201, 0x0e01, 0x0e02, 0x0e03],
+            ..Default::default()
+        };
+        let verdict = case(Format::Docx, facts, 1, &fonts).verdict();
+        let missing: Vec<&Warning> = verdict
+            .warnings
+            .iter()
+            .filter(|w| w.code == WarningCode::GlyphsMissing)
+            .collect();
+        assert_eq!(missing.len(), 1, "{:?}", verdict.warnings);
+        let w = missing[0];
+        assert_eq!(w.code.as_str(), "GLYPHS_MISSING");
+        assert_eq!(w.page, None);
+        assert_eq!(
+            w.detail,
+            vec![
+                ("missing", DetailValue::Int(5)),
+                (
+                    "code_points",
+                    DetailValue::List(
+                        ["U+0E01", "U+0E02", "U+0E03", "U+1200", "U+1201"]
+                            .map(String::from)
+                            .to_vec()
+                    )
+                ),
+                (
+                    "scripts",
+                    DetailValue::Counts(vec![("Ethiopic".into(), 2), ("Thai".into(), 3)])
+                ),
+            ]
+        );
+        assert_eq!(
+            w.message,
+            "5 characters have no font in this image: Ethiopic 2, Thai 3"
+        );
+    }
+
+    #[test]
+    fn glyphs_missing_lists_at_most_eight_code_points() {
+        let fonts = latin_coverage();
+        let facts = SourceFacts {
+            text_code_points: (0x0e01..0x0e11).collect(),
+            ..Default::default()
+        };
+        let verdict = case(Format::Docx, facts, 1, &fonts).verdict();
+        let w = &verdict.warnings[0];
+        assert_eq!(w.detail[0], ("missing", DetailValue::Int(16)));
+        let DetailValue::List(listed) = &w.detail[1].1 else {
+            panic!("{:?}", w.detail);
+        };
+        assert_eq!(listed.len(), 8);
+        assert_eq!(listed[0], "U+0E01");
+    }
+
+    #[test]
+    fn glyphs_covered_text_raises_nothing() {
+        let fonts = latin_coverage();
+        let facts = SourceFacts {
+            text_code_points: vec![0x41, 0xe9],
+            ..Default::default()
+        };
+        let verdict = case(Format::Docx, facts, 1, &fonts).verdict();
+        assert!(verdict.warnings.is_empty(), "{:?}", verdict.warnings);
+        assert!(verdict.skipped.is_empty(), "{:?}", verdict.skipped);
+    }
+
+    #[test]
+    fn glyphs_without_coverage_is_skipped() {
+        // Outside the image build-info.json has no "coverage".
+        let fonts = catalog();
+        let facts = SourceFacts {
+            text_code_points: vec![0x0e01],
+            ..Default::default()
+        };
+        let verdict = case(Format::Docx, facts, 1, &fonts).verdict();
+        assert!(verdict.warnings.is_empty());
+        assert_eq!(verdict.skipped, [(Check::Glyphs, "no_coverage")]);
+    }
+
     #[test]
     fn v2_without_a_catalog_is_skipped() {
         let fonts = FontCatalog::default();
@@ -819,7 +1029,7 @@ mod tests {
 
         let mut none = case(Format::Docx, SourceFacts::default(), 1, &fonts);
         none.facts = None;
-        assert_eq!(none.verdict().skipped.len(), 3);
+        assert_eq!(none.verdict().skipped.len(), 4);
     }
 
     #[test]

@@ -234,6 +234,10 @@ fn detail_schema() -> impl Into<RefOr<Schema>> {
 /// - `MACROS_IGNORED`: the document contains macros. They were not run.
 /// - `RENDER_CLAMPED`: a server limit reduced the requested resolution.
 ///   `detail` has `requested_dpi` and `effective_dpi`.
+/// - `GLYPHS_MISSING`: the text has characters that no installed font
+///   covers; they render as boxes or not at all. `detail` has `missing`
+///   (the count), `code_points` (the first 8, as `U+0E01`) and `scripts`
+///   (a count per script, such as `{"Thai": 12}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[schema(as = WarningCode)]
@@ -243,6 +247,7 @@ pub enum WarningCodeDto {
     BlankPage,
     MacrosIgnored,
     RenderClamped,
+    GlyphsMissing,
 }
 
 impl From<WarningCode> for WarningCodeDto {
@@ -253,6 +258,7 @@ impl From<WarningCode> for WarningCodeDto {
             WarningCode::BlankPage => WarningCodeDto::BlankPage,
             WarningCode::MacrosIgnored => WarningCodeDto::MacrosIgnored,
             WarningCode::RenderClamped => WarningCodeDto::RenderClamped,
+            WarningCode::GlyphsMissing => WarningCodeDto::GlyphsMissing,
         }
     }
 }
@@ -382,6 +388,13 @@ impl From<&Warning> for WarningDto {
                     DetailValue::Str(text) => serde_json::Value::from(text.as_str()),
                     DetailValue::Int(n) => serde_json::Value::from(*n),
                     DetailValue::Float(f) => serde_json::Value::from(*f),
+                    DetailValue::List(items) => serde_json::Value::from(items.clone()),
+                    DetailValue::Counts(counts) => serde_json::Value::Object(
+                        counts
+                            .iter()
+                            .map(|(name, n)| (name.clone(), serde_json::Value::from(*n)))
+                            .collect(),
+                    ),
                 };
                 ((*key).to_owned(), value)
             })

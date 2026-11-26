@@ -7,7 +7,7 @@
 //! becomes a `String` in Round B).
 
 use crate::domain::verification::{
-    Check, DeclaredPages, MacroFact, MacroKind, SkipReason, SourceFacts,
+    Check, DeclaredPages, MAX_CODE_POINTS, MacroFact, MacroKind, SkipReason, SourceFacts,
 };
 use crate::ipc::protocol::{
     CheckWire, DeclaredPagesWire, MacroFactWire, MacroKindWire, SkipReasonWire, SourceFactsWire,
@@ -34,6 +34,7 @@ impl From<&SourceFacts> for SourceFactsWire {
             }),
             requested_fonts: facts.requested_fonts.clone(),
             embedded_fonts: facts.embedded_fonts.clone(),
+            text_code_points: facts.text_code_points.clone(),
             macros: facts.macros.as_ref().map(|m| MacroFactWire {
                 kind: match m.kind {
                     MacroKind::Vba => MacroKindWire::Vba,
@@ -51,6 +52,7 @@ impl From<&SourceFacts> for SourceFactsWire {
                         Check::PageCount => CheckWire::PageCount,
                         Check::Fonts => CheckWire::Fonts,
                         Check::Macros => CheckWire::Macros,
+                        Check::Glyphs => CheckWire::Glyphs,
                     };
                     let reason = match reason {
                         SkipReason::CapReached => SkipReasonWire::CapReached,
@@ -73,6 +75,7 @@ impl From<&SourceFactsWire> for SourceFacts {
             }),
             requested_fonts: wire.requested_fonts.clone(),
             embedded_fonts: wire.embedded_fonts.clone(),
+            text_code_points: code_points(&wire.text_code_points),
             macros: wire.macros.as_ref().map(|m| MacroFact {
                 kind: match m.kind {
                     MacroKindWire::Vba => MacroKind::Vba,
@@ -90,6 +93,7 @@ impl From<&SourceFactsWire> for SourceFacts {
                         CheckWire::PageCount => Check::PageCount,
                         CheckWire::Fonts => Check::Fonts,
                         CheckWire::Macros => Check::Macros,
+                        CheckWire::Glyphs => Check::Glyphs,
                     };
                     let reason = match reason {
                         SkipReasonWire::CapReached => SkipReason::CapReached,
@@ -101,6 +105,16 @@ impl From<&SourceFactsWire> for SourceFacts {
                 .collect(),
         }
     }
+}
+
+/// The worker parses hostile files, so the supervisor keeps its own bound:
+/// sorted, distinct, at most [`MAX_CODE_POINTS`].
+fn code_points(wire: &[u32]) -> Vec<u32> {
+    let mut out: Vec<u32> = wire.to_vec();
+    out.sort_unstable();
+    out.dedup();
+    out.truncate(MAX_CODE_POINTS);
+    out
 }
 
 #[cfg(test)]
@@ -116,6 +130,7 @@ mod tests {
             }),
             requested_fonts: vec!["Aptos".into(), "Calibri".into()],
             embedded_fonts: vec!["Aptos".into()],
+            text_code_points: vec![0x41, 0x0e01],
             macros: Some(MacroFact {
                 kind: MacroKind::Basic,
                 part: "Basic/".into(),
@@ -123,6 +138,7 @@ mod tests {
             skipped: vec![
                 (Check::Fonts, SkipReason::CapReached),
                 (Check::Macros, SkipReason::MalformedXml),
+                (Check::Glyphs, SkipReason::CapReached),
             ],
         };
         let wire = SourceFactsWire::from(&facts);
@@ -133,6 +149,20 @@ mod tests {
             SourceFacts::from(&SourceFactsWire::default()),
             SourceFacts::default()
         );
+    }
+
+    #[test]
+    fn the_supervisor_bounds_the_code_points_it_receives() {
+        // A compromised worker can send anything; the supervisor sorts,
+        // dedups and caps.
+        let wire = SourceFactsWire {
+            text_code_points: (0..10_000u32).rev().chain([5, 5]).collect(),
+            ..Default::default()
+        };
+        let facts = SourceFacts::from(&wire);
+        assert_eq!(facts.text_code_points.len(), MAX_CODE_POINTS);
+        assert!(facts.text_code_points.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(facts.text_code_points[0], 0);
     }
 
     #[test]

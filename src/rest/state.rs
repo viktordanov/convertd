@@ -124,6 +124,12 @@ impl AppState {
             build_info.font_substitutes.clone(),
             build_info.default_substitute.clone(),
             load_fonts_file(&config.server.fonts_path).0,
+        )
+        .with_coverage(
+            build_info
+                .coverage
+                .iter()
+                .map(|[start, end]| (*start, *end)),
         );
         let capabilities = Capabilities::new(service, engine_info.clone(), &config.limits, fonts);
         // Serialising plain structs of strings and integers cannot fail.

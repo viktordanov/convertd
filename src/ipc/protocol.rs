@@ -330,6 +330,10 @@ pub struct SourceFactsWire {
     /// Families the source embeds (DOCX font table).
     #[serde(default)]
     pub embedded_fonts: Vec<String>,
+    /// The distinct text code points that need a glyph, sorted, at most
+    /// `MAX_CODE_POINTS` (`GLYPHS_MISSING`).
+    #[serde(default)]
+    pub text_code_points: Vec<u32>,
     pub macros: Option<MacroFactWire>,
     pub skipped: Vec<(CheckWire, SkipReasonWire)>,
 }
@@ -362,6 +366,7 @@ pub enum CheckWire {
     PageCount,
     Fonts,
     Macros,
+    Glyphs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
