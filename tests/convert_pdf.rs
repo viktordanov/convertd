@@ -27,6 +27,12 @@ const KEY: &str = "test-key";
 
 static LOGS: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
 
+/// `PLAN_DELAY_MS` is one static for the whole process: the tests that set
+/// it take this first, so two of them never run at once under `cargo test`
+/// (nextest runs each test in its own process).
+#[cfg(feature = "test-hooks")]
+static PLAN_DELAY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 struct Capture(Arc<Mutex<Vec<u8>>>);
 
 impl Write for Capture {
@@ -958,6 +964,7 @@ async fn a_client_that_stops_reading_releases_the_permit_after_the_idle_timeout(
 #[tokio::test]
 async fn slow_a_bundle_whose_planning_passes_the_deadline_is_504() {
     use std::sync::atomic::Ordering;
+    let _plan_delay = PLAN_DELAY.lock().await;
     let app = App::with_pdf(
         "deadline-after-plan",
         &[],
@@ -982,6 +989,32 @@ async fn slow_a_bundle_whose_planning_passes_the_deadline_is_504() {
         String::from_utf8_lossy(&body[..body.len().min(200)])
     );
     assert_eq!(error_code(&body), "CONVERSION_TIMEOUT");
+    app.assert_no_jobs().await;
+}
+
+/// A client that leaves while its bundle is planned does not free its
+/// slot: the planning task holds the permit until it ends (review round 2
+/// on ledger/001-perf3). About 1.3 s.
+#[cfg(feature = "test-hooks")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_a_client_that_leaves_during_planning_keeps_its_slot_until_it_ends() {
+    use std::sync::atomic::Ordering;
+    let _plan_delay = PLAN_DELAY.lock().await;
+    let app = App::new("plan-permit", &[("MAX_CONCURRENT_REQUESTS", "1")]);
+    convertd::rest::convert_handlers::test_hooks::PLAN_DELAY_MS.store(800, Ordering::Relaxed);
+    let bundle = with_options("a.pdf", &pdf("x"), r#"{"output":"bundle"}"#);
+    let left = tokio::time::timeout(Duration::from_millis(300), send(&app, bundle)).await;
+    convertd::rest::convert_handlers::test_hooks::PLAN_DELAY_MS.store(0, Ordering::Relaxed);
+    assert!(left.is_err(), "the bundle came back before the client left");
+    let (response, _) = send(&app, file("b.pdf", &pdf("y"))).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the slot was freed while the plan still ran"
+    );
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let (response, _) = send(&app, file("b.pdf", &pdf("y"))).await;
+    assert_eq!(response.status(), StatusCode::OK);
     app.assert_no_jobs().await;
 }
 

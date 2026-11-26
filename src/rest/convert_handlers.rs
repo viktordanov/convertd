@@ -127,7 +127,7 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
     })
     .await
     .unwrap_or_else(|err| Err(std::io::Error::other(err)));
-    let (job, permit) = match created {
+    let (mut job, permit) = match created {
         Ok(created) => created,
         Err(err) => {
             return ApiError::from_upload(&upload::map_io(err), state.queue_wait_seconds)
@@ -135,9 +135,11 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
         }
     };
     let mut detected = None;
+    let shared = Arc::new(permit);
     let received = match upload::receive(
         request,
         &job,
+        Arc::clone(&shared),
         state.service.limits(),
         state.upload_rate,
         &mut detected,
@@ -165,6 +167,11 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
             return response;
         }
     };
+    // receive awaited its sink, so the permit is the handler's alone again.
+    let Ok(mut permit) = Arc::try_unwrap(shared) else {
+        return ApiError::internal("the upload sink still holds the permit".to_owned())
+            .into_response();
+    };
 
     let mut timings = RequestTimings {
         recv: Some(received.upload_done - started),
@@ -174,18 +181,17 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
     let deadline = received.upload_done + received.request.timeout;
     let paths = job.paths(received.detection.format);
     // The supervisor creates pages/; the render engine writes into it.
-    let pages_dir = paths.pages_dir.clone();
-    if received.request.output != Output::Pdf
-        && let Err(err) = tokio::task::spawn_blocking(move || std::fs::create_dir(pages_dir))
-            .await
-            .unwrap_or_else(|err| Err(std::io::Error::other(err)))
-    {
-        let api = ApiError::from_upload(&upload::map_io(err), state.queue_wait_seconds);
-        let mut response = api.into_response();
-        response
-            .headers_mut()
-            .insert(SERVER_TIMING, timings.header());
-        return response;
+    if received.request.output != Output::Pdf {
+        let pages_dir = paths.pages_dir.clone();
+        let made = off_runtime((permit, job), move |_| std::fs::create_dir(pages_dir)).await;
+        match made {
+            Some((Ok(()), held)) => (permit, job) = held,
+            Some((Err(err), _)) => return pages_failed(state.queue_wait_seconds, &timings, err),
+            None => {
+                let err = std::io::Error::other("the task that makes pages/ panicked");
+                return pages_failed(state.queue_wait_seconds, &timings, err);
+            }
+        }
     }
     let outcome = {
         let conversion = state.service.convert(
@@ -252,6 +258,37 @@ const PAGE_COUNT: HeaderName = HeaderName::from_static("convert-page-count");
 const WARNING_COUNT: HeaderName = HeaderName::from_static("convert-warning-count");
 const FINGERPRINT: HeaderName = HeaderName::from_static("convert-engine-fingerprint");
 
+/// The answer when `pages/` cannot be made.
+fn pages_failed(
+    queue_wait_seconds: u32,
+    timings: &RequestTimings,
+    err: std::io::Error,
+) -> Response {
+    let api = ApiError::from_upload(&upload::map_io(err), queue_wait_seconds);
+    let mut response = api.into_response();
+    response
+        .headers_mut()
+        .insert(SERVER_TIMING, timings.header());
+    response
+}
+
+/// A request's admission permit and job directory.
+type Held = (tokio::sync::OwnedSemaphorePermit, Arc<JobDir>);
+
+/// Runs `work` on the blocking pool with the request's permit and job
+/// directory, and hands both back. A client that leaves meanwhile drops
+/// this future, not the task: its slot stays taken and its directory
+/// stays until the work ends. `None` if the task panicked; the permit and
+/// the directory went with it.
+async fn off_runtime<T: Send + 'static>(
+    held: Held,
+    work: impl FnOnce(&JobDir) -> T + Send + 'static,
+) -> Option<(T, Held)> {
+    tokio::task::spawn_blocking(move || (work(&held.1), held))
+        .await
+        .ok()
+}
+
 /// The 200: headers first, then the body pump, which owns the job
 /// directory and the permit from here on. Anything that fails before the
 /// headers still becomes an error status.
@@ -279,44 +316,49 @@ async fn success(
             state.queue_wait_seconds,
         )
     };
-    let prepared = match output {
-        _ if Instant::now() >= deadline => Err(timed_out()),
-        Output::Pdf => {
-            let job = Arc::clone(&job);
-            let pdf = result.pdf.clone();
-            tokio::task::spawn_blocking(move || {
-                settle(&job);
-                File::open(pdf).and_then(|file| Ok((file.metadata()?.len(), file)))
-            })
-            .await
-            .unwrap_or_else(|err| Err(std::io::Error::other(err)))
-            .map(|(size, file)| Prepared::Pdf { file, size })
-            .map_err(|err| ApiError::internal(format!("failed to open the result: {err}")))
-        }
-        Output::Images | Output::Bundle => {
-            let manifest = ManifestInput::new(state, received, request_id, timings);
-            let job = Arc::clone(&job);
-            let result = result.clone();
-            tokio::task::spawn_blocking(move || plan_tar(&job, &manifest, &result))
-                .await
-                .unwrap_or_else(|err| {
-                    Err(ApiError::internal(format!(
-                        "failed to plan the bundle: {err}"
-                    )))
-                })
-        }
+    let held = (permit, job);
+    let done = if Instant::now() >= deadline {
+        Some((Err(timed_out()), held))
+    } else if output == Output::Pdf {
+        let pdf = result.pdf.clone();
+        off_runtime(held, move |job| {
+            settle(job);
+            File::open(pdf)
+                .and_then(|file| Ok((file.metadata()?.len(), file)))
+                .map(|(size, file)| Prepared::Pdf { file, size })
+                .map_err(|err| ApiError::internal(format!("failed to open the result: {err}")))
+        })
+        .await
+    } else {
+        let manifest = ManifestInput::new(state, received, request_id, timings);
+        let result = result.clone();
+        off_runtime(held, move |job| plan_tar(job, &manifest, &result)).await
     };
-    // The second check, just before the 200.
-    let prepared = prepared.and_then(|prepared| {
-        if Instant::now() >= deadline {
-            Err(timed_out())
-        } else {
-            Ok(prepared)
-        }
-    });
-    let prepared = match prepared {
-        Ok(prepared) => prepared,
-        Err(api) => {
+    let (prepared, held) = match done {
+        // The second check, just before the 200.
+        Some((prepared, held)) => (
+            prepared.and_then(|prepared| {
+                if Instant::now() >= deadline {
+                    Err(timed_out())
+                } else {
+                    Ok(prepared)
+                }
+            }),
+            Some(held),
+        ),
+        None => (
+            Err(ApiError::internal(
+                "failed to prepare the response: the task panicked".to_owned(),
+            )),
+            None,
+        ),
+    };
+    let (prepared, (permit, job)) = match (prepared, held) {
+        (Ok(prepared), Some(held)) => (prepared, held),
+        (prepared, _) => {
+            let api = prepared
+                .err()
+                .unwrap_or_else(|| ApiError::internal("failed to prepare the response".to_owned()));
             timings.total = Some(received.upload_done.elapsed());
             log_finished(request_id, received, None, timings, Some(api.code.as_str()));
             let mut response = api.into_response();

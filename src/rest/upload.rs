@@ -30,7 +30,7 @@ use axum::http::header;
 use bytes::Bytes;
 use multer::{Constraints, Multipart, SizeLimit};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
+use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
 use super::serialization::options::{ConvertOptions, OptionsError};
 use crate::detect;
@@ -130,13 +130,16 @@ pub fn is_disk_full(err: &io::Error) -> bool {
 
 /// Reads the multipart body into `job`. Called after auth and the
 /// concurrency permit; rejects an oversized `Content-Length` before a byte
-/// is read.
+/// is read. The sink holds a share of `permit` until its blocking task
+/// ends, so a client that leaves meanwhile does not free its slot while
+/// the open or the writes still run.
 /// `detected` is set as soon as detection has run, so the caller knows
 /// that an error after it (such as an options part after the file) still
 /// gets `Server-Timing`.
 pub async fn receive(
     request: Request,
     job: &Arc<JobDir>,
+    permit: Arc<OwnedSemaphorePermit>,
     limits: &Limits,
     rate: MinRate,
     detected: &mut Option<Duration>,
@@ -199,7 +202,11 @@ pub async fn receive(
                 let file_name = field.file_name().and_then(sanitize_file_name);
                 let (tx, rx) = mpsc::channel(UPLOAD_QUEUE_CHUNKS);
                 let sink_job = Arc::clone(job);
-                let sink = tokio::task::spawn_blocking(move || sink(&sink_job, rx));
+                let sink_permit = Arc::clone(&permit);
+                let sink = tokio::task::spawn_blocking(move || {
+                    let _held = sink_permit;
+                    sink(&sink_job, rx)
+                });
                 let forwarded = forward(&mut field, &tx, max_upload).await;
                 drop(tx);
                 let result = sink

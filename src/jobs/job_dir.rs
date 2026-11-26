@@ -100,18 +100,19 @@ impl JobDir {
     /// Only those sizes are kept, however many files the walk counts. A
     /// path the walk did not count as a regular file has `None`.
     pub fn settle_budget_with_sizes(&self, wanted: &[&Path]) -> io::Result<Settled> {
-        let index: HashMap<&Path, usize> = wanted
-            .iter()
-            .enumerate()
-            .map(|(at, path)| (*path, at))
-            .collect();
-        let mut sizes = vec![None; wanted.len()];
+        let mut measured: HashMap<&Path, Option<u64>> =
+            wanted.iter().map(|path| (*path, None)).collect();
         let used = disk_usage(&self.root, 2, &mut |entry, len| {
-            if let Some(&at) = index.get(entry.path().as_path()) {
-                sizes[at] = Some(len);
+            if let Some(size) = measured.get_mut(entry.path().as_path()) {
+                *size = Some(len);
             }
         })?;
         self.settle_to(used);
+        // In the order asked, a path named twice included.
+        let sizes = wanted
+            .iter()
+            .map(|path| measured.get(path).copied().flatten())
+            .collect();
         Ok(Settled { used, sizes })
     }
 
@@ -333,11 +334,11 @@ mod tests {
         let missing = job.pages_dir().join("0002.png");
         let pdf = job.pdf_path();
         let settled = job
-            .settle_budget_with_sizes(&[&page, &pdf, &missing])
+            .settle_budget_with_sizes(&[&page, &pdf, &missing, &page])
             .unwrap();
         assert_eq!(settled.used, 1305);
         // Only the wanted sizes, by the paths that JobDir hands out.
-        assert_eq!(settled.sizes, [Some(300), Some(1000), None]);
+        assert_eq!(settled.sizes, [Some(300), Some(1000), None, Some(300)]);
         std::fs::remove_file(job.root().join("stray")).unwrap();
         assert_eq!(job.settle_budget().unwrap(), 1300);
         assert_eq!(job.budget().reserved(), 1300);
