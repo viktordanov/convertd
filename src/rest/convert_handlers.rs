@@ -1,6 +1,8 @@
 //! `POST /v1/convert`.
 
+use std::collections::HashMap;
 use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -270,7 +272,7 @@ async fn success(
         _ if Instant::now() >= deadline => Err(timed_out()),
         Output::Pdf => {
             // A few entries: cheap enough on this thread.
-            settle(&job);
+            let _ = settle(&job);
             File::open(&result.pdf)
                 .and_then(|file| Ok((file.metadata()?.len(), file)))
                 .map(|(size, file)| Prepared::Pdf { file, size })
@@ -402,17 +404,23 @@ impl ManifestInput {
 
 /// Gives back the disk reservation that the finished engine calls did not
 /// use, so a long download holds only what is on disk. On an error the
-/// whole reservation stays until the job ends, which is safe.
-fn settle(job: &JobDir) {
-    if let Err(err) = job.settle_budget() {
-        tracing::warn!(error = %err, "failed to measure the job directory; its reservation stays");
+/// whole reservation stays until the job ends, which is safe. Returns
+/// the size of every file it measured, empty on an error.
+fn settle(job: &JobDir) -> HashMap<PathBuf, u64> {
+    match job.settle_budget() {
+        Ok(settled) => settled.sizes,
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to measure the job directory; its reservation stays");
+            HashMap::new()
+        }
     }
 }
 
 /// Builds the tar.zst plan: `manifest.json`, then `document.pdf` for a
-/// bundle, then `pages/NNNN.<ext>` in page order. Sizes come from `fstat`;
-/// the page paths come from the page numbers, never from the engine's file
-/// names.
+/// bundle, then `pages/NNNN.<ext>` in page order. Sizes come from the
+/// `fstat` of the settle walk, one per file (a file it did not count gets
+/// its own); the page paths come from the page numbers, never from the
+/// engine's file names.
 fn plan_tar(
     job: &JobDir,
     input: &ManifestInput,
@@ -425,7 +433,11 @@ fn plan_tar(
             std::thread::sleep(Duration::from_millis(ms));
         }
     }
-    settle(job);
+    let sizes = settle(job);
+    let size_of = |path: &Path| match sizes.get(path) {
+        Some(&len) => Ok(len),
+        None => std::fs::metadata(path).map(|m| m.len()),
+    };
     let format = input.request.images.format;
     let io = |err: std::io::Error| ApiError::internal(format!("failed to plan the bundle: {err}"));
     let pages: Vec<(String, std::path::PathBuf)> = result
@@ -439,12 +451,12 @@ fn plan_tar(
         .collect();
     let page_sizes = pages
         .iter()
-        .map(|(_, path)| std::fs::metadata(path).map(|m| m.len()))
+        .map(|(_, path)| size_of(path))
         .collect::<Result<Vec<u64>, _>>()
         .map_err(io)?;
     let bundle = input.request.output == Output::Bundle;
     let pdf_size = if bundle {
-        Some(std::fs::metadata(&result.pdf).map_err(io)?.len())
+        Some(size_of(&result.pdf).map_err(io)?)
     } else {
         None
     };
@@ -470,12 +482,12 @@ fn plan_tar(
     let mut plan = TarPlan::new();
     plan.add_bytes("manifest.json", bytes::Bytes::from(manifest))
         .map_err(plan_error)?;
-    if bundle {
-        plan.add_file("document.pdf", result.pdf.clone())
+    if let Some(size) = pdf_size {
+        plan.add_file_sized("document.pdf", result.pdf.clone(), size)
             .map_err(plan_error)?;
     }
-    for (name, path) in pages {
-        plan.add_file(name, path).map_err(plan_error)?;
+    for ((name, path), size) in pages.into_iter().zip(page_sizes) {
+        plan.add_file_sized(name, path, size).map_err(plan_error)?;
     }
     let size = plan.tar_length();
     Ok(Prepared::Tar { plan, size })
