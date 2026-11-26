@@ -217,18 +217,31 @@ impl OfficeWorker {
             None => self.convert_from(&args.input, args, times),
             // The PDF is exported beside the copy, then moved: a link that
             // LibreOffice writes relative to the PDF then points where it
-            // would without the copy.
+            // would without the copy. Only on the output's own file system,
+            // so the move is a rename and the export meets the output's
+            // disk; elsewhere it goes to the output directly.
             Some(copy) => {
-                let staged = ConvertArgs {
-                    output: staged_output(copy, &args.output),
-                    ..args.clone()
-                };
-                self.convert_from(copy, &staged, times)
-                    .and_then(|doc_type| {
-                        std::fs::rename(&staged.output, &args.output)
-                            .map(|()| doc_type)
-                            .map_err(|err| io_error("move the converted PDF", &err))
-                    })
+                // A retry after a crash may find the last attempt's PDF:
+                // only one may be on disk, as only one is reserved.
+                match std::fs::remove_file(&args.output) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(io_error("remove the earlier PDF", &err)),
+                }
+                if same_file_system(copy, &args.output) {
+                    let staged = ConvertArgs {
+                        output: staged_output(copy, &args.output),
+                        ..args.clone()
+                    };
+                    self.convert_from(copy, &staged, times)
+                        .and_then(|doc_type| {
+                            std::fs::rename(&staged.output, &args.output)
+                                .map(|()| doc_type)
+                                .map_err(|err| io_error("move the converted PDF", &err))
+                        })
+                } else {
+                    self.convert_from(copy, args, times)
+                }
             }
         };
         // The supervisor gives the copy's reservation back when this job
@@ -401,6 +414,17 @@ impl Engine for OfficeWorker {
             )),
         }
     }
+}
+
+/// Whether the folders of `a` and `b` are on one file system.
+fn same_file_system(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let dev = |path: &Path| {
+        path.parent()
+            .and_then(|dir| std::fs::metadata(dir).ok())
+            .map(|meta| meta.dev())
+    };
+    matches!((dev(a), dev(b)), (Some(x), Some(y)) if x == y)
 }
 
 /// Where the PDF of a copy is exported: beside the copy, under the name of
