@@ -1288,7 +1288,9 @@ async fn a_discarded_incumbent_does_not_strand_its_replacement() {
 /// Item 010: the reply carries the worker's CPU time for the call. The
 /// worker spins for 200 ms of CPU; the reply must show at least 150 ms,
 /// and no more than the call's wall time, since the test worker has one
-/// thread (this catches a unit slip).
+/// thread (this catches a unit slip). A 200 ms sleep on the same worker
+/// then reports little CPU: the field is CPU time, not wall time, and the
+/// change over one call, not the process total.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cpu_burn_reports_its_cpu_time() {
     within(TEST, "a_cpu_burn_reports_its_cpu_time", async {
@@ -1308,6 +1310,13 @@ async fn a_cpu_burn_reports_its_cpu_time() {
             cpu <= wall + Duration::from_millis(10),
             "cpu {cpu:?} above wall {wall:?}"
         );
+        let slept = lease
+            .call(test_op(TestOp::Sleep { ms: 200 }), after(10_000))
+            .await
+            .unwrap();
+        let idle = Duration::from_micros(slept.engine.cpu_us);
+        eprintln!("sleep: cpu {idle:?}");
+        assert!(idle < Duration::from_millis(50), "sleep cpu {idle:?}");
         drop(lease);
         finish(pool, "burn").await;
     })
