@@ -114,21 +114,25 @@ struct Deck {
     unknown: bool,
 }
 
-/// The prefixes that `e` declares: `xmlns` binds the empty prefix.
-fn bindings(e: &BytesStart<'_>) -> Vec<(Vec<u8>, Ns)> {
-    e.attributes()
-        .flatten()
-        .filter_map(|a| {
-            let prefix = if a.key.as_ref() == b"xmlns" {
-                Vec::new()
-            } else if a.key.prefix().map(|p| p.into_inner()) == Some(b"xmlns".as_slice()) {
-                a.key.local_name().as_ref().to_vec()
-            } else {
-                return None;
-            };
-            Some((prefix, Ns::of(&a.value)))
-        })
-        .collect()
+/// The prefixes that `e` declares (`xmlns` binds the empty prefix), or
+/// `None` when they would take the open declarations past `room`. Nothing
+/// past the cap is copied.
+fn bindings(e: &BytesStart<'_>, room: usize) -> Option<Vec<(Vec<u8>, Ns)>> {
+    let mut out = Vec::new();
+    for a in e.attributes().flatten() {
+        let prefix = if a.key.as_ref() == b"xmlns" {
+            Vec::new()
+        } else if a.key.prefix().map(|p| p.into_inner()) == Some(b"xmlns".as_slice()) {
+            a.key.local_name().as_ref().to_vec()
+        } else {
+            continue;
+        };
+        if out.len() >= room {
+            return None;
+        }
+        out.push((prefix, Ns::of(&a.value)));
+    }
+    Some(out)
 }
 
 impl Deck {
@@ -169,34 +173,34 @@ impl Deck {
     }
 
     fn on_event(&mut self, content: bool, event: &XmlEvent<'_, '_>) {
+        // An unknown list stays unknown: the scan stops tracking the deck.
+        if self.unknown {
+            return;
+        }
         match event {
             XmlEvent::Start(e) => {
                 if self.deeper > 0 || self.open.len() >= MAX_DEPTH {
                     self.deeper += 1;
                     return;
                 }
-                let own = bindings(e);
-                self.bound += own.len();
-                if self.bound > MAX_BINDINGS {
+                let Some(own) = bindings(e, MAX_BINDINGS - self.bound) else {
                     self.unknown = true;
-                }
-                let kind = if self.unknown {
-                    Kind::Other
-                } else {
-                    self.on_element(content, e, &own, true)
+                    return;
                 };
+                self.bound += own.len();
+                let kind = self.on_element(content, e, &own, true);
                 self.open.push(Open {
                     kind,
                     bindings: own,
                 });
             }
             XmlEvent::Empty(e) => {
-                if self.deeper == 0 && self.open.len() < MAX_DEPTH && !self.unknown {
-                    let own = bindings(e);
-                    if self.bound + own.len() > MAX_BINDINGS {
-                        self.unknown = true;
-                    } else {
-                        self.on_element(content, e, &own, false);
+                if self.deeper == 0 && self.open.len() < MAX_DEPTH {
+                    match bindings(e, MAX_BINDINGS - self.bound) {
+                        Some(own) => {
+                            self.on_element(content, e, &own, false);
+                        }
+                        None => self.unknown = true,
                     }
                 }
             }

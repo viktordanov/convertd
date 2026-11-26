@@ -776,6 +776,14 @@ fn pptx(slides: &[(&str, &str)], with_list: bool) -> Vec<u8> {
 
 /// `pptx`, with `extra` after the slide list in `ppt/presentation.xml`.
 fn pptx_extra(slides: &[(&str, &str)], with_list: bool, extra: &str) -> Vec<u8> {
+    pptx_custom(slides, with_list.then_some(None), extra)
+}
+
+/// `pptx` with the slide list's children given as XML (`Some(Some(..))`),
+/// built from `slides` (`Some(None)`), or no list (`None`). Slide `n` has
+/// the relationship `rId{n+1}`.
+fn pptx_custom(slides: &[(&str, &str)], list_xml: Option<Option<&str>>, extra: &str) -> Vec<u8> {
+    let with_list = list_xml.is_some();
     let content_types = types("");
     let root = rels(&[("rId1", "officeDocument", "ppt/presentation.xml")]);
     let mut pres_rels: Vec<(String, String, String)> = vec![(
@@ -795,6 +803,9 @@ fn pptx_extra(slides: &[(&str, &str)], with_list: bool, extra: &str) -> Vec<u8> 
             256 + i,
             i + 2
         ));
+    }
+    if let Some(Some(custom)) = list_xml {
+        list = custom.to_owned();
     }
     let presentation = if with_list {
         format!(r#"<p:presentation {P}><p:sldIdLst>{list}</p:sldIdLst>{extra}</p:presentation>"#)
@@ -949,6 +960,54 @@ fn pptx_reads_slides_only_from_the_slide_list() {
         })
     );
     assert_eq!(facts.declared_pages.map(|d| d.count), Some(1));
+}
+
+#[test]
+fn pptx_reads_the_relationship_id_by_namespace() {
+    // Another vocabulary's `id` comes first and names the hidden slide;
+    // only the relationship namespace's `id` counts, whatever its prefix.
+    let slides = [("p:sld", ""), ("p:sld show=\"0\"", "")];
+    let list = concat!(
+        r#"<p:sldId xmlns:ext="urn:example:ext" ext:id="rId3" id="256" r:id="rId2"/>"#,
+        r#"<p:sldId xmlns:rel="http://schemas.openxmlformats.org/officeDocument/2006/relationships" id="257" rel:id="rId3"/>"#,
+    );
+    let facts = scan_bytes(
+        "ids.pptx",
+        &pptx_custom(&slides, Some(Some(list)), ""),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![2]
+        })
+    );
+}
+
+#[test]
+fn pptx_with_a_compatibility_block_in_the_slide_list_skips_the_list() {
+    // Which branch an exporter takes is unknown: no slide list, no V1.
+    let slides = [("p:sld", ""), ("p:sld show=\"0\"", "")];
+    let list = concat!(
+        r#"<p:sldId id="256" r:id="rId2"/>"#,
+        r#"<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Fallback><p:sldId id="257" r:id="rId3"/></mc:Fallback></mc:AlternateContent>"#,
+    );
+    let facts = scan_bytes(
+        "mc.pptx",
+        &pptx_custom(&slides, Some(Some(list)), ""),
+        Family::Presentation,
+    );
+    assert_eq!(facts.slides, None);
+    assert_eq!(facts.declared_pages, None);
+    assert!(
+        facts
+            .skipped
+            .iter()
+            .any(|(check, _)| *check == Check::PageCount),
+        "{:?}",
+        facts.skipped
+    );
 }
 
 #[test]
