@@ -12,7 +12,9 @@
 //! styles of `styles.xml` belong to master pages and never apply. A page
 //! whose style is defined in neither scope leaves the list unknown (`None`).
 //! Elements and attributes match by namespace URI, whatever the prefix,
-//! and a property applies only inside the open style that holds it.
+//! and a property applies only inside the open style that holds it. Past
+//! 256 open namespace declarations the list is unknown, so a name lookup
+//! stays bounded.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -46,18 +48,49 @@ enum Scope {
     Common,
 }
 
-const OFFICE: &[u8] = b"urn:oasis:names:tc:opendocument:xmlns:office:1.0";
-const STYLE: &[u8] = b"urn:oasis:names:tc:opendocument:xmlns:style:1.0";
-const DRAW: &[u8] = b"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0";
-const PRESENTATION: &[u8] = b"urn:oasis:names:tc:opendocument:xmlns:presentation:1.0";
+/// The open namespace declarations that are kept; past this many the slide
+/// list is unknown. LibreOffice declares about 40 on the root.
+const MAX_BINDINGS: usize = 256;
 
-/// An open element: its namespace, its local name and the prefixes it
-/// declares.
+/// The namespaces the slide scan reads. A declaration is classified once,
+/// so a long URI costs nothing per use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ns {
+    Office,
+    Style,
+    Draw,
+    Presentation,
+    Other,
+}
+
+impl Ns {
+    fn of(uri: &[u8]) -> Ns {
+        match uri {
+            b"urn:oasis:names:tc:opendocument:xmlns:office:1.0" => Ns::Office,
+            b"urn:oasis:names:tc:opendocument:xmlns:style:1.0" => Ns::Style,
+            b"urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" => Ns::Draw,
+            b"urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" => Ns::Presentation,
+            _ => Ns::Other,
+        }
+    }
+}
+
+/// The elements that the path checks name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    AutomaticStyles,
+    Styles,
+    Body,
+    Presentation,
+    Style,
+    Other,
+}
+
+/// An open element: what it is, and the prefixes it declares.
 #[derive(Debug)]
 struct Open {
-    ns: Option<Vec<u8>>,
-    local: Vec<u8>,
-    bindings: Vec<(Vec<u8>, Vec<u8>)>,
+    kind: Kind,
+    bindings: Vec<(Vec<u8>, Ns)>,
 }
 
 /// The pages of a presentation and the drawing-page styles that can apply
@@ -73,13 +106,16 @@ struct Deck {
     open: Vec<Open>,
     /// Elements opened past `MAX_DEPTH`, not kept in `open`.
     deeper: usize,
+    /// The declarations in `open`.
+    bound: usize,
     /// The slide style that is open, and its index in `open`.
     current: Option<(Scope, String, usize)>,
-    too_many: bool,
+    /// Too many slides or declarations: the list is unknown.
+    unknown: bool,
 }
 
 /// The prefixes that `e` declares: `xmlns` binds the empty prefix.
-fn bindings(e: &BytesStart<'_>) -> Vec<(Vec<u8>, Vec<u8>)> {
+fn bindings(e: &BytesStart<'_>) -> Vec<(Vec<u8>, Ns)> {
     e.attributes()
         .flatten()
         .filter_map(|a| {
@@ -90,7 +126,7 @@ fn bindings(e: &BytesStart<'_>) -> Vec<(Vec<u8>, Vec<u8>)> {
             } else {
                 return None;
             };
-            Some((prefix, a.value.into_owned()))
+            Some((prefix, Ns::of(&a.value)))
         })
         .collect()
 }
@@ -99,31 +135,31 @@ impl Deck {
     fn start_part(&mut self) {
         self.open.clear();
         self.deeper = 0;
+        self.bound = 0;
         self.current = None;
     }
 
     /// The namespace bound to `prefix`, by `own` (the element's own
-    /// declarations) or an open element, innermost first.
-    fn resolve(&self, own: &[(Vec<u8>, Vec<u8>)], prefix: &[u8]) -> Option<Vec<u8>> {
+    /// declarations) or an open element, innermost first. At most
+    /// `MAX_BINDINGS` declarations are searched.
+    fn resolve(&self, own: &[(Vec<u8>, Ns)], prefix: &[u8]) -> Ns {
         own.iter()
             .chain(self.open.iter().rev().flat_map(|o| o.bindings.iter()))
             .find(|(p, _)| p == prefix)
-            .map(|(_, uri)| uri.clone())
+            .map_or(Ns::Other, |&(_, ns)| ns)
     }
 
     /// The value of the attribute `ns`:`local` of `e`.
     fn attr_ns(
         &self,
         e: &BytesStart<'_>,
-        own: &[(Vec<u8>, Vec<u8>)],
-        ns: &[u8],
+        own: &[(Vec<u8>, Ns)],
+        ns: Ns,
         local: &[u8],
     ) -> Option<String> {
         e.attributes().flatten().find_map(|a| {
             let prefix = a.key.prefix()?;
-            if a.key.local_name().as_ref() != local
-                || self.resolve(own, prefix.as_ref()).as_deref() != Some(ns)
-            {
+            if a.key.local_name().as_ref() != local || self.resolve(own, prefix.as_ref()) != ns {
                 return None;
             }
             a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
@@ -140,26 +176,35 @@ impl Deck {
                     return;
                 }
                 let own = bindings(e);
-                let ns = self.element_ns(e, &own);
-                self.on_element(content, e, &own, ns.as_deref(), true);
+                self.bound += own.len();
+                if self.bound > MAX_BINDINGS {
+                    self.unknown = true;
+                }
+                let kind = if self.unknown {
+                    Kind::Other
+                } else {
+                    self.on_element(content, e, &own, true)
+                };
                 self.open.push(Open {
-                    ns,
-                    local: e.local_name().as_ref().to_vec(),
+                    kind,
                     bindings: own,
                 });
             }
             XmlEvent::Empty(e) => {
-                if self.deeper == 0 && self.open.len() < MAX_DEPTH {
+                if self.deeper == 0 && self.open.len() < MAX_DEPTH && !self.unknown {
                     let own = bindings(e);
-                    let ns = self.element_ns(e, &own);
-                    self.on_element(content, e, &own, ns.as_deref(), false);
+                    if self.bound + own.len() > MAX_BINDINGS {
+                        self.unknown = true;
+                    } else {
+                        self.on_element(content, e, &own, false);
+                    }
                 }
             }
             XmlEvent::End => {
                 if self.deeper > 0 {
                     self.deeper -= 1;
-                } else {
-                    self.open.pop();
+                } else if let Some(open) = self.open.pop() {
+                    self.bound -= open.bindings.len();
                     if matches!(self.current, Some((_, _, at)) if at >= self.open.len()) {
                         self.current = None;
                     }
@@ -169,46 +214,65 @@ impl Deck {
         }
     }
 
-    fn element_ns(&self, e: &BytesStart<'_>, own: &[(Vec<u8>, Vec<u8>)]) -> Option<Vec<u8>> {
+    /// The namespace of `e`; only for the local names the scan reads, so
+    /// other elements cost no lookup.
+    fn element_ns(&self, e: &BytesStart<'_>, own: &[(Vec<u8>, Ns)]) -> Ns {
         let name = e.name();
         let prefix = name.prefix().map(|p| p.into_inner()).unwrap_or(b"");
         self.resolve(own, prefix)
     }
 
     /// Whether the open elements, below the root, are exactly `path`.
-    fn under(&self, path: &[(&[u8], &[u8])]) -> bool {
+    fn under(&self, path: &[Kind]) -> bool {
         self.open.len() == path.len() + 1
             && self.open[1..]
                 .iter()
                 .zip(path)
-                .all(|(o, (ns, local))| o.ns.as_deref() == Some(*ns) && o.local == *local)
+                .all(|(o, kind)| o.kind == *kind)
     }
 
+    /// Reads one element, and gives its kind for the path checks.
     fn on_element(
         &mut self,
         content: bool,
         e: &BytesStart<'_>,
-        own: &[(Vec<u8>, Vec<u8>)],
-        ns: Option<&[u8]>,
+        own: &[(Vec<u8>, Ns)],
         opens: bool,
-    ) {
+    ) -> Kind {
         let local = e.local_name();
-        match (ns, local.as_ref()) {
-            (Some(STYLE), b"style") => {
-                let scope = if content && self.under(&[(OFFICE, b"automatic-styles")]) {
+        let wanted = matches!(
+            local.as_ref(),
+            b"automatic-styles"
+                | b"styles"
+                | b"body"
+                | b"presentation"
+                | b"style"
+                | b"drawing-page-properties"
+                | b"page"
+        );
+        if !wanted {
+            return Kind::Other;
+        }
+        match (self.element_ns(e, own), local.as_ref()) {
+            (Ns::Office, b"automatic-styles") => Kind::AutomaticStyles,
+            (Ns::Office, b"styles") => Kind::Styles,
+            (Ns::Office, b"body") => Kind::Body,
+            (Ns::Office, b"presentation") => Kind::Presentation,
+            (Ns::Style, b"style") => {
+                let scope = if content && self.under(&[Kind::AutomaticStyles]) {
                     Scope::Automatic
-                } else if !content && self.under(&[(OFFICE, b"styles")]) {
+                } else if !content && self.under(&[Kind::Styles]) {
                     Scope::Common
                 } else {
-                    return;
+                    return Kind::Style;
                 };
-                if self.attr_ns(e, own, STYLE, b"family").as_deref() != Some("drawing-page") {
-                    return;
+                if self.attr_ns(e, own, Ns::Style, b"family").as_deref() != Some("drawing-page") {
+                    return Kind::Style;
                 }
-                let Some(name) = self.attr_ns(e, own, STYLE, b"name") else {
-                    return;
+                let Some(name) = self.attr_ns(e, own, Ns::Style, b"name") else {
+                    return Kind::Style;
                 };
-                let parent = self.attr_ns(e, own, STYLE, b"parent-style-name");
+                let parent = self.attr_ns(e, own, Ns::Style, b"parent-style-name");
                 let styles = match scope {
                     Scope::Automatic => &mut self.automatic,
                     Scope::Common => &mut self.common,
@@ -218,15 +282,13 @@ impl Deck {
                 if opens {
                     self.current = Some((scope, name, self.open.len()));
                 }
+                Kind::Style
             }
-            (Some(STYLE), b"drawing-page-properties") => {
-                let Some((scope, name, at)) = self.current.clone() else {
-                    return;
-                };
-                if at + 1 != self.open.len() {
-                    return;
-                }
-                if let Some(visibility) = self.attr_ns(e, own, PRESENTATION, b"visibility") {
+            (Ns::Style, b"drawing-page-properties") => {
+                if let Some((scope, name, at)) = self.current.clone()
+                    && at + 1 == self.open.len()
+                    && let Some(visibility) = self.attr_ns(e, own, Ns::Presentation, b"visibility")
+                {
                     let styles = match scope {
                         Scope::Automatic => &mut self.automatic,
                         Scope::Common => &mut self.common,
@@ -235,18 +297,20 @@ impl Deck {
                         style.hidden = Some(visibility == "hidden");
                     }
                 }
+                Kind::Other
             }
-            (Some(DRAW), b"page")
-                if content && self.under(&[(OFFICE, b"body"), (OFFICE, b"presentation")]) =>
-            {
-                if self.pages.len() >= MAX_SLIDES {
-                    self.too_many = true;
-                } else {
-                    let style = self.attr_ns(e, own, DRAW, b"style-name");
-                    self.pages.push(style);
+            (Ns::Draw, b"page") => {
+                if content && self.under(&[Kind::Body, Kind::Presentation]) {
+                    if self.pages.len() >= MAX_SLIDES {
+                        self.unknown = true;
+                    } else {
+                        let style = self.attr_ns(e, own, Ns::Draw, b"style-name");
+                        self.pages.push(style);
+                    }
                 }
+                Kind::Other
             }
-            _ => {}
+            _ => Kind::Other,
         }
     }
 
@@ -267,7 +331,7 @@ impl Deck {
     }
 
     fn slides(&self) -> Option<Slides> {
-        if self.too_many {
+        if self.unknown {
             return None;
         }
         let mut hidden = Vec::new();

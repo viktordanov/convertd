@@ -73,9 +73,10 @@ pub struct PageInfo {
     pub width_px: u32,
     pub height_px: u32,
     pub blank: bool,
-    /// Absent unless the page comes from a hidden slide; never `false`.
-    #[serde(default)]
-    pub hidden: Option<bool>,
+    /// Absent unless the page comes from a hidden slide, and then `true`.
+    /// `Some` holds any value that was present, `null` included.
+    #[serde(default, deserialize_with = "present")]
+    pub hidden: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -105,6 +106,15 @@ impl Verdict {
     pub fn passed(&self) -> bool {
         self.failures.is_empty()
     }
+}
+
+/// A field that was present, whatever its value: `null` gives
+/// `Some(Value::Null)`, where a plain `Option` would give `None`.
+fn present<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
 pub fn evaluate(case: &Case, obs: &Observed, ctx: &Context) -> Verdict {
@@ -201,11 +211,15 @@ pub fn evaluate(case: &Case, obs: &Observed, ctx: &Context) -> Verdict {
     }
     // The service leaves `hidden` out of an unmarked page, in every case.
     if let (true, Some(m)) = (archive, manifest) {
-        for page in m.pages.iter().filter(|p| p.hidden == Some(false)) {
-            v.failures.push(format!(
-                "page {} has hidden: false; an unmarked page has no hidden key",
-                page.number
-            ));
+        for page in &m.pages {
+            if let Some(value) = &page.hidden
+                && *value != serde_json::Value::Bool(true)
+            {
+                v.failures.push(format!(
+                    "page {} has hidden: {value}; an unmarked page has no hidden key",
+                    page.number
+                ));
+            }
         }
     }
     if let (Some(want), true) = (&expect.hidden_pages, archive)
@@ -214,7 +228,7 @@ pub fn evaluate(case: &Case, obs: &Observed, ctx: &Context) -> Verdict {
         let got: BTreeSet<u32> = m
             .pages
             .iter()
-            .filter(|p| p.hidden == Some(true))
+            .filter(|p| p.hidden == Some(serde_json::Value::Bool(true)))
             .map(|p| p.number)
             .collect();
         let want: BTreeSet<u32> = want.iter().copied().collect();
@@ -774,17 +788,27 @@ mod tests {
         let mut obs = bundle(3, vec![]);
         assert_eq!(failures(&c, &obs), ["hidden pages {}, expected {2}"]);
         if let Some(m) = obs.manifest.as_mut() {
-            m.pages[1].hidden = Some(true);
+            m.pages[1].hidden = Some(json!(true));
         }
         assert!(failures(&c, &obs).is_empty());
         // The manifest leaves the key out of an unmarked page.
-        if let Some(m) = obs.manifest.as_mut() {
-            m.pages[0].hidden = Some(false);
+        for (value, text) in [(json!(false), "false"), (json!(null), "null")] {
+            if let Some(m) = obs.manifest.as_mut() {
+                m.pages[0].hidden = Some(value);
+            }
+            assert_eq!(
+                failures(&c, &obs),
+                [format!(
+                    "page 1 has hidden: {text}; an unmarked page has no hidden key"
+                )]
+            );
         }
-        assert_eq!(
-            failures(&c, &obs),
-            ["page 1 has hidden: false; an unmarked page has no hidden key"]
-        );
+        // A null in the manifest itself decodes as present.
+        let page: PageInfo = serde_json::from_value(
+            json!({"number": 1, "width_px": 1, "height_px": 1, "blank": false, "hidden": null}),
+        )
+        .unwrap();
+        assert_eq!(page.hidden, Some(serde_json::Value::Null));
         if let Some(m) = obs.manifest.as_mut() {
             m.pages[0].hidden = None;
         }

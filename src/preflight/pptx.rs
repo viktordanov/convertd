@@ -15,7 +15,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::docx::{ThemeFonts, main_part, theme_fonts};
-use super::package::{Package, attr, attr_prefixed};
+use super::package::{Package, XmlEvent, attr, attr_prefixed};
 use super::{FONT_SCAN_CAP, PART_CAP, add_font};
 use crate::domain::verification::{Check, DeclaredPages, SkipReason, Slides, SourceFacts};
 
@@ -44,15 +44,38 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
     };
     let mut ids = Vec::new();
     let mut too_many = false;
-    if let Err(reason) = package.xml(&main, PART_CAP, |e| {
-        if e.local_name().as_ref() == b"sldId"
-            && let Some(id) = attr_prefixed(e, b"id")
-        {
-            if ids.len() >= MAX_SLIDES {
-                too_many = true;
-                return false;
+    // Only `p:sldId` children of the root's `p:sldIdLst` are slides; an
+    // extension can refer to a slide too.
+    let mut depth = 0usize;
+    let mut in_list = false;
+    if let Err(reason) = package.xml_events(&main, PART_CAP, |event| {
+        match event {
+            XmlEvent::Start(e) | XmlEvent::Empty(e) => {
+                let local = e.local_name();
+                if depth == 1 && local.as_ref() == b"sldIdLst" {
+                    in_list = matches!(event, XmlEvent::Start(_));
+                } else if depth == 2
+                    && in_list
+                    && local.as_ref() == b"sldId"
+                    && let Some(id) = attr_prefixed(e, b"id")
+                {
+                    if ids.len() >= MAX_SLIDES {
+                        too_many = true;
+                        return false;
+                    }
+                    ids.push(id);
+                }
+                if matches!(event, XmlEvent::Start(_)) {
+                    depth += 1;
+                }
             }
-            ids.push(id);
+            XmlEvent::End => {
+                depth = depth.saturating_sub(1);
+                if depth == 1 {
+                    in_list = false;
+                }
+            }
+            XmlEvent::Text => {}
         }
         true
     }) {

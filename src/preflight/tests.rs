@@ -771,6 +771,11 @@ fn docm_macros_only_with_a_vba_project() {
 
 /// A deck: one entry per slide, (root tag with attributes, inner XML).
 fn pptx(slides: &[(&str, &str)], with_list: bool) -> Vec<u8> {
+    pptx_extra(slides, with_list, "")
+}
+
+/// `pptx`, with `extra` after the slide list in `ppt/presentation.xml`.
+fn pptx_extra(slides: &[(&str, &str)], with_list: bool, extra: &str) -> Vec<u8> {
     let content_types = types("");
     let root = rels(&[("rId1", "officeDocument", "ppt/presentation.xml")]);
     let mut pres_rels: Vec<(String, String, String)> = vec![(
@@ -792,7 +797,7 @@ fn pptx(slides: &[(&str, &str)], with_list: bool) -> Vec<u8> {
         ));
     }
     let presentation = if with_list {
-        format!(r#"<p:presentation {P}><p:sldIdLst>{list}</p:sldIdLst></p:presentation>"#)
+        format!(r#"<p:presentation {P}><p:sldIdLst>{list}</p:sldIdLst>{extra}</p:presentation>"#)
     } else {
         format!(r#"<p:presentation {P}/>"#)
     };
@@ -924,6 +929,26 @@ fn pptx_lists_the_hidden_slides_in_slide_order() {
             hidden: vec![]
         })
     );
+}
+
+#[test]
+fn pptx_reads_slides_only_from_the_slide_list() {
+    // An extension that refers to a slide adds no slide.
+    let slides = [("p:sld", ""), ("p:sld show=\"0\"", "")];
+    let extra = r#"<p:extLst><p:ext uri="{x}"><p:sldId id="900" r:id="rId2"/></p:ext></p:extLst>"#;
+    let facts = scan_bytes(
+        "ext.pptx",
+        &pptx_extra(&slides, true, extra),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![2]
+        })
+    );
+    assert_eq!(facts.declared_pages.map(|d| d.count), Some(1));
 }
 
 #[test]
@@ -1150,6 +1175,24 @@ fn odp_visibility_is_read_by_namespace() {
             hidden: vec![2]
         })
     );
+}
+
+#[test]
+fn odp_with_too_many_namespace_declarations_lists_no_slides() {
+    // Each element would search every open declaration: past the cap, the
+    // slide list is unknown, and the fonts are still read.
+    let decls: String = (0..300)
+        .map(|i| format!(r#" xmlns:n{i}="urn:example:{i}""#))
+        .collect();
+    let styles = page_style("dp1", Some("hidden"), None);
+    let pages = format!(r#"<draw:page{decls} draw:style-name="dp1"/>"#);
+    let facts = scan_bytes(
+        "decls.odp",
+        &odp_parts(&pages, &styles, "", ""),
+        Family::Presentation,
+    );
+    assert_eq!(facts.slides, None);
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
 }
 
 #[test]
