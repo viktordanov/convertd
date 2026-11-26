@@ -482,7 +482,8 @@ fn plan_tar(
 }
 
 /// The `conversion finished` line: PLAN's fields plus the §11 overheads,
-/// in microseconds.
+/// in microseconds, and the workers' CPU time of the calls that succeeded,
+/// in milliseconds with microsecond resolution.
 fn log_finished(
     request_id: &str,
     received: &Received,
@@ -520,6 +521,7 @@ fn log_finished(
         total_us = timings.total.map(micros),
         overhead_us = micros(timings.overhead()),
         overhead_strict_us = micros(timings.overhead_strict()),
+        cpu_ms = micros(s.cpu) as f64 / 1000.0,
         error_code,
         "conversion finished"
     );
