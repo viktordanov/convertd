@@ -90,7 +90,17 @@ pub struct WorkerEnv {
     path_prefix: Option<PathBuf>,
     /// `LC_ALL` was set and is not passed on (it would override `LC_PAPER`).
     pub lc_all_dropped: bool,
+    /// `LANG` (other than `C.UTF-8`) and the `LC_*` variables other than
+    /// `LC_ALL` and `LC_PAPER` that were set and are not passed on.
+    pub locale_dropped: Vec<String>,
 }
+
+/// The locale of every worker. LibreOffice formats numbers and dates with
+/// the system locale, because the image keeps `ooSetupSystemLocale` empty
+/// (docker/libreoffice/rs-convert-paper.xcd) so that `LC_PAPER` decides the
+/// default paper. A fixed `LANG` keeps that formatting en-US, as it was when
+/// LibreOfficeKit forced en-US, whatever the deployment sets.
+const WORKER_LANG: &str = "C.UTF-8";
 
 const PASSTHROUGH: [&str; 5] = [
     "FONTCONFIG_FILE",
@@ -108,20 +118,27 @@ impl WorkerEnv {
 
     pub fn from_vars(vars: impl IntoIterator<Item = (OsString, OsString)>, paper: Paper) -> Self {
         let mut passthrough = Vec::new();
-        let mut lang = None;
         let mut lc_all_dropped = false;
+        let mut locale_dropped = Vec::new();
         for (name, value) in vars {
             let Some(key) = name.to_str() else { continue };
             if key == "LANG" {
-                lang = Some(value);
+                if value != WORKER_LANG {
+                    locale_dropped.push(key.to_owned());
+                }
             } else if key == "LC_ALL" {
                 lc_all_dropped = true;
-            } else if (key.starts_with("LC_") && key != "LC_PAPER") || PASSTHROUGH.contains(&key) {
+            } else if key.starts_with("LC_") {
+                if key != "LC_PAPER" {
+                    locale_dropped.push(key.to_owned());
+                }
+            } else if PASSTHROUGH.contains(&key) {
                 passthrough.push((name, value));
             }
         }
-        passthrough.push(("LANG".into(), lang.unwrap_or_else(|| "C.UTF-8".into())));
+        passthrough.push(("LANG".into(), WORKER_LANG.into()));
         passthrough.sort();
+        locale_dropped.sort();
         Self {
             passthrough,
             lc_paper: match paper {
@@ -130,6 +147,7 @@ impl WorkerEnv {
             },
             path_prefix: None,
             lc_all_dropped,
+            locale_dropped,
         }
     }
 
@@ -224,6 +242,7 @@ mod tests {
             Paper::Letter,
         );
         assert!(env.lc_all_dropped);
+        assert_eq!(env.locale_dropped, ["LC_TIME"]);
         let slot = SlotDir::new(Path::new("/tmp/convert/workers"), "office", 0);
         let vars = env.vars(&slot, "office-0");
         assert_eq!(
@@ -235,7 +254,6 @@ mod tests {
                 "HOME",
                 "LANG",
                 "LC_PAPER",
-                "LC_TIME",
                 "PATH",
                 "TMPDIR",
                 "TZ",
@@ -259,6 +277,37 @@ mod tests {
         assert_eq!(
             get("UserInstallation"),
             "file:///tmp/convert/workers/office-0/profile"
+        );
+    }
+
+    #[test]
+    fn the_worker_locale_is_fixed_whatever_the_supervisor_sets() {
+        let lang = |vars: &[(&str, &str)]| {
+            let env = WorkerEnv::from_vars(
+                vars.iter()
+                    .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+                Paper::A4,
+            );
+            let slot = SlotDir::new(Path::new("/tmp/w"), "office", 0);
+            let value = env
+                .vars(&slot, "office-0")
+                .into_iter()
+                .find(|(k, _)| k == "LANG")
+                .map(|(_, v)| v.to_string_lossy().into_owned())
+                .unwrap();
+            (value, env.locale_dropped)
+        };
+        assert_eq!(lang(&[]), ("C.UTF-8".to_owned(), Vec::<String>::new()));
+        assert_eq!(
+            lang(&[("LANG", "C.UTF-8")]),
+            ("C.UTF-8".to_owned(), Vec::<String>::new())
+        );
+        assert_eq!(
+            lang(&[("LANG", "en_GB.UTF-8"), ("LC_NUMERIC", "de_DE.UTF-8")]),
+            (
+                "C.UTF-8".to_owned(),
+                vec!["LANG".to_owned(), "LC_NUMERIC".to_owned()]
+            )
         );
     }
 

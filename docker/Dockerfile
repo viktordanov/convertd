@@ -174,6 +174,22 @@ RUN --mount=type=cache,id=engine-downloads,target=/downloads,sharing=locked \
     chmod -R a+rX,go-w /out/pdfium; \
     rm -rf /tmp/lo /tmp/pdfium
 
+# ---- Paper locales: the LC_PAPER data that DEFAULT_PAPER needs -----------------------------
+# The workers get LC_PAPER=en_GB.UTF-8 (DEFAULT_PAPER=A4) or en_US.UTF-8 (Letter). LibreOffice
+# reads it with newlocale(LC_PAPER_MASK, "") for every page it leaves to the system default (a
+# sheet without a page setup, an ODF document without a page layout). Without the locale data,
+# newlocale fails and LibreOffice falls back to en-US, so every such page was Letter. Only the
+# two compiled locales go into the image, not the `locales` package. Built on the target
+# platform from the same base image, so the files match its glibc.
+FROM ${RUNTIME_BASE} AS paper-locales
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+RUN apt-get update && apt-get install -y --no-install-recommends locales \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /out \
+    && localedef -i en_GB -c -f UTF-8 /out/en_GB.utf8 \
+    && localedef -i en_US -c -f UTF-8 /out/en_US.utf8 \
+    && chmod -R a+rX,go-w /out
+
 # ---- Runtime base: Debian userland, LibreOffice, PDFium, fonts, build-info, user -----------
 FROM ${RUNTIME_BASE} AS runtime-base
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
@@ -209,6 +225,27 @@ RUN --mount=type=bind,from=engines,source=/out/debs,target=/debs \
     --mount=type=bind,source=docker/install-engines.sh,target=/install-engines.sh \
     LO_VERSION="${LO_VERSION}" FONTS_CJK="${FONTS_CJK}" bash /install-engines.sh runtime
 COPY --from=engines /out/pdfium /opt/pdfium
+COPY --from=paper-locales /out/ /usr/lib/locale/
+# Gate: LC_PAPER must load without a diagnostic and give the paper that DEFAULT_PAPER promises
+# (glibc stores mm). The C locale is A4 too, so a missing en_GB would still print 297 210.
+# The install layer must also keep ooSetupSystemLocale finalized and empty, after main.xcd
+# (rs-convert-paper.xcd). This part is a packaging check: it compares the installed file
+# without white space with the form in the repository. The effect on the engine is proven by
+# tests/engines_office.rs, default_paper_sets_the_page_size_of_a_sheet_without_one.
+RUN xcd="$(tr -d ' \t\n' </opt/libreoffice/share/registry/rs-convert-paper.xcd)"; \
+    for want in '<dependencyfile="main"/>' \
+      '<oor:component-dataoor:package="org.openoffice"oor:name="Setup"><nodeoor:name="L10N"><propoor:name="ooSetupSystemLocale"oor:finalized="true"><value></value></prop></node></oor:component-data>'; do \
+      [[ "${xcd}" == *"${want}"* ]] || { echo "rs-convert-paper.xcd lacks ${want}" >&2; exit 1; }; \
+    done; \
+    for spec in "en_GB.UTF-8 en_GB.utf8 297 210" "en_US.UTF-8 en_US.utf8 279 216"; do \
+      read -r name dir height width <<<"${spec}"; \
+      locale -a | grep -qxF "${dir}" || { echo "locale ${dir} is not installed" >&2; exit 1; }; \
+      err="$(env -u LC_ALL LC_PAPER="${name}" locale height width 2>&1 >/dev/null)"; \
+      [[ -z "${err}" ]] || { echo "LC_PAPER=${name} does not load: ${err}" >&2; exit 1; }; \
+      got="$(env -u LC_ALL LC_PAPER="${name}" locale height width | tr '\n' ' ')"; \
+      [[ "${got}" == "${height} ${width} " ]] \
+        || { echo "LC_PAPER=${name} gives '${got}', expected '${height} ${width}'" >&2; exit 1; }; \
+    done
 # Writes /opt/convertd/build-info.json (versions from the pinned args, fonts from fc-list,
 # font_substitutes from fc-match per family in probe-families.txt, and the default substitute).
 # The script stays in the image so a derived font image can run it again.
