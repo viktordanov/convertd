@@ -194,9 +194,13 @@ pub struct ProbedPage {
 /// An encrypted PDF without a password gives `Err(PasswordRequired)`;
 /// with a wrong one `Err(InvalidPassword)`; with the right one `Ok` with
 /// `encrypted` and `needs_password`. When `needs_password`, the service
-/// calls `decrypt` before anything else reads the file. An
-/// owner-password-only PDF (`encrypted`, not `needs_password`) passes
-/// through unchanged.
+/// calls `decrypt` before anything else reads the file.
+///
+/// An owner-password-only PDF (`encrypted`, not `needs_password`) opens
+/// without a password. With none given it passes through unchanged. With
+/// one given, the service calls `decrypt`, which verifies it as the owner
+/// password: verified, it writes the decrypted copy; not verified,
+/// `Err(InvalidPassword)`.
 #[derive(Debug, Clone)]
 pub struct Inspection {
     pub page_count: u32,

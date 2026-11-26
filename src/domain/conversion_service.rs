@@ -214,7 +214,12 @@ impl ConversionService {
                     )
                     .await
                     .map_err(engine_error)?;
-                if inspection.needs_password {
+                // A user-password PDF needs its password. An owner-password
+                // PDF opens without one and passes through, but a password
+                // given for it is checked: decrypt verifies it as the owner
+                // password, and a wrong one is InvalidPassword.
+                let owner_password_given = inspection.encrypted && job.request.password.is_some();
+                if inspection.needs_password || owner_password_given {
                     let password = job
                         .request
                         .password

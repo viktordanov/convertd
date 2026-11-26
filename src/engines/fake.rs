@@ -379,7 +379,8 @@ impl FakePdf {
         self
     }
 
-    /// The only password that opens an encrypted PDF.
+    /// The only password that opens an encrypted PDF, and the owner
+    /// password of an owner-only one (`/OwnerOnly`).
     pub fn with_password(mut self, password: impl Into<String>) -> Self {
         self.password = Some(password.into());
         self
@@ -422,7 +423,9 @@ impl PdfEngine for FakePdf {
         let played = self.settings.play(behavior, deadline).await?;
         let pages = played.pages.unwrap_or(1);
         let encrypted = memchr::memmem::find(&head, b"/Encrypt").is_some();
-        if encrypted {
+        // `/OwnerOnly`: an owner-password PDF, which opens without one.
+        let owner_only = encrypted && memchr::memmem::find(&head, b"/OwnerOnly").is_some();
+        if encrypted && !owner_only {
             match &job.password {
                 None => return Err(EngineError::PasswordRequired),
                 Some(password) if !self.opens(password.expose()) => {
@@ -434,7 +437,7 @@ impl PdfEngine for FakePdf {
         Ok(Inspection {
             page_count: pages,
             encrypted,
-            needs_password: encrypted,
+            needs_password: encrypted && !owner_only,
             pages: vec![A4; pages as usize],
             probe: match job.probe_dpi {
                 Some(_) => (1..=pages)

@@ -537,6 +537,49 @@ async fn encrypted_pdf_needs_the_password_and_is_decrypted() {
     app.assert_no_jobs().await;
 }
 
+/// An owner-password PDF opens without a password, so with none it passes
+/// through. A password given for it is checked as the owner password: the
+/// right one decrypts, a wrong one is 422 INVALID_PASSWORD (review, lane
+/// 001 item 9). The fake marks such a PDF with `/OwnerOnly`.
+#[tokio::test]
+async fn an_owner_password_is_verified_when_given() {
+    let app = App::with_pdf(
+        "owner-only",
+        &[],
+        FakePdf::new(FakeBehavior::Succeed).with_password("owner"),
+    );
+    let upload = pdf("/Encrypt 5 0 R /OwnerOnly");
+
+    let (response, body) = send(&app, file("perms.pdf", &upload)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body, upload, "no password: passed through unchanged");
+
+    let (response, body) = send(
+        &app,
+        with_options("perms.pdf", &upload, r#"{"password":"wrong"}"#),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(error_code(&body), "INVALID_PASSWORD");
+
+    let (response, body) = send(
+        &app,
+        with_options("perms.pdf", &upload, r#"{"password":"owner"}"#),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        memchr::memmem::find(&body, b"/Encrypt").is_none(),
+        "decrypted"
+    );
+    app.assert_no_jobs().await;
+}
+
 /// An encrypted OOXML package: an OLE2 file with the two streams.
 fn encrypted_ooxml() -> Vec<u8> {
     let mut compound = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).unwrap();
