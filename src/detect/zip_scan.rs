@@ -101,11 +101,27 @@ pub fn directory<R: Read + Seek>(
 ) -> Result<(u64, u64, u64, bool), ScanError> {
     let directory = read_directory(file, file_size)?;
     let mut zip64 = directory.zip64;
-    if !zip64 && let Some(locator_pos) = directory.eocd_pos.checked_sub(20) {
+    // An optional locator: only after the central directory, and only
+    // when it points to a ZIP64 end record.
+    if !zip64
+        && let Some(locator_pos) = directory.eocd_pos.checked_sub(20)
+        && locator_pos >= directory.offset + directory.size
+    {
         file.seek(SeekFrom::Start(locator_pos))?;
-        let mut signature = [0; 4];
-        file.read_exact(&mut signature)?;
-        zip64 = u32_at(&signature, 0) == ZIP64_LOCATOR_SIG;
+        let mut locator = [0; 20];
+        file.read_exact(&mut locator)?;
+        if u32_at(&locator, 0) == ZIP64_LOCATOR_SIG {
+            let record_pos = u64_at(&locator, 8);
+            let mut signature = [0; 4];
+            if record_pos
+                .checked_add(4)
+                .is_some_and(|end| end <= locator_pos)
+            {
+                file.seek(SeekFrom::Start(record_pos))?;
+                file.read_exact(&mut signature)?;
+            }
+            zip64 = u32_at(&signature, 0) == ZIP64_EOCD_SIG;
+        }
     }
     Ok((directory.entries, directory.offset, directory.size, zip64))
 }

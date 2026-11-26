@@ -560,11 +560,32 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Resu
     let mut xml = NsReader::from_reader(bytes.as_slice());
     let mut buf = Vec::new();
     let mut main = None;
+    // Relationship parts are two levels deep; anything deeper, a root that
+    // is not OPC's Relationships, or a namespace spelled with a reference
+    // could hide a signature origin: the package loads as it came.
+    let mut depth = 0usize;
+    let mut root_seen = false;
     loop {
         let (ns, event) = xml
             .read_resolved_event_into(&mut buf)
             .map_err(|_| Skip::Unsupported)?;
         let in_rels = matches!(ns, ResolveResult::Bound(Namespace(n)) if n == RELS_NS);
+        if let Event::Start(e) | Event::Empty(e) = &event {
+            let escaped = e.attributes().with_checks(false).flatten().any(|a| {
+                let key = a.key.as_ref();
+                (key == b"xmlns" || key.starts_with(b"xmlns:")) && a.value.contains(&b'&')
+            });
+            let bad_root = !root_seen && !(in_rels && e.local_name().as_ref() == b"Relationships");
+            if escaped || bad_root || depth >= 8 {
+                return Err(Skip::Unsupported);
+            }
+            root_seen = true;
+        }
+        match &event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => depth = depth.saturating_sub(1),
+            _ => {}
+        }
         match event {
             Event::Start(e) | Event::Empty(e)
                 if in_rels && e.local_name().as_ref() == b"Relationship" =>

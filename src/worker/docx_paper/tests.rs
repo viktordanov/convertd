@@ -793,3 +793,65 @@ fn many_declarations_on_the_root_alone_are_fine() {
     let xml = format!(r#"<w:document xmlns:w="{W}"{many}><w:body><w:p/></w:body></w:document>"#);
     assert!(fixed(&xml, Paper::A4).unwrap().contains(A4));
 }
+
+#[test]
+fn odd_relationship_parts_keep_the_package() {
+    let check = |rels: &[u8]| {
+        let bytes = zip(&[("_rels/.rels", rels, true, false)]);
+        let dir = Scratch::new();
+        let path = dir.path().join("p.docx");
+        std::fs::write(&path, &bytes).unwrap();
+        let mut file = File::open(&path).unwrap();
+        main_part(&mut file, &entries(&bytes))
+    };
+    // The relationships namespace spelled with a reference.
+    let escaped = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationship&#115;"><Relationship Type="http://schemas.openxmlformats.org/package/2006/relationships/digital-signature/origin" Target="s"/></Relationships>"#;
+    assert_eq!(check(escaped), Err(Skip::Unsupported));
+    // A foreign root.
+    assert_eq!(check(br#"<Other xmlns="x"/>"#), Err(Skip::Unsupported));
+    // Deep nesting.
+    let deep = format!(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{}{}</Relationships>"#,
+        "<a>".repeat(100_000),
+        "</a>".repeat(100_000)
+    );
+    assert_eq!(check(deep.as_bytes()), Err(Skip::Unsupported));
+}
+
+#[test]
+fn a_locator_signature_inside_the_directory_is_no_zip64() {
+    // A comment on the last directory record ends with bytes that look
+    // like a locator 20 bytes before the end record.
+    let classic = zip(&[
+        ("[Content_Types].xml", CONTENT_TYPES, true, false),
+        ("_rels/.rels", RELS, true, false),
+        ("word/document.xml", doc("<w:p/>").as_bytes(), true, false),
+    ]);
+    let eocd = classic.len() - 22;
+    let cd_offset = u32_at(&classic, eocd + 16) as usize;
+    let cd_size = u32_at(&classic, eocd + 12) as usize;
+    // Find the last record and give it a 20-byte comment that starts with
+    // the locator signature.
+    let mut at = cd_offset;
+    let mut last = at;
+    while at < cd_offset + cd_size {
+        last = at;
+        let len = 46
+            + u16_at(&classic, at + 28) as usize
+            + u16_at(&classic, at + 30) as usize
+            + u16_at(&classic, at + 32) as usize;
+        at += len;
+    }
+    let mut bytes = classic[..eocd].to_vec();
+    put_u16(&mut bytes, last + 32, 20);
+    let mut comment = 0x0706_4b50u32.to_le_bytes().to_vec();
+    comment.resize(20, 0);
+    bytes.extend_from_slice(&comment);
+    let mut end = classic[eocd..].to_vec();
+    put_u32(&mut end, 12, (cd_size + 20) as u32);
+    bytes.extend_from_slice(&end);
+    let (_, _, _, zip64) =
+        zip_scan::directory(&mut std::io::Cursor::new(&bytes), bytes.len() as u64).unwrap();
+    assert!(!zip64);
+    assert_eq!(repacked(&bytes, Paper::A4).0, Ok(()));
+}
