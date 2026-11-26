@@ -68,7 +68,8 @@ fn an_empty_section_is_expanded() {
     let out = fixed(&doc(r#"<w:p/><w:sectPr w:rsidR="1" />"#), Paper::A4).unwrap();
     assert_eq!(
         out,
-        doc(&format!(r#"<w:p/><w:sectPr w:rsidR="1">{A4}</w:sectPr>"#))
+        // Only the `/>` changes; the space before it stays.
+        doc(&format!(r#"<w:p/><w:sectPr w:rsidR="1" >{A4}</w:sectPr>"#))
     );
 }
 
@@ -298,7 +299,7 @@ impl Drop for Scratch {
     }
 }
 
-fn repacked(source: &[u8], paper: Paper) -> (Result<bool, Skip>, Option<Vec<u8>>) {
+fn repacked(source: &[u8], paper: Paper) -> (Result<(), Skip>, Option<Vec<u8>>) {
     let dir = Scratch::new();
     let input = dir.path().join("source.docx");
     std::fs::write(&input, source).unwrap();
@@ -318,7 +319,7 @@ fn a_deflated_main_part_is_rewritten_and_every_other_entry_kept_byte_for_byte() 
         ("word/media/image1.png", &image, false, false),
     ]);
     let (result, copy) = repacked(&source, Paper::A4);
-    assert_eq!(result, Ok(true));
+    assert_eq!(result, Ok(()));
     let copy = copy.unwrap();
     for name in [
         "[Content_Types].xml",
@@ -375,7 +376,7 @@ fn a_deflated_main_part_is_rewritten_and_every_other_entry_kept_byte_for_byte() 
 fn a_stored_main_part_stays_stored() {
     let source = crate::worker::warmup::docx("Stored.");
     let (result, copy) = repacked(&source, Paper::Letter);
-    assert_eq!(result, Ok(true));
+    assert_eq!(result, Ok(()));
     let copy = copy.unwrap();
     let (_, entry) = entries(&copy)
         .into_iter()
@@ -448,4 +449,68 @@ fn word_packages_are_told_by_extension() {
         copy_path(Path::new("/j/source.docx")).unwrap(),
         Path::new("/j/paper/source.docx")
     );
+}
+
+#[test]
+fn an_empty_body_gets_a_section_whatever_its_spelling() {
+    let short = format!(r#"<w:document xmlns:w="{W}"><w:body/></w:document>"#);
+    let long = format!(r#"<w:document xmlns:w="{W}"><w:body></w:body></w:document>"#);
+    let want = format!(
+        r#"<w:document xmlns:w="{W}"><w:body><w:sectPr>{A4}</w:sectPr></w:body></w:document>"#
+    );
+    assert_eq!(fixed(&short, Paper::A4).unwrap(), want);
+    assert_eq!(fixed(&long, Paper::A4).unwrap(), want);
+}
+
+#[test]
+fn a_section_in_a_compatibility_branch_is_left_to_libreoffice() {
+    let mc = r#"xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006""#;
+    // The final section in mc:Choice and mc:Fallback.
+    let xml = format!(
+        r#"<w:document xmlns:w="{W}" {mc}><w:body><w:p/><mc:AlternateContent><mc:Choice Requires="w14"><w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr></mc:Choice><mc:Fallback><w:sectPr/></mc:Fallback></mc:AlternateContent></w:body></w:document>"#
+    );
+    assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
+    // A page size in a branch inside the section.
+    let xml = format!(
+        r#"<w:document xmlns:w="{W}" {mc}><w:body><w:sectPr><mc:AlternateContent><mc:Choice Requires="w14"><w:pgSz w:w="1" w:h="2"/></mc:Choice></mc:AlternateContent></w:sectPr></w:body></w:document>"#
+    );
+    assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
+    // A section in a paragraph's properties outside a paragraph.
+    let xml = doc("<w:tbl><w:pPr><w:sectPr/></w:pPr></w:tbl><w:sectPr/>");
+    assert_eq!(fix_part(xml.as_bytes(), Paper::A4), Err(Skip::Unsupported));
+}
+
+#[test]
+fn many_sections_share_their_texts_and_too_many_are_left_alone() {
+    let breaks = "<w:p><w:pPr><w:sectPr/></w:pPr></w:p>".repeat(1000);
+    let plan = plan(doc(&breaks).as_bytes(), Paper::A4, MAIN_PART_CAP).unwrap();
+    assert_eq!(plan.edits.len(), 1001);
+    assert_eq!(plan.texts.len(), 2);
+    let breaks = "<w:p><w:pPr><w:sectPr/></w:pPr></w:p>".repeat(MAX_EDITS);
+    assert_eq!(
+        fix_part(doc(&breaks).as_bytes(), Paper::A4),
+        Err(Skip::Unsupported)
+    );
+}
+
+#[test]
+fn a_failed_write_fails_the_job_but_the_copy_cap_does_not() {
+    let full = io::Error::from_raw_os_error(libc::ENOSPC);
+    assert!(matches!(written(full), Skip::Io(err) if err.raw_os_error() == Some(libc::ENOSPC)));
+    assert_eq!(
+        written(io::ErrorKind::FileTooLarge.into()),
+        Skip::Unsupported
+    );
+    assert_eq!(applied(io::ErrorKind::InvalidData.into()), Skip::Unreadable);
+    assert!(matches!(
+        applied(io::Error::from_raw_os_error(libc::ENOSPC)),
+        Skip::Io(_)
+    ));
+    // A copy into a directory that does not exist is a write error.
+    let source = crate::worker::warmup::docx("x");
+    let dir = Scratch::new();
+    let input = dir.path().join("source.docx");
+    std::fs::write(&input, &source).unwrap();
+    let result = repack(&input, &dir.path().join("missing/copy.docx"), Paper::A4);
+    assert!(matches!(result, Err(Skip::Io(_))), "{result:?}");
 }

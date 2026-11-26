@@ -16,13 +16,19 @@
 //!   other entry is copied byte for byte, data descriptors included, and
 //!   the central directory keeps its order.
 //!
-//! Bounds, as in the pre-flight: the main part is read under the
-//! pre-flight's per-request cap, the archive under detection's caps, and
-//! the copy may be at most [`copy_cap`] bytes, which the supervisor
-//! reserves. A package outside them (ZIP64, encrypted entries, a part in
-//! another encoding than UTF-8, deep nesting) is loaded as it came, on
-//! Letter. Nothing here panics or fails the job: the worst case is the
-//! original file.
+//! Only `DEFAULT_PAPER=A4` needs it: Letter is the importer's own default,
+//! so with Letter there is no copy and no reservation.
+//!
+//! Bounds: the main part is inflated at most twice, a plan and a rewrite,
+//! each under [`MAIN_PART_CAP`] (the size of the pre-flight's per-request
+//! cap, apart from it). The archive is read under detection's caps, the
+//! plan holds at most [`MAX_EDITS`] edits, and the copy may be at most
+//! [`copy_cap`] bytes, which the supervisor reserves. A package outside
+//! them (ZIP64, encrypted entries, a part in another encoding than UTF-8,
+//! deep nesting, a section in a markup compatibility branch) is loaded as
+//! it came, on Letter. Nothing here panics. Only a failed write of the copy
+//! ([`Skip::Io`]) fails the job, so that a busy disk never changes the
+//! paper.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -31,7 +37,7 @@ use std::path::{Path, PathBuf};
 use flate2::Compression;
 use flate2::write::DeflateEncoder;
 use quick_xml::NsReader;
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::Event;
 use quick_xml::name::{Namespace, ResolveResult};
 
 use crate::detect::zip_scan::{self, METHOD_DEFLATED, METHOD_STORED};
@@ -68,24 +74,100 @@ pub const fn copy_cap(source_bytes: u64) -> u64 {
     crate::domain::limits::paper_copy_bytes(source_bytes)
 }
 
-/// A replacement of the main part's bytes `at..end` (inflated offsets).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A replacement of the main part's bytes `at..end` (inflated offsets) by
+/// `Plan::texts[text]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Edit {
     pub at: u64,
     pub end: u64,
-    pub text: Vec<u8>,
+    pub text: u32,
 }
 
-/// Why a package is loaded as it came.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The edits that size every section. The texts are shared, so the plan of
+/// a part with many sections stays small.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Plan {
+    pub edits: Vec<Edit>,
+    pub texts: Vec<Vec<u8>>,
+}
+
+/// At most this many edits: a part with more sections loads as it came.
+pub const MAX_EDITS: usize = 100_000;
+/// At most this many distinct texts (one per prefix and kind of edit).
+const MAX_TEXTS: usize = 16;
+/// The longest prefix that is copied into a text.
+const MAX_PREFIX: usize = 64;
+
+impl Plan {
+    fn push(&mut self, at: u64, end: u64, text: Vec<u8>) -> Result<(), Skip> {
+        if self.edits.len() >= MAX_EDITS {
+            return Err(Skip::Unsupported);
+        }
+        let id = match self.texts.iter().position(|t| *t == text) {
+            Some(id) => id,
+            None if self.texts.len() < MAX_TEXTS => {
+                self.texts.push(text);
+                self.texts.len() - 1
+            }
+            None => return Err(Skip::Unsupported),
+        };
+        self.edits.push(Edit {
+            at,
+            end,
+            text: id as u32,
+        });
+        Ok(())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.edits.is_empty()
+    }
+}
+
+/// Why a package is loaded as it came, or why its copy failed.
+#[derive(Debug)]
 pub enum Skip {
     /// Every section names its page size: nothing to do.
     Sized,
-    /// Not a ZIP package this code can rewrite (ZIP64, an encrypted or
-    /// unusually compressed main part, an odd layout).
+    /// Not a package this code rewrites: ZIP64, an encrypted or unusually
+    /// compressed main part, an odd layout, a section in a markup
+    /// compatibility branch, more than [`MAX_EDITS`] sections, or a copy
+    /// over its cap.
     Unsupported,
     /// The main part is not well-formed UTF-8 XML, or over a cap.
     Unreadable,
+    /// Writing the copy failed (a full disk, for example). Not a property of
+    /// the document: the job fails, so that the paper never depends on how
+    /// busy the disk was.
+    Io(io::Error),
+}
+
+impl PartialEq for Skip {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Skip::Io(a), Skip::Io(b)) => a.kind() == b.kind(),
+            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
+    }
+}
+
+/// A failed write of the copy: [`Skip::Io`], except at the copy's own cap.
+fn written(err: io::Error) -> Skip {
+    if err.raw_os_error().is_none() && err.kind() == io::ErrorKind::FileTooLarge {
+        Skip::Unsupported
+    } else {
+        Skip::Io(err)
+    }
+}
+
+/// A failed rewrite of the main part: a write error is [`Skip::Io`] (or
+/// the cap, as in [`written`]); anything else is the inflated part's fault.
+fn applied(err: io::Error) -> Skip {
+    if err.raw_os_error().is_some() || err.kind() == io::ErrorKind::FileTooLarge {
+        written(err)
+    } else {
+        Skip::Unreadable
+    }
 }
 
 /// The namespace of a Word element, when it is in one of the two.
@@ -119,6 +201,23 @@ fn page_size(prefix: &[u8], ns: &[u8], paper: Paper) -> Vec<u8> {
     out
 }
 
+/// `<p:sectPr><p:pgSz …/></p:sectPr>`.
+fn section(prefix: &[u8], ns: &[u8], paper: Paper) -> Vec<u8> {
+    let mut text = b"<".to_vec();
+    text.extend(qualified(prefix, b"sectPr"));
+    text.push(b'>');
+    text.extend(page_size(prefix, ns, paper));
+    text.extend(closing(prefix, b"sectPr"));
+    text
+}
+
+fn closing(prefix: &[u8], local: &[u8]) -> Vec<u8> {
+    let mut text = b"</".to_vec();
+    text.extend(qualified(prefix, local));
+    text.push(b'>');
+    text
+}
+
 fn qualified(prefix: &[u8], local: &[u8]) -> Vec<u8> {
     let mut out = prefix.to_vec();
     if !prefix.is_empty() {
@@ -134,6 +233,7 @@ enum Tag {
     P,
     PPr,
     SectPr,
+    SectPrChange,
     Other,
 }
 
@@ -150,7 +250,11 @@ struct Section {
 
 /// The edits that give every section a page size, from the main part's
 /// inflated bytes. At most `cap` bytes are read.
-pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Vec<Edit>, Skip> {
+///
+/// A `w:sectPr` anywhere but in the body, in a paragraph's `w:pPr` or in a
+/// `w:sectPrChange`, and an `mc:AlternateContent` inside a section, make
+/// the section that LibreOffice uses ambiguous: the part loads as it came.
+pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     let mut part = part.take(cap.saturating_add(1));
     // quick-xml drops a UTF-8 byte order mark without counting it in its
     // positions, so it never sees one: `skipped` puts it back.
@@ -171,8 +275,8 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Vec<Edit>, Ski
     let mut xml = NsReader::from_reader(head.chain(part));
     let mut buf = Vec::with_capacity(4096);
     let mut stack: Vec<Tag> = Vec::with_capacity(64);
-    let mut edits = Vec::new();
-    let mut section: Option<Section> = None;
+    let mut plan = Plan::default();
+    let mut open: Option<Section> = None;
     // The body: its depth, prefix and namespace.
     let mut body: Option<(usize, Vec<u8>, &'static [u8])> = None;
     let mut body_has_section = false;
@@ -191,55 +295,57 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Vec<Edit>, Ski
                 let empty = matches!(event, Event::Empty(_));
                 let local = e.local_name();
                 let local = local.as_ref();
-                let prefix = e
+                let prefix: &[u8] = e
                     .name()
                     .prefix()
-                    .map(|p| p.as_ref().to_vec())
+                    .map(|p| p.into_inner())
                     .unwrap_or_default();
                 let tag = match (ns, local) {
                     (Some(_), b"body") => Tag::Body,
                     (Some(_), b"p") => Tag::P,
                     (Some(_), b"pPr") => Tag::PPr,
                     (Some(_), b"sectPr") => Tag::SectPr,
+                    (Some(_), b"sectPrChange") => Tag::SectPrChange,
                     _ => Tag::Other,
                 };
                 let depth = stack.len();
-                if let Some(s) = section.as_mut()
-                    && depth == s.depth + 1
-                {
-                    if ns.is_some() && local == b"pgSz" {
-                        s.sized = true;
-                    } else if s.insert_at.is_none()
-                        && !(ns.is_some() && BEFORE_PAGE_SIZE.contains(&local))
-                    {
-                        s.insert_at = Some(before);
+                if let Some(s) = open.as_mut() {
+                    if local == b"AlternateContent" {
+                        return Err(Skip::Unsupported);
+                    }
+                    if depth == s.depth + 1 {
+                        if ns.is_some() && local == b"pgSz" {
+                            s.sized = true;
+                        } else if s.insert_at.is_none()
+                            && !(ns.is_some() && BEFORE_PAGE_SIZE.contains(&local))
+                        {
+                            s.insert_at = Some(before);
+                        }
                     }
                 }
                 let parent = stack.last().copied();
                 let grandparent = depth.checked_sub(2).map(|i| stack[i]);
-                let hosted = match parent {
-                    Some(Tag::Body) => {
-                        body_has_section |= tag == Tag::SectPr;
-                        true
+                if tag == Tag::SectPr && parent != Some(Tag::SectPrChange) {
+                    let hosted = match parent {
+                        Some(Tag::Body) => true,
+                        Some(Tag::PPr) => grandparent == Some(Tag::P),
+                        _ => false,
+                    };
+                    if !hosted || open.is_some() || prefix.len() > MAX_PREFIX {
+                        return Err(Skip::Unsupported);
                     }
-                    Some(Tag::PPr) => grandparent == Some(Tag::P),
-                    _ => false,
-                };
-                if tag == Tag::SectPr
-                    && hosted
-                    && section.is_none()
-                    && let Some(ns) = ns
-                {
+                    let ns = ns.unwrap_or(W_NS);
+                    body_has_section |= parent == Some(Tag::Body);
                     if empty {
-                        edits.push(Edit {
-                            at: before,
-                            end: after,
-                            text: expanded(e, &prefix, ns, paper),
-                        });
+                        // `<w:sectPr …/>`: its `/>` becomes `>…</w:sectPr>`.
+                        let mut text = b">".to_vec();
+                        text.extend(page_size(prefix, ns, paper));
+                        text.extend(closing(prefix, b"sectPr"));
+                        plan.push(after - 2, after, text)?;
                     } else {
-                        section = Some(Section {
+                        open = Some(Section {
                             depth,
-                            prefix: prefix.clone(),
+                            prefix: prefix.to_vec(),
                             ns,
                             sized: false,
                             insert_at: None,
@@ -250,11 +356,18 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Vec<Edit>, Ski
                     && body.is_none()
                     && let Some(ns) = ns
                 {
-                    if empty {
-                        // <w:body/>: nothing to lay out, nothing to size.
-                    } else {
-                        body = Some((depth, prefix, ns));
+                    if prefix.len() > MAX_PREFIX {
+                        return Err(Skip::Unsupported);
                     }
+                    if empty {
+                        // `<w:body/>` still lays out one empty page.
+                        let mut text = b">".to_vec();
+                        text.extend(section(prefix, ns, paper));
+                        text.extend(closing(prefix, b"body"));
+                        plan.push(after - 2, after, text)?;
+                        body_has_section = true;
+                    }
+                    body = Some((depth, prefix.to_vec(), ns));
                 }
                 if !empty {
                     stack.push(tag);
@@ -266,33 +379,18 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Vec<Edit>, Ski
             Event::End(_) => {
                 let closed = stack.pop();
                 let depth = stack.len();
-                if let Some(s) = section.take_if(|s| s.depth == depth)
+                if let Some(s) = open.take_if(|s| s.depth == depth)
                     && !s.sized
                 {
                     let at = s.insert_at.unwrap_or(before);
-                    edits.push(Edit {
-                        at,
-                        end: at,
-                        text: page_size(&s.prefix, s.ns, paper),
-                    });
+                    plan.push(at, at, page_size(&s.prefix, s.ns, paper))?;
                 }
                 if closed == Some(Tag::Body)
                     && let Some((body_depth, prefix, ns)) = &body
                     && *body_depth == depth
                 {
                     if !body_has_section {
-                        let mut text = b"<".to_vec();
-                        text.extend(qualified(prefix, b"sectPr"));
-                        text.push(b'>');
-                        text.extend(page_size(prefix, ns, paper));
-                        text.extend_from_slice(b"</");
-                        text.extend(qualified(prefix, b"sectPr"));
-                        text.push(b'>');
-                        edits.push(Edit {
-                            at: before,
-                            end: before,
-                            text,
-                        });
+                        plan.push(before, before, section(prefix, ns, paper))?;
                     }
                     // Only the first body counts.
                     body_has_section = true;
@@ -307,29 +405,18 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Vec<Edit>, Ski
     if !stack.is_empty() {
         return Err(Skip::Unreadable);
     }
-    Ok(edits)
+    Ok(plan)
 }
 
-/// `<w:sectPr …/>` as `<w:sectPr …><w:pgSz …/></w:sectPr>`.
-fn expanded(e: &BytesStart<'_>, prefix: &[u8], ns: &[u8], paper: Paper) -> Vec<u8> {
-    let raw: &[u8] = e;
-    let raw = raw.trim_ascii_end();
-    let mut text = Vec::with_capacity(raw.len() + 200);
-    text.push(b'<');
-    text.extend_from_slice(raw);
-    text.push(b'>');
-    text.extend(page_size(prefix, ns, paper));
-    text.extend_from_slice(b"</");
-    text.extend(qualified(prefix, b"sectPr"));
-    text.push(b'>');
-    text
-}
-
-/// Writes `part` with `edits` applied. The edits are sorted and do not
-/// overlap ([`plan`] makes them so).
-pub fn apply(mut part: impl Read, edits: &[Edit], out: &mut impl Write) -> io::Result<()> {
+/// Writes `part` with the edits of `plan` applied. The edits are sorted
+/// and do not overlap ([`plan`] makes them so).
+pub fn apply(mut part: impl Read, plan: &Plan, out: &mut impl Write) -> io::Result<()> {
     let mut at = 0u64;
-    for edit in edits {
+    for edit in &plan.edits {
+        let text = plan
+            .texts
+            .get(edit.text as usize)
+            .ok_or_else(|| io::Error::other("no such text"))?;
         if edit.at < at || edit.end < edit.at {
             return Err(io::Error::other("edits out of order"));
         }
@@ -337,7 +424,7 @@ pub fn apply(mut part: impl Read, edits: &[Edit], out: &mut impl Write) -> io::R
         if copied != edit.at - at {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
-        out.write_all(&edit.text)?;
+        out.write_all(text)?;
         let skipped = io::copy(&mut (&mut part).take(edit.end - edit.at), &mut io::sink())?;
         if skipped != edit.end - edit.at {
             return Err(io::ErrorKind::UnexpectedEof.into());
@@ -351,12 +438,12 @@ pub fn apply(mut part: impl Read, edits: &[Edit], out: &mut impl Write) -> io::R
 /// `xml` with every section sized, or `None` when nothing changes. For
 /// tests and for callers that hold the part in memory.
 pub fn fix_part(xml: &[u8], paper: Paper) -> Result<Option<Vec<u8>>, Skip> {
-    let edits = plan(xml, paper, MAIN_PART_CAP)?;
-    if edits.is_empty() {
+    let plan = plan(xml, paper, MAIN_PART_CAP)?;
+    if plan.is_empty() {
         return Ok(None);
     }
     let mut out = Vec::with_capacity(xml.len() + 256);
-    apply(xml, &edits, &mut out).map_err(|_| Skip::Unreadable)?;
+    apply(xml, &plan, &mut out).map_err(|_| Skip::Unreadable)?;
     Ok(Some(out))
 }
 
@@ -463,18 +550,18 @@ impl<W: Write> Write for Crc<W> {
 }
 
 /// Writes a copy of the Word package `source` to `out` in which every
-/// section names a page size of `paper`. `Ok(true)` when the copy was
-/// written; `Ok(false)` or an error leaves no file at `out`, and the
-/// caller loads `source`.
-pub fn repack(source: &Path, out: &Path, paper: Paper) -> Result<bool, Skip> {
+/// section names a page size of `paper`. `Ok` when the copy was
+/// written. An error leaves no file at `out`: the caller loads `source`,
+/// except after [`Skip::Io`], which fails the job.
+pub fn repack(source: &Path, out: &Path, paper: Paper) -> Result<(), Skip> {
     let result = write_copy(source, out, paper);
-    if !matches!(result, Ok(true)) {
+    if result.is_err() {
         let _ = std::fs::remove_file(out);
     }
     result
 }
 
-fn write_copy(source: &Path, out: &Path, paper: Paper) -> Result<bool, Skip> {
+fn write_copy(source: &Path, out: &Path, paper: Paper) -> Result<(), Skip> {
     let unsupported = |_| Skip::Unsupported;
     let mut file = File::open(source).map_err(|_| Skip::Unsupported)?;
     let size = file.metadata().map_err(|_| Skip::Unsupported)?.len();
@@ -538,7 +625,7 @@ fn write_copy(source: &Path, out: &Path, paper: Paper) -> Result<bool, Skip> {
         return Err(Skip::Unsupported);
     }
 
-    let target = File::create_new(out).map_err(unsupported)?;
+    let target = File::create_new(out).map_err(written)?;
     let mut writer = Capped {
         inner: BufWriter::with_capacity(64 * 1024, target),
         written: 0,
@@ -558,7 +645,7 @@ fn write_copy(source: &Path, out: &Path, paper: Paper) -> Result<bool, Skip> {
             file.seek(SeekFrom::Start(record.local_offset))
                 .map_err(unsupported)?;
             let span = end - record.local_offset;
-            let copied = io::copy(&mut (&mut file).take(span), &mut writer).map_err(unsupported)?;
+            let copied = io::copy(&mut (&mut file).take(span), &mut writer).map_err(written)?;
             if copied != span {
                 return Err(Skip::Unsupported);
             }
@@ -577,7 +664,7 @@ fn write_copy(source: &Path, out: &Path, paper: Paper) -> Result<bool, Skip> {
             put_u32(&mut bytes, 20, compressed);
             put_u32(&mut bytes, 24, uncompressed);
         }
-        writer.write_all(&bytes).map_err(unsupported)?;
+        writer.write_all(&bytes).map_err(written)?;
     }
     let new_cd_size = writer.written - new_cd_offset;
     let count = u16::try_from(records.len()).map_err(|_| Skip::Unsupported)?;
@@ -595,9 +682,9 @@ fn write_copy(source: &Path, out: &Path, paper: Paper) -> Result<bool, Skip> {
         16,
         u32::try_from(new_cd_offset).map_err(|_| Skip::Unsupported)?,
     );
-    writer.write_all(&eocd).map_err(unsupported)?;
-    writer.flush().map_err(unsupported)?;
-    Ok(true)
+    writer.write_all(&eocd).map_err(written)?;
+    writer.flush().map_err(written)?;
+    Ok(())
 }
 
 /// Writes the main part's local record: its header with the new CRC and
@@ -608,7 +695,7 @@ fn write_main(
     writer: &mut Capped<BufWriter<File>>,
     record: &Record,
     entry: &zip_scan::Entry,
-    edits: &[Edit],
+    edits: &Plan,
 ) -> Result<(u32, u32, u32), Skip> {
     let unsupported = |_| Skip::Unsupported;
     file.seek(SeekFrom::Start(record.local_offset))
@@ -632,8 +719,8 @@ fn write_main(
 
     // The header goes first with zeros, and is written again at the end.
     let header_at = writer.written;
-    writer.write_all(&header).map_err(unsupported)?;
-    writer.write_all(&name_extra).map_err(unsupported)?;
+    writer.write_all(&header).map_err(written)?;
+    writer.write_all(&name_extra).map_err(written)?;
     let data_at = writer.written;
     let (crc, uncompressed) = {
         let part = zip_scan::open_entry(file, entry)
@@ -647,9 +734,9 @@ fn write_main(
                     crc: crc32fast::Hasher::new(),
                     len: 0,
                 };
-                apply(part, edits, &mut sink).map_err(|_| Skip::Unreadable)?;
+                apply(part, edits, &mut sink).map_err(applied)?;
                 let (crc, len) = (sink.crc.finalize(), sink.len);
-                sink.inner.finish().map_err(unsupported)?;
+                sink.inner.finish().map_err(written)?;
                 (crc, len)
             }
             _ => {
@@ -658,7 +745,7 @@ fn write_main(
                     crc: crc32fast::Hasher::new(),
                     len: 0,
                 };
-                apply(part, edits, &mut sink).map_err(|_| Skip::Unreadable)?;
+                apply(part, edits, &mut sink).map_err(applied)?;
                 (sink.crc.finalize(), sink.len)
             }
         }
@@ -673,11 +760,9 @@ fn write_main(
     put_u32(&mut header, 22, uncompressed);
     let end = writer.written;
     let inner = &mut writer.inner;
-    inner
-        .seek(SeekFrom::Start(header_at))
-        .map_err(unsupported)?;
-    inner.write_all(&header).map_err(unsupported)?;
-    inner.seek(SeekFrom::Start(end)).map_err(unsupported)?;
+    inner.seek(SeekFrom::Start(header_at)).map_err(written)?;
+    inner.write_all(&header).map_err(written)?;
+    inner.seek(SeekFrom::Start(end)).map_err(written)?;
     Ok((crc, compressed, uncompressed))
 }
 
