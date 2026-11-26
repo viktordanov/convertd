@@ -1,6 +1,8 @@
 //! The `pages` option: `3`, `1-5`, `10-`, comma-separated, 1-based.
 
+use super::conversion::{ExportOptions, SlideNotes};
 use super::conversion_service::ConversionError;
+use super::verification::Slides;
 
 /// The longest `pages` value the spec allows.
 pub const PAGES_MAX_LEN: usize = 256;
@@ -112,9 +114,75 @@ fn parse_page(text: &str) -> Option<u32> {
     text.parse().ok()
 }
 
+/// The PDF pages that come from hidden slides, ascending.
+///
+/// Only with `slides.include_hidden`: without it, LibreOffice exports no
+/// hidden slide. The slide list must predict the page count exactly:
+/// `count` pages for slides only or for notes pages only, `2 × count` for
+/// slides followed by their notes pages. When the PDF has any other count,
+/// or the list is unknown, no page is marked: a wrong mark is worse than
+/// none.
+pub fn hidden_pages(slides: Option<&Slides>, export: &ExportOptions, page_count: u32) -> Vec<u32> {
+    let Some(slides) = slides else {
+        return Vec::new();
+    };
+    if !export.include_hidden_slides || slides.hidden.is_empty() {
+        return Vec::new();
+    }
+    match export.notes {
+        SlideNotes::None | SlideNotes::Only if page_count == slides.count => slides.hidden.clone(),
+        SlideNotes::Append if Some(page_count) == slides.count.checked_mul(2) => slides
+            .hidden
+            .iter()
+            .copied()
+            .chain(slides.hidden.iter().map(|n| n + slides.count))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn export(include_hidden_slides: bool, notes: SlideNotes) -> ExportOptions {
+        ExportOptions {
+            notes,
+            include_hidden_slides,
+            one_page_per_sheet: false,
+        }
+    }
+
+    #[test]
+    fn hidden_pages_follow_the_slides_when_the_count_matches() {
+        let three = Slides {
+            count: 3,
+            hidden: vec![2],
+        };
+        let on = export(true, SlideNotes::None);
+        assert_eq!(hidden_pages(Some(&three), &on, 3), [2]);
+        // Without the option LibreOffice drops the hidden slide.
+        let off = export(false, SlideNotes::None);
+        assert!(hidden_pages(Some(&three), &off, 2).is_empty());
+        // A count the slides do not predict: no mark.
+        assert!(hidden_pages(Some(&three), &on, 2).is_empty());
+        assert!(hidden_pages(Some(&three), &on, 4).is_empty());
+        // Unknown slides (a .ppt, an unread part): no mark.
+        assert!(hidden_pages(None, &on, 3).is_empty());
+        // Notes appended: the slide page and its notes page.
+        let append = export(true, SlideNotes::Append);
+        assert_eq!(hidden_pages(Some(&three), &append, 6), [2, 5]);
+        assert!(hidden_pages(Some(&three), &append, 3).is_empty());
+        // Notes only: one notes page per slide.
+        let only = export(true, SlideNotes::Only);
+        assert_eq!(hidden_pages(Some(&three), &only, 3), [2]);
+        // No hidden slide: nothing to mark, whatever the option.
+        let none = Slides {
+            count: 3,
+            hidden: vec![],
+        };
+        assert!(hidden_pages(Some(&none), &on, 3).is_empty());
+    }
 
     fn resolve(text: &str, count: u32) -> Result<Vec<u32>, ConversionError> {
         PageSelection::parse(text)?.resolve(count, 500)

@@ -287,6 +287,9 @@ pub struct ConversionResult {
     pub page_count: u32,
     /// Empty for `output=pdf`.
     pub pages: Vec<RenderedPage>,
+    /// The PDF pages that come from hidden slides, ascending
+    /// ([`super::pages::hidden_pages`]). Empty when none or not known.
+    pub hidden_pages: Vec<u32>,
     pub warnings: Vec<Warning>,
     /// The checks that could not run, for the metrics.
     pub skipped: Vec<(Check, &'static str)>,

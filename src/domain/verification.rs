@@ -191,8 +191,10 @@ pub fn verify(input: &VerifyInput<'_>) -> Verdict {
 }
 
 /// V1 · `PAGE_COUNT_MISMATCH`, PPTX family only. The declared count is
-/// the visible slides, so the check is skipped when hidden slides or notes
-/// pages are included, and for a declared count of 0 (a template).
+/// the visible slides. With `slides.include_hidden` it is every slide of
+/// [`SourceFacts::slides`], and the check is skipped when that list is
+/// unknown. It is skipped when notes pages are included, and for an
+/// expected count of 0 (a template).
 fn page_count(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdict) {
     if !matches!(
         input.format,
@@ -204,10 +206,16 @@ fn page_count(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdic
         return;
     };
     let export = input.request.export;
-    let skip = if declared.count == 0 {
+    let expected = match (export.include_hidden_slides, &facts.slides) {
+        (false, _) => declared.count,
+        (true, Some(slides)) => slides.count,
+        (true, None) => {
+            verdict.skipped.push((Check::PageCount, "include_hidden"));
+            return;
+        }
+    };
+    let skip = if expected == 0 {
         Some("no_declared_count")
-    } else if export.include_hidden_slides {
-        Some("include_hidden")
     } else if export.notes != SlideNotes::None {
         Some("notes")
     } else {
@@ -217,16 +225,16 @@ fn page_count(input: &VerifyInput<'_>, facts: &SourceFacts, verdict: &mut Verdic
         verdict.skipped.push((Check::PageCount, reason));
         return;
     }
-    if declared.count != input.page_count {
+    if expected != input.page_count {
         verdict.warnings.push(Warning {
             code: WarningCode::PageCountMismatch,
             message: format!(
                 "the source declares {} pages and the PDF has {}",
-                declared.count, input.page_count
+                expected, input.page_count
             ),
             page: None,
             detail: vec![
-                ("expected", DetailValue::Int(i64::from(declared.count))),
+                ("expected", DetailValue::Int(i64::from(expected))),
                 ("actual", DetailValue::Int(i64::from(input.page_count))),
                 ("source", DetailValue::Str(declared.source.to_owned())),
             ],
@@ -656,6 +664,7 @@ mod tests {
                 .contains(&(Check::PageCount, "no_declared_count"))
         );
 
+        // Hidden slides included and the slide list unknown: skipped.
         let mut hidden = case(Format::Pptx, declared(3), 5, &fonts);
         hidden.request.export.include_hidden_slides = true;
         let verdict = hidden.verdict();
@@ -665,6 +674,31 @@ mod tests {
                 .skipped
                 .contains(&(Check::PageCount, "include_hidden"))
         );
+
+        // With the slide list, V1 counts every slide, hidden ones included.
+        let five = SourceFacts {
+            slides: Some(Slides {
+                count: 5,
+                hidden: vec![2, 4],
+            }),
+            ..declared(3)
+        };
+        for (pages, warns) in [(5, false), (3, true)] {
+            let mut hidden = case(Format::Pptx, five.clone(), pages, &fonts);
+            hidden.request.export.include_hidden_slides = true;
+            let verdict = hidden.verdict();
+            assert_eq!(verdict.warnings.len(), usize::from(warns), "{pages} pages");
+            if warns {
+                assert_eq!(
+                    verdict.warnings[0].detail[0],
+                    ("expected", DetailValue::Int(5))
+                );
+            }
+            assert!(verdict.skipped.is_empty(), "{:?}", verdict.skipped);
+        }
+        // Without the option, the visible count still decides.
+        let verdict = case(Format::Pptx, five, 3, &fonts).verdict();
+        assert!(verdict.warnings.is_empty());
 
         let mut notes = case(Format::Pptx, declared(3), 6, &fonts);
         notes.request.export.notes = SlideNotes::Append;

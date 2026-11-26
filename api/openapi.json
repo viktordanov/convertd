@@ -837,6 +837,10 @@
             "format": "int32",
             "minimum": 1
           },
+          "hidden": {
+            "type": "boolean",
+            "description": "Present, and true, when the page comes from a slide marked hidden.\nOnly with `slides.include_hidden`, and only when the slide list\npredicts the page count exactly. A legacy `.ppt` never has it."
+          },
           "number": {
             "type": "integer",
             "format": "int32",
@@ -1004,7 +1008,7 @@
         "properties": {
           "include_hidden": {
             "type": "boolean",
-            "description": "Also export slides that are marked hidden.",
+            "description": "Also export slides that are marked hidden, in slide order. The\nmanifest marks their pages with `hidden`.",
             "default": false
           },
           "notes": {
