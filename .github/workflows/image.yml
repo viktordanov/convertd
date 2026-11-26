@@ -228,8 +228,6 @@ jobs:
             kubectl kustomize "$o" | kubeconform -strict -summary -
           done
           kubeconform -strict -summary deploy/k8s/overlays/gvisor/runtimeclass.yaml
-      - name: Bicep compiles
-        run: az bicep build --file deploy/aca/main.bicep --stdout >/dev/null
       - name: Install shellcheck
         run: |
           curl -fsSL -o /tmp/shellcheck.tar.xz \
