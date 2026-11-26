@@ -520,6 +520,12 @@ fn status_line(answer: &[u8]) -> u16 {
 #[cfg(feature = "test-hooks")]
 /// A DOCX whose marker makes the fake office engine take 1.5 s.
 fn slow_docx() -> Vec<u8> {
+    docx_with("FAKE:DELAY_MS=1500")
+}
+
+#[cfg(feature = "test-hooks")]
+/// A DOCX whose text holds `marker`, for the fake engines.
+fn docx_with(marker: &str) -> Vec<u8> {
     use std::io::Write;
     let mut out = Vec::new();
     let mut zip = zip::ZipWriter::new(Cursor::new(&mut out));
@@ -528,7 +534,7 @@ fn slow_docx() -> Vec<u8> {
     zip.start_file("[Content_Types].xml", stored).unwrap();
     zip.write_all(br#"<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#).unwrap();
     zip.start_file("word/document.xml", stored).unwrap();
-    zip.write_all(b"<w:document><w:t>FAKE:DELAY_MS=1500</w:t></w:document>")
+    zip.write_all(format!("<w:document><w:t>{marker}</w:t></w:document>").as_bytes())
         .unwrap();
     zip.finish().unwrap();
     out
@@ -678,4 +684,34 @@ fn slow_a_second_server_on_the_same_tmp_dir_refuses_to_start() {
     );
     first.sigterm();
     assert!(first.wait_exit().success());
+}
+
+/// One shutdown deadline, taken at SIGTERM: the drain, the connections and
+/// the pools share SHUTDOWN_GRACE_SECONDS, and the pools get only what is
+/// left. A request that hangs in a worker must not stretch the exit to two
+/// graces (review, lane 001 item 7).
+#[cfg(feature = "test-hooks")]
+#[test]
+fn slow_sigterm_with_a_hung_worker_exits_within_one_grace() {
+    let served = Served::start(
+        "sigterm-hang",
+        &[
+            ("TEST_ENGINE", "worker"),
+            ("OFFICE_WORKERS", "1"),
+            ("RENDER_WORKERS", "1"),
+            ("SHUTDOWN_GRACE_SECONDS", "5"),
+        ],
+    );
+    let _hung = std::thread::spawn({
+        let mut stream = served.connect();
+        let bytes = raw_convert(&docx_with("FAKE:HANG"), None);
+        move || exchange(&mut stream, &bytes)
+    });
+    std::thread::sleep(Duration::from_millis(400));
+    let signalled = std::time::Instant::now();
+    served.sigterm();
+    let _status = served.wait_exit();
+    let took = signalled.elapsed();
+    // 5 s of grace, up to 2 s for open connections, then the kill.
+    assert!(took < Duration::from_secs(9), "exit took {took:?}");
 }

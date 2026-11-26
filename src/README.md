@@ -140,7 +140,9 @@ The scanners stream each part through quick-xml under fixed caps: 4 MiB per part
 2. It waits until no request holds a permit, at most `SHUTDOWN_GRACE_SECONDS`. The listener stays open during this time. A request admitted before the signal finishes, even if its upload is still arriving, and its later engine calls still get a worker.
 3. It calls the engines' `drain`, so the pools lease no more workers.
 4. It stops axum, which stops accepting and gives open connections 2 s more.
-5. It calls the engines' `shutdown` with `SHUTDOWN_GRACE_SECONDS`, then exits 0.
+5. It calls the engines' `shutdown` with what is left of the deadline, or zero, then exits 0.
+
+The deadline is set once, at the signal: `SHUTDOWN_GRACE_SECONDS` from then. Steps 2 and 5 share it, so a worker that hangs cannot stretch the exit past one grace plus the 2 s for connections.
 
 `/metrics` renders one process-wide Prometheus recorder in the text format. 001 records `convert_requests_total`, `convert_stage_duration_seconds`, `convert_input_bytes`, `convert_warnings_total`, `convert_verify_skipped_total`, `convert_pages_rendered_total`, `convert_responses_cut_total` and `convert_disk_budget_bytes`. On Linux it adds the supervisor's RSS, peak RSS, open descriptors and threads from `/proc/self` at each scrape. A 200 whose body stalls or aborts counts once in `convert_requests_total` with code `OK` and once in `convert_responses_cut_total`. The pools and the adapters in `engines/` record their own metrics, which [engines/README.md](engines/README.md) lists. `METRICS_ENABLED=false` makes `/metrics` answer 404.
 <!-- /memoria:section -->

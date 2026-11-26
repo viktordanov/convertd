@@ -187,6 +187,9 @@ fn serve() -> Result<(), String> {
             Ok(served) => served.map_err(|err| format!("failed to serve: {err}")),
             Err(err) => Err(format!("failed to serve: {err}")),
         };
+        // The one shutdown deadline, set at SIGTERM. Without a signal
+        // (the server failed), the pools get the whole grace.
+        let mut stop_by: Option<tokio::time::Instant> = None;
         let served = tokio::select! {
             result = &mut serving => joined(result),
             () = shutdown => {
@@ -197,6 +200,8 @@ fn serve() -> Result<(), String> {
                 // leasing: a request in flight still needs its later engine
                 // calls (the render after an office convert).
                 let grace = config.server.shutdown_grace;
+                let deadline = tokio::time::Instant::now() + grace;
+                stop_by = Some(deadline);
                 server::begin_drain(&state);
                 if !server::wait_idle(&state, grace).await {
                     tracing::warn!(grace_seconds = grace.as_secs(), "requests still in flight after the grace period");
@@ -214,7 +219,11 @@ fn serve() -> Result<(), String> {
                 }
             }
         };
-        selected.handle.shutdown(config.server.shutdown_grace).await;
+        // The pools get what is left of the deadline, or nothing.
+        let left = stop_by.map_or(config.server.shutdown_grace, |deadline| {
+            deadline.saturating_duration_since(tokio::time::Instant::now())
+        });
+        selected.handle.shutdown(left).await;
         served?;
         tracing::info!("server stopped");
         Ok(())
