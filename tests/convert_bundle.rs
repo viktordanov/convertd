@@ -556,6 +556,34 @@ fn aptos_docx(vba: bool) -> Vec<u8> {
     package(&entries)
 }
 
+/// `aptos_docx(false)` with Aptos embedded in `word/fontTable.xml`, as
+/// Word writes it: an obfuscated `odttf` part behind `w:embedRegular`.
+fn aptos_embedded_docx() -> Vec<u8> {
+    let main = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
+    package(&[
+        ("[Content_Types].xml", content_types(main)),
+        ("_rels/.rels", rels(&[("rId1", "officeDocument", "word/document.xml")])),
+        (
+            "word/_rels/document.xml.rels",
+            rels(&[("rId1", "theme", "theme/theme1.xml"), ("rId2", "fontTable", "fontTable.xml")]),
+        ),
+        (
+            "word/document.xml",
+            r#"<w:document xmlns:w="w"><w:body><w:p><w:r><w:rPr><w:rFonts w:asciiTheme="minorHAnsi"/></w:rPr></w:r></w:p></w:body></w:document>"#.to_owned(),
+        ),
+        (
+            "word/theme/theme1.xml",
+            r#"<a:theme xmlns:a="a"><a:majorFont><a:latin typeface="Calibri"/></a:majorFont><a:minorFont><a:latin typeface="Aptos"/></a:minorFont></a:theme>"#.to_owned(),
+        ),
+        (
+            "word/fontTable.xml",
+            r#"<w:fonts xmlns:w="w" xmlns:r="r"><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1" w:fontKey="{5F3C1A2B-9D4E-4C6F-8A7B-0E1D2C3B4A59}"/></w:font></w:fonts>"#.to_owned(),
+        ),
+        ("word/_rels/fontTable.xml.rels", rels(&[("rIdF1", "font", "fonts/font1.odttf")])),
+        ("word/fonts/font1.odttf", "obfuscated font bytes".to_owned()),
+    ])
+}
+
 /// A deck that declares 3 visible slides; the fake PDF has 1 page.
 fn three_slide_pptx() -> Vec<u8> {
     let main = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml";
@@ -666,4 +694,39 @@ async fn warnings_reach_the_manifest_and_the_header() {
         "V1 is skipped with hidden slides"
     );
     app.assert_no_jobs().await;
+}
+
+#[tokio::test]
+async fn an_embedded_font_raises_no_font_warning() {
+    // F1: the same catalog as the test above, where Aptos is not installed;
+    // the DOCX embeds Aptos, so LibreOffice substitutes nothing.
+    let files = Path::new(env!("CARGO_TARGET_TMPDIR")).join("convert_zip-embedded-files");
+    std::fs::create_dir_all(&files).unwrap();
+    let build_info = files.join("build-info.json");
+    let fonts = files.join("fonts.json");
+    std::fs::write(
+        &build_info,
+        r#"{"libreoffice":"26.8.3.1","pdfium":"8179","fonts":["Carlito","DejaVu Sans"],
+            "font_substitutes":{"Aptos":"DejaVu Sans","Calibri":"Carlito"},"default_substitute":"DejaVu Sans"}"#,
+    )
+    .unwrap();
+    std::fs::write(&fonts, r#"{"Calibri": true, "Aptos": false}"#).unwrap();
+    let env = [
+        ("BUILD_INFO_PATH", build_info.to_str().unwrap()),
+        ("FONTS_PATH", fonts.to_str().unwrap()),
+    ];
+    let app = App::new("embedded", &env, FakeBehavior::Succeed);
+
+    let (response, body) = app
+        .send("e.docx", &aptos_embedded_docx(), r#"{"output":"bundle"}"#)
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(header_str(&response, "convert-warning-count"), "0");
+    let manifest: Value = serde_json::from_slice(&read_bundle(&body)[0].1).unwrap();
+    assert_eq!(manifest["warnings"], serde_json::json!([]));
 }

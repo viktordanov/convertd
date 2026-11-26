@@ -7,13 +7,18 @@
 //! styles the scanned parts reference, with their `w:basedOn` chain. Theme
 //! references (`minorHAnsi`, `majorAscii`, …) resolve through the theme's
 //! `a:minorFont|a:majorFont/a:latin@typeface`.
+//!
+//! Embedded families come from `word/fontTable.xml`: a `w:font` whose
+//! `w:embedRegular`, `w:embedBold`, `w:embedItalic` or `w:embedBoldItalic`
+//! points, through the table's relationships, at a font part the package
+//! holds. Obfuscated (`w:fontKey`) and plain parts count alike.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use quick_xml::events::BytesStart;
 
-use super::package::{Package, attr, resolve};
-use super::{FONT_SCAN_CAP, PART_CAP, add_font};
+use super::package::{Package, attr, attr_prefixed, resolve};
+use super::{FONT_SCAN_CAP, MAX_FONTS, PART_CAP, add_font};
 use crate::domain::verification::{Check, SkipReason, SourceFacts};
 
 /// At most this many styles are kept.
@@ -98,6 +103,10 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
         .into_iter()
         .next()
         .unwrap_or_else(|| "word/styles.xml".to_owned());
+    let font_table_part = target("/fontTable")
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "word/fontTable.xml".to_owned());
     let theme = theme_fonts(package, &theme_part);
 
     // The parts with runs: the main part, then headers, footers, notes.
@@ -177,7 +186,57 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
             return;
         }
     }
+    match embedded_fonts(package, &font_table_part) {
+        Ok(embedded) => facts.embedded_fonts = embedded.into_iter().collect(),
+        Err(reason) => {
+            facts.skipped.push((Check::Fonts, reason));
+            return;
+        }
+    }
     fonts.extend(found);
+}
+
+/// The families of `part` (the font table) whose embed elements point at
+/// a font part the package holds. A missing table embeds nothing; a table
+/// or relationships part that cannot be read is an error, because the
+/// font check must not run without knowing what is embedded.
+fn embedded_fonts(package: &mut Package, part: &str) -> Result<BTreeSet<String>, SkipReason> {
+    let rels = match package.rels(part) {
+        Ok(rels) => rels,
+        Err(SkipReason::MissingPart) => Default::default(),
+        Err(reason) => return Err(reason),
+    };
+    let mut current: Option<String> = None;
+    let mut ids: Vec<(String, String)> = Vec::new();
+    let result = package.xml(part, PART_CAP, |e| {
+        match e.local_name().as_ref() {
+            b"font" => current = attr(e, b"name"),
+            b"embedRegular" | b"embedBold" | b"embedItalic" | b"embedBoldItalic" => {
+                if let (Some(name), Some(id)) = (&current, attr_prefixed(e, b"id"))
+                    && ids.len() < 4 * MAX_FONTS
+                {
+                    ids.push((name.clone(), id));
+                }
+            }
+            _ => {}
+        }
+        true
+    });
+    match result {
+        Ok(_) => {}
+        Err(SkipReason::MissingPart) => return Ok(BTreeSet::new()),
+        Err(reason) => return Err(reason),
+    }
+    let mut embedded = BTreeSet::new();
+    for (name, id) in ids {
+        if rels
+            .get(&id)
+            .is_some_and(|(kind, target)| kind.ends_with("/font") && package.has(target))
+        {
+            add_font(&mut embedded, &name);
+        }
+    }
+    Ok(embedded)
 }
 
 /// The document defaults' families and every style: id to (style, is the

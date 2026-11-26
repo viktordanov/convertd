@@ -266,18 +266,19 @@ mod tests {
             reply(Ok(Output::Converted(ConvertedOut {
                 pdf_bytes: 1234,
                 doc_type: "text".into(),
-                facts: Some(SourceFactsWire {
+                facts: Some(Box::new(SourceFactsWire {
                     declared_pages: Some(DeclaredPagesWire {
                         count: 3,
                         source: "ppt/presentation.xml".into(),
                     }),
                     requested_fonts: vec!["Calibri".into()],
+                    embedded_fonts: vec!["Aptos".into()],
                     macros: Some(MacroFactWire {
                         kind: MacroKindWire::Vba,
                         part: "word/vbaProject.bin".into(),
                     }),
                     skipped: vec![(CheckWire::Fonts, SkipReasonWire::CapReached)],
-                }),
+                })),
             }))),
             reply(Ok(Output::Inspected(InspectedOut {
                 page_count: 1,

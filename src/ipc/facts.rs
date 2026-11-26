@@ -33,6 +33,7 @@ impl From<&SourceFacts> for SourceFactsWire {
                 source: d.source.to_owned(),
             }),
             requested_fonts: facts.requested_fonts.clone(),
+            embedded_fonts: facts.embedded_fonts.clone(),
             macros: facts.macros.as_ref().map(|m| MacroFactWire {
                 kind: match m.kind {
                     MacroKind::Vba => MacroKindWire::Vba,
@@ -71,6 +72,7 @@ impl From<&SourceFactsWire> for SourceFacts {
                 source: static_source(&d.source),
             }),
             requested_fonts: wire.requested_fonts.clone(),
+            embedded_fonts: wire.embedded_fonts.clone(),
             macros: wire.macros.as_ref().map(|m| MacroFact {
                 kind: match m.kind {
                     MacroKindWire::Vba => MacroKind::Vba,
@@ -113,6 +115,7 @@ mod tests {
                 source: "ppt/presentation.xml",
             }),
             requested_fonts: vec!["Aptos".into(), "Calibri".into()],
+            embedded_fonts: vec!["Aptos".into()],
             macros: Some(MacroFact {
                 kind: MacroKind::Basic,
                 part: "Basic/".into(),

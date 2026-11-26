@@ -134,6 +134,86 @@ fn docx_referenced_styles_their_chain_runs_and_headers() {
     );
 }
 
+/// A `word/fontTable.xml` with its relationships: each font is
+/// (name, embed element and relationship id, or none).
+fn font_table(fonts: &[(&str, Option<(&str, &str)>)]) -> String {
+    let mut out = format!(
+        r#"<w:fonts {W} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#
+    );
+    for (name, embed) in fonts {
+        out.push_str(&format!(
+            r#"<w:font w:name="{name}"><w:family w:val="swiss"/>"#
+        ));
+        if let Some((element, id)) = embed {
+            out.push_str(&format!(
+                r#"<w:{element} r:id="{id}" w:fontKey="{{5F3C1A2B-9D4E-4C6F-8A7B-0E1D2C3B4A59}}"/>"#
+            ));
+        }
+        out.push_str("</w:font>");
+    }
+    out.push_str("</w:fonts>");
+    out
+}
+
+#[test]
+fn docx_embedded_fonts_from_the_font_table() {
+    // F1: a family counts as embedded only when an embed element points at
+    // a font part that the package holds, obfuscated (odttf) or plain.
+    let table = font_table(&[
+        ("Calibri", None),
+        ("Aptos", Some(("embedRegular", "rIdF1"))),
+        ("Embed Plain", Some(("embedBold", "rIdF2"))),
+        ("Gone Part", Some(("embedItalic", "rIdF3"))),
+        ("No Relationship", Some(("embedBoldItalic", "rIdF9"))),
+    ]);
+    let table_rels = rels(&[
+        ("rIdF1", "font", "fonts/font1.odttf"),
+        ("rIdF2", "font", "fonts/font2.ttf"),
+        ("rIdF3", "font", "fonts/font3.odttf"),
+    ]);
+    let bytes = docx(
+        &[
+            ("word/fontTable.xml", table.as_bytes()),
+            ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+            ("word/fonts/font1.odttf", b"\x00obfuscated"),
+            ("word/fonts/font2.ttf", b"\x00\x01\x00\x00plain"),
+        ],
+        &body("<w:p/>"),
+    );
+    let facts = scan_bytes("embedded.docx", &bytes, Family::Document);
+    assert_eq!(facts.embedded_fonts, ["Aptos", "Embed Plain"]);
+    assert_eq!(facts.requested_fonts, ["Calibri", "Cambria"]);
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_without_a_font_table_embeds_nothing() {
+    let facts = scan_bytes("small.docx", &docx(&[], &body("<w:p/>")), Family::Document);
+    assert!(facts.embedded_fonts.is_empty());
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_malformed_font_table_skips_the_font_check() {
+    // The table feeds the font check: unreadable, the check is skipped
+    // rather than run without knowing which families are embedded.
+    let bytes = docx(
+        &[(
+            "word/fontTable.xml",
+            b"<w:fonts><w:font w:name=\"A\"><broken",
+        )],
+        &body("<w:p/>"),
+    );
+    let facts = scan_bytes("broken.docx", &bytes, Family::Document);
+    assert!(
+        facts.requested_fonts.is_empty(),
+        "{:?}",
+        facts.requested_fonts
+    );
+    assert!(facts.embedded_fonts.is_empty());
+    assert_eq!(facts.skipped, [(Check::Fonts, SkipReason::MalformedXml)]);
+}
+
 #[test]
 fn docm_macros_only_with_a_vba_project() {
     let document = body("<w:p/>");
