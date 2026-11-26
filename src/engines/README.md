@@ -258,12 +258,60 @@ A second measurement, made on 2026-11-26 at commit `1eaf546`, in the dev image `
 | `test` | 0.25 ms / 0.37 ms | 4 MB | — |
 
 Lease, `Ping` and return took 3.6 to 3.8 µs at p50 for every role. Over HTTP, the overhead of one DOCX conversion was about 1.3 ms beside 31.7 ms of engine time, with inspect and the probe included. These numbers are not measured under gVisor.
+
+### Soak, 2026-11-26
+
+A soak of 120 minutes ran on 2026-11-26 from 00:41 UTC. It used the image `rs-convert-lead-runtime:wave2b` (`3ccbb545d9fb`), built from main at `1eafd5ee`. The conditions were:
+
+- The Docker VM on the same Apple M4 Max had 14 CPUs and 3.9 GiB of memory.
+- The flags were `--read-only`, `--tmpfs /tmp:size=2g`, `--cap-drop ALL` and `--security-opt no-new-privileges`.
+- `OFFICE_WORKERS=1` and `RENDER_WORKERS=2`. Every other variable kept its default: `WORKER_MAX_JOBS` 50, `WORKER_MAX_RSS_MB` 1024, `WORKER_KILL_RSS_MB` 2048, `WORKER_MAX_AGE_SECONDS` 3600 and `POISON_TTL_SECONDS` 600.
+- Two client threads sent requests over HTTP with no pause, from a driver outside the repository.
+- The load picked at random from 96 cases on 42 files. These were the cases of `corpus/expected.json` and an `images` case in JPEG, PNG or WebP for each `bundle` case. The encrypted PPTX and XLSX came with and without the password.
+- A sample every 5 minutes read `/proc` in the container, `du` of `/tmp` and `/metrics`. A last sample came 60 s after the load stopped.
+
+The run sent 18076 requests: 6924 `bundle`, 6785 `images` and 4367 `pdf`. Each response had the expected status and code. No response was a 5xx, and no request failed on the client side. The responses were 15280 `200`, 936 `PASSWORD_REQUIRED`, 905 `UNSUPPORTED_FORMAT`, 579 `INVALID_PASSWORD`, 192 `LIMIT_EXCEEDED` and 184 `CONVERSION_FAILED`. Of these, 926 requests used the hostile files and 3031 used the encrypted files.
+
+| Measure, after 15 minutes of warm-up | Result |
+| --- | --- |
+| Supervisor RSS | 20.1 to 24.8 MiB, slope −53 KiB per hour over 22 samples. The peak RSS stayed at 27.7 MiB from minute 10. |
+| Supervisor open descriptors | 21 in each sample, 24 once. 19 at the start and 60 s after the end. |
+| Processes in the container | 5, 6 once while a new office worker started beside the old one. No zombie in any sample. |
+| `/tmp` | 0.7 to 97 MiB under load. 328 KiB at the start, 656 KiB after the end. The difference is the profile of the office slot, which had the same size after a 1-minute run. |
+| Office worker RSS | 238 to 243 MiB at `Ready`, 244 to 391 MiB at recycle, 282 to 572 MiB in the samples. The mean at recycle was 343 MiB in the first half and 345 MiB in the second half. |
+| Render worker RSS | 7 MiB at `Ready`, 10 to 51 MiB at recycle. |
+| Spawn to `Ready`, p50 / max | Office 159 / 289 ms, render 3.7 / 7.5 ms. |
+
+The pools recycled 994 workers, and the logs show 997 `worker ready` events: the 3 first workers and one replacement for each recycle. `convert_worker_restarts_total` gave the same counts as the logs:
+
+- `render`, reason `jobs`: 615.
+- `office`, reason `jobs`: 195.
+- `office`, reason `error`: 184.
+- No worker crashed or was killed, and no recycle had the reason `rss` or `age`.
+
+Each `error` recycle followed one of the 184 requests for `hostile/xml-entities.docx`, which ended in `CONVERSION_FAILED`. The office adapter recycles a worker after this error, by design. The logs have no `document poisoned`, no `stray child reaped` and no line at `WARN` or `ERROR`. At the end, the container was healthy, and `OOMKilled` was false.
+
+A worker lived 20 s at p50 and 62 s at most, because the job limit replaced it first. The run thus did not exercise the age limit of 1 hour.
+
+The server total of the `200` responses, in ms, after warm-up:
+
+| Family | `pdf` p50 / p99 | `bundle` p50 / p99 | `images` p50 / p99 |
+| --- | --- | --- | --- |
+| docx | 90 / 5754 | 44 / 5713 | 45 / 5766 |
+| pptx | 1002 / 9550 | 285 / 6728 | 306 / 6413 |
+| xlsx | 6998 / 12894 | 165 / 9021 | 226 / 8998 |
+| odf | — | 16 / 5654 | 27 / 5666 |
+| rtf | — | 10 / 5534 | 11 / 3079 |
+| pdf | — | 0.8 / 2.5 | 1.8 / 24.7 |
+| encrypted PPTX and XLSX | 759 / 6037 | — | — |
+
+The tails come from the single office worker. Of the 757 conversions of files under 100 kB that took more than 3 s, the median spent 99 % of its time in the queue. PDF files go to the render pool, so they never wait for an office job. Their p99 stayed under 25 ms. The p50 and p99 of each family showed no trend over the 24 windows.
 <!-- /memoria:section -->
 
 ## Not built yet
 
 These parts of plan 002 do not exist yet:
 
-- `engine soak` and the fault and soak run (step 13).
+- `engine soak` and the fault run of step 13. The soak run of step 13 used HTTP instead ([Soak, 2026-11-26](#soak-2026-11-26)).
 
 Image assembly (step 11) is out of v1, so `PdfPdfium::assemble` returns `Failed`.
