@@ -53,6 +53,13 @@ fn skip_group(b: &[u8], at: usize, close: u8) -> usize {
                 i = skip_string(b, i);
                 continue;
             }
+            // A comment runs to the end of its line, quotes included.
+            b'#' => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
             c if c == open => depth += 1,
             c if c == close => {
                 depth -= 1;
@@ -454,6 +461,15 @@ fn the_name_scan_reports_a_misspelled_metric() {
         .into()
     );
     assert_eq!(missing(&selected, &have), ["covert_workers", "up"]);
+    // A comment inside braces hides neither the closing brace nor what follows.
+    let names =
+        query_metrics("convert_workers{pool=\"office\" # don't count render\n} + covert_workers");
+    assert_eq!(
+        names,
+        ["convert_workers", "covert_workers"]
+            .map(String::from)
+            .into()
+    );
     // A selector that names no metric before its braces cannot be checked.
     for bare in [
         r#"convert_workers or {__name__="covert_workers"}"#,
