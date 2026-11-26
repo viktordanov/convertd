@@ -712,3 +712,45 @@ fn slow_sigterm_with_a_hung_worker_exits_within_one_grace() {
     // 5 s of grace, up to 2 s for open connections, then the kill.
     assert!(took < Duration::from_secs(9), "exit took {took:?}");
 }
+
+/// Level B: a request that times out in the office queue answers 429, and
+/// its Server-Timing shows the wait as `queue`. Before, the error carried
+/// no timing and the header said queue 0.0 beside a total of the whole
+/// wait (lane 002's ingestion finding).
+#[cfg(feature = "test-hooks")]
+#[test]
+fn slow_a_queue_timeout_reports_its_wait_as_queue() {
+    let served = Served::start(
+        "queue-timeout",
+        &[
+            ("TEST_ENGINE", "worker"),
+            ("OFFICE_WORKERS", "1"),
+            ("RENDER_WORKERS", "1"),
+            ("QUEUE_WAIT_SECONDS", "1"),
+        ],
+    );
+    // The one office worker is busy for 4 s.
+    let busy = std::thread::spawn({
+        let mut stream = served.connect();
+        let bytes = raw_convert(&docx_with("FAKE:DELAY_MS=4000"), None);
+        move || exchange(&mut stream, &bytes)
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    let answer = exchange(&mut served.connect(), &raw_convert(&docx_with("x"), None));
+    let text = String::from_utf8_lossy(&answer).into_owned();
+    assert_eq!(status_line(&answer), 429, "{text}");
+    let timing = text
+        .lines()
+        .find_map(|line| line.strip_prefix("server-timing: "))
+        .unwrap_or_else(|| panic!("no Server-Timing: {text}"));
+    let queue_ms: f64 = timing
+        .split(", ")
+        .find_map(|entry| entry.strip_prefix("queue;dur="))
+        .and_then(|ms| ms.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no queue entry: {timing}"));
+    assert!(
+        (900.0..3000.0).contains(&queue_ms),
+        "queue {queue_ms} ms in {timing}"
+    );
+    assert_eq!(status_line(&busy.join().unwrap()), 200);
+}

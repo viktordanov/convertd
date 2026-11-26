@@ -177,6 +177,7 @@ impl ConversionService {
                     job.budget,
                     self.limits.pdf_output_bytes(job.upload.size_bytes),
                 )?;
+                let called = Instant::now();
                 let converted = self
                     .office
                     .convert(
@@ -193,6 +194,7 @@ impl ConversionService {
                         job.deadline,
                     )
                     .await
+                    .inspect_err(|err| charge_queue(timings, called, err))
                     .map_err(engine_error)?;
                 timings.add_call(&converted.timing);
                 if job.detection.encrypted {
@@ -252,6 +254,7 @@ impl ConversionService {
                         job.budget,
                         self.limits.decrypt_output_bytes(job.upload.size_bytes),
                     )?;
+                    let called = Instant::now();
                     let decrypted = self
                         .pdf
                         .decrypt(
@@ -291,7 +294,10 @@ impl ConversionService {
                                 None,
                             )
                         }
-                        Err(err) => return Err(engine_error(err)),
+                        Err(err) => {
+                            charge_queue(timings, called, &err);
+                            return Err(engine_error(err));
+                        }
                     }
                 } else {
                     (
@@ -389,6 +395,7 @@ impl ConversionService {
             ),
         )?;
         let wanted = numbers.clone();
+        let called = Instant::now();
         let rendered = self
             .pdf
             .render(
@@ -408,6 +415,7 @@ impl ConversionService {
                 job.deadline,
             )
             .await
+            .inspect_err(|err| charge_queue(timings, called, err))
             .map_err(ConversionError::Engine)?;
         timings.add_call(&rendered.timing);
         timings.render = Some(rendered.timing.wall);
@@ -431,6 +439,7 @@ impl ConversionService {
         timings: &mut StageTimings,
     ) -> Result<Inspection, EngineError> {
         let probe_dpi = if probe { self.probe_dpi } else { None };
+        let called = Instant::now();
         let inspection = self
             .pdf
             .inspect(
@@ -444,7 +453,8 @@ impl ConversionService {
                 adm,
                 deadline,
             )
-            .await?;
+            .await
+            .inspect_err(|err| charge_queue(timings, called, err))?;
         timings.add_call(&inspection.timing);
         timings.inspect = Some(inspection.timing.wall);
         let probe = probe_dpi.map(|_| inspection.probe_engine);
@@ -466,6 +476,16 @@ impl ConversionService {
         } else {
             Err(ConversionError::DiskFull)
         }
+    }
+}
+
+/// An engine call that failed in the queue (`QueueTimeout`, or `QueueFull`
+/// at once) spent all its time waiting there: charge it to `queue`, so the
+/// error's `Server-Timing` shows the wait. An engine error carries no
+/// timing of its own.
+fn charge_queue(timings: &mut StageTimings, called: Instant, err: &EngineError) {
+    if matches!(err, EngineError::QueueTimeout | EngineError::QueueFull) {
+        timings.queue += called.elapsed();
     }
 }
 
