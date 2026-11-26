@@ -16,7 +16,8 @@ use crate::engines::error::EngineFailure;
 use crate::engines::poison::{Attempt, PoisonList, Strike, Work, strike_for, worse};
 use crate::engines::pool::{Admission as PoolAdmission, CallError, Lease, Pool};
 use crate::ipc::{
-    self, DecryptArgs, InspectArgs, Op, Output, RenderArgs, Reply, Secret, WorkerErrorKind,
+    self, DecryptArgs, InspectArgs, Op, Output, ProbePages, RenderArgs, Reply, Secret,
+    WorkerErrorKind,
 };
 
 /// A render chunk has at least this many pages, so an extra chunk (a PDF
@@ -228,6 +229,8 @@ impl PdfEngine for PdfPdfium {
             pdf: job.pdf,
             password: job.password.map(|p| Secret::new(p.expose())),
             probe_dpi: job.probe_dpi,
+            // Every page until the domain names the pages (lane 001).
+            probe_pages: ProbePages::default(),
             collect_fonts: job.collect_fonts,
         });
         let called = call(&self.pool, op, admission(adm), deadline, recycles).await?;

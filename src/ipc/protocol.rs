@@ -163,9 +163,31 @@ pub struct ConvertArgs {
 pub struct InspectArgs {
     pub pdf: PathBuf,
     pub password: Option<Secret>,
-    /// Render every page at this DPI for the blank-page probe.
+    /// Render the pages that `probe_pages` names at this DPI, for the
+    /// blank-page probe.
     pub probe_dpi: Option<u16>,
+    /// Which pages the probe renders. Unused without `probe_dpi`.
+    #[serde(default)]
+    pub probe_pages: ProbePages,
     pub collect_fonts: bool,
+}
+
+/// The pages of the blank-page probe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbePages {
+    /// The first pages of the document, at most `max` (`None`: every
+    /// page). The rest count in `InspectedOut::probe_skipped`.
+    All { max: Option<u32> },
+    /// Only these 1-based pages, in order. Numbers past the page count are
+    /// left out, and nothing counts as skipped.
+    Only(Vec<u32>),
+}
+
+impl Default for ProbePages {
+    fn default() -> Self {
+        ProbePages::All { max: None }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -358,8 +380,11 @@ pub struct InspectedOut {
     pub needs_password: bool,
     /// Every page, in order.
     pub pages: Vec<PageGeometry>,
-    /// Only with `probe_dpi`.
+    /// Only with `probe_dpi`: the pages that `probe_pages` names.
     pub probe: Vec<ProbedPage>,
+    /// Pages that `ProbePages::All { max }` left out of the probe.
+    #[serde(default)]
+    pub probe_skipped: u32,
     /// Only with `collect_fonts`.
     pub fonts: Vec<String>,
 }

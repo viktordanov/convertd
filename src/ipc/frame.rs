@@ -189,6 +189,7 @@ mod tests {
                 pdf: "/j/document.pdf".into(),
                 password: None,
                 probe_dpi: Some(18),
+                probe_pages: ProbePages::Only(vec![1, 3]),
                 collect_fonts: true,
             })),
             call(Op::Render(RenderArgs {
@@ -286,6 +287,7 @@ mod tests {
                 page_count: 1,
                 encrypted: true,
                 needs_password: false,
+                probe_skipped: 2,
                 pages: vec![PageGeometry {
                     width_pt: 595.0,
                     height_pt: 842.0,

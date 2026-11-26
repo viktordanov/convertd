@@ -304,6 +304,7 @@ impl TestEngine {
                 needs_password: false,
                 pages: vec![PAGE; pages as usize],
                 probe,
+                probe_skipped: 0,
                 fonts: Vec::new(),
             }))
         })

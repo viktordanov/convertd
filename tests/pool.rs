@@ -647,6 +647,7 @@ async fn the_page_count_marker_flows_from_convert_to_inspect() {
                         pdf,
                         password: None,
                         probe_dpi: None,
+                        probe_pages: Default::default(),
                         collect_fonts: false,
                     }),
                     after(5000),

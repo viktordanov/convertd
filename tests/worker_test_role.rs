@@ -300,6 +300,7 @@ fn panic_marker_exits_101() {
             pdf: dir.join("source.pdf"),
             password: None,
             probe_dpi: None,
+            probe_pages: Default::default(),
             collect_fonts: false,
         }),
     }));
@@ -341,6 +342,7 @@ fn inspect(pdf: PathBuf) -> Op {
         pdf,
         password: None,
         probe_dpi: Some(18),
+        probe_pages: Default::default(),
         collect_fonts: false,
     })
 }

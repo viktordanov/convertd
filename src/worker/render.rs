@@ -12,8 +12,8 @@ use pdfium_render::prelude::*;
 
 use crate::ipc::{
     DecryptArgs, DecryptedOut, EngineTimes, Init, InspectArgs, InspectedOut, Op, Output,
-    PageGeometry, ProbedPage, RenderArgs, RenderedOut, RenderedPage, Secret, WorkerError,
-    WorkerErrorKind,
+    PageGeometry, ProbePages, ProbedPage, RenderArgs, RenderedOut, RenderedPage, Secret,
+    WorkerError, WorkerErrorKind,
 };
 use crate::worker::encode::{EncodeError, encode, flat, max_edge};
 use crate::worker::output::OutputBudget;
@@ -120,7 +120,11 @@ impl RenderWorker {
         times.inspect_us = micros(started.elapsed());
 
         let mut probe = Vec::new();
+        let mut probe_skipped = 0;
         if let Some(dpi) = args.probe_dpi {
+            let count = sizes.len() as u32;
+            let (numbers, skipped) = probe_numbers(&args.probe_pages, count);
+            probe_skipped = skipped;
             let probed = Instant::now();
             let config = PdfRenderConfig::new()
                 .scale_page_by_factor(f32::from(dpi) / 72.0)
@@ -128,13 +132,16 @@ impl RenderWorker {
                 .set_reverse_byte_order(false)
                 .use_grayscale_rendering(true)
                 .render_form_data(true);
-            for (index, page) in pages.iter().enumerate() {
+            for number in numbers {
+                let page = pages
+                    .get((number - 1) as PdfPageIndex)
+                    .map_err(|err| load_failed(&err))?;
                 let bitmap = page
                     .render_with_config(&config)
                     .map_err(|err| render_failed(&err))?;
                 let (flat, colour) = flat(&bitmap.as_raw_bytes());
                 probe.push(ProbedPage {
-                    number: index as u32 + 1,
+                    number,
                     objects: page.objects().len() as u32,
                     flat,
                     colour,
@@ -149,6 +156,7 @@ impl RenderWorker {
             needs_password,
             pages: sizes,
             probe,
+            probe_skipped,
             fonts: Vec::new(),
         }))
     }
@@ -477,8 +485,56 @@ impl Engine for RenderWorker {
     }
 }
 
+/// The 1-based pages that the probe renders, in order, and the pages that
+/// `All { max }` leaves out. `Only` drops numbers outside the document.
+pub fn probe_numbers(pages: &ProbePages, count: u32) -> (Vec<u32>, u32) {
+    match pages {
+        ProbePages::All { max } => {
+            let probed = max.map_or(count, |max| max.min(count));
+            ((1..=probed).collect(), count - probed)
+        }
+        ProbePages::Only(numbers) => {
+            let mut numbers: Vec<u32> = numbers
+                .iter()
+                .copied()
+                .filter(|&n| (1..=count).contains(&n))
+                .collect();
+            numbers.sort_unstable();
+            numbers.dedup();
+            (numbers, 0)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::probe_numbers;
+    use crate::ipc::ProbePages;
+
+    #[test]
+    fn the_probe_takes_the_pages_it_is_given() {
+        assert_eq!(
+            probe_numbers(&ProbePages::All { max: None }, 3),
+            (vec![1, 2, 3], 0)
+        );
+        assert_eq!(
+            probe_numbers(&ProbePages::All { max: Some(2) }, 5),
+            (vec![1, 2], 3)
+        );
+        assert_eq!(
+            probe_numbers(&ProbePages::All { max: Some(9) }, 3),
+            (vec![1, 2, 3], 0)
+        );
+        assert_eq!(
+            probe_numbers(&ProbePages::Only(vec![5, 2, 2, 0, 40]), 30),
+            (vec![2, 5], 0)
+        );
+        assert_eq!(
+            probe_numbers(&ProbePages::Only(Vec::new()), 30),
+            (Vec::new(), 0)
+        );
+    }
+
     use super::*;
 
     #[test]

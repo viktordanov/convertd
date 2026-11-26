@@ -797,3 +797,53 @@ async fn the_output_cap_does_not_depend_on_the_number_of_render_workers() {
     )
     .await;
 }
+
+/// The probe renders only the pages it is given, and a cap on "every page"
+/// reports the rest as skipped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inspect_probes_only_the_pages_it_is_given() {
+    use convertd::engines::pool::Admission as PoolAdmission;
+    use convertd::ipc::{InspectArgs, Op, Output, ProbePages};
+    let Some(pdfium) = pdfium() else {
+        return;
+    };
+    within(TEST, "inspect_probes_only_the_pages_it_is_given", async {
+        let dir = Scratch::new("render-probe-pages");
+        let contents: Vec<String> = (0..30)
+            .map(|_| "0 0 0 rg 10 10 20 20 re f".to_string())
+            .collect();
+        let source = dir.join("thirty.pdf");
+        std::fs::write(&source, handmade_pdf(72, &contents)).unwrap();
+        let pool = ready(render_spec(dir.path(), &pdfium, 1)).await;
+        let inspect = |probe_pages| {
+            Op::Inspect(InspectArgs {
+                pdf: source.clone(),
+                password: None,
+                probe_dpi: Some(18),
+                probe_pages,
+                collect_fonts: false,
+            })
+        };
+        for (pages, numbers, skipped) in [
+            (ProbePages::Only(vec![5, 2, 40]), vec![2u32, 5], 0u32),
+            (ProbePages::Only(Vec::new()), Vec::new(), 0),
+            (ProbePages::All { max: Some(10) }, (1..=10).collect(), 20),
+            (ProbePages::All { max: None }, (1..=30).collect(), 0),
+        ] {
+            let mut lease = pool.lease(deadline(), PoolAdmission::Queue).await.unwrap();
+            let reply = lease
+                .call(inspect(pages.clone()), deadline())
+                .await
+                .unwrap();
+            let Ok(Output::Inspected(out)) = reply.result else {
+                panic!("{pages:?}: {:?}", reply.result);
+            };
+            assert_eq!(out.page_count, 30);
+            let probed: Vec<u32> = out.probe.iter().map(|p| p.number).collect();
+            assert_eq!(probed, numbers, "{pages:?}");
+            assert_eq!(out.probe_skipped, skipped, "{pages:?}");
+        }
+        pool.shutdown(Duration::from_secs(5)).await;
+    })
+    .await;
+}
