@@ -26,7 +26,7 @@ out="$(mktemp -d)"
 key="smoke-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 fail=0
 
-# shellcheck disable=SC2317  # called through the EXIT trap
+# shellcheck disable=SC2317,SC2329  # called through the EXIT trap (SC2329 is ShellCheck 0.11)
 cleanup() { docker rm -f "${name}" >/dev/null 2>&1 || true; rm -rf "${out}"; }
 trap cleanup EXIT
 note() { printf '%-26s %s\n' "$1" "$2"; }

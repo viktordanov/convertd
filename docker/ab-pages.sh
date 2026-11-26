@@ -21,7 +21,7 @@ curl_image="${CURL_IMAGE:?set CURL_IMAGE to a pinned curl image, tag@sha256:...}
 key="ab-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 names=()
 
-# shellcheck disable=SC2317  # called through the EXIT trap
+# shellcheck disable=SC2317,SC2329  # called through the EXIT trap (SC2329 is ShellCheck 0.11)
 cleanup() { for n in ${names[@]+"${names[@]}"}; do docker rm -f "${n}" >/dev/null 2>&1 || true; done; }
 trap cleanup EXIT
 
