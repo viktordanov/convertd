@@ -80,7 +80,7 @@ The build arguments:
 | `LO_SHA256_AMD64`, `LO_SHA256_ARM64` | SHA-256 of each LibreOffice tarball |
 | `PDFIUM_BUILD`, `PDFIUM_SHA256_AMD64`, `PDFIUM_SHA256_ARM64` | `8179`, and SHA-256 of each PDFium tarball |
 | `RUST_IMAGE`, `RUNTIME_BASE`, `CARGO_CHEF_VERSION` | base images by index digest, and the cargo-chef version |
-| `FONTS_CJK` | `1` adds Noto CJK (size not measured) |
+| `FONTS_CJK` | `1` adds Noto CJK, 91 MB installed. The image is then over the 635 MB budget of CI |
 | `CARGO_JOBS` | Cargo jobs per platform, 2 by default |
 | `CONVERTD_VERSION`, `CONVERTD_COMMIT`, `CONVERTD_BUILD_DATE` | the OCI version, revision and created labels. convertd also compiles in `CONVERTD_COMMIT` for `/v1/capabilities` and the engine fingerprint. `convertd --version` prints the version from `Cargo.toml` |
 <!-- /memoria:section -->
@@ -88,13 +88,15 @@ The build arguments:
 <!-- memoria:section id="contract" files="fonts/fonts.json fonts/10-libreoffice-fonts.conf fonts/35-rs-convert-aliases.conf fonts/probe-families.txt dpkg/fonts.cfg dpkg/libreoffice.cfg write-build-info.sh install-engines.sh cache-fonts.sh" -->
 ## Fonts and build-info.json
 
-The font set covers Latin, Greek, Cyrillic, symbols, math and emoji. These families are installed, and the build fails if `fc-list` does not find one of them:
+The font set covers Latin, Greek, Cyrillic, symbols, math and emoji, and the scripts in the list that follows. These families are installed, and the build fails if `fc-list` does not find one of them:
 
 - Liberation Sans, Serif and Mono, Carlito and Caladea: metric-compatible with Arial, Times New Roman, Courier New, Calibri and Cambria.
 - DejaVu, and the Noto families Sans, Serif, Sans Mono, Sans Symbols, Sans Symbols2, Sans Math and Color Emoji.
-- The fonts that LibreOffice bundles, OpenSymbol among them. They also cover Arabic, Hebrew, Armenian, Georgian and Lao.
+- The fonts that LibreOffice bundles, OpenSymbol among them. They also cover Arabic, Hebrew, Armenian, Georgian and Lao. Their Noto Sans also covers Devanagari.
+- Noto Sans Thai and Noto Sans Ethiopic, from `fonts-noto-core`.
+- WenQuanYi Micro Hei, a fallback for Chinese, Japanese and Korean. It has one glyph form for all three. `FONTS_CJK=1` adds Noto CJK, with the correct glyph forms for each region.
 
-Devanagari, Thai, Ethiopic and CJK have no font. Text in these scripts renders as empty boxes. `FONTS_CJK=1` adds Noto CJK.
+A script with no font renders blank, or as wrong glyphs. The PDF text layer still holds the text, and no warning tells the client. Thus the build also fails if no font has a letter of Devanagari, Thai, Ethiopic, Han, kana, Hangul, Arabic or Hebrew. Other scripts, for example Bengali, Tamil, Khmer and Myanmar, still have no font. `docs/ledger/fonts-study/` gives the measurements.
 
 LibreOffice bundles its own copies of Liberation, Carlito, Caladea, DejaVu, Noto Sans and Noto Serif, and Debian packages install them too. The image keeps one copy of each family: the copy that fontconfig picked when both were present. That is Debian's Carlito and LibreOffice's copy of the others, the same version or a newer one. `dpkg/fonts.cfg` and `dpkg/libreoffice.cfg` drop the other copy, and `build-info.json` stays the same. A new LibreOffice release can change these versions, so the pin procedure checks them again.
 
