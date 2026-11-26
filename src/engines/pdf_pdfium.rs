@@ -10,9 +10,11 @@ use crate::domain::engine::{
     Admission, DecryptJob, Decrypted, EngineError, EngineTiming, InspectJob, Inspection, PageSize,
     PdfEngine, ProbedPage, RenderJob, Rendered, RenderedPage, WorkerRef,
 };
-use crate::engines::call::{RETRY_MIN_LEFT, admission, call, unexpected, worker_ref};
+use crate::engines::call::{RETRY_MIN_LEFT, admission, call_with_poison, unexpected, worker_ref};
 use crate::engines::error::EngineFailure;
-use crate::engines::poison::{Attempt, PoisonList, Strike, Work, strike_for, worse};
+use crate::engines::poison::{
+    Attempt, Poison, PoisonList, Probe, Strike, Work, password_fingerprint, strike_for, worse,
+};
 use crate::engines::pool::{Admission as PoolAdmission, CallError, Lease, Pool};
 use crate::ipc::{
     self, DecryptArgs, InspectArgs, Op, Output, ProbePages, RenderArgs, Reply, Secret,
@@ -34,11 +36,21 @@ impl PdfPdfium {
         Self { pool, poison: None }
     }
 
-    /// Refuses renders of documents that recently timed out or crashed a
-    /// worker.
+    /// Refuses inspects, decrypts and renders of documents that recently
+    /// timed out or crashed a worker.
     pub fn with_poison(mut self, poison: Option<Arc<PoisonList>>) -> Self {
         self.poison = poison;
         self
+    }
+
+    /// The poison handle of one inspect or decrypt; render keeps its own
+    /// per-chunk rule.
+    fn poison(&self, key: [u8; 32], work: Work) -> Option<Poison> {
+        self.poison.as_ref().map(|list| Poison {
+            list: Arc::clone(list),
+            key,
+            work,
+        })
     }
 
     /// Renders the pages that went over their share on one lease, with
@@ -50,22 +62,30 @@ impl PdfPdfium {
         left: u64,
         deadline: Instant,
         limit: EngineError,
+        guard: Option<Guard<'_>>,
     ) -> Result<ChunkOk, ChunkFailure> {
         if left == 0 || deadline.saturating_duration_since(Instant::now()) < RETRY_MIN_LEFT {
             return Err(ChunkFailure::engine(limit));
+        }
+        // Before the wait for a worker, and again after it below.
+        if guard.is_some_and(|g| g.refuses(deadline)) {
+            return Err(ChunkFailure::engine(EngineError::Poisoned));
         }
         let lease = self
             .pool
             .lease(deadline, PoolAdmission::Continue)
             .await
             .map_err(|err| ChunkFailure::engine(EngineFailure::from(err).into()))?;
+        if guard.is_some_and(|g| g.refuses(deadline)) {
+            return Err(ChunkFailure::engine(EngineError::Poisoned));
+        }
         tracing::debug!(
             pool = self.pool.name(),
             pages = args.pages.len(),
             left,
             "render chunks went over their share; rendering them on one worker"
         );
-        render_chunk(&self.pool, lease, args, deadline).await
+        render_chunk(&self.pool, lease, args, deadline, guard).await
     }
 }
 
@@ -127,6 +147,40 @@ fn severity(err: &EngineError) -> u8 {
     }
 }
 
+/// A render's poison check for a lease taken after its first one (a crash
+/// retry or an over-share rerun): the list, the upload's key and the work.
+#[derive(Clone, Copy)]
+struct Guard<'a> {
+    list: &'a PoisonList,
+    key: &'a [u8; 32],
+    work: Work,
+}
+
+impl Guard<'_> {
+    /// Whether a call dispatched now, with the time left, is refused.
+    fn refuses(&self, deadline: Instant) -> bool {
+        self.list
+            .refuses(self.key, &Attempt::new(self.work, deadline, Instant::now()))
+    }
+}
+
+/// One render strikes once: the worse strike of its chunks (a crash before
+/// a timeout), with the budget of the call that earned it. Between equal
+/// strikes the longest budget that still failed is the strongest evidence.
+fn pick_strike(
+    held: (Option<Strike>, Duration),
+    chunk: (Option<Strike>, Duration),
+) -> (Option<Strike>, Duration) {
+    let strike = worse(held.0, chunk.0);
+    if strike != held.0 {
+        (strike, chunk.1)
+    } else if chunk.0 == strike {
+        (strike, held.1.max(chunk.1))
+    } else {
+        held
+    }
+}
+
 /// What one render chunk gives back.
 type ChunkOk = (Vec<ipc::RenderedPage>, Duration, WorkerRef);
 
@@ -134,13 +188,16 @@ type ChunkOk = (Vec<ipc::RenderedPage>, Duration, WorkerRef);
 struct ChunkFailure {
     error: EngineError,
     strike: Option<Strike>,
+    /// The time its failing worker call had: a timeout strike's budget.
+    ran: Duration,
 }
 
 impl ChunkFailure {
-    fn of(err: CallError, retried: bool) -> Self {
+    fn of(err: CallError, retried: bool, ran: Duration) -> Self {
         Self {
             strike: strike_for(&err, retried),
             error: EngineFailure::from(err).into(),
+            ran,
         }
     }
 
@@ -148,6 +205,7 @@ impl ChunkFailure {
         Self {
             error,
             strike: None,
+            ran: Duration::ZERO,
         }
     }
 }
@@ -185,19 +243,36 @@ async fn render_chunk(
     mut lease: Lease,
     args: RenderArgs,
     deadline: Instant,
+    guard: Option<Guard<'_>>,
 ) -> Result<ChunkOk, ChunkFailure> {
     let op = Op::Render(args);
+    // Each chunk checks at its own dispatch: a strike can land, or this
+    // chunk's time can fall into a covered range, after the first lease.
+    // It has not run, so it earns no strike.
+    if guard.is_some_and(|g| g.refuses(deadline)) {
+        return Err(ChunkFailure::engine(EngineError::Poisoned));
+    }
+    let ran = deadline.saturating_duration_since(Instant::now());
     match lease.call(op.clone(), deadline).await {
         Ok(reply) => return chunk_reply(&mut lease, reply, pool),
         Err(err @ CallError::Crashed { .. })
             if deadline.saturating_duration_since(Instant::now()) < RETRY_MIN_LEFT =>
         {
-            return Err(ChunkFailure::of(err, false));
+            return Err(ChunkFailure::of(err, false, ran));
         }
         Err(CallError::Crashed { .. }) => {}
-        Err(err) => return Err(ChunkFailure::of(err, false)),
+        Err(err) => return Err(ChunkFailure::of(err, false, ran)),
     }
     drop(lease);
+    // Check before the wait for a retry worker too: a covered retry fails
+    // fast, and the crash counts once.
+    if guard.is_some_and(|g| g.refuses(deadline)) {
+        return Err(ChunkFailure {
+            error: EngineError::Poisoned,
+            strike: Some(Strike::Crash(1)),
+            ran,
+        });
+    }
     tracing::warn!(pool = pool.name(), "render chunk crashed; retrying once");
     let mut retry = match pool.lease(deadline, PoolAdmission::Continue).await {
         Ok(lease) => lease,
@@ -206,12 +281,24 @@ async fn render_chunk(
             return Err(ChunkFailure {
                 error: EngineFailure::from(err).into(),
                 strike: Some(Strike::Crash(1)),
+                ran,
             });
         }
     };
+    // The retry waited for a worker: check again with the time left. The
+    // crash still counts once.
+    if guard.is_some_and(|g| g.refuses(deadline)) {
+        drop(retry);
+        return Err(ChunkFailure {
+            error: EngineError::Poisoned,
+            strike: Some(Strike::Crash(1)),
+            ran,
+        });
+    }
+    let ran = deadline.saturating_duration_since(Instant::now());
     match retry.call(op, deadline).await {
         Ok(reply) => chunk_reply(&mut retry, reply, pool),
-        Err(err) => Err(ChunkFailure::of(err, true)),
+        Err(err) => Err(ChunkFailure::of(err, true, ran)),
     }
 }
 
@@ -223,6 +310,20 @@ impl PdfEngine for PdfPdfium {
         adm: Admission,
         deadline: Instant,
     ) -> Result<Inspection, EngineError> {
+        let poison = self.poison(
+            job.sha256,
+            Work::Inspect {
+                probe: job.probe_dpi.map(|dpi| Probe {
+                    dpi,
+                    pages: job.probe_max_pages,
+                }),
+                password: job
+                    .password
+                    .as_ref()
+                    .map(|p| password_fingerprint(p.expose())),
+                export: job.export,
+            },
+        );
         let op = Op::Inspect(InspectArgs {
             pdf: job.pdf,
             password: job.password.map(|p| Secret::new(p.expose())),
@@ -233,7 +334,15 @@ impl PdfEngine for PdfPdfium {
             },
             collect_fonts: job.collect_fonts,
         });
-        let called = call(&self.pool, op, admission(adm), deadline, recycles).await?;
+        let called = call_with_poison(
+            &self.pool,
+            op,
+            admission(adm),
+            deadline,
+            recycles,
+            poison.as_ref(),
+        )
+        .await?;
         let Output::Inspected(out) = called.output else {
             return Err(unexpected("inspect"));
         };
@@ -273,6 +382,13 @@ impl PdfEngine for PdfPdfium {
         adm: Admission,
         deadline: Instant,
     ) -> Result<Decrypted, EngineError> {
+        let poison = self.poison(
+            job.sha256,
+            Work::Decrypt {
+                password: password_fingerprint(job.password.expose()),
+                check_owner: job.check_owner,
+            },
+        );
         let op = Op::Decrypt(DecryptArgs {
             pdf: job.pdf,
             password: Secret::new(job.password.expose()),
@@ -280,7 +396,15 @@ impl PdfEngine for PdfPdfium {
             max_output_bytes: job.max_output_bytes,
             check_owner: job.check_owner,
         });
-        let called = call(&self.pool, op, admission(adm), deadline, recycles).await?;
+        let called = call_with_poison(
+            &self.pool,
+            op,
+            admission(adm),
+            deadline,
+            recycles,
+            poison.as_ref(),
+        )
+        .await?;
         let Output::Decrypted(out) = called.output else {
             return Err(unexpected("decrypt"));
         };
@@ -308,6 +432,7 @@ impl PdfEngine for PdfPdfium {
         let attempt = Attempt::new(
             Work::Render {
                 pages: job.pages.len() as u32,
+                rerun_of: None,
             },
             deadline,
             started,
@@ -317,6 +442,11 @@ impl PdfEngine for PdfPdfium {
         {
             return Err(EngineError::Poisoned);
         }
+        let guard = self.poison.as_deref().map(|list| Guard {
+            list,
+            key: &job.sha256,
+            work: attempt.work,
+        });
         let first = self
             .pool
             .lease(deadline, admission(adm))
@@ -324,6 +454,18 @@ impl PdfEngine for PdfPdfium {
             .map_err(|err| EngineError::from(EngineFailure::from(err)))?;
         let queue = first.queued();
         let lease_time = first.leased().saturating_sub(queue);
+        // Check again with the time a worker gets now: under queue pressure
+        // a request that is left with no more time than a timed-out one is
+        // refused instead of killing another worker.
+        if let Some(list) = &self.poison
+            && list.refuses(
+                &job.sha256,
+                &Attempt::new(attempt.work, deadline, Instant::now()),
+            )
+        {
+            drop(first);
+            return Err(EngineError::Poisoned);
+        }
         let spawned = first.spawned_on_path();
         let wanted = job.pages.len().div_ceil(RENDER_CHUNK_MIN_PAGES).max(1);
         let mut leases = vec![first];
@@ -351,13 +493,20 @@ impl PdfEngine for PdfPdfium {
         let runs = leases
             .into_iter()
             .zip(parts.iter().cloned())
-            .map(|(lease, pages)| render_chunk(&self.pool, lease, args(pages, share), deadline));
+            .map(|(lease, pages)| {
+                render_chunk(&self.pool, lease, args(pages, share), deadline, guard)
+            });
         let results = futures_util::future::join_all(runs).await;
         let mut pages = Vec::with_capacity(job.pages.len());
         let mut workers = Vec::new();
         let mut longest = Duration::ZERO;
         let mut failure: Option<EngineError> = None;
         let mut strike: Option<Strike> = None;
+        // The budget of the call whose strike counts: a timeout covers only
+        // requests that give a worker no more time than that call had.
+        let mut strike_ran = Duration::ZERO;
+        // The work of the call whose strike counts: the job, or its rerun.
+        let mut strike_work = attempt.work;
         // Pages of the chunks that went over their share: an equal share
         // keeps the disk within the reservation, but the job's cap is the
         // whole budget, so these get what the other chunks left.
@@ -375,7 +524,8 @@ impl PdfEngine for PdfPdfium {
                     over_error = Some(chunk.error);
                 }
                 Err(chunk) => {
-                    strike = worse(strike, chunk.strike);
+                    (strike, strike_ran) =
+                        pick_strike((strike, strike_ran), (chunk.strike, chunk.ran));
                     let more_severe = failure
                         .as_ref()
                         .is_none_or(|old| severity(&chunk.error) < severity(old));
@@ -391,7 +541,23 @@ impl PdfEngine for PdfPdfium {
             over.sort_unstable();
             let finished: u64 = pages.iter().map(|p: &RenderedPage| p.size_bytes).sum();
             let left = job.max_output_bytes.saturating_sub(finished);
-            match self.rerun(args(over, left), left, deadline, limit).await {
+            // The rerun renders only these pages, as the rerun of a job of
+            // this size: its check and its strike weigh that work, so a
+            // repeated rerun matches its own strikes, and a standalone
+            // render of fewer pages is not covered.
+            let rerun_work = Work::Render {
+                pages: over.len() as u32,
+                rerun_of: Some(job.pages.len() as u32),
+            };
+            strike_work = rerun_work;
+            let rerun_guard = guard.map(|g| Guard {
+                work: rerun_work,
+                ..g
+            });
+            match self
+                .rerun(args(over, left), left, deadline, limit, rerun_guard)
+                .await
+            {
                 Ok((chunk, engine, worker)) => {
                     pages.extend(chunk.into_iter().map(rendered_page));
                     // The rerun comes after the parallel chunks.
@@ -400,6 +566,7 @@ impl PdfEngine for PdfPdfium {
                 }
                 Err(chunk) => {
                     strike = chunk.strike;
+                    strike_ran = chunk.ran;
                     failure = Some(chunk.error);
                 }
             }
@@ -410,7 +577,11 @@ impl PdfEngine for PdfPdfium {
             if let Some(list) = &self.poison
                 && let Some(strike) = strike
             {
-                list.strike(&job.sha256, strike, &attempt);
+                let ran = Attempt {
+                    work: strike_work,
+                    budget: strike_ran,
+                };
+                list.strike(&job.sha256, strike, &ran);
             }
             return Err(err);
         }
@@ -445,6 +616,20 @@ impl PdfEngine for PdfPdfium {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_render_keeps_the_worse_strike_and_the_longest_failed_budget() {
+        let s = Duration::from_secs;
+        let none = (None, Duration::ZERO);
+        let timeout = |b| (Some(Strike::Timeout), s(b));
+        assert_eq!(pick_strike(none, timeout(10)), timeout(10));
+        assert_eq!(pick_strike(timeout(10), timeout(2)), timeout(10));
+        assert_eq!(pick_strike(timeout(2), timeout(10)), timeout(10));
+        let crash = (Some(Strike::Crash(2)), s(3));
+        assert_eq!(pick_strike(timeout(10), crash), crash, "a crash is worse");
+        assert_eq!(pick_strike(crash, timeout(10)), crash);
+        assert_eq!(pick_strike(timeout(10), none), timeout(10));
+    }
+
     use super::*;
 
     #[test]

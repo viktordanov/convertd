@@ -4,6 +4,8 @@
 //! thread and holds one document at a time. Every operation opens its
 //! document, works, and closes it before it answers.
 
+use std::fs::{self, File};
+use std::io::{self, BufWriter, Write};
 use std::os::raw::{c_int, c_ulong, c_void};
 use std::path::Path;
 use std::time::Instant;
@@ -15,8 +17,8 @@ use crate::ipc::{
     PageGeometry, ProbePages, ProbedPage, RenderArgs, RenderedOut, RenderedPage, Secret,
     WorkerError, WorkerErrorKind,
 };
-use crate::worker::encode::{EncodeError, encode, flat, max_edge};
-use crate::worker::output::OutputBudget;
+use crate::worker::encode::{EncodeError, Encoder, flat, max_edge};
+use crate::worker::output::{OutputBudget, io_error};
 use crate::worker::{Engine, Handled, micros};
 
 /// `FPDF_SaveAsCopy` flags (`fpdf_save.h`; the crate keeps them private).
@@ -64,20 +66,13 @@ impl RenderWorker {
             font,
             PdfPoints::new(12.0),
         )?;
-        let bitmap = page.render_with_config(
-            &PdfRenderConfig::new()
-                .scale_page_by_factor(1.0)
-                .set_format(PdfBitmapFormat::BGRA)
-                .set_reverse_byte_order(false),
-        )?;
-        let bytes = bitmap.as_raw_bytes();
-        let _ = encode(
-            crate::ipc::ImageFormat::Jpeg,
-            &bytes,
-            bitmap.width() as u32,
-            bitmap.height() as u32,
-            85,
-        );
+        let config = PdfRenderConfig::new()
+            .scale_page_by_factor(1.0)
+            .set_format(PdfBitmapFormat::BGRA)
+            .set_reverse_byte_order(false);
+        let mut bitmap = Vec::new();
+        let (width, height) = render_into(&page, &config, 1.0, &mut bitmap)?;
+        let _ = Encoder::new().encode(crate::ipc::ImageFormat::Jpeg, &bitmap, width, height, 85);
         Ok(())
     }
 
@@ -132,6 +127,9 @@ impl RenderWorker {
                 .set_reverse_byte_order(false)
                 .use_grayscale_rendering(true)
                 .render_form_data(true);
+            let scale = f32::from(dpi) / 72.0;
+            // One bitmap for every probed page, which keeps its allocation.
+            let mut bitmap = Vec::new();
             for number in numbers {
                 let page = pages
                     .get((number - 1) as PdfPageIndex)
@@ -142,10 +140,9 @@ impl RenderWorker {
                     probe_skipped += 1;
                     continue;
                 }
-                let bitmap = page
-                    .render_with_config(&config)
+                render_into(&page, &config, scale, &mut bitmap)
                     .map_err(|err| render_failed(&err))?;
-                let (flat, colour) = flat(&bitmap.as_raw_bytes());
+                let (flat, colour) = flat(&bitmap);
                 probe.push(ProbedPage {
                     number,
                     objects: page.objects().len() as u32,
@@ -175,6 +172,10 @@ impl RenderWorker {
         let count = pages.len().max(0) as u32;
         let mut budget = OutputBudget::new(args.max_output_bytes);
         let mut out = Vec::with_capacity(args.pages.len());
+        // One bitmap and one encoder for the job: both keep their
+        // allocations from page to page, and no page is copied.
+        let mut bitmap = Vec::new();
+        let mut encoder = Encoder::new();
         let result = (|| {
             for &number in &args.pages {
                 if number == 0 || number > count {
@@ -199,38 +200,28 @@ impl RenderWorker {
                     )));
                 }
                 let rendering = Instant::now();
-                let bitmap = page
-                    .render_with_config(
-                        &PdfRenderConfig::new()
-                            .scale_page_by_factor(scale)
-                            .set_format(PdfBitmapFormat::BGRA)
-                            .set_reverse_byte_order(false)
-                            .render_form_data(true),
-                    )
+                let config = PdfRenderConfig::new()
+                    .scale_page_by_factor(scale)
+                    .set_format(PdfBitmapFormat::BGRA)
+                    .set_reverse_byte_order(false)
+                    .render_form_data(true);
+                let (width, height) = render_into(&page, &config, scale, &mut bitmap)
                     .map_err(|err| render_failed(&err))?;
-                let (width, height) = (bitmap.width() as u32, bitmap.height() as u32);
-                let bgra = bitmap.as_raw_bytes();
                 times.render_us += micros(rendering.elapsed());
-                if bgra.len() != (width as usize) * (height as usize) * 4 {
-                    return Err(WorkerError::new(
-                        WorkerErrorKind::Internal,
-                        "failed to read the bitmap: unexpected stride",
-                    ));
-                }
-                let (flat, colour) = flat(&bgra);
+                let (flat, colour) = flat(&bitmap);
                 let encoding = Instant::now();
-                let bytes = encode(args.format, &bgra, width, height, args.quality).map_err(
-                    |err| match err {
+                let bytes = encoder
+                    .encode(args.format, &bitmap, width, height, args.quality)
+                    .map_err(|err| match err {
                         EncodeError::TooLarge(message) => too_large(&message),
                         EncodeError::Failed(message) => WorkerError::new(
                             WorkerErrorKind::Internal,
                             format!("failed to encode page: {message}"),
                         ),
-                    },
-                )?;
+                    })?;
                 times.encode_us += micros(encoding.elapsed());
                 let file_name = format!("{number:04}.{}", args.format.extension());
-                let size_bytes = budget.write_file(&args.out_dir.join(&file_name), &bytes)?;
+                let size_bytes = budget.write_file(&args.out_dir.join(&file_name), bytes)?;
                 out.push(RenderedPage {
                     number,
                     file_name,
@@ -243,7 +234,7 @@ impl RenderWorker {
                     flat,
                     colour,
                     effective_dpi: scale * 72.0,
-                    crc32: Some(crc32fast::hash(&bytes)),
+                    crc32: Some(crc32fast::hash(bytes)),
                 });
             }
             Ok(())
@@ -317,7 +308,15 @@ impl RenderWorker {
                 )
             });
         }
-        let mut writer = CopyWriter::new(args.max_output_bytes);
+        let file = match File::create(&args.output) {
+            Ok(file) => file,
+            Err(err) => {
+                // SAFETY: closes the document opened above, once.
+                unsafe { bindings.FPDF_CloseDocument(document) };
+                return Err(io_error("write the decrypted PDF", &err));
+            }
+        };
+        let mut writer = CopyWriter::new(file, args.max_output_bytes);
         // SAFETY: `document` is open; `writer` starts with the FPDF_FILEWRITE
         // that PDFium calls back through, and outlives the call.
         let saved = unsafe {
@@ -331,23 +330,10 @@ impl RenderWorker {
         unsafe { bindings.FPDF_CloseDocument(document) };
         times.decrypt_us = micros(started.elapsed());
         times.engine_us = times.decrypt_us;
-        if writer.over_limit {
-            return Err(WorkerError::new(
-                WorkerErrorKind::LimitExceeded,
-                "failed to write the decrypted PDF: output exceeds limit",
-            ));
-        }
-        if saved == 0 {
-            return Err(WorkerError::new(
-                WorkerErrorKind::ExportFailed,
-                "failed to write the decrypted PDF",
-            ));
-        }
-        let mut budget = OutputBudget::new(args.max_output_bytes);
-        let pdf_bytes = match budget.write_file(&args.output, &writer.bytes) {
+        let pdf_bytes = match writer.finish(saved != 0) {
             Ok(n) => n,
             Err(err) => {
-                budget.remove_written();
+                let _ = fs::remove_file(&args.output);
                 return Err(err);
             }
         };
@@ -365,7 +351,7 @@ impl RenderWorker {
             })
             .unwrap_or(false);
         if !clean {
-            budget.remove_written();
+            let _ = fs::remove_file(&args.output);
             return Err(WorkerError::new(
                 WorkerErrorKind::ExportFailed,
                 "failed to decrypt the PDF: the copy is still protected",
@@ -373,6 +359,51 @@ impl RenderWorker {
         }
         Ok(Output::Decrypted(DecryptedOut { pdf_bytes }))
     }
+}
+
+/// The pixel size of a page rendered at `scale`, rounded as pdfium-render
+/// rounds it for `PdfRenderConfig::scale_page_by_factor` (`apply_to_page`
+/// in its `render_config.rs`, 0.9.6), so the render fills the bitmap.
+pub fn bitmap_size(w_pt: f32, h_pt: f32, scale: f32) -> (i32, i32) {
+    ((w_pt * scale).round() as i32, (h_pt * scale).round() as i32)
+}
+
+/// Renders `page` with `config`, whose scale is `scale`, into `bitmap`
+/// and gives the pixel size. The bitmap is our buffer, wrapped for PDFium
+/// with `PdfBitmap::from_bytes`, so nothing copies it afterwards. It keeps
+/// its allocation from page to page and ends up exactly `width * height * 4`
+/// bytes of BGRA rows. PDFium clears it to white before each page.
+fn render_into(
+    page: &PdfPage,
+    config: &PdfRenderConfig,
+    scale: f32,
+    bitmap: &mut Vec<u8>,
+) -> Result<(u32, u32), PdfiumError> {
+    let (width, height) = bitmap_size(page.width().value, page.height().value, scale);
+    if width <= 0 || height <= 0 {
+        return Err(PdfiumError::ImageSizeOutOfBounds);
+    }
+    // PdfBitmap::from_bytes takes the stride and the byte count as i32 and
+    // refuses more; refuse it here, before the buffer is reserved.
+    let len = width
+        .checked_mul(4)
+        .and_then(|stride| stride.checked_mul(height))
+        .ok_or(PdfiumError::ImageSizeOutOfBounds)? as usize;
+    // A page that fits the allocation reuses it. A larger page frees the
+    // old buffer first, so growing never holds two pages: PDFium clears
+    // the bitmap anyway. A size the allocator refuses is an error, as
+    // PDFium's own bitmap allocation was, not an abort of the worker.
+    if len > bitmap.capacity() {
+        *bitmap = Vec::new();
+        bitmap
+            .try_reserve_exact(len)
+            .map_err(|_| PdfiumError::ImageSizeOutOfBounds)?;
+    }
+    bitmap.resize(len, 0);
+    let mut wrapped =
+        PdfBitmap::from_bytes(width, height, PdfBitmapFormat::BGRA, bitmap.as_mut_slice())?;
+    page.render_into_bitmap_with_config(&mut wrapped, config)?;
+    Ok((width as u32, height as u32))
 }
 
 /// The scale of a page: the requested DPI, reduced so that the longer edge
@@ -386,26 +417,32 @@ pub fn page_scale(dpi: u16, max_edge: u32, w_pt: f32, h_pt: f32) -> f32 {
     by_dpi.min(max_edge as f32 / longest)
 }
 
-/// `FPDF_FILEWRITE` followed by the buffer it fills. `repr(C)` keeps the
-/// PDFium struct first, so the callback can find the rest from its pointer.
+/// `FPDF_FILEWRITE` followed by the file it streams into, under the job's
+/// byte cap. `repr(C)` keeps the PDFium struct first, so the callback can
+/// find the rest from its pointer. Only a buffer of 64 KiB is in memory,
+/// never the whole PDF.
 #[repr(C)]
 struct CopyWriter {
     base: FPDF_FILEWRITE,
-    bytes: Vec<u8>,
+    file: BufWriter<File>,
+    written: u64,
     limit: u64,
     over_limit: bool,
+    error: Option<io::Error>,
 }
 
 impl CopyWriter {
-    fn new(limit: u64) -> Self {
+    fn new(file: File, limit: u64) -> Self {
         Self {
             base: FPDF_FILEWRITE {
                 version: 1,
                 WriteBlock: Some(write_block),
             },
-            bytes: Vec::new(),
+            file: BufWriter::with_capacity(64 * 1024, file),
+            written: 0,
             limit,
             over_limit: false,
+            error: None,
         }
     }
 
@@ -413,6 +450,53 @@ impl CopyWriter {
     /// so the callback may reach past `base`.
     fn as_file_write(&mut self) -> *mut FPDF_FILEWRITE {
         std::ptr::from_mut(self).cast()
+    }
+
+    /// Takes one block from PDFium: refused past the cap or after an error,
+    /// else written through the buffer.
+    fn write(&mut self, chunk: &[u8]) -> bool {
+        if self.over_limit || self.error.is_some() {
+            return false;
+        }
+        if self.written.saturating_add(chunk.len() as u64) > self.limit {
+            self.over_limit = true;
+            return false;
+        }
+        match self.file.write_all(chunk) {
+            Ok(()) => {
+                self.written += chunk.len() as u64;
+                true
+            }
+            Err(err) => {
+                self.error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Flushes the file and gives its size, or the first failure: the cap,
+    /// then an I/O error, then a save that PDFium reported as failed. The
+    /// caller removes the file on an error.
+    fn finish(mut self, saved: bool) -> Result<u64, WorkerError> {
+        if self.over_limit {
+            return Err(WorkerError::new(
+                WorkerErrorKind::LimitExceeded,
+                "failed to write the decrypted PDF: output exceeds limit",
+            ));
+        }
+        if let Some(err) = self.error.take() {
+            return Err(io_error("write the decrypted PDF", &err));
+        }
+        if !saved {
+            return Err(WorkerError::new(
+                WorkerErrorKind::ExportFailed,
+                "failed to write the decrypted PDF",
+            ));
+        }
+        self.file
+            .flush()
+            .map_err(|err| io_error("write the decrypted PDF", &err))?;
+        Ok(self.written)
     }
 }
 
@@ -425,16 +509,13 @@ unsafe extern "C" fn write_block(
     // points at the first field of a live `CopyWriter`.
     let writer = unsafe { &mut *this.cast::<CopyWriter>() };
     let size = size as usize;
-    if writer.bytes.len() as u64 + size as u64 > writer.limit {
-        writer.over_limit = true;
-        return 0;
-    }
-    if size > 0 {
+    let chunk = if size == 0 {
+        &[][..]
+    } else {
         // SAFETY: PDFium gives `size` readable bytes at `data`.
-        let chunk = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) };
-        writer.bytes.extend_from_slice(chunk);
-    }
-    1
+        unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) }
+    };
+    c_int::from(writer.write(chunk))
 }
 
 /// The password to open with, or `None`. A password with a NUL byte is
@@ -651,6 +732,220 @@ mod tests {
         let good = Secret::new("secret");
         assert_eq!(secret(Some(&good)).unwrap(), Some("secret"));
         assert_eq!(secret(None).unwrap(), None);
+    }
+
+    /// PDFium bound from `PDFIUM_LIB_DIR`, as in the dev image; `None`
+    /// elsewhere, and the test then passes without checking.
+    /// The PDFium library in `PDFIUM_LIB_DIR`, when it is there.
+    fn pdfium_library() -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(std::env::var_os("PDFIUM_LIB_DIR")?);
+        let library = Pdfium::pdfium_platform_library_name_at_path(&dir);
+        if library.exists() {
+            Some(library)
+        } else {
+            eprintln!("skipped: no {} in PDFIUM_LIB_DIR", library.display());
+            None
+        }
+    }
+
+    /// A library that is there but does not bind fails the test, so a
+    /// broken dev image cannot pass by skipping.
+    fn bound_pdfium() -> Option<Pdfium> {
+        let library = pdfium_library()?;
+        let bindings = Pdfium::bind_to_library(&library)
+            .unwrap_or_else(|err| panic!("failed to bind {}: {err}", library.display()));
+        Some(Pdfium::new(bindings))
+    }
+
+    /// A document of `pages` square pages of `side` points, each with text.
+    fn square_pages(pdfium: &Pdfium, side: f32, pages: usize) -> PdfDocument<'_> {
+        let mut document = pdfium.create_new_pdf().unwrap();
+        let font = document.fonts_mut().helvetica();
+        for n in 0..pages {
+            let mut page = document
+                .pages_mut()
+                .create_page_at_end(PdfPagePaperSize::Custom(
+                    PdfPoints::new(side),
+                    PdfPoints::new(side),
+                ))
+                .unwrap();
+            page.objects_mut()
+                .create_text_object(
+                    PdfPoints::new(72.0),
+                    PdfPoints::new(side - 144.0),
+                    format!("Page {n}"),
+                    font,
+                    PdfPoints::new(48.0),
+                )
+                .unwrap();
+        }
+        document
+    }
+
+    fn config(scale: f32) -> PdfRenderConfig {
+        PdfRenderConfig::new()
+            .scale_page_by_factor(scale)
+            .set_format(PdfBitmapFormat::BGRA)
+            .set_reverse_byte_order(false)
+            .render_form_data(true)
+    }
+
+    /// Our bitmap holds what PDFium's own bitmap held, at sizes that round
+    /// both ways.
+    #[test]
+    fn render_into_matches_the_crate_render() {
+        let Some(pdfium) = bound_pdfium() else {
+            eprintln!("skipped: no PDFium");
+            return;
+        };
+        let document = square_pages(&pdfium, 595.3, 1);
+        let page = document.pages().get(0).unwrap();
+        let mut bitmap = Vec::new();
+        for scale in [1.0, 150.0 / 72.0, 0.37] {
+            let config = config(scale);
+            let (w, h) = render_into(&page, &config, scale, &mut bitmap).unwrap();
+            let theirs = page.render_with_config(&config).unwrap();
+            assert_eq!(
+                (w, h),
+                (theirs.width() as u32, theirs.height() as u32),
+                "{scale}"
+            );
+            assert_eq!(bitmap, theirs.as_raw_bytes(), "{scale}: the pixels differ");
+        }
+    }
+
+    /// The peak resident memory per process of rendering two 4096 x 4096
+    /// pages to PNG, before and after the copy-free path. Each path runs
+    /// in a child process of its own, because the peak only grows. It
+    /// needs PDFium: `cargo test --lib render_peak -- --ignored` in the dev
+    /// image.
+    #[test]
+    #[ignore = "needs PDFium and a quiet process; run by hand in the dev image"]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a child of the test binary, outside the worker's reaper"
+    )]
+    fn render_peak_rss_per_page() {
+        const NAME: &str = "worker::render::tests::render_peak_rss_per_page";
+        // Only the children bind PDFium: pdfium-render binds once per
+        // process, so the parent leaves the binding to them.
+        if pdfium_library().is_none() {
+            eprintln!("skipped: no PDFium");
+            return;
+        }
+        let max_rss_kib = || {
+            // SAFETY: rusage is plain integers, for which zero is valid.
+            let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+            // SAFETY: getrusage fills the struct it is given.
+            unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) };
+            // KiB on Linux, bytes on macOS.
+            if cfg!(target_os = "macos") {
+                usage.ru_maxrss / 1024
+            } else {
+                usage.ru_maxrss
+            }
+        };
+        if let Ok(path) = std::env::var("P2_RENDER_PATH") {
+            let pdfium = bound_pdfium().expect("the library was found above");
+            let document = square_pages(&pdfium, 4096.0, 2);
+            let before = max_rss_kib();
+            let mut bitmap = Vec::new();
+            let mut encoder = crate::worker::encode::Encoder::new();
+            for page in document.pages().iter() {
+                let config = config(1.0);
+                if path == "old" {
+                    let rendered = page.render_with_config(&config).unwrap();
+                    let bgra = rendered.as_raw_bytes();
+                    let mut rgb = Vec::with_capacity(bgra.len() / 4 * 3);
+                    for p in bgra.as_chunks::<4>().0 {
+                        rgb.extend_from_slice(&[p[2], p[1], p[0]]);
+                    }
+                    let mut out = Vec::new();
+                    use image::ImageEncoder;
+                    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+                    PngEncoder::new_with_quality(
+                        &mut out,
+                        CompressionType::Fast,
+                        FilterType::Adaptive,
+                    )
+                    .write_image(
+                        &rgb,
+                        rendered.width() as u32,
+                        rendered.height() as u32,
+                        image::ExtendedColorType::Rgb8,
+                    )
+                    .unwrap();
+                } else {
+                    let (w, h) = render_into(&page, &config, 1.0, &mut bitmap).unwrap();
+                    encoder
+                        .encode(crate::ipc::ImageFormat::Png, &bitmap, w, h, 85)
+                        .unwrap();
+                }
+            }
+            // On a line of its own: libtest's "test ... " has no newline.
+            println!("\nP2 {path} {}", max_rss_kib() - before);
+            return;
+        }
+        let run = |path: &str| -> i64 {
+            use std::io::Read;
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    NAME,
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("P2_RENDER_PATH", path)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            // Each child gets a deadline, so a stalled PDFium fails the test
+            // with the path that stalled instead of hanging it.
+            let deadline = Instant::now() + std::time::Duration::from_secs(120);
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("the {path} child passed its 120 s deadline");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            };
+            let (mut stdout, mut stderr) = (String::new(), String::new());
+            let _ = child.stdout.take().unwrap().read_to_string(&mut stdout);
+            let _ = child.stderr.take().unwrap().read_to_string(&mut stderr);
+            // A child that measured and then crashed in teardown fails too.
+            assert!(
+                status.success(),
+                "the {path} child failed ({status}): {stderr}"
+            );
+            stdout
+                .lines()
+                .find_map(|line| line.split(&format!("P2 {path} ")).nth(1))
+                .and_then(|kib| kib.trim().parse().ok())
+                .unwrap_or_else(|| panic!("no result from the {path} child: {stdout}"))
+        };
+        let (old, new) = (run("old"), run("new"));
+        let page_mib = 4096 * 4096 * 4 / 1024 / 1024;
+        eprintln!(
+            "peak RSS growth for two 4096 x 4096 PNG pages: before {} MiB, after {} MiB \
+             (one BGRA page is {page_mib} MiB)",
+            old / 1024,
+            new / 1024
+        );
+        assert!(
+            new < old,
+            "the copy-free path is not lower: {new} KiB >= {old} KiB"
+        );
+        assert!(
+            new / 1024 < page_mib as i64 * 3 / 2,
+            "more than one page buffer: {} MiB",
+            new / 1024
+        );
     }
 
     #[test]

@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::conversion::{ConversionRequest, ConversionResult, Output, PdfOrigin, StageTimings};
+use super::conversion::{
+    ConversionRequest, ConversionResult, ExportOptions, Output, PdfOrigin, StageTimings,
+};
 use super::detection::Detection;
 use super::document::{DocType, Family, Format};
 use super::engine::{
@@ -250,6 +252,13 @@ impl ConversionService {
                         Admission::Continue,
                         job.deadline,
                         probe,
+                        job.upload.sha256,
+                        // The family the worker exported with: the loaded
+                        // type, else the requested one (export_family).
+                        Some(effective_export(
+                            Some(converted.doc_type.family().unwrap_or(family)),
+                            job.request.export,
+                        )),
                         timings,
                     )
                     .await
@@ -269,6 +278,8 @@ impl ConversionService {
                         Admission::Queue,
                         job.deadline,
                         probe,
+                        job.upload.sha256,
+                        None,
                         timings,
                     )
                     .await
@@ -299,6 +310,7 @@ impl ConversionService {
                                 output: paths.document_pdf.clone(),
                                 max_output_bytes,
                                 check_owner: true,
+                                sha256: job.upload.sha256,
                             },
                             Admission::Continue,
                             job.deadline,
@@ -464,6 +476,9 @@ impl ConversionService {
         Ok(rendered.pages)
     }
 
+    // Two more arguments than clippy's default: the upload's hash and the
+    // export, for the poison memory. A struct would only move the list.
+    #[allow(clippy::too_many_arguments)]
     async fn inspect(
         &self,
         pdf: &Path,
@@ -471,6 +486,8 @@ impl ConversionService {
         adm: Admission,
         deadline: Instant,
         probe: bool,
+        sha256: [u8; 32],
+        export: Option<ExportOptions>,
         timings: &mut StageTimings,
     ) -> Result<Inspection, EngineError> {
         let probe_dpi = if probe { self.probe_dpi } else { None };
@@ -484,6 +501,8 @@ impl ConversionService {
                     probe_dpi,
                     collect_fonts: false,
                     probe_max_pages: self.probe_max_pages,
+                    sha256,
+                    export,
                 },
                 adm,
                 deadline,
@@ -574,8 +593,53 @@ pub fn render_reservation(
     total.min(cap)
 }
 
+/// The export settings that LibreOffice applies to a document of `family`,
+/// as `worker::office::filter_options` reads them: the others make no
+/// difference to the PDF, so they must not make another poison key.
+fn effective_export(family: Option<Family>, export: ExportOptions) -> ExportOptions {
+    match family {
+        Some(Family::Presentation) => ExportOptions {
+            one_page_per_sheet: false,
+            ..export
+        },
+        Some(Family::Spreadsheet) => ExportOptions {
+            one_page_per_sheet: export.one_page_per_sheet,
+            ..ExportOptions::default()
+        },
+        _ => ExportOptions::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_the_settings_an_export_uses_make_its_poison_key() {
+        use super::super::conversion::SlideNotes;
+        let all = ExportOptions {
+            notes: SlideNotes::Only,
+            include_hidden_slides: true,
+            one_page_per_sheet: true,
+        };
+        assert_eq!(
+            effective_export(Some(Family::Document), all),
+            ExportOptions::default()
+        );
+        assert_eq!(
+            effective_export(Some(Family::Spreadsheet), all),
+            ExportOptions {
+                one_page_per_sheet: true,
+                ..ExportOptions::default()
+            }
+        );
+        assert_eq!(
+            effective_export(Some(Family::Presentation), all),
+            ExportOptions {
+                one_page_per_sheet: false,
+                ..all
+            }
+        );
+    }
+
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU64, Ordering};
 

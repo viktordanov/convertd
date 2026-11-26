@@ -317,8 +317,9 @@ pub struct ConvertedOut {
     /// detection.
     pub doc_type: String,
     /// The pre-flight scan of the source; `None` when it did not run.
+    /// Boxed: the facts would make every `Response` as large as a `Reply`.
     #[serde(default)]
-    pub facts: Option<SourceFactsWire>,
+    pub facts: Option<Box<SourceFactsWire>>,
 }
 
 /// The wire form of `domain::verification::SourceFacts`.
@@ -326,6 +327,9 @@ pub struct ConvertedOut {
 pub struct SourceFactsWire {
     pub declared_pages: Option<DeclaredPagesWire>,
     pub requested_fonts: Vec<String>,
+    /// Families the source embeds (DOCX font table).
+    #[serde(default)]
+    pub embedded_fonts: Vec<String>,
     pub macros: Option<MacroFactWire>,
     pub skipped: Vec<(CheckWire, SkipReasonWire)>,
 }

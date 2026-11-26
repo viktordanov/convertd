@@ -46,5 +46,5 @@ A `WorkerError` has a `kind` and a message for the log. The message can hold pat
 <!-- memoria:section id="facts" files="facts.rs" -->
 ## Pre-flight facts
 
-`facts.rs` converts the domain's `SourceFacts` to `SourceFactsWire` and back. The domain type keeps `DeclaredPages::source` as a `&'static str`, so the supervisor maps the wire string back to a static one. `ppt/presentation.xml` and `docProps/app.xml`, the sources that the scanners name, map to themselves. Any other source reads as `other`.
+`facts.rs` converts the domain's `SourceFacts` to `SourceFactsWire` and back. `embedded_fonts` defaults to empty when a reply lacks it. The domain type keeps `DeclaredPages::source` as a `&'static str`, so the supervisor maps the wire string back to a static one. `ppt/presentation.xml` and `docProps/app.xml`, the sources that the scanners name, map to themselves. Any other source reads as `other`.
 <!-- /memoria:section -->

@@ -120,7 +120,7 @@ impl OfficeEngine for OfficeLok {
         Ok(Converted {
             pdf_bytes: out.pdf_bytes,
             doc_type: doc_type(&out.doc_type),
-            facts: out.facts.as_ref().map(SourceFacts::from),
+            facts: out.facts.as_deref().map(SourceFacts::from),
             timing: called.timing,
             worker: called.worker,
         })
