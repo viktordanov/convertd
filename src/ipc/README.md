@@ -27,13 +27,13 @@ One call is in flight for each worker at a time, and the reply echoes the call's
 - **`Request::Init`**: the first frame after the spawn. It carries `PROTOCOL_VERSION` (1), the engine paths, the warm-up flag and the start faults of the `test` role.
 - **`Request::Call`**: one operation with its `id`. The operations are `Ping`, `Convert`, `Inspect`, `Render`, `Decrypt`, and `Test` for the `test` role only.
 - **`Response::Ready`** or **`Response::Fatal`**: the answer to `Init`. `Ready` carries the PID, the engine version, `bind_us` and the RSS.
-- **`Response::Reply`**: the answer to a call. It carries the conversion count of the process (`job`, without `Ping` and `Inspect`), the engine times, the RSS, and the result or a `WorkerError`.
+- **`Response::Reply`**: the answer to a call. It carries the conversion count of the process (`job`, without `Ping` and `Inspect`), the engine times, the RSS, and the result or a `WorkerError`. The engine times include `cpu_us`, the CPU time of the worker process over the whole call. A reply without `cpu_us` parses with 0, so an older worker still works with the same `PROTOCOL_VERSION`.
 
 A `Ping` call and its reply look like this on the wire:
 
 ```json
 {"type":"call","id":7,"op":{"op":"ping"}}
-{"type":"reply","id":7,"job":1,"engine":{"engine_us":0,"convert_us":0,"inspect_us":0,"probe_us":0,"render_us":0,"encode_us":0,"decrypt_us":0,"preflight_us":0},"rss_bytes":0,"result":{"Ok":{"output":"pong"}}}
+{"type":"reply","id":7,"job":1,"engine":{"engine_us":0,"convert_us":0,"inspect_us":0,"probe_us":0,"render_us":0,"encode_us":0,"decrypt_us":0,"preflight_us":0,"cpu_us":12},"rss_bytes":0,"result":{"Ok":{"output":"pong"}}}
 ```
 
 `Convert` names the office family of the source: `document`, `spreadsheet` or `presentation`. Its reply carries the PDF size, LibreOffice's document type and the pre-flight facts as `SourceFactsWire`. Each `RenderedPage` carries the CRC-32 of its file.

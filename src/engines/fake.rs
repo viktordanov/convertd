@@ -184,6 +184,7 @@ impl Settings {
             wall: started.elapsed(),
             engine,
             preflight: Duration::ZERO,
+            cpu: Duration::ZERO,
         }
     }
 }

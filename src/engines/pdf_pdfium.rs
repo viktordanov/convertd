@@ -182,10 +182,20 @@ fn pick_strike(
 }
 
 /// What one render chunk gives back.
-type ChunkOk = (Vec<ipc::RenderedPage>, Duration, WorkerRef);
+/// A render chunk that answered.
+struct ChunkOk {
+    pages: Vec<ipc::RenderedPage>,
+    engine: Duration,
+    /// The worker's CPU time for the chunk.
+    cpu: Duration,
+    worker: WorkerRef,
+}
 
 /// A failed render chunk, with the poison strike it earned.
 struct ChunkFailure {
+    /// The worker's CPU time when the worker answered with an error: a
+    /// chunk over its share spent it, and its rerun may still succeed.
+    cpu: Duration,
     error: EngineError,
     strike: Option<Strike>,
     /// The time its failing worker call had: a timeout strike's budget.
@@ -198,6 +208,7 @@ impl ChunkFailure {
             strike: strike_for(&err, retried),
             error: EngineFailure::from(err).into(),
             ran,
+            cpu: Duration::ZERO,
         }
     }
 
@@ -206,6 +217,7 @@ impl ChunkFailure {
             error,
             strike: None,
             ran: Duration::ZERO,
+            cpu: Duration::ZERO,
         }
     }
 }
@@ -218,18 +230,26 @@ fn chunk_reply(lease: &mut Lease, reply: Reply, pool: &Pool) -> Result<ChunkOk, 
         generation: 0,
         job: 0,
     });
+    let cpu = Duration::from_micros(reply.engine.cpu_us);
     match reply.result {
-        Ok(Output::Rendered(out)) => Ok((
-            out.pages,
-            Duration::from_micros(reply.engine.engine_us),
+        Ok(Output::Rendered(out)) => Ok(ChunkOk {
+            pages: out.pages,
+            engine: Duration::from_micros(reply.engine.engine_us),
+            cpu,
             worker,
-        )),
-        Ok(_) => Err(ChunkFailure::engine(unexpected("render"))),
+        }),
+        Ok(_) => Err(ChunkFailure {
+            cpu,
+            ..ChunkFailure::engine(unexpected("render"))
+        }),
         Err(err) => {
             if recycles(err.kind) {
                 lease.recycle_after();
             }
-            Err(ChunkFailure::engine(EngineFailure::from(err).into()))
+            Err(ChunkFailure {
+                cpu,
+                ..ChunkFailure::engine(EngineFailure::from(err).into())
+            })
         }
     }
 }
@@ -271,6 +291,7 @@ async fn render_chunk(
             error: EngineError::Poisoned,
             strike: Some(Strike::Crash(1)),
             ran,
+            cpu: Duration::ZERO,
         });
     }
     tracing::warn!(pool = pool.name(), "render chunk crashed; retrying once");
@@ -282,6 +303,7 @@ async fn render_chunk(
                 error: EngineFailure::from(err).into(),
                 strike: Some(Strike::Crash(1)),
                 ran,
+                cpu: Duration::ZERO,
             });
         }
     };
@@ -293,6 +315,7 @@ async fn render_chunk(
             error: EngineError::Poisoned,
             strike: Some(Strike::Crash(1)),
             ran,
+            cpu: Duration::ZERO,
         });
     }
     let ran = deadline.saturating_duration_since(Instant::now());
@@ -500,6 +523,8 @@ impl PdfEngine for PdfPdfium {
         let mut pages = Vec::with_capacity(job.pages.len());
         let mut workers = Vec::new();
         let mut longest = Duration::ZERO;
+        // Every chunk that answered, a chunk over its share included.
+        let mut cpu = Duration::ZERO;
         let mut failure: Option<EngineError> = None;
         let mut strike: Option<Strike> = None;
         // The budget of the call whose strike counts: a timeout covers only
@@ -514,12 +539,14 @@ impl PdfEngine for PdfPdfium {
         let mut over_error: Option<EngineError> = None;
         for (chunk_pages, result) in parts.into_iter().zip(results) {
             match result {
-                Ok((chunk, engine, worker)) => {
-                    pages.extend(chunk.into_iter().map(rendered_page));
-                    longest = longest.max(engine);
-                    workers.push(worker);
+                Ok(chunk) => {
+                    pages.extend(chunk.pages.into_iter().map(rendered_page));
+                    longest = longest.max(chunk.engine);
+                    cpu += chunk.cpu;
+                    workers.push(chunk.worker);
                 }
                 Err(chunk) if split && matches!(chunk.error, EngineError::LimitExceeded(_)) => {
+                    cpu += chunk.cpu;
                     over.extend(chunk_pages);
                     over_error = Some(chunk.error);
                 }
@@ -558,11 +585,12 @@ impl PdfEngine for PdfPdfium {
                 .rerun(args(over, left), left, deadline, limit, rerun_guard)
                 .await
             {
-                Ok((chunk, engine, worker)) => {
-                    pages.extend(chunk.into_iter().map(rendered_page));
+                Ok(chunk) => {
+                    pages.extend(chunk.pages.into_iter().map(rendered_page));
                     // The rerun comes after the parallel chunks.
-                    longest += engine;
-                    workers.push(worker);
+                    longest += chunk.engine;
+                    cpu += chunk.cpu;
+                    workers.push(chunk.worker);
                 }
                 Err(chunk) => {
                     strike = chunk.strike;
@@ -594,6 +622,7 @@ impl PdfEngine for PdfPdfium {
             wall: started.elapsed(),
             engine: longest,
             preflight: Duration::ZERO,
+            cpu,
         };
         metrics::histogram!(
             "convert_engine_overhead_seconds",

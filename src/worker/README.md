@@ -47,7 +47,7 @@ A worker reads no configuration. The supervisor gives it a fixed environment and
 
 After `Ready`, the worker reads one `Call` at a time and writes one `Reply` with the same `id`. The worker answers `Ping` itself. It gives every other operation to its engine through the `Engine` trait, whose `handle` returns the result and the engine times.
 
-The `job` field of a reply counts the conversions that this process served. A `Ping` and an `Inspect` do not count, so `WORKER_MAX_JOBS` counts conversions (`counts_as_job`). `Test` counts, because it stands in for a conversion at level B. The `rss_bytes` field is the RSS after the call. The engine times run from just before the document is opened to just after the last engine call. Process start, the bind and IPC are outside them. If a reply does not fit in one 16 MiB frame, the worker sends a `LimitExceeded` error with the same `id` instead.
+The `job` field of a reply counts the conversions that this process served. A `Ping` and an `Inspect` do not count, so `WORKER_MAX_JOBS` counts conversions (`counts_as_job`). `Test` counts, because it stands in for a conversion at level B. The `rss_bytes` field is the RSS after the call. The engine times run from just before the document is opened to just after the last engine call. Process start, the bind and IPC are outside them. The `cpu_us` field is the CPU time of the whole process over the call, user plus system, from `getrusage(RUSAGE_SELF)` before and after the call. It covers every thread, so it includes LibreOffice's own threads and the pre-flight scan. It does not cover child processes. A worker serves one call at a time, so the difference is the CPU time of that call. If a reply does not fit in one 16 MiB frame, the worker sends a `LimitExceeded` error with the same `id` instead.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="failure" files="mod.rs sys.rs" -->
@@ -169,6 +169,7 @@ A fake PDF has `n` empty A4 pages. When `n` is not 1, it carries a `FAKE:PAGES=<
 | `TestOp` | What the worker does |
 | --- | --- |
 | `Sleep { ms }` | Sleeps, then answers. |
+| `Burn { ms }` | Spins until the process used `ms` more CPU time, then answers. It stops after 10 × `ms` of wall time. |
 | `Hang` | Never answers. |
 | `Abort` | Calls `abort()` and dies with SIGABRT. |
 | `Exit { code }` | Exits with `code` and sends no reply. |
