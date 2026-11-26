@@ -216,6 +216,8 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 `EngineConfig::from_env` parses the engine variables, and `select.rs` builds the two `PoolSpec`s from them. [The configuration table in src/README.md](../README.md#configuration) lists them with their defaults, next to the supervisor's variables.
 
 The worker counts, the job, RSS and age limits, and `WORKER_KILL_RSS_MB` must be at least 1. The defaults give a 14-CPU machine 7 office and 14 render workers. An office worker holds about 250 MB at `Ready`, so a container with little memory needs explicit values.
+
+Each pool can have its own memory limits. `OFFICE_MAX_RSS_MB` and `OFFICE_KILL_RSS_MB` set the office pool's recycle and kill limits, and `RENDER_MAX_RSS_MB` and `RENDER_KILL_RSS_MB` set the render pool's. A variable that is not set takes the shared `WORKER_MAX_RSS_MB` or `WORKER_KILL_RSS_MB`. LibreOffice needs about 10 times the memory of PDFium: in an ingestion of real documents, office workers needed up to 3281 MiB and render workers stayed under 280 MiB. On a small box, a low render limit leaves the memory to the office pool. The log line `engine pools starting` shows both kill limits.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="measurement" files="pool.rs process.rs" -->
