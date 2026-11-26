@@ -201,8 +201,9 @@ impl Package {
     /// [`Package::rels`] for a scan that must not mistake a partial map for
     /// a whole one: the part must hold one `Relationships` root, closed,
     /// with nothing after it, and only its direct `Relationship` children
-    /// count. Only relationships of the `types` given are kept, and their
-    /// resolved targets may take at most [`super::PART_CAP`] bytes in all.
+    /// count. Only relationships of the `types` given are kept (all when
+    /// `None`), and their resolved targets may take at most
+    /// [`super::PART_CAP`] bytes in all.
     /// More than 20 000 kept, or more bytes, fail with `CapReached`; a
     /// cut, empty, wrongly rooted or multi-rooted part with `MalformedXml`.
     ///
@@ -211,7 +212,7 @@ impl Package {
     pub fn rels_complete(
         &mut self,
         part: &str,
-        types: &[&str],
+        types: Option<&[&str]>,
         budget: &mut u64,
     ) -> Result<HashMap<String, (String, String)>, SkipReason> {
         let rels_name = rels_path(part);
@@ -247,7 +248,9 @@ impl Package {
                 closed = !opens;
             } else if open == 1
                 && root == Some(true)
-                && attr(e, b"Type").is_some_and(|kind| types.contains(&kind.as_str()))
+                && types.is_none_or(|types| {
+                    attr(e, b"Type").is_some_and(|kind| types.contains(&kind.as_str()))
+                })
                 && let Some((id, value)) = relationship(part, e)
             {
                 kept_bytes += (id.len() + value.0.len() + value.1.len()) as u64;
