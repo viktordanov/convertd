@@ -115,7 +115,8 @@ impl Package {
     }
 
     /// The first `len` inflated bytes of `name`, or fewer when it is
-    /// shorter. They count against the request budget.
+    /// shorter. They count against the request budget; when the budget, not
+    /// the part, ends the read, it fails with `CapReached`.
     pub fn head(&mut self, name: &str, len: usize) -> Result<Vec<u8>, SkipReason> {
         let entry = *self.entries.get(name).ok_or(SkipReason::MissingPart)?;
         let reader = zip_scan::open_entry(&mut self.file, &entry)
@@ -128,6 +129,9 @@ impl Package {
             .read_to_end(&mut out)
             .map_err(|_| SkipReason::MalformedXml)?;
         self.left = self.left.saturating_sub(out.len() as u64);
+        if cap < len as u64 && out.len() as u64 == cap {
+            return Err(SkipReason::CapReached);
+        }
         Ok(out)
     }
 
@@ -170,15 +174,21 @@ impl Package {
         let rels_name = rels_path(part);
         let mut map = HashMap::new();
         // A part cut at a tag boundary reads as EOF with elements still
-        // open: a partial map would pass for the whole one.
+        // open, and an empty part as EOF with no element: either would pass
+        // for a complete map.
         let mut open = 0usize;
+        let mut rooted = false;
         self.xml_events(&rels_name, super::PART_CAP, |event| {
             let e = match event {
                 XmlEvent::Start(e) => {
                     open += 1;
+                    rooted = true;
                     e
                 }
-                XmlEvent::Empty(e) => e,
+                XmlEvent::Empty(e) => {
+                    rooted = true;
+                    e
+                }
                 XmlEvent::End => {
                     open = open.saturating_sub(1);
                     return true;
@@ -194,7 +204,7 @@ impl Package {
             }
             true
         })?;
-        if open != 0 {
+        if open != 0 || !rooted {
             return Err(SkipReason::MalformedXml);
         }
         Ok(map)

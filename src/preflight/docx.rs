@@ -266,6 +266,9 @@ fn embedded_fonts(
     // Elements open in the whole table: a table cut short reads as EOF
     // with some still open, and is malformed rather than complete.
     let mut open = 0usize;
+    // Whether the root element is `w:fonts`; `None` until one is seen. A
+    // part with no element at all is malformed, not an empty table.
+    let mut root: Option<bool> = None;
     package.xml_events(part, PART_CAP, |event| {
         let (e, opens) = match event {
             XmlEvent::Start(e) => {
@@ -282,9 +285,14 @@ fn embedded_fonts(
                 return true;
             }
         };
+        if root.is_none() {
+            root = Some(e.local_name().as_ref() == b"fonts");
+            return true;
+        }
         match current.as_mut() {
             None => {
-                if opens && e.local_name().as_ref() == b"font" {
+                // Only a `w:font` that is a child of the `w:fonts` root.
+                if opens && open == 2 && root == Some(true) && e.local_name().as_ref() == b"font" {
                     let family =
                         attr(e, b"name").and_then(|name| wanted.get(&fold(&name)).copied());
                     current = Some((family, 0));
@@ -316,7 +324,7 @@ fn embedded_fonts(
         }
         true
     })?;
-    if open != 0 {
+    if open != 0 || root.is_none() {
         return Err(SkipReason::MalformedXml);
     }
 
@@ -374,12 +382,17 @@ fn font_key(key: &str) -> Option<[u8; 16]> {
     Some(out)
 }
 
-/// Whether the font part `target`, deobfuscated with `key`, starts a font
-/// whose directory fits in the part: an sfnt version (TrueType, OpenType
-/// with CFF, Apple TrueType) with 1 to 1024 table records, each pointing
-/// inside the part, or a font collection with 1 to 1024 member offsets
-/// inside the part. This reads the directory only; it is not a parse, but
-/// it rejects empty, cut and unrelated parts.
+/// The tables a font needs: the character map and the metrics, then the
+/// outlines as TrueType glyphs or CFF.
+const REQUIRED_TABLES: [&[u8; 4]; 5] = [b"cmap", b"head", b"hhea", b"hmtx", b"maxp"];
+
+/// Whether the font part `target`, deobfuscated with `key`, starts a font:
+/// an sfnt version (TrueType, OpenType with CFF, Apple TrueType) with 1 to
+/// 1024 table records, each pointing inside the part, that list the
+/// character map, the metrics and the outlines. This reads the directory
+/// only; it is not a parse, but it rejects empty, cut, unrelated and
+/// incomplete parts. Word embeds single TrueType fonts, so a collection
+/// (`ttcf`) does not count.
 fn is_font(package: &mut Package, target: &str, key: Option<[u8; 16]>) -> Result<bool, SkipReason> {
     let size = package.size(target).unwrap_or(0);
     let read = |package: &mut Package, len: u64| -> Result<Vec<u8>, SkipReason> {
@@ -392,25 +405,20 @@ fn is_font(package: &mut Package, target: &str, key: Option<[u8; 16]>) -> Result
         Ok(bytes)
     };
     let head = read(package, OBFUSCATED as u64)?;
-    let be16 = |b: &[u8], at: usize| {
-        b.get(at..at + 2)
-            .map(|x| u64::from(u16::from_be_bytes([x[0], x[1]])))
-    };
-    let be32 = |b: &[u8], at: usize| {
-        b.get(at..at + 4)
-            .map(|x| u64::from(u32::from_be_bytes([x[0], x[1], x[2], x[3]])))
-    };
-    // (number of entries, bytes per entry, where an entry's offset is,
-    // where its length is, if it has one).
-    let (count, entry, offset_at, length_at) = match head.get(..4) {
-        Some([0x00, 0x01, 0x00, 0x00] | b"OTTO" | b"true") => (be16(&head, 4), 16, 8, Some(12)),
-        Some(b"ttcf") => (be32(&head, 8), 4, 0, None),
-        _ => return Ok(false),
-    };
-    let Some(count) = count.filter(|n| (1..=MAX_DIRECTORY).contains(n)) else {
+    if !matches!(
+        head.get(..4),
+        Some([0x00, 0x01, 0x00, 0x00] | b"OTTO" | b"true")
+    ) {
+        return Ok(false);
+    }
+    let Some(count) = head
+        .get(4..6)
+        .map(|b| u64::from(u16::from_be_bytes([b[0], b[1]])))
+        .filter(|n| (1..=MAX_DIRECTORY).contains(n))
+    else {
         return Ok(false);
     };
-    let directory = 12 + entry * count;
+    let directory = 12 + 16 * count;
     if size < directory {
         return Ok(false);
     }
@@ -418,17 +426,26 @@ fn is_font(package: &mut Package, target: &str, key: Option<[u8; 16]>) -> Result
     if (bytes.len() as u64) < directory {
         return Ok(false);
     }
-    let fits = (0..count).all(|i| {
-        let at = usize::try_from(12 + entry * i).unwrap_or(usize::MAX);
-        let offset = be32(&bytes, at + offset_at).unwrap_or(u64::MAX);
-        // A collection member needs at least its own offset table.
-        let length = match length_at {
-            Some(length_at) => be32(&bytes, at + length_at).unwrap_or(u64::MAX),
-            None => 12,
-        };
-        offset >= 12 && offset.saturating_add(length) <= size
-    });
-    Ok(fits)
+    let be32 = |at: usize| {
+        bytes.get(at..at + 4).map_or(u64::MAX, |x| {
+            u64::from(u32::from_be_bytes([x[0], x[1], x[2], x[3]]))
+        })
+    };
+    let mut tags: HashSet<[u8; 4]> = HashSet::new();
+    for i in 0..count {
+        let at = usize::try_from(12 + 16 * i).unwrap_or(usize::MAX);
+        let (offset, length) = (be32(at + 8), be32(at + 12));
+        if offset < directory || offset.saturating_add(length) > size {
+            return Ok(false);
+        }
+        if let Some(tag) = bytes.get(at..at + 4) {
+            tags.insert([tag[0], tag[1], tag[2], tag[3]]);
+        }
+    }
+    let outlines = (tags.contains(b"glyf") && tags.contains(b"loca"))
+        || tags.contains(b"CFF ")
+        || tags.contains(b"CFF2");
+    Ok(outlines && REQUIRED_TABLES.iter().all(|tag| tags.contains(*tag)))
 }
 
 /// Trimmed, case-folded, runs of whitespace collapsed to one space: the

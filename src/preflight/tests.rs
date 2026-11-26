@@ -150,11 +150,29 @@ const KEY: &str = "{5F3C1A2B-9D4E-4C6F-8A7B-0E1D2C3B4A59}";
 /// A font part that starts with the sfnt version `magic`: an offset
 /// table with one table record, then filler.
 fn sfnt(magic: &[u8; 4]) -> Vec<u8> {
+    sfnt_with(magic, &FONT_TABLES)
+}
+
+/// The tables of a minimal TrueType font.
+const FONT_TABLES: [&[u8; 4]; 7] = [
+    b"cmap", b"glyf", b"head", b"hhea", b"hmtx", b"loca", b"maxp",
+];
+
+/// A font part with an offset table listing `tables`, each 16 bytes long
+/// after the directory, then filler.
+fn sfnt_with(magic: &[u8; 4], tables: &[&[u8; 4]]) -> Vec<u8> {
+    let count = u16::try_from(tables.len()).unwrap();
     let mut out = magic.to_vec();
-    // numTables 1, searchRange 16, entrySelector 0, rangeShift 0.
-    out.extend_from_slice(&[0, 1, 0, 16, 0, 0, 0, 0]);
-    out.extend_from_slice(b"head\0\0\0\0\0\0\0\x1c\0\0\0\x36");
-    out.extend_from_slice(&[0x5a; 64]);
+    out.extend_from_slice(&count.to_be_bytes());
+    out.extend_from_slice(&[0, 16, 0, 0, 0, 0]);
+    let start = 12 + 16 * u32::from(count);
+    for (i, tag) in tables.iter().enumerate() {
+        out.extend_from_slice(*tag);
+        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(&(start + 16 * u32::try_from(i).unwrap()).to_be_bytes());
+        out.extend_from_slice(&16u32.to_be_bytes());
+    }
+    out.extend_from_slice(&vec![0x5a; 16 * tables.len()]);
     out
 }
 
@@ -383,7 +401,7 @@ fn docx_font_whose_tables_leave_the_part_is_not_embedded() {
         "{:?}",
         facts.embedded_fonts
     );
-    // A collection whose member offset points past the end.
+    // A collection: Word embeds single fonts, so it does not count.
     let mut collection = b"ttcf\0\x01\0\0\0\0\0\x01\0\0\x10\0".to_vec();
     collection.extend_from_slice(&[0; 16]);
     let facts = aptos_embedded(&table_rels, &collection);
@@ -392,6 +410,66 @@ fn docx_font_whose_tables_leave_the_part_is_not_embedded() {
         "{:?}",
         facts.embedded_fonts
     );
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn docx_font_without_a_required_table_is_not_embedded() {
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    // Only `head`: no character map, no metrics, no outlines.
+    let facts = aptos_embedded(&table_rels, &sfnt_with(&[0, 1, 0, 0], &[b"head"]));
+    assert!(
+        facts.embedded_fonts.is_empty(),
+        "{:?}",
+        facts.embedded_fonts
+    );
+    // CFF outlines instead of glyf and loca count.
+    let cff = sfnt_with(
+        b"OTTO",
+        &[b"CFF ", b"cmap", b"head", b"hhea", b"hmtx", b"maxp"],
+    );
+    assert_eq!(aptos_embedded(&table_rels, &cff).embedded_fonts, ["Aptos"]);
+}
+
+#[test]
+fn docx_font_table_needs_a_fonts_root() {
+    let table_rels = rels(&[("rIdF1", "font", "fonts/font1.ttf")]);
+    let font = sfnt(&[0, 1, 0, 0]);
+    let with_table = |table: &str| {
+        let bytes = docx(
+            &[
+                ("word/fontTable.xml", table.as_bytes()),
+                ("word/_rels/fontTable.xml.rels", table_rels.as_bytes()),
+                ("word/fonts/font1.ttf", &font),
+            ],
+            &runs(&["Aptos"]),
+        );
+        scan_bytes("root.docx", &bytes, Family::Document)
+    };
+    // Empty, or only the declaration: malformed, not an empty table.
+    for table in ["", r#"<?xml version="1.0"?>"#] {
+        let facts = with_table(table);
+        assert_eq!(
+            facts.skipped,
+            [(Check::Fonts, SkipReason::MalformedXml)],
+            "{table:?}"
+        );
+    }
+    // A `w:font` that is not a child of the `w:fonts` root does not count.
+    let nested = format!(
+        r#"<w:fonts {W} xmlns:r="r"><w:ext><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1"/></w:font></w:ext></w:fonts>"#
+    );
+    let other_root = format!(
+        r#"<w:other {W} xmlns:r="r"><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1"/></w:font></w:other>"#
+    );
+    for table in [nested, other_root] {
+        let facts = with_table(&table);
+        assert!(facts.embedded_fonts.is_empty(), "{table}");
+        assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+    }
+    // An empty but well-formed table embeds nothing and runs the check.
+    let facts = with_table(&format!("<w:fonts {W}/>"));
+    assert!(facts.embedded_fonts.is_empty());
     assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
 }
 

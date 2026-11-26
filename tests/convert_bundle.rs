@@ -557,8 +557,8 @@ fn aptos_docx(vba: bool) -> Vec<u8> {
 }
 
 /// `aptos_docx(false)` with Aptos embedded in `word/fontTable.xml`: a font
-/// part behind `w:embedRegular` that starts with an sfnt offset table
-/// (`true`, one table). The pre-flight unit tests cover obfuscated parts.
+/// part behind `w:embedRegular` with the directory of a minimal TrueType
+/// font. The pre-flight unit tests cover obfuscated parts.
 fn aptos_embedded_docx() -> Vec<u8> {
     let main = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
     package(&[
@@ -581,16 +581,26 @@ fn aptos_embedded_docx() -> Vec<u8> {
             r#"<w:fonts xmlns:w="w" xmlns:r="r"><w:font w:name="Aptos"><w:embedRegular r:id="rIdF1"/></w:font></w:fonts>"#.to_owned(),
         ),
         ("word/_rels/fontTable.xml.rels", rels(&[("rIdF1", "font", "fonts/font1.ttf")])),
-        // An offset table with one table record (offset 28, length 54),
-        // then filler.
-        (
-            "word/fonts/font1.ttf",
-            format!(
-                "true\0\u{1}\0\u{10}\0\0\0\0head\0\0\0\0\0\0\0\u{1c}\0\0\0\u{36}{}",
-                "\0".repeat(76)
-            ),
-        ),
+        ("word/fonts/font1.ttf", minimal_font()),
     ])
+}
+
+/// The directory of a minimal TrueType font, as text: its offset table
+/// and the seven table records the pre-flight check asks for, then filler.
+/// Every byte is below 0x80, so the part can be a `String`.
+fn minimal_font() -> String {
+    let tables: [&[u8; 4]; 7] = [
+        b"cmap", b"glyf", b"head", b"hhea", b"hmtx", b"loca", b"maxp",
+    ];
+    let mut bytes = b"true\0\x07\0\x10\0\0\0\0".to_vec();
+    for (i, tag) in tables.iter().enumerate() {
+        bytes.extend_from_slice(*tag);
+        bytes.extend_from_slice(&[0; 4]);
+        bytes.extend_from_slice(&(256 + 16 * u32::try_from(i).unwrap()).to_be_bytes());
+        bytes.extend_from_slice(&16u32.to_be_bytes());
+    }
+    bytes.resize(512, 0);
+    String::from_utf8(bytes).unwrap()
 }
 
 /// A deck that declares 3 visible slides; the fake PDF has 1 page.
