@@ -110,15 +110,19 @@ Only the main part changes, with its own compression method. Every other entry i
 
 The main part is inflated at most twice, once to plan and once to rewrite. Each pass reads at most 64 MiB, the size of the pre-flight's per-request cap, and the archive is read under detection's caps. A failed write of the copy, such as a full disk, fails the job with the worker's I/O error. A busy disk thus never changes the paper. A copy that cannot be removed fails the job too, because the supervisor gives its reservation back when the job answers. The time counts as `preflight_us`.
 
-These packages are loaded as they came, on Letter:
+These packages are loaded as they came, on Letter. The conversion succeeds; only a failed write or removal is an error.
 
-- a ZIP64 archive (also only at the end record), an encrypted main part, or a signed package (a signature origin or `_xmlsignatures/`);
-- a main part whose CRC or size does not match its directory record;
-- a main part that is not UTF-8 XML, by its bytes or its declaration;
-- a main part that nests deeper than 4096 elements, or has more than 512 namespace declarations in scope;
-- a namespace spelled with a character reference;
-- more than 100 000 sections;
-- a section or a body in an `mc:AlternateContent` branch, an `mc:AlternateContent` in a section, or a `w:pgSz` in a wrapper element inside a section.
+- ZIP64 anywhere: the end record, a directory record or a local header.
+- An encrypted main part, overlapping records, or bytes after the counted directory records.
+- A main part whose local header, data descriptor, CRC or size disagrees with its directory record.
+- A signed package: a signature-origin relationship, or an `_xmlsignatures/` folder.
+- A root relationships part with another root element, a relationship below the root, a branch, an escaped namespace, or more than 8 levels.
+- A main part over 64 MiB inflated, or a copy over the source size plus 1 MiB.
+- A main part that is not UTF-8, by its bytes or its declaration.
+- A main part deeper than 4096 elements, with more than 512 namespace declarations in scope, with a namespace spelled with a character reference, or with a prefix over 64 bytes.
+- More than 100 000 sections, or more than 16 distinct texts to insert.
+- A section or body in an `mc:AlternateContent` branch, an `mc:AlternateContent` in a section, or a body that is not the root's child.
+- A `w:pgSz` or an earlier section child in a wrapper inside a section, or a section in a wrapper under `mc:ProcessContent`.
 
 The callback counts the password prompts of one load. A failed load is `PasswordRequired` after one prompt without a password, `InvalidPassword` after a second prompt with a password, and `LoadFailed` otherwise.
 
