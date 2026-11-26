@@ -471,7 +471,7 @@ func TestOptions(t *testing.T) {
 		Password:  "secret",
 		Timeout:   90500 * time.Millisecond,
 		RequestID: "caller-id",
-		Images:    convert.ImageOptions{Format: convert.WebP, DPI: 200, Quality: 70, MaxEdge: 2576},
+		Images:    convert.ImageOptions{Format: convert.JPEG, DPI: 200, Quality: 70, MaxEdge: 2576},
 		Slides:    convert.SlideOptions{IncludeHidden: true, Notes: convert.NotesAppend},
 		Sheets:    convert.SheetOptions{OnePagePerSheet: true},
 	}
@@ -487,7 +487,7 @@ func TestOptions(t *testing.T) {
 			"pages":           "1-5,8",
 			"password":        "secret",
 			"timeout_seconds": float64(91), // rounded up to whole seconds
-			"images":          map[string]any{"format": "webp", "dpi": float64(200), "quality": float64(70), "max_edge": float64(2576)},
+			"images":          map[string]any{"format": "jpeg", "dpi": float64(200), "quality": float64(70), "max_edge": float64(2576)},
 			"slides":          map[string]any{"include_hidden": true, "notes": "append"},
 			"sheets":          map[string]any{"one_page_per_sheet": true},
 		}
@@ -607,7 +607,7 @@ func TestCapabilitiesAndReady(t *testing.T) {
 				"media_types": []string{"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
 			}},
 			"outputs":       []string{"pdf", "images", "bundle"},
-			"image_formats": []string{"jpeg", "png", "webp"},
+			"image_formats": []string{"jpeg", "png"},
 			"limits": map[string]any{
 				"max_upload_bytes": 125829120, "max_render_pages": 500, "max_dpi": 300, "max_edge_px": 4096,
 				"default_timeout_seconds": 120, "max_timeout_seconds": 210,
@@ -640,7 +640,7 @@ func TestCapabilitiesAndReady(t *testing.T) {
 		if len(caps.Formats) != 1 || caps.Formats[0].Name != "docx" || caps.Formats[0].Engine != "libreoffice" {
 			t.Errorf("formats = %+v", caps.Formats)
 		}
-		if len(caps.ImageFormats) != 3 || caps.ImageFormats[2] != convert.WebP {
+		if len(caps.ImageFormats) != 2 || caps.ImageFormats[1] != convert.PNG {
 			t.Errorf("image formats = %v", caps.ImageFormats)
 		}
 		if caps.Limits.MaxUploadBytes != 125829120 || caps.Limits.MaxDPI != 300 || caps.Limits.MaxTimeout != 210*time.Second {
