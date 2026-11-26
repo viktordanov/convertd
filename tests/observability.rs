@@ -244,6 +244,22 @@ fn dashboard_queries(value: &serde_json::Value, out: &mut Vec<String>) {
 /// escapes would need a YAML parser, and a block scalar needs none.
 fn rule_queries(yaml: &str) -> Vec<String> {
     let lines: Vec<&str> = yaml.lines().collect();
+    // Every `expr` key in any YAML form, such as a flow mapping
+    // `{alert: A, expr: x}`, which the line scan below does not read.
+    let keys = lines
+        .iter()
+        .map(|line| line.split_once('#').map_or(*line, |(code, _)| code))
+        .map(|code| {
+            code.match_indices("expr")
+                .filter(|(at, _)| {
+                    let before = code[..*at].chars().next_back();
+                    let after = code[at + 4..].trim_start();
+                    !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                        && after.starts_with(':')
+                })
+                .count()
+        })
+        .sum::<usize>();
     let mut out = Vec::new();
     for (n, line) in lines.iter().enumerate() {
         // The key's own indent: `- expr:` opens a list item at the dash.
@@ -272,6 +288,11 @@ fn rule_queries(yaml: &str) -> Vec<String> {
         );
         out.push(parts.join("\n"));
     }
+    assert_eq!(
+        out.len(),
+        keys,
+        "write each expr as its own `expr:` line in block style"
+    );
     out
 }
 
@@ -299,9 +320,13 @@ fn named_metrics() -> BTreeSet<String> {
         } else {
             rule_queries(text)
         };
-        // The dashboard has 42 queries today and the rules 4: a scan that
-        // finds fewer is broken, not passing.
-        let least = if json { 30 } else { 4 };
+        // The two examples have 42 and 4 queries today: a scan that finds
+        // fewer is broken, not passing. Any other file needs one query.
+        let least = match path.file_name().and_then(|n| n.to_str()) {
+            Some("grafana-dashboard.json") => 30,
+            Some("prometheusrule.yaml") => 4,
+            _ => 1,
+        };
         assert!(
             queries.len() >= least,
             "{} has only {} queries",
@@ -388,6 +413,12 @@ fn the_query_extractors_find_every_query() {
         out,
         ["rate(x_total[1m])", "y_bytes{n=~\"$n\"}", "covert_y_bytes"]
     );
+}
+
+#[test]
+#[should_panic(expected = "in block style")]
+fn a_flow_style_rule_is_refused() {
+    rule_queries("  - alert: A\n    expr: up\n  - {alert: B, expr: covert_workers == 0}\n");
 }
 
 #[test]
