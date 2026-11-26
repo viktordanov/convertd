@@ -493,3 +493,30 @@ fn ole2_version_3_and_nested_names() {
         Format::Xls
     );
 }
+
+/// The bounded reader against `cfb` on compound files that Office wrote,
+/// not ones `cfb` made: both must give the same root names.
+#[test]
+fn ole2_root_names_match_cfb_on_real_files() {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus/fixtures");
+    let mut checked = 0;
+    for name in [
+        "vbaProject-word.bin",
+        "vbaProject-xl.bin",
+        "vbaProject-ppt.bin",
+    ] {
+        let bytes = std::fs::read(fixtures.join(name)).unwrap();
+        let mut ours = convertd::detect::ole2::root_names(&mut Cursor::new(&bytes))
+            .unwrap_or_else(|| panic!("{name}: the reader could not follow it"));
+        let compound = cfb::CompoundFile::open(Cursor::new(&bytes)).unwrap();
+        let mut theirs: Vec<String> = compound
+            .read_root_storage()
+            .map(|entry| entry.name().to_owned())
+            .collect();
+        ours.sort();
+        theirs.sort();
+        assert_eq!(ours, theirs, "{name}");
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+}
