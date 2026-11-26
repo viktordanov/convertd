@@ -1189,14 +1189,19 @@ async fn a_lease_that_returns_during_the_handoff_does_not_strand_the_replacement
                 (Mutex::new(go_tx), Mutex::new(ack_rx), Mutex::new(setup_rx));
             let hook_fired = Arc::clone(&fired);
             let hook_placements = Arc::clone(&placements);
-            let _hook =
-                convertd::engines::pool::set_place_ready_hook("race-return", move |stage| {
+            let (locked_tx, locked_rx) = std::sync::mpsc::channel::<bool>();
+            let locked_tx = Mutex::new(locked_tx);
+            let _hook = convertd::engines::pool::set_place_ready_hook(
+                "race-return",
+                move |stage, locked| {
                     match stage {
                         convertd::engines::pool::PlaceStage::BeforeLock => {
                             hold_replacement(&hook_placements, &setup_rx);
                         }
                         convertd::engines::pool::PlaceStage::Retired => {
                             if !hook_fired.swap(true, Ordering::AcqRel) {
+                                // The retire must happen under the idle lock.
+                                let _ = locked_tx.lock().unwrap().send(locked);
                                 let _ = go_tx.lock().unwrap().send(());
                                 // Under the idle lock the return must block: an
                                 // acknowledgement now means it saw the retire
@@ -1209,7 +1214,8 @@ async fn a_lease_that_returns_during_the_handoff_does_not_strand_the_replacement
                             }
                         }
                     }
-                });
+                },
+            );
             let pool = incumbent_leased("race-return", &held, false, setup_tx).await;
             let until = Instant::now() + Duration::from_secs(10);
             while done_rx.try_recv().is_err() {
@@ -1224,6 +1230,10 @@ async fn a_lease_that_returns_during_the_handoff_does_not_strand_the_replacement
                 !early,
                 "the lease returned between the retire and the placement"
             );
+            let locked = locked_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the hook gave no lock state");
+            assert!(locked, "the incumbent was retired outside the idle lock");
             returner.join().unwrap();
             replacement_is_leasable(&pool).await;
             finish(pool, "race-return").await;
@@ -1250,8 +1260,9 @@ async fn a_discarded_incumbent_does_not_strand_its_replacement() {
             let setup_rx = Mutex::new(setup_rx);
             let (hook_held, hook_fired) = (Arc::clone(&held), Arc::clone(&fired));
             let hook_placements = Arc::clone(&placements);
-            let _hook =
-                convertd::engines::pool::set_place_ready_hook("race-discard", move |stage| {
+            let _hook = convertd::engines::pool::set_place_ready_hook(
+                "race-discard",
+                move |stage, _locked| {
                     if stage == convertd::engines::pool::PlaceStage::BeforeLock
                         && hold_replacement(&hook_placements, &setup_rx)
                     {
@@ -1259,7 +1270,8 @@ async fn a_discarded_incumbent_does_not_strand_its_replacement() {
                         drop(hook_held.lock().unwrap().take());
                         hook_fired.store(true, Ordering::Release);
                     }
-                });
+                },
+            );
             let pool = incumbent_leased("race-discard", &held, true, setup_tx).await;
             let until = Instant::now() + Duration::from_secs(10);
             while !fired.load(Ordering::Acquire) {

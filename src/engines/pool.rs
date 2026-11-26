@@ -100,11 +100,15 @@ pub enum PlaceStage {
 }
 
 /// Test hooks: a function the manager calls in `place_ready` for the pool of
-/// that name, at each [`PlaceStage`] (to drive a race).
+/// that name, at each [`PlaceStage`] (to drive a race). Its second argument
+/// tells whether the pool's idle lock is held at that moment, probed with
+/// `try_lock` by the caller of the hook, not reported by `place_ready`.
 #[cfg(feature = "test-hooks")]
-type ReadyHook = Arc<dyn Fn(PlaceStage) + Send + Sync>;
+type ReadyHook = Arc<dyn Fn(PlaceStage, bool) + Send + Sync>;
 #[cfg(feature = "test-hooks")]
-static PLACE_READY_HOOKS: Mutex<Vec<(&'static str, ReadyHook)>> = Mutex::new(Vec::new());
+static PLACE_READY_HOOKS: Mutex<Vec<(&'static str, u64, ReadyHook)>> = Mutex::new(Vec::new());
+#[cfg(feature = "test-hooks")]
+static PLACE_READY_HOOK_IDS: AtomicU64 = AtomicU64::new(0);
 
 /// Registers `hook` for the pool named `pool`, in place of any earlier one
 /// (test hooks only). It stays registered while the returned guard lives.
@@ -112,34 +116,40 @@ static PLACE_READY_HOOKS: Mutex<Vec<(&'static str, ReadyHook)>> = Mutex::new(Vec
 #[must_use = "the hook is removed when the guard is dropped"]
 pub fn set_place_ready_hook(
     pool: &'static str,
-    hook: impl Fn(PlaceStage) + Send + Sync + 'static,
+    hook: impl Fn(PlaceStage, bool) + Send + Sync + 'static,
 ) -> PlaceReadyHook {
+    let id = PLACE_READY_HOOK_IDS.fetch_add(1, Ordering::Relaxed);
     let mut hooks = lock(&PLACE_READY_HOOKS);
-    hooks.retain(|(name, _)| *name != pool);
-    hooks.push((pool, Arc::new(hook)));
-    PlaceReadyHook(pool)
+    hooks.retain(|(name, _, _)| *name != pool);
+    hooks.push((pool, id, Arc::new(hook)));
+    PlaceReadyHook { pool, id }
 }
 
-/// Removes its pool's place_ready hook when dropped.
+/// Removes its own place_ready hook when dropped, not a later one.
 #[cfg(feature = "test-hooks")]
-pub struct PlaceReadyHook(&'static str);
+pub struct PlaceReadyHook {
+    pool: &'static str,
+    id: u64,
+}
 
 #[cfg(feature = "test-hooks")]
 impl Drop for PlaceReadyHook {
     fn drop(&mut self) {
-        lock(&PLACE_READY_HOOKS).retain(|(name, _)| *name != self.0);
+        lock(&PLACE_READY_HOOKS).retain(|(name, id, _)| !(*name == self.pool && *id == self.id));
     }
 }
 
-fn place_ready_hook(_pool: &str, _stage: PlaceStage) {
+fn place_ready_hook(_pool: &str, _stage: PlaceStage, _idle: &Mutex<Idle>) {
     #[cfg(feature = "test-hooks")]
     {
         let hook = lock(&PLACE_READY_HOOKS)
             .iter()
-            .find(|(name, _)| *name == _pool)
-            .map(|(_, hook)| Arc::clone(hook));
+            .find(|(name, _, _)| *name == _pool)
+            .map(|(_, _, hook)| Arc::clone(hook));
         if let Some(hook) = hook {
-            hook(_stage);
+            // Held by this thread or another: try_lock fails either way.
+            let locked = _idle.try_lock().is_err();
+            hook(_stage, locked);
         }
     }
 }
@@ -1415,7 +1425,7 @@ impl Manager {
     /// ended between the retire and the lock saw its worker retired with
     /// no replacement waiting yet, so nobody released the replacement.
     fn place_ready(&mut self, pool: &PoolInner, worker: Worker) {
-        place_ready_hook(self.spec.name, PlaceStage::BeforeLock);
+        place_ready_hook(self.spec.name, PlaceStage::BeforeLock, &pool.idle);
         let (gone, new_permit) = {
             let mut idle = lock(&pool.idle);
             // Retire under the idle lock: `give_back` and `discard` read
@@ -1432,7 +1442,7 @@ impl Manager {
                     (slot, member.generation, member.fate.reason())
                 });
             if replaced.is_some() {
-                place_ready_hook(self.spec.name, PlaceStage::Retired);
+                place_ready_hook(self.spec.name, PlaceStage::Retired, &pool.idle);
             }
             let (gone, new_permit) = match replaced {
                 None => {
