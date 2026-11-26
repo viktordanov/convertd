@@ -945,3 +945,47 @@ fn an_entry_whose_data_runs_into_the_next_is_not_copied() {
     put_u32(&mut source, cd + 24, size);
     assert_eq!(repacked(&source, Paper::A4), (Err(Skip::Unsupported), None));
 }
+
+#[test]
+fn an_extension_before_the_references_does_not_move_the_size_before_them() {
+    let body = r#"<w:sectPr xmlns:x="ext"><x:note/><w:headerReference w:type="default" r:id="rId7"/><w:footnotePr><w:numFmt w:val="decimal"/></w:footnotePr><w:pgMar w:top="1"/></w:sectPr>"#;
+    assert_eq!(
+        fixed(&doc(body), Paper::A4).unwrap(),
+        doc(&format!(
+            r#"<w:sectPr xmlns:x="ext"><x:note/><w:headerReference w:type="default" r:id="rId7"/><w:footnotePr><w:numFmt w:val="decimal"/></w:footnotePr>{A4}<w:pgMar w:top="1"/></w:sectPr>"#
+        ))
+    );
+}
+
+#[test]
+fn a_main_part_whose_local_header_disagrees_is_not_copied() {
+    let main = doc("<w:p/>");
+    let entries_of = |descriptor: bool| {
+        zip(&[
+            ("[Content_Types].xml", CONTENT_TYPES, true, false),
+            ("_rels/.rels", RELS, true, false),
+            ("word/document.xml", main.as_bytes(), true, descriptor),
+        ])
+    };
+    let at = |bytes: &[u8]| {
+        entries(bytes)
+            .into_iter()
+            .find(|(n, _)| n == "word/document.xml")
+            .unwrap()
+            .1
+    };
+    // A wrong CRC in the local header.
+    let mut bytes = entries_of(false);
+    let local = at(&bytes).local_offset as usize;
+    bytes[local + 14] ^= 0xFF;
+    assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unreadable), None));
+    // A wrong CRC in the data descriptor.
+    let mut bytes = entries_of(true);
+    let entry = at(&bytes);
+    let descriptor = entry.local_offset as usize + 30 + 17 + 4 + entry.compressed as usize;
+    bytes[descriptor + 4] ^= 0xFF;
+    assert_eq!(repacked(&bytes, Paper::A4), (Err(Skip::Unreadable), None));
+    // Both intact: copied.
+    assert_eq!(repacked(&entries_of(true), Paper::A4).0, Ok(()));
+    assert_eq!(repacked(&entries_of(false), Paper::A4).0, Ok(()));
+}

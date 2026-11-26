@@ -240,7 +240,7 @@ This is every variable that an operator can set. An empty value counts as unset.
 | `LO_PROFILE_TEMPLATE` | unset | A read-only LibreOffice profile, copied per worker |
 | `PDFIUM_LIB_DIR` | `/opt/pdfium/lib` | The folder of `libpdfium.so` |
 | `POISON_TTL_SECONDS` | `600` | How long a file that crashed a worker is refused; `0` turns it off |
-| `DEFAULT_PAPER` | `A4` | `A4` or `Letter`: the page of a document that leaves it to LibreOffice, such as a sheet without a page setup, and of a DOCX section without a page size. An RTF without paper dimensions is always Letter |
+| `DEFAULT_PAPER` | `A4` | `A4` or `Letter`: the page of a document that leaves it to LibreOffice, such as a sheet without a page setup, and of a DOCX in which no section names a page size (`worker/README.md` lists the exceptions). An RTF without paper dimensions is always Letter |
 | `TEST_ENGINE` | unset | `fake` or `worker`; only in a build with `test-hooks` |
 
 `FONTS_PATH` (default `/etc/convertd/fonts.json`) names the `{family: metric_compatible}` table for `FONT_SUBSTITUTED`. A missing file only logs a warning, and then no family counts as metric-compatible.

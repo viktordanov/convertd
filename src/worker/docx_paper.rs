@@ -279,8 +279,12 @@ struct Section {
     depth: usize,
     prefix: Vec<u8>,
     ns: &'static [u8],
-    /// Before the first child that comes after `w:pgSz` in the schema.
-    insert_at: Option<u64>,
+    /// After the last child that comes before `w:pgSz` in the schema, or
+    /// after the start tag. Other children (extensions that a reader may
+    /// ignore) do not move it, so the schema order holds either way.
+    insert_at: u64,
+    /// A child that comes before `w:pgSz` is open.
+    in_before: bool,
 }
 
 /// The edits that give every section a page size, from the main part's
@@ -395,10 +399,12 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                             // guess, so the part loads as it came, and the
                             // rest need not be read.
                             return Err(Skip::Sized);
-                        } else if s.insert_at.is_none()
-                            && !(ns.is_some() && BEFORE_PAGE_SIZE.contains(&local))
-                        {
-                            s.insert_at = Some(before);
+                        } else if ns.is_some() && BEFORE_PAGE_SIZE.contains(&local) {
+                            if empty {
+                                s.insert_at = after;
+                            } else {
+                                s.in_before = true;
+                            }
                         }
                     }
                 }
@@ -426,7 +432,8 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                             depth,
                             prefix: prefix.to_vec(),
                             ns,
-                            insert_at: None,
+                            insert_at: after,
+                            in_before: false,
                         });
                     }
                 }
@@ -466,8 +473,15 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
                 alternates -= usize::from(closed == Some(Tag::Alternate));
                 history -= usize::from(closed == Some(Tag::SectPrChange));
                 let depth = stack.len();
+                if let Some(s) = open.as_mut()
+                    && s.in_before
+                    && depth == s.depth + 1
+                {
+                    s.insert_at = after;
+                    s.in_before = false;
+                }
                 if let Some(s) = open.take_if(|s| s.depth == depth) {
-                    let at = s.insert_at.unwrap_or(before);
+                    let at = s.insert_at;
                     plan.push(at, at, page_size(&s.prefix, s.ns, paper))?;
                 }
                 if closed == Some(Tag::Body)
@@ -727,6 +741,7 @@ struct Record {
     method: u16,
     crc: u32,
     compressed: u64,
+    uncompressed: u64,
     local_offset: u64,
     is_main: bool,
 }
@@ -774,6 +789,7 @@ fn records(directory: &[u8], entries: u64, main: &str) -> Option<Vec<Record>> {
             method: u16_at(header, 10),
             crc: u32_at(header, 16),
             compressed: u64::from(compressed),
+            uncompressed: u64::from(uncompressed),
             local_offset: u64::from(local_offset),
             is_main: name == main.as_bytes(),
         });
@@ -969,6 +985,43 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
             + record.compressed;
         if u32_at(&header, 0) != 0x0403_4b50 || record.local_offset + needed > end {
             return Err(Skip::Unsupported);
+        }
+        // The main part's own CRC and sizes are replaced: they must agree
+        // with the directory first, so that the copy never repairs damage
+        // that LibreOffice would see in the source.
+        if record.is_main {
+            let fields = if record.flags & 0x0008 == 0 {
+                [
+                    u32_at(&header, 14),
+                    u32_at(&header, 18),
+                    u32_at(&header, 22),
+                ]
+            } else {
+                let at = record.local_offset + needed;
+                let room = usize::try_from((end - at).min(16)).unwrap_or(16);
+                let mut descriptor = [0u8; 16];
+                file.seek(SeekFrom::Start(at)).map_err(source_io)?;
+                file.read_exact(&mut descriptor[..room])
+                    .map_err(source_io)?;
+                let signed = room >= 16 && u32_at(&descriptor, 0) == 0x0807_4b50;
+                let start = if signed { 4 } else { 0 };
+                if room < start + 12 {
+                    return Err(Skip::Unreadable);
+                }
+                [
+                    u32_at(&descriptor, start),
+                    u32_at(&descriptor, start + 4),
+                    u32_at(&descriptor, start + 8),
+                ]
+            };
+            let want = [
+                record.crc,
+                record.compressed as u32,
+                record.uncompressed as u32,
+            ];
+            if fields != want {
+                return Err(Skip::Unreadable);
+            }
         }
     }
 
