@@ -368,7 +368,7 @@ fn a_deflated_main_part_is_rewritten_and_every_other_entry_kept_byte_for_byte() 
     std::fs::write(&path, &copy).unwrap();
     let mut file = File::open(&path).unwrap();
     assert_eq!(
-        main_part(&mut file, &entries(&copy)).as_deref(),
+        main_part(&mut file, &entries(&copy)).ok().as_deref(),
         Some("word/document.xml")
     );
 }
@@ -581,7 +581,7 @@ fn only_the_office_document_relationship_names_the_main_part() {
     std::fs::write(&path, &bytes).unwrap();
     let mut file = File::open(&path).unwrap();
     assert_eq!(
-        main_part(&mut file, &entries(&bytes)).as_deref(),
+        main_part(&mut file, &entries(&bytes)).ok().as_deref(),
         Some("word/main.xml")
     );
 }
@@ -646,8 +646,24 @@ fn utf16_relationships_name_the_main_part() {
         std::fs::write(&path, &bytes).unwrap();
         let mut file = File::open(&path).unwrap();
         assert_eq!(
-            main_part(&mut file, &entries(&bytes)).as_deref(),
+            main_part(&mut file, &entries(&bytes)).ok().as_deref(),
             Some("word/main.xml")
         );
     }
+}
+
+#[test]
+fn a_file_system_error_on_the_source_is_not_a_skip() {
+    assert!(matches!(
+        source_io(io::Error::from_raw_os_error(libc::EIO)),
+        Skip::Io(_)
+    ));
+    assert_eq!(
+        source_io(io::ErrorKind::UnexpectedEof.into()),
+        Skip::Unsupported
+    );
+    let dir = Scratch::new();
+    // A directory in place of the source: reading it fails with EISDIR.
+    let result = repack(dir.path(), &dir.path().join("copy.docx"), Paper::A4);
+    assert!(matches!(result, Err(Skip::Io(_))), "{result:?}");
 }

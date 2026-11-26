@@ -161,6 +161,35 @@ fn written(err: io::Error) -> Skip {
     }
 }
 
+/// A failed read of the source: [`Skip::Io`] for an error of the file
+/// system (so that a transient one fails the job instead of changing the
+/// paper), anything else the package's fault.
+fn source_io(err: io::Error) -> Skip {
+    if err.raw_os_error().is_some() {
+        Skip::Io(err)
+    } else {
+        Skip::Unsupported
+    }
+}
+
+fn scan_error(err: zip_scan::ScanError) -> Skip {
+    match err {
+        zip_scan::ScanError::Io(err) => source_io(err),
+        _ => Skip::Unsupported,
+    }
+}
+
+/// A failed parse: an error of the file system below it is [`Skip::Io`].
+fn xml_error(err: quick_xml::Error) -> Skip {
+    match err {
+        quick_xml::Error::Io(err) => match err.raw_os_error() {
+            Some(code) => Skip::Io(io::Error::from_raw_os_error(code)),
+            None => Skip::Unreadable,
+        },
+        _ => Skip::Unreadable,
+    }
+}
+
 /// A failed rewrite of the main part: a write error is [`Skip::Io`] (or
 /// the cap, as in [`written`]); anything else is the inflated part's fault.
 fn applied(err: io::Error) -> Skip {
@@ -274,6 +303,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
         match part.read(&mut head[read..]) {
             Ok(0) => break,
             Ok(n) => read += n,
+            Err(err) if err.raw_os_error().is_some() => return Err(Skip::Io(err)),
             Err(_) => return Err(Skip::Unreadable),
         }
     }
@@ -296,9 +326,7 @@ pub fn plan(part: impl BufRead, paper: Paper, cap: u64) -> Result<Plan, Skip> {
     let mut history = 0usize;
     let mut before = skipped + xml.buffer_position();
     loop {
-        let (ns, event) = xml
-            .read_resolved_event_into(&mut buf)
-            .map_err(|_| Skip::Unreadable)?;
+        let (ns, event) = xml.read_resolved_event_into(&mut buf).map_err(xml_error)?;
         let mc = matches!(ns, ResolveResult::Bound(Namespace(n)) if n == MC_NS);
         let ns = word_ns(&ns);
         let after = skipped + xml.buffer_position();
@@ -488,18 +516,23 @@ pub fn fix_part(xml: &[u8], paper: Paper) -> Result<Option<Vec<u8>>, Skip> {
 
 /// The main part that `_rels/.rels` names, or `word/document.xml` when it
 /// names none, as the pre-flight finds it.
-pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Option<String> {
+pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Result<String, Skip> {
     let Some((_, rels)) = entries.iter().find(|(name, _)| name == "_rels/.rels") else {
-        return Some("word/document.xml".to_owned());
+        return Ok("word/document.xml".to_owned());
     };
-    let bytes = zip_scan::read_entry(file, rels, crate::preflight::PART_CAP as usize).ok()??;
+    let bytes = zip_scan::read_entry(file, rels, crate::preflight::PART_CAP as usize)
+        .map_err(scan_error)?
+        .ok_or(Skip::Unsupported)?;
     // OPC allows UTF-16 here, whatever the main part uses; no offsets are
     // needed, so it is decoded first.
     let bytes = utf16_to_utf8(&bytes).unwrap_or(bytes);
     let mut xml = quick_xml::Reader::from_reader(bytes.as_slice());
     let mut buf = Vec::new();
     loop {
-        match xml.read_event_into(&mut buf).ok()? {
+        match xml
+            .read_event_into(&mut buf)
+            .map_err(|_| Skip::Unsupported)?
+        {
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Relationship" => {
                 let attr = |key: &[u8]| {
                     e.attributes()
@@ -512,10 +545,10 @@ pub fn main_part(file: &mut File, entries: &[(String, zip_scan::Entry)]) -> Opti
                     && attr(b"TargetMode").is_none_or(|mode| mode == "Internal")
                     && let Some(target) = attr(b"Target")
                 {
-                    return Some(normalize(&target));
+                    return Ok(normalize(&target));
                 }
             }
-            Event::Eof => return Some("word/document.xml".to_owned()),
+            Event::Eof => return Ok("word/document.xml".to_owned()),
             _ => {}
         }
         buf.clear();
@@ -737,21 +770,20 @@ pub fn repack(source: &Path, out: &Path, paper: Paper) -> Result<(), Skip> {
 }
 
 fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Result<(), Skip> {
-    let unsupported = |_| Skip::Unsupported;
-    let mut file = File::open(source).map_err(|_| Skip::Unsupported)?;
-    let size = file.metadata().map_err(|_| Skip::Unsupported)?.len();
+    let mut file = File::open(source).map_err(source_io)?;
+    let size = file.metadata().map_err(source_io)?.len();
     let mut head = [0u8; 4];
-    if file.read_exact(&mut head).is_err() || head != *b"PK\x03\x04" {
+    file.read_exact(&mut head).map_err(source_io)?;
+    if head != *b"PK\x03\x04" {
         return Err(Skip::Unsupported);
     }
     // The central directory's size first: the listings below keep names.
-    let (count, cd_offset, cd_size) =
-        zip_scan::directory(&mut file, size).map_err(|_| Skip::Unsupported)?;
+    let (count, cd_offset, cd_size) = zip_scan::directory(&mut file, size).map_err(scan_error)?;
     if cd_size > DIRECTORY_CAP || cd_offset > u64::from(u32::MAX) {
         return Err(Skip::Unsupported);
     }
-    let entries = zip_scan::list(&mut file, size).map_err(|_| Skip::Unsupported)?;
-    let main = main_part(&mut file, &entries).ok_or(Skip::Unsupported)?;
+    let entries = zip_scan::list(&mut file, size).map_err(scan_error)?;
+    let main = main_part(&mut file, &entries)?;
     let entry = entries
         .iter()
         .find(|(name, _)| *name == main)
@@ -768,8 +800,8 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
 
     // The central directory, whole: at most DIRECTORY_CAP bytes.
     let mut directory = vec![0u8; cd_size as usize];
-    file.seek(SeekFrom::Start(cd_offset)).map_err(unsupported)?;
-    file.read_exact(&mut directory).map_err(unsupported)?;
+    file.seek(SeekFrom::Start(cd_offset)).map_err(source_io)?;
+    file.read_exact(&mut directory).map_err(source_io)?;
     let records = records(&directory, count, &main).ok_or(Skip::Unsupported)?;
     let mut mains = records.iter().filter(|r| r.is_main);
     let (Some(main_record), None) = (mains.next(), mains.next()) else {
@@ -784,7 +816,7 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
     // copy's new CRC never hides the damage from LibreOffice.
     let edits = {
         let reader = zip_scan::open_entry(&mut file, &entry)
-            .map_err(|_| Skip::Unreadable)?
+            .map_err(scan_error)?
             .ok_or(Skip::Unsupported)?;
         let mut checked = CrcReader {
             inner: reader,
@@ -797,8 +829,7 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
             MAIN_PART_CAP,
         )?;
         // plan() read to the end of the part; anything left is damage too.
-        let rest =
-            io::copy(&mut (&mut checked).take(1), &mut io::sink()).map_err(|_| Skip::Unreadable)?;
+        let rest = io::copy(&mut (&mut checked).take(1), &mut io::sink()).map_err(applied)?;
         if rest != 0
             || checked.len != entry.uncompressed
             || checked.crc.finalize() != main_record.crc
@@ -844,7 +875,7 @@ fn write_copy(source: &Path, out: &Path, paper: Paper, created: &mut bool) -> Re
             main_fields = Some(write_main(&mut file, &mut writer, record, &entry, &edits)?);
         } else {
             file.seek(SeekFrom::Start(record.local_offset))
-                .map_err(unsupported)?;
+                .map_err(source_io)?;
             let span = end - record.local_offset;
             let copied = io::copy(&mut (&mut file).take(span), &mut writer).map_err(written)?;
             if copied != span {
@@ -898,17 +929,16 @@ fn write_main(
     entry: &zip_scan::Entry,
     edits: &Plan,
 ) -> Result<(u32, u32, u32), Skip> {
-    let unsupported = |_| Skip::Unsupported;
     file.seek(SeekFrom::Start(record.local_offset))
-        .map_err(unsupported)?;
+        .map_err(source_io)?;
     let mut header = [0u8; 30];
-    file.read_exact(&mut header).map_err(unsupported)?;
+    file.read_exact(&mut header).map_err(source_io)?;
     if u32_at(&header, 0) != 0x0403_4b50 || u16_at(&header, 8) != record.method {
         return Err(Skip::Unsupported);
     }
     let mut name_extra =
         vec![0u8; usize::from(u16_at(&header, 26)) + usize::from(u16_at(&header, 28))];
-    file.read_exact(&mut name_extra).map_err(unsupported)?;
+    file.read_exact(&mut name_extra).map_err(source_io)?;
     let extra = &name_extra[usize::from(u16_at(&header, 26))..];
     let mut at = 0;
     while at + 4 <= extra.len() {
@@ -925,7 +955,7 @@ fn write_main(
     let data_at = writer.written;
     let (crc, uncompressed) = {
         let part = zip_scan::open_entry(file, entry)
-            .map_err(|_| Skip::Unreadable)?
+            .map_err(scan_error)?
             .ok_or(Skip::Unsupported)?;
         let part = part.take(MAIN_PART_CAP.saturating_add(1));
         match record.method {
@@ -968,7 +998,15 @@ fn write_main(
 }
 
 /// Where the repacked copy of `source` goes: a `paper` directory next to
-/// it, under the same file name, so LibreOffice sees the same name.
+/// it, under the same file name, so LibreOffice sees the same name (a
+/// FILENAME field, for example).
+///
+/// The directory differs, so a relative hyperlink resolves under `paper/`.
+/// That costs nothing: without the copy it resolves under the job
+/// directory, whose name is a random UUID per request (`jobs/job_dir.rs`)
+/// and which is removed after the response. Such a link target was never
+/// stable or reachable for a client. Writing the copy over the source
+/// instead would make a retry after a crash depend on which file is which.
 pub fn copy_path(source: &Path) -> Option<PathBuf> {
     Some(source.parent()?.join("paper").join(source.file_name()?))
 }
