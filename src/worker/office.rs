@@ -251,6 +251,13 @@ impl OfficeWorker {
         else {
             return Ok(None);
         };
+        // A worker that died during an earlier attempt of this job may have
+        // left a partial copy: the retry starts from the source again.
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(io_error("clear the paper copy", &err)),
+        }
         std::fs::create_dir(&dir).map_err(|err| io_error("create the paper copy", &err))?;
         match docx_paper::repack(&args.input, &copy, paper) {
             Ok(()) => Ok(Some(copy)),
