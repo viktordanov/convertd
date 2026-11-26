@@ -240,6 +240,12 @@ async fn render_chunk(
     guard: Option<Guard<'_>>,
 ) -> Result<ChunkOk, ChunkFailure> {
     let op = Op::Render(args);
+    // Each chunk checks at its own dispatch: a strike can land, or this
+    // chunk's time can fall into a covered range, after the first lease.
+    // It has not run, so it earns no strike.
+    if guard.is_some_and(|g| g.refuses(deadline)) {
+        return Err(ChunkFailure::engine(EngineError::Poisoned));
+    }
     let ran = deadline.saturating_duration_since(Instant::now());
     match lease.call(op.clone(), deadline).await {
         Ok(reply) => return chunk_reply(&mut lease, reply, pool),
