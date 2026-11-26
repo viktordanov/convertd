@@ -169,6 +169,8 @@ Each folder in this list has a README for its own readers.
 
 [docs/README.md](docs/README.md) maps the other documents: the measured spike results, the design plan, the writing guidance and the ledger of work.
 
+`bench/results/` holds the benchmark records. In the first record, [2026-11-26-wave2b.md](bench/results/2026-11-26-wave2b.md), the service added 0.88 ms at p50 to the conversion of a one-page DOCX to PDF, beside 22.7 ms in LibreOffice. That run used the arm64 image on an Apple-silicon Mac, with 4 CPUs for the container. `examples/overhead.rs` produces these numbers: `src/README.md` explains it.
+
 ## License
 
 rs-convert uses the Apache-2.0 license (`LICENSE`). The image also bundles LibreOffice (MPL-2.0), PDFium (BSD-style) and fonts under their own licenses.
