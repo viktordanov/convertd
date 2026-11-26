@@ -150,7 +150,7 @@ jobs:
 
   image:
     # By hand, monthly, and on the pushes and pull requests that the changes job selects. It
-    # builds the image natively on each arch, runs the smoke test and the 59-case corpus check.
+    # builds the image natively on each arch, runs the smoke test and the corpus check.
     # The engine test suites stay out of it: they run monthly or by hand (lead's ruling,
     # 2026-11-26).
     needs: changes
@@ -221,7 +221,7 @@ jobs:
           shared-key: corpus-${{ matrix.arch }}
       - name: Build corpus-bench
         run: cargo build --release --locked --manifest-path tools/corpus/Cargo.toml
-      - name: Corpus check (59 cases, canary listener in the service namespace)
+      - name: Corpus check (every case of corpus/expected.json, canary listener in the service namespace)
         env:
           # The image's own base: glibc for the harness binary built on the runner.
           HARNESS_IMAGE: debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
