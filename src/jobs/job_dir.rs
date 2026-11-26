@@ -264,10 +264,16 @@ mod tests {
         let err = lock_tmp_dir(&tmp).unwrap_err();
         assert!(err.contains("in use by another convertd serve"), "{err}");
         drop(held);
-        assert!(
-            lock_tmp_dir(&tmp).is_ok(),
-            "free again after the holder ends"
-        );
+        // A child that another test forks shares the open file until it
+        // execs, so the lock can outlive the drop by a moment.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while lock_tmp_dir(&tmp).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "free again after the holder ends"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         std::fs::remove_dir_all(tmp).unwrap();
     }
 
