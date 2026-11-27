@@ -58,6 +58,9 @@ pub struct Framing {
     /// The last bytes of the previous chunk, so that a pattern split over
     /// two chunks is found.
     tail: Vec<u8>,
+    /// Scratch for the seam between the tail and a new chunk, reused so
+    /// that a data frame copies no more than the delimiter's length.
+    seam: Vec<u8>,
     /// The stream offset of `tail[0]`.
     tail_at: u64,
     /// The stream offset where the bounded state began.
@@ -72,6 +75,7 @@ impl Framing {
             delimiter: Finder::new(format!("\r\n--{boundary}").as_bytes()).into_owned(),
             headers_end: Finder::new(b"\r\n\r\n").into_owned(),
             tail: Vec::new(),
+            seam: Vec::new(),
             tail_at: 0,
             state_at: 0,
         }
@@ -83,13 +87,15 @@ impl Framing {
 
     /// Whether the delimiter may be in `chunk` or across its seam with the
     /// kept tail.
-    fn delimiter_near(&self, chunk: &[u8]) -> bool {
+    fn delimiter_near(&mut self, chunk: &[u8]) -> bool {
         if self.delimiter.find(chunk).is_some() {
             return true;
         }
-        let mut seam = self.tail.clone();
-        seam.extend_from_slice(&chunk[..self.keep().min(chunk.len())]);
-        self.delimiter.find(&seam).is_some()
+        let keep = self.keep().min(chunk.len());
+        self.seam.clear();
+        self.seam.extend_from_slice(&self.tail);
+        self.seam.extend_from_slice(&chunk[..keep]);
+        self.delimiter.find(&self.seam).is_some()
     }
 
     /// Takes the next bytes of the stream, in windows of [`WINDOW`] bytes,

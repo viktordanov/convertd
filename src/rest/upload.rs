@@ -128,6 +128,9 @@ pub fn is_disk_full(err: &io::Error) -> bool {
     )
 }
 
+/// The longest multipart boundary accepted (RFC 2046).
+pub const MAX_BOUNDARY: usize = 70;
+
 /// Reads the multipart body into `job`. Called after auth and the
 /// concurrency permit; rejects an oversized `Content-Length` before a byte
 /// is read. The sink holds a share of `permit` until its blocking task
@@ -151,6 +154,9 @@ pub async fn receive(
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| multer::parse_boundary(value).ok())
+        // RFC 2046: 1 to 70 characters. A longer one would make every
+        // body frame's delimiter search that much longer.
+        .filter(|boundary| (1..=MAX_BOUNDARY).contains(&boundary.len()))
         .ok_or(UploadError::NotMultipart)?;
     let content_length = request
         .headers()
