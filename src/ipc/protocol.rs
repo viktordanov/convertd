@@ -242,7 +242,7 @@ pub enum TestOp {
     /// Answer the worker's environment.
     Env,
     /// Read `/proc/<pid>/environ` and answer its size or the error kind:
-    /// the supervisor must not be readable this way (S1).
+    /// the supervisor must not be readable this way (`tests/not_dumpable.rs`).
     ReadEnviron { pid: u32 },
 }
 
@@ -555,7 +555,7 @@ pub enum WorkerErrorKind {
     /// copy was written; the original stays as it is.
     Restricted,
     /// Only the `test` role sends this, for `FAKE:TOO_MANY_REQUESTS`, so
-    /// level-B fixtures behave as they do at level A.
+    /// fixtures for the fake worker behave as they do with the fake engine.
     FakeQueueFull,
     /// Only the `test` role sends this, for `FAKE:SERVICE_UNAVAILABLE`.
     FakeUnavailable,

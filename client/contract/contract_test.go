@@ -409,9 +409,9 @@ func TestFakeUnprocessableCodes(t *testing.T) {
 	}
 }
 
-// Case 14 runs at level B: see levelb_test.go.
+// Case 14 runs with the fake worker: see levelb_test.go.
 
-// Case 15, level A: the 429 from the concurrency cap and from the marker.
+// Case 15, with the fake engine: the 429 from the concurrency cap and from the marker.
 func TestFakeBusy(t *testing.T) {
 	requireFake(t)
 	t.Parallel()

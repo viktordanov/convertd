@@ -9,7 +9,7 @@
 //! ```
 //!
 //! It runs the real engines when `LO_PROGRAM_DIR` and `PDFIUM_LIB_DIR` hold
-//! them, as in the dev image. `RSS_ENGINE=fake` runs the level-A fake
+//! them, as in the dev image. `RSS_ENGINE=fake` runs the fake engine
 //! instead, which needs `--features test-hooks`. The workers are processes
 //! of their own; only the supervisor's RSS is measured.
 //!
@@ -111,7 +111,7 @@ mod measured {
         /// LibreOffice and PDFium, from `LO_PROGRAM_DIR` and `PDFIUM_LIB_DIR`,
         /// as absolute paths: each worker starts in its own directory.
         Real { lo: PathBuf, pdfium: PathBuf },
-        /// The level-A fake (`TEST_ENGINE=fake`), only with `test-hooks`.
+        /// The fake engine (`TEST_ENGINE=fake`), only with `test-hooks`.
         Fake,
     }
 
@@ -371,7 +371,7 @@ mod measured {
         // 15 KB to 20 MB and a small DOCX. Two checks: the target of
         // 30 MB for every reading, and a growth budget after the first
         // round, at most 1 MiB per later round of 1 000 requests
-        // on average (the soak's budget). Single rounds
+        // on average. Single rounds
         // swing by more than 1 MiB, so the budget is from the first round
         // to the last, not between neighbours. RSS_ROUNDS sets the count:
         // 3 by default, so the budget averages two intervals; at least 2.
@@ -455,12 +455,12 @@ mod measured {
                 .map(|r| (*r as f64 / MB as f64 * 10.0).round() / 10.0)
                 .collect::<Vec<_>>()
         );
-        // The first target was at most 1.5 x the reading after start. It
-        // is missed and accepted: the first requests fault in code pages
-        // and malloc arenas, and the readings stay flat after that. It is a
-        // note, not a check.
+        // The reading after the first round is more than 1.5 x the reading
+        // after start: the first requests fault in code pages and malloc
+        // arenas, and the readings stay flat after that. Thus it is printed,
+        // not checked.
         eprintln!(
-            "after the first round: {:.2} x the reading after start (the first target was 1.5 x)",
+            "after the first round: {:.2} x the reading after start (not checked)",
             warm as f64 / first as f64
         );
         assert!(first <= 30 * MB, "{first} bytes after start");

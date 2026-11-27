@@ -56,8 +56,9 @@ impl FromStr for Paper {
 }
 
 /// `OFFICE_MAX_JOBS` when neither it nor `WORKER_MAX_JOBS` is set. An office
-/// worker lived 20 s at 50 jobs in the soak, and its RSS at recycle did not
-/// grow with the job count, so 200 cuts the restarts by 4.
+/// worker lived 20 s at 50 jobs in a 120-minute soak test (2026-11-26,
+/// `src/engines/README.md`), and its RSS at recycle did not grow with the
+/// job count, so 200 cuts the restarts by 4.
 /// `OFFICE_MAX_RSS_MB` still recycles a worker that grows.
 pub const OFFICE_DEFAULT_MAX_JOBS: u32 = 200;
 

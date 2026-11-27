@@ -27,7 +27,7 @@ Add a nested README only for a folder with its own contract. Link it from its pa
 
 ## Root README
 
-Introduce rs-convert to a user who has never seen it. Lead with what the service does in one sentence, the problem it solves, and what it does not do (no OCR, no HTML, no fidelity guarantee against Microsoft Office). Then give a quick start that works today: convert one file with `curl` and read the headers. Run the published image once it converts documents; until then, build and run `convertd` from source with the level-A fake, and say so in the status paragraph. Then the catalog of boundaries, grouped by reader: using the service, deploying it, contributing to it. End with the documentation map and the license.
+Introduce rs-convert to a user who has never seen it. Lead with what the service does in one sentence, the problem it solves, and what it does not do (no OCR, no HTML, no fidelity guarantee against Microsoft Office). Then give a quick start that works today: convert one file with `curl` and read the headers. Run the published image, and give a second path that builds `convertd` from source and runs it with the fake engine, for a reader without Docker. Then the catalog of boundaries, grouped by reader: using the service, deploying it, contributing to it. End with the documentation map and the license.
 
 Keep the API description short and link to the spec. Keep design history in the spike results, not in the root README. Do not claim performance that the benchmarks have not measured.
 
@@ -41,7 +41,7 @@ Give a contributor the mental model of the `convertd` crate. Start with the proc
 
 ## tests/README.md
 
-Explain the test levels: unit tests in `src/`, integration tests in `tests/`, the two fakes (level A replaces the engines, level B runs `convertd worker test` behind the real pool), the `test-hooks` cargo feature, and the contract tests in `client/contract/`. Explain the nextest profiles in `.config/nextest.toml` and the `slow_` name rule. Give the exact commands that CI runs.
+Explain the test levels: unit tests in `src/`, integration tests in `tests/`, the two fakes (the fake engine replaces the engines in the supervisor, the fake worker runs `convertd worker test` behind the real pool), the `test-hooks` cargo feature, and the contract tests in `client/contract/`. Explain the nextest profiles in `.config/nextest.toml` and the `slow_` name rule. Give the exact commands that CI runs.
 
 ## client/README.md
 

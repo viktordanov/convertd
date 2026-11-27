@@ -1,5 +1,5 @@
-//! The first end-to-end slice: `/v1/convert` with
-//! `output=pdf` through the level-A fakes, real detection, the response
+//! `/v1/convert` end to end with
+//! `output=pdf` through the fake engine, real detection, the response
 //! pump, the backstop, the permit and the response-stall rule.
 
 use std::io::{Read, Write};

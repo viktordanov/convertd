@@ -4,6 +4,7 @@
 [![GHCR image](https://img.shields.io/github/v/release/viktordanov/rs-convert?label=ghcr%20image)](https://github.com/viktordanov/rs-convert/pkgs/container/rs-convert)
 [![API](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fviktordanov%2Frs-convert%2Fmain%2Fapi%2Fopenapi.json&query=%24.info.version&label=api&prefix=v)](api/openapi.json)
 [![Memoria](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fviktordanov%2Frs-convert%2Fmain%2F.github%2Fworkflows%2Fmemoria.yml&query=%24.jobs.memoria.steps%5B1%5D.with.version&label=memoria&prefix=v)](https://github.com/viktordanov/rs-memoria)
+[![Memoria check](https://img.shields.io/github/actions/workflow/status/viktordanov/rs-convert/memoria.yml?branch=main&label=memoria%20check)](https://github.com/viktordanov/rs-convert/actions/workflows/memoria.yml)
 
 rs-convert is an HTTP service that converts office documents and PDFs into a PDF and per-page images.
 

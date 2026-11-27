@@ -230,7 +230,7 @@ fn runs(families: &[&str]) -> String {
 
 #[test]
 fn docx_embedded_fonts_from_the_font_table() {
-    // F1: a requested family counts as embedded only when one of its embed
+    // A requested family counts as embedded only when one of its embed
     // elements points at a font part that the package holds and that is an
     // sfnt font once deobfuscated with the element's key.
     let other_key = "{00000000-1111-2222-3333-444444444444}";
@@ -1600,7 +1600,7 @@ fn cps(text: &str) -> Vec<u32> {
 
 #[test]
 fn docx_text_code_points_from_runs_headers_and_entities() {
-    // F2: w:t text of the body and a header; an entity and a character
+    // The w:t text of the body and a header; an entity and a character
     // reference count; delText, instrText, white space, ZWJ and private
     // use do not.
     let document = body(
@@ -1905,7 +1905,7 @@ fn pptx_notes_text_counts_when_notes_are_printed() {
 
 #[test]
 fn odp_notes_and_hidden_pages_count_when_printed() {
-    // Page 2's style hides it (E4's slide list); page 1 has notes.
+    // Page 2's style hides it (the slide list); page 1 has notes.
     let pages = r#"<draw:page draw:style-name="dp1"><draw:frame><draw:text-box><text:p>x</text:p></draw:text-box></draw:frame><presentation:notes><draw:frame><draw:text-box><text:p>ሀ</text:p></draw:text-box></draw:frame></presentation:notes></draw:page><draw:page draw:style-name="dp2"><draw:frame><draw:text-box><text:p>ก</text:p></draw:text-box></draw:frame></draw:page>"#;
     let styles = [
         page_style("dp1", None, None),

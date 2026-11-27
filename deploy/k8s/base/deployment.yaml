@@ -65,9 +65,9 @@ spec:
             # LibreOffice, 8 MiB for PDFium) are page cache that the cgroup counts once, inside the
             # 512 MiB. All of it MUST fit in the memory limit: OFFICE_WORKERS x OFFICE_KILL_RSS_MB
             # + 256 + RENDER_WORKERS x RENDER_KILL_RSS_MB + 512 MiB <= limits.memory:
-            # 2 x 992 + 256 + 2 x 320 + 512 = 3392 MiB <= 4096 MiB. 992 and 736 keep the cut-off
-            # of the old count (1152 and 896, the 160 MiB of shared pages included); after a soak,
-            # each office worker can get about 156 MiB more.
+            # 2 x 992 + 256 + 2 x 320 + 512 = 3392 MiB <= 4096 MiB. 992 and 736 equal a VmRSS
+            # cut-off of 1152 and 896, less the 160 MiB of shared pages. A deployment that measures
+            # its own documents can give each office worker about 156 MiB more.
             # Change the worker counts, these values and the memory limit together: a container
             # OOM can kill every job in the pod. Measured on 276 real documents (2026-11-26,
             # 2 CPUs): LibreOffice needed up to 3281 MiB for heavy decks (p99 1546 MiB), PDFium at

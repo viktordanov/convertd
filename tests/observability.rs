@@ -1,7 +1,7 @@
 //! The Grafana dashboard and the alert rules in `deploy/observability/`
 //! name only metrics that convertd emits.
 //!
-//! The scrape test starts `convertd serve` at level B, so the pools record
+//! The scrape test starts `convertd serve` with the fake worker, so the pools record
 //! their metrics too, and sends requests until every family exists. Two
 //! sets of names must then be sample names of the scrape:
 //!
@@ -629,7 +629,7 @@ mod level_b {
     const BOUNDARY: &str = "convertd-observability-boundary";
     const PDF: &[u8] = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n";
 
-    /// `convertd serve` at level B, killed on drop.
+    /// `convertd serve` with the fake worker, killed on drop.
     pub struct Served {
         child: std::process::Child,
         port: u16,

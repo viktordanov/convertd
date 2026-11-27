@@ -809,7 +809,7 @@ async fn send_with_boundary(app: &App, boundary: &str) -> (StatusCode, Value) {
 
 #[tokio::test]
 async fn a_boundary_of_more_than_70_characters_or_none_is_400() {
-    // S7, RFC 2046: 1 to 70 characters. A longer one would make every body
+    // RFC 2046: 1 to 70 characters. A longer one would make every body
     // frame's delimiter search as long.
     let app = App::new("boundary", &[]);
     let (status, _) = send_with_boundary(&app, &"b".repeat(70)).await;

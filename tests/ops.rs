@@ -391,7 +391,7 @@ impl Served {
             .spawn()
             .unwrap();
         let served = Self { child, port };
-        // Ready: at level B the pools need a moment to start their workers.
+        // Ready: with the fake worker, the pools need a moment to start their workers.
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while !served.get("/readyz").starts_with("HTTP/1.1 200") {
             assert!(
@@ -569,7 +569,7 @@ fn slow_sigterm_drains_then_exits() {
 }
 
 #[cfg(feature = "test-hooks")]
-/// Level B: the real pools around `convertd worker test`. SIGTERM lands
+/// With the fake worker: the real pools around `convertd worker test`. SIGTERM lands
 /// while the office worker converts; the request still needs the render
 /// pool for inspect and render after it. A second request is still
 /// uploading when the signal arrives; its first engine call comes after.
@@ -713,7 +713,7 @@ fn slow_sigterm_with_a_hung_worker_exits_within_one_grace() {
     assert!(took < Duration::from_secs(9), "exit took {took:?}");
 }
 
-/// Level B: a request that times out in the office queue answers 429, and
+/// With the fake worker: a request that times out in the office queue answers 429, and
 /// its Server-Timing shows the wait as `queue`. Before, the error carried
 /// no timing and the header said queue 0.0 beside a total of the whole
 /// wait.
@@ -755,7 +755,7 @@ fn slow_a_queue_timeout_reports_its_wait_as_queue() {
     assert_eq!(status_line(&busy.join().unwrap()), 200);
 }
 
-/// At level B the pools record each worker call's CPU time,
+/// With the fake worker, the pools record each worker call's CPU time,
 /// with its own buckets from 1 ms to 60 s, by pool and operation.
 #[cfg(feature = "test-hooks")]
 #[test]
@@ -811,7 +811,7 @@ fn level_b_metrics_show_worker_cpu() {
 }
 
 #[cfg(all(target_os = "linux", feature = "test-hooks"))]
-/// S1 on the real binary: `serve` marks itself not dumpable, so another
+/// On the real binary: `serve` marks itself not dumpable, so another
 /// process of its UID cannot read its environment, which holds `API_KEY`.
 /// Its own `/proc` reads still feed the supervisor gauges.
 #[test]

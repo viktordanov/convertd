@@ -1,5 +1,5 @@
 //! `output=images` and `output=bundle`: the tar.zst
-//! bundle over HTTP through the level-A fakes, read back with the `zstd`
+//! bundle over HTTP through the fake engine, read back with the `zstd`
 //! crate and a small ustar reader. The `zip` crate only builds inputs.
 
 use std::io::Cursor;
@@ -814,7 +814,7 @@ async fn warnings_reach_the_manifest_and_the_header() {
 
 #[tokio::test]
 async fn an_embedded_font_raises_no_font_warning() {
-    // F1: the same catalog as the test above, where Aptos is not installed;
+    // The same catalog as the test above, where Aptos is not installed;
     // the DOCX embeds Aptos, so LibreOffice substitutes nothing.
     let files = Path::new(env!("CARGO_TARGET_TMPDIR")).join("convert_zip-embedded-files");
     std::fs::create_dir_all(&files).unwrap();
@@ -853,7 +853,7 @@ async fn an_embedded_font_raises_no_font_warning() {
 
 #[tokio::test]
 async fn uncovered_text_raises_glyphs_missing() {
-    // F2: the image's faces cover only ASCII; the DOCX has Thai text.
+    // The image's faces cover only ASCII; the DOCX has Thai text.
     let files = Path::new(env!("CARGO_TARGET_TMPDIR")).join("convert_zip-glyphs-files");
     std::fs::create_dir_all(&files).unwrap();
     let build_info = files.join("build-info.json");

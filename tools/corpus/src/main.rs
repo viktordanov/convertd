@@ -1,6 +1,5 @@
 //! `corpus-bench`: checks the rs-convert corpus and runs it against the
-//! service. It has `validate` and `check`; the bench,
-//! soak and compare subcommands come in later steps.
+//! service. It has the `validate`, `check` and `listen` subcommands.
 
 mod check;
 mod expected;

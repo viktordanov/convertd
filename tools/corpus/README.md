@@ -1,6 +1,6 @@
 # corpus-bench
 
-`corpus-bench` is the Rust harness that checks the corpus in [`corpus/`](../../corpus/README.md) and runs it against the service. It does not measure the service: the benchmark of record uses `examples/overhead.rs`.
+`corpus-bench` is the Rust harness that checks the corpus in [`corpus/`](../../corpus/README.md) and runs it against the service. It does not measure the service. `examples/overhead.rs` measures the overhead ([Results over time](#results-over-time)).
 
 The crate is not part of the `convertd` workspace. It has its own `[workspace]` table and its own `Cargo.lock`, so the root `cargo build` never builds it, and its dependencies stay out of the service's lock file. Run Cargo here, or give `--manifest-path tools/corpus/Cargo.toml`.
 
@@ -34,7 +34,7 @@ The crate uses the Rust toolchain that `rust-toolchain.toml` pins at the reposit
 
 The unit tests of `validate` build small corpus folders in a temporary directory. They prove that `validate` fails on a missing file, a wrong SHA-256, an unlisted file under `out/` or `fixtures/`, fixtures over the budget, and a sample of the schema and semantic rules. One test applies the schema and the semantic checks to the committed `corpus/expected.json`, without the generated files.
 
-The unit tests of `check` compare hand-built answers with expectations, because the level-A fake cannot produce warnings, blank pages or real page counts. They cover the warning multiset, `"*"` and `unless_installed`, blank pages, the three page-count forms, status lists, the invariants, the `/BaseFont` arbiter, the listener and the exit status.
+The unit tests of `check` compare hand-built answers with expectations, because the fake engine (`TEST_ENGINE=fake`) cannot produce warnings, blank pages or real page counts. They cover the warning multiset, `"*"` and `unless_installed`, blank pages, the three page-count forms, status lists, the invariants, the `/BaseFont` arbiter, the listener and the exit status.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="usage" files="src/main.rs src/validate.rs src/expected.rs" -->
@@ -89,7 +89,7 @@ Then `check` compares the fields that the expectation gives. For each `FONT_SUBS
 
 `check` prints `PASS` or `FAIL` for each case, with each failure and the observed value. It prints the observed page count of an `"unrecorded"` case as a note. Then it prints the passed and run cases for each tag. It exits 0 only if every selected case passed.
 
-The canary listener must share the network namespace of the service, because LibreOffice connects to the loopback address of its own container. The run of record used a harness container started with `--network container:<service>`. A harness on the host behind `-p` does not see such a connection.
+The canary listener must share the network namespace of the service, because LibreOffice connects to the loopback address of its own container. The runs that this section records used a harness container started with `--network container:<service>`. A harness on the host behind `-p` does not see such a connection.
 
 On 2026-11-26, `check` ran that way against the first arm64 `runtime` image of 2026-11-26, with LibreOffice 26.8.3.1 and PDFium 8179, in arm64 Docker on an Apple-silicon Mac. 47 of the 55 cases of that time passed. The listener saw no connection, and the `/BaseFont` arbiter agreed with each `FONT_SUBSTITUTED` warning. No positive control has run yet, so zero connections does not yet prove that the canaries can connect. Of the eight failures, five changed their expectations to what LibreOffice does, and the three image cases now expect the 415 that the service gives for image inputs, which are out of v1. `expected.json` also gained `docx-one-page` with two cases, so it now holds 57 cases. Its 1-page count comes from the same image, by a direct request.
 
@@ -97,9 +97,9 @@ On 2026-11-26, `check` ran the same way against the arm64 `runtime` image `sha25
 
 Later on 2026-11-26, with two data-descriptor cases added, `check` ran again against the same image, and all 59 cases passed. The listener control passed inside the namespace of the service. `docx-stored-descriptor` gave `422 CONVERSION_FAILED` and `docx-deflated-descriptor` gave 200 with 2 pages, as expected.
 
-`expected.json` then gained a 60th case, `pdf-text3/webp-refused`, when WebP output left the service. It expects `422 VALIDATION_ERROR`, as the service answers an unknown image format. No `check` run with that case is recorded yet.
+`expected.json` then gained a 60th case, `pdf-text3/webp-refused`, because the service gives no WebP output. It expects `422 VALIDATION_ERROR`, as the service answers an unknown image format. No `check` run with that case is recorded yet.
 
-The hidden-slide work added `hidden_pages` to the expectations and six cases: `pptx-hidden3` (three), `odp-hidden` (two) and `pptx-deck20/include-hidden`. `check` compares `hidden_pages` with the pages that carry `hidden: true` in the manifest, as it does for `blank_pages`. No `check` run with these cases is recorded yet.
+For hidden slides, the expectations gained `hidden_pages` and six cases: `pptx-hidden3` (three), `odp-hidden` (two) and `pptx-deck20/include-hidden`. `check` compares `hidden_pages` with the pages that carry `hidden: true` in the manifest, as it does for `blank_pages`. No `check` run with these cases is recorded yet.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="listen" files="src/main.rs src/check/listener.rs" -->
@@ -129,15 +129,15 @@ In the throwaway image even a direct call of the Basic macro through the script 
 
 | Subcommand | What it would do | Status |
 | --- | --- | --- |
-| `bench` | The `overhead`, `spawn`, `formats` and `memory` suites, with `summary.json` | Not planned. `examples/overhead.rs` made the benchmark of record |
+| `bench` | The `overhead`, `spawn`, `formats` and `memory` suites, with `summary.json` | Not planned. `examples/overhead.rs` measures the overhead |
 | `exec` | Times an external command for each file, such as a cold `soffice` start | Not planned |
-| `soak` | 10,000 conversions with samples of memory, processes and job directories | Not planned. The soak runs over HTTP (`src/engines/README.md`, Soak) |
+| `soak` | 10,000 conversions with samples of memory, processes and job directories | Not planned. Long load runs go over HTTP, and `src/engines/README.md` records one |
 | `compare` | Compares two `summary.json` files against absolute thresholds | Not planned while no `summary.json` exists |
 
 In CI, `docker/corpus-check.sh` runs `check` against the image, with the harness in a container that shares the network namespace of the service.
 
 ## Results over time
 
-The benchmark of record is [`bench/results/2026-11-26.md`](../../bench/results/2026-11-26.md). `examples/overhead.rs` made it against the arm64 `runtime` image `sha256:3ccbb545d9fb`, and it gives `overhead` 0.883 ms at p50 for the one-page DOCX, against the 5 ms gate. That file records its conditions. A later run is compared with it by hand, because no `compare` subcommand and no `bench/thresholds.json` exist.
+The overhead measurement is in [`bench/results/2026-11-26.md`](../../bench/results/2026-11-26.md). `examples/overhead.rs` made it against the arm64 `runtime` image `sha256:3ccbb545d9fb`, and it gives `overhead` 0.883 ms at p50 for the one-page DOCX, against the 5 ms gate. That file records its conditions. A later run is compared with it by hand, because no `compare` subcommand and no `bench/thresholds.json` exist.
 
 Next: run `cargo test --locked` in `tools/corpus` before you change `validate` or `check`.

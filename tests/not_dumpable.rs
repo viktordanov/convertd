@@ -1,4 +1,4 @@
-//! S1: the supervisor is not dumpable, so a worker with its UID cannot read
+//! The supervisor is not dumpable, so a worker with its UID cannot read
 //! `/proc/<supervisor>/environ`, which holds `API_KEY`. A file of its own:
 //! the flag is set on this whole test process, which plays the supervisor.
 #![cfg(all(target_os = "linux", feature = "test-hooks"))]

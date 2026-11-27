@@ -60,7 +60,7 @@ One `Dockerfile` holds every target, so the product and the test image use the s
 
 The other stages are internal. `engines` downloads and checks the pinned files on the build platform. `lib-check` runs the [library check](#library-check). `rust-cross`, `chef-tool`, `planner` and `builder` compile Rust on the build platform and cross-compile to the target, so no `rustc` runs under emulation.
 
-The Docker VM on the development Mac has about 4 GB. Build one image at a time. Keep `CARGO_JOBS` at 2. A build that ends with signal 9 ran out of memory. Build the base and the dev image like this:
+If the Docker VM has about 4 GB, build one image at a time. Keep `CARGO_JOBS` at 2. A build that ends with signal 9 ran out of memory. Build the base and the dev image like this:
 
 ```sh
 docker buildx build -f docker/Dockerfile --target runtime-base \
@@ -118,7 +118,7 @@ LibreOffice bundles its own copies of Liberation, Carlito, Caladea, DejaVu, Noto
 
 The fontconfig cache is built into the image, so no worker writes a user cache at start. This works only if fontconfig and LibreOffice use the same directory names. LibreOffice registers `share/fonts/truetype` and `program/resource/common/fonts` by their real path, `/opt/libreoffice26.8/…`, and fontconfig keys its cache on the path as written. Thus `install-engines.sh` rewrites `fonts/10-libreoffice-fonts.conf` to the real directory before `fc-cache` runs. With the symlink path, each LibreOffice start wrote two cache files under `$HOME/.cache/fontconfig`.
 
-fontconfig also trusts a cache file only if the modification time of its directory matches in seconds and in nanoseconds. A layer that passes through a tar file keeps whole seconds only. A `docker-container` buildx builder, the GitHub Actions cache and a registry push all do this. Before the fix, an image from such a builder wrote 9 user cache files at start, one for each font directory. `cache-fonts.sh` therefore sets every font directory to a whole-second time, runs `fc-cache`, and fails the build if an unprivileged user still sees a stale cache.
+fontconfig also trusts a cache file only if the modification time of its directory matches in seconds and in nanoseconds. A layer that passes through a tar file keeps whole seconds only. A `docker-container` buildx builder, the GitHub Actions cache and a registry push all do this. Without `cache-fonts.sh`, an image from such a builder wrote 9 user cache files at start, one for each font directory. `cache-fonts.sh` therefore sets every font directory to a whole-second time, runs `fc-cache`, and fails the build if an unprivileged user still sees a stale cache.
 
 To add licensed fonts, build a derived image. It copies the fonts, runs `/opt/convertd/cache-fonts.sh`, and runs `/opt/convertd/write-build-info.sh` again as root, so `build-info.json` stays true. The script needs `LO_VERSION` set to the four-part build, such as `26.8.3.1`, because the image does not set it. Private fonts then never enter this repository.
 <!-- /memoria:section -->
@@ -181,21 +181,21 @@ These sizes are measurements without CJK fonts, on an arm64 Mac (Docker 29.8.2, 
 | `runtime`, amd64 (CI, native) | 706 MB | 578 MB | not measured |
 | `dev`, arm64 | 2.78 GB | 2.65 GB | not measured |
 
-Uncompressed sizes come from `docker image inspect`. The working target for the product image is at most 600 MB uncompressed, on amd64, the production architecture. The trims save 128 MB on each architecture. The largest savings are the icon themes (72 MB), the gallery (14 MB), the offline help (11 MB of content in 5334 files), the duplicate fonts and the templates (8 MB). The spike image of `docs/m0-spikes.md` was 708 MB, without the Noto fonts.
+Uncompressed sizes come from `docker image inspect`. The working target for the product image is at most 600 MB uncompressed, on amd64, the production architecture. The trims save 128 MB on each architecture. The largest savings are the icon themes (72 MB), the gallery (14 MB), the offline help (11 MB of content in 5334 files), the duplicate fonts and the templates (8 MB). An engine test image with LibreOffice, fonts and one test program was 708 MB, without the Noto fonts ([docs/m0-spikes.md](../docs/m0-spikes.md)).
 
-Later on 2026-11-26, the fonts for the scripts of living languages and WenQuanYi Micro Hei added 11.6 MB. The arm64 `runtime` image then measured 616.5 MB, under the CI budget of 635 MB. The same files go into the amd64 image, so it comes to about 590 MB. The next CI image job measures it natively. The final arm64 `runtime` image, built with the performance work, measured 615.9 MB (615917307 bytes). Its convertd is 5.8 MB. The paper locales then added about 3 MB: 618.9 MB with `DEFAULT_PAPER`.
+Later on 2026-11-26, the fonts for the scripts of living languages and WenQuanYi Micro Hei added 11.6 MB. The arm64 `runtime` image then measured 616.5 MB, under the CI budget of 635 MB. The same files go into the amd64 image, so it comes to about 590 MB. A later arm64 `runtime` image measured 615.9 MB (615917307 bytes). Its convertd is 5.8 MB. The paper locales then added about 3 MB: 618.9 MB with `DEFAULT_PAPER`. On 2026-11-27 the CI image job measured the `runtime` images of version 0.2.0 natively on GitHub runners: 593 MB on amd64 and 620 MB on arm64. These images include the paper locales and the macro and link lock-down.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="verification" files="Dockerfile smoke.sh ab-pages.sh corpus-check.sh" -->
 ## What is verified
 
-Before convertd had real engines, an `engine-check` image proved the engines under the production limits: a read-only root, a tmpfs on `/tmp`, user `10001:10001`, no capabilities, `no-new-privileges` and no network. It ran the M0 spike binaries. Both the image and the spikes are removed now, because the `runtime` image and the CI image job cover the same ground. On 2026-11-25 that check gave these results:
+Before convertd had real engines, an `engine-check` image proved the engines under the production limits: a read-only root, a tmpfs on `/tmp`, user `10001:10001`, no capabilities, `no-new-privileges` and no network. It ran the test programs of [docs/m0-spikes.md](../docs/m0-spikes.md). The image and those programs are not in the repository, because the `runtime` image and the CI image job cover the same ground. On 2026-11-25 that check gave these results:
 
 - **arm64, native:** a DOCX, a PPTX and an XLSX convert to PDF through `/opt/libreoffice/program`, and PDFium renders every page through `/opt/pdfium/lib`.
-- **amd64, under emulation on the arm64 Mac:** the same conversions and renders pass. Emulation proves function only, not timing.
+- **amd64, under emulation on an arm64 Mac:** the same conversions and renders pass. Emulation proves function only, not timing.
 - **Both:** no fontconfig user cache is written under `/tmp`, and `lib-check` passes.
 
-On 2026-11-26 the arm64 `runtime` image, built from `main` with the real engines, gave these results:
+On 2026-11-26 the arm64 `runtime` image, built with the real engines, gave these results:
 
 - **Start:** with a read-only root, a tmpfs on `/tmp`, no capabilities, `no-new-privileges`, `OFFICE_WORKERS=1` and `RENDER_WORKERS=2`, `/readyz` answers 200 after about 1 s.
 - **Health check:** Docker reports `healthy` about 6 s after start, and `convertd healthcheck` exits 0.
@@ -211,7 +211,7 @@ An earlier `runtime` build of the same day, with no real engines in convertd, ga
 
 These results prove conversion on arm64 under Docker. They do not prove Kubernetes or gVisor.
 
-On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a baseline image built from the same `main` without them:
+On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a baseline image built from the same source without them:
 
 - **Pages:** `ab-pages.sh` converted the 42 files of `corpus/out` to PNG pages at 72 dpi with both images. All 42 statuses and all 192 page hashes are the same, 160 of them distinct. That includes `canary/remote-image.docx`, which shows the missing-image icon.
 - **Corpus:** `corpus-bench check` passed 59 of 59 cases on both images, with the same results apart from timings. The listener control passed, and the service log had no error.
@@ -240,7 +240,7 @@ docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
 - That no fontconfig user cache is written.
 - That no file has a setuid or setgid bit. `find` runs as root in a container of its own, so that it can read every folder, and any error of `find` fails the check.
 
-After the smoke test, the job runs `corpus-check.sh`. Both gates live in `.github/actions/image-gates`, which `release.yml` runs too. `corpus-check.sh` is the `corpus-bench check` of `tools/corpus/`, every case of `corpus/expected.json`, against the image. The harness runs in a pinned Debian container inside the network namespace of the service. Only there does the canary listener see a connection from LibreOffice. On 2026-11-26 this check passed 59 of 59 cases on the arm64 image by hand. The first automatic image run on `main` passed it on amd64.
+After the smoke test, the job runs `corpus-check.sh`. Both gates live in `.github/actions/image-gates`, which `release.yml` runs too. `corpus-check.sh` is the `corpus-bench check` of `tools/corpus/`, every case of `corpus/expected.json`, against the image. The harness runs in a pinned Debian container inside the network namespace of the service. Only there does the canary listener see a connection from LibreOffice. On 2026-11-26 this check passed 59 of 59 cases on the arm64 image by hand. The CI image job then passed it on amd64.
 
 `smoke/small.docx` is the corpus entry `docx-small`, 36986 bytes. `corpus/generate.py` makes the same bytes, and its SHA-256 is in `corpus/expected.json`.
 
@@ -267,6 +267,6 @@ Only the push and publish jobs may write packages, and only the release job may 
 
 Run by hand (`workflow_dispatch`), the workflow is a dry run: the version and build jobs only, with no registry login, push or release. The push leg has not run yet.
 
-GitHub makes a new package private on its first publish, and the owner then makes it public once. On the package page, open **Package settings**, then **Danger Zone**, **Change visibility**, **Public**. GitHub cannot make a public package private again. The image's `org.opencontainers.image.source` label links the package to the repository, so the package takes the repository's access permissions, but not its visibility.
+GitHub makes a new package private on its first publish, and an administrator of the package then makes it public once. On the package page, open **Package settings**, then **Danger Zone**, **Change visibility**, **Public**. GitHub cannot make a public package private again. The image's `org.opencontainers.image.source` label links the package to the repository, so the package takes the repository's access permissions, but not its visibility.
 
 `build_docker.sh` stays for builds outside CI, such as the CJK variant. It tags `<repo>:v<x.y.z>`; the workflow tags `X.Y.Z`, without the `v`.

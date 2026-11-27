@@ -1,7 +1,7 @@
 //! The deflate work of the service on the host: the streamed PNG encoder
 //! of `worker/encode.rs` on 20 A4 pages at 150 dpi (1240 x 1754), and the
 //! pre-flight inflate of DOCX files. Each is timed 5 times; the median is
-//! printed. For comparing flate2 backends (ledger 012 P5).
+//! printed. For comparing flate2 backends.
 //!
 //! ```text
 //! cargo run --release --example encode_bench -- corpus/out/docx/*.docx

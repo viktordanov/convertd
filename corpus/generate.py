@@ -102,7 +102,7 @@ UNHASHED = {"docx-encrypted": _RANDOM_SALT, "pptx-encrypted": _RANDOM_SALT,
 # Encrypted entries: the entry whose bytes are encrypted, and the library that opens the result.
 ENCRYPTED = {"docx-encrypted": "docx-small", "pptx-encrypted": "pptx-deck20",
              "xlsx-encrypted": "xlsx-sheet3"}
-# Size bounds that keep the corpus small (the spike's small.docx is 36 KB).
+# Size bounds that keep the corpus small (docx-small is 36 KB).
 SIZE_BOUNDS = {"docx-small": (20_000, 100_000), "docx-one-page": (20_000, 100_000),
                "pptx-photos60": (25 << 20, 45 << 20)}
 
@@ -177,7 +177,7 @@ def docx_bytes(doc, edits=None):
 
 
 def spike_document(paragraphs, font="Calibri"):
-    """The spike's make_docx: Normal in a literal font, a heading every 12 paragraphs, a table."""
+    """A document of LOREM paragraphs: Normal in a literal font, a heading every 12 paragraphs, a table."""
     d = docx.Document()
     style = d.styles["Normal"]
     style.font.name = font
@@ -258,7 +258,7 @@ def docx_deflated_descriptor(ctx):
 
 
 def docx_one_page(_ctx):
-    """The spike's document cut to two paragraphs, so that it fits one page: the
+    """spike_document cut to two paragraphs, so that it fits one page: the
     file of the overhead gate (docx-small renders two pages in LibreOffice)."""
     return docx_bytes(spike_document(2))
 

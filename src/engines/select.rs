@@ -6,9 +6,10 @@
 //! - `TEST_ENGINE` unset: the office pool runs `convertd worker office`
 //!   (LibreOfficeKit) and the render pool `convertd worker render`
 //!   (PDFium).
-//! - `TEST_ENGINE=worker` (level B, feature `test-hooks`): both pools run
-//!   `convertd worker test` behind the same pools, queue and kills.
-//! - `TEST_ENGINE=fake` (level A): the in-process fakes, no pools.
+//! - `TEST_ENGINE=worker` (the fake worker, feature `test-hooks`): both
+//!   pools run `convertd worker test` behind the same pools, queue and
+//!   kills.
+//! - `TEST_ENGINE=fake` (the fake engine): the in-process fakes, no pools.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -130,7 +131,7 @@ pub async fn start(config: &Config) -> Result<Selected, String> {
     #[cfg(feature = "test-hooks")]
     if config.test_engine == Some(crate::config::TestEngine::Fake) {
         use super::fake::{FakeOffice, FakePdf, FakeReadiness};
-        tracing::warn!("using the level-A fake engines (TEST_ENGINE=fake)");
+        tracing::warn!("using the fake engines in the supervisor (TEST_ENGINE=fake)");
         return Ok(Selected {
             office: Arc::new(FakeOffice::from_markers()),
             pdf: Arc::new(FakePdf::from_markers()),
@@ -247,7 +248,9 @@ pub async fn start(config: &Config) -> Result<Selected, String> {
 #[cfg(feature = "test-hooks")]
 fn roles(level_b: bool) -> Result<(Role, Role), String> {
     Ok(if level_b {
-        tracing::warn!("using level B: both pools run convertd worker test (TEST_ENGINE=worker)");
+        tracing::warn!(
+            "using the fake worker: both pools run convertd worker test (TEST_ENGINE=worker)"
+        );
         (Role::Test, Role::Test)
     } else {
         (Role::Office, Role::Render)

@@ -48,8 +48,8 @@ speccheck() {
 echo "Emitting the spec from convertd..."
 # Built with test-hooks, like the tests and scripts/contract_test.sh, so that
 # one binary serves all three and none of them rebuilds convertd with other
-# features. The spec code has no feature gates; contract case 16 checks that
-# the served spec equals the committed one.
+# features. The spec code has no feature gates; TestServedSpecIsCommittedSpec
+# in client/contract checks that the served spec equals the committed one.
 cargo run --locked --quiet --features test-hooks --bin convertd -- openapi > "$tmp/a.json"
 cargo run --locked --quiet --features test-hooks --bin convertd -- openapi > "$tmp/b.json"
 if ! cmp -s "$tmp/a.json" "$tmp/b.json"; then

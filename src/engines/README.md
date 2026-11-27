@@ -9,9 +9,9 @@ Three duties apply to every change in this folder:
 - **Every worker starts through `Spawner::spawn`.** The spawn runs on the long-lived `convertd-spawner` thread, because on Linux the parent-death signal of a worker follows the thread that started it.
 - **The supervisor ends a worker only by SIGKILL of its process group.** The supervisor never asks a worker to shut down, so no LibreOffice teardown runs. The [worker README](../worker/README.md) gives the reason.
 
-`convertd serve` runs two pools: the office pool runs LibreOffice and the render pool runs PDFium. `select.rs` starts them, and `OfficeLok` and `PdfPdfium` implement the engine traits over them. A call that passes `WORKER_KILL_RSS_MB` kills its worker, and poison memory refuses documents that recently hung or crashed one. The soak run is not built yet, and image inputs are out of v1. [Not built yet](#not-built-yet) lists them.
+`convertd serve` runs two pools: the office pool runs LibreOffice and the render pool runs PDFium. `select.rs` starts them, and `OfficeLok` and `PdfPdfium` implement the engine traits over them. A call that passes `WORKER_KILL_RSS_MB` kills its worker, and poison memory refuses documents that recently hung or crashed one. A fault run is not built yet, and image inputs are out of v1. [Not built yet](#not-built-yet) lists them.
 
-The worker side is in [`src/worker/`](../worker/README.md), and the frames between the two sides are in [`src/ipc/`](../ipc/README.md). `fake.rs` and `fake_markers.rs` hold the level-A fakes and the `FAKE:` marker parser. This README does not cover them.
+The worker side is in [`src/worker/`](../worker/README.md), and the frames between the two sides are in [`src/ipc/`](../ipc/README.md). `fake.rs` and `fake_markers.rs` hold the fake engine and the `FAKE:` marker parser. This README does not cover them.
 
 ## Contents
 
@@ -103,7 +103,7 @@ The pool sets four metrics:
 - `convert_workers{pool,state}`, for `idle`, `busy` and `starting`. Each lease, each return and each manager event sets it under the idle lock, so the gauges agree with `/readyz`.
 - `convert_worker_restarts_total{pool,reason}`.
 - `convert_queue_depth{pool}`.
-- `convert_worker_cpu_seconds{pool,op}`, a histogram of the `cpu_us` of each reply, with buckets from 1 ms to 60 s. `op` is `convert`, `inspect`, `render`, `decrypt`, or `test` at level B. `Ping` is not recorded. A reply with an engine error is recorded, because the worker spent the CPU time. A call that times out, crashes or passes `kill_rss` sends no reply, so it records nothing. The histogram's `_sum` is the series for cores: `sum by (pool) (rate(convert_worker_cpu_seconds_sum[$__rate_interval]))` gives the cores that each pool used for its finished calls. A call adds all of its CPU time when it replies. Thus a worker that is busy on a call longer than the rate window shows as idle during the call, and above one core when the call ends. Thus use a window that is much longer than a typical call, for example 5 m.
+- `convert_worker_cpu_seconds{pool,op}`, a histogram of the `cpu_us` of each reply, with buckets from 1 ms to 60 s. `op` is `convert`, `inspect`, `render`, `decrypt`, or `test` with the fake worker. `Ping` is not recorded. A reply with an engine error is recorded, because the worker spent the CPU time. A call that times out, crashes or passes `kill_rss` sends no reply, so it records nothing. The histogram's `_sum` is the series for cores: `sum by (pool) (rate(convert_worker_cpu_seconds_sum[$__rate_interval]))` gives the cores that each pool used for its finished calls. A call adds all of its CPU time when it replies. Thus a worker that is busy on a call longer than the rate window shows as idle during the call, and above one core when the call ends. Thus use a window that is much longer than a typical call, for example 5 m.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="contract" files="pool.rs" -->
@@ -134,13 +134,13 @@ When a lease ends, `recycle_decision` uses the numbers in the worker's last repl
 
 A replacement that is `Ready` while its old worker is still leased waits outside the idle list, without a permit. It becomes leasable when the old worker leaves. A pool thus never runs more jobs at once than its size. The memory of a swap is one extra idle worker, about 250 MB for LibreOffice after its warm-up, never a second worker at its kill limit. The memory rule for a container is therefore (workers × kill) + one idle replacement per pool + 512 MiB. For the office pool that is about 256 MiB, whatever the number of office workers.
 
-With `max_jobs` at 1, a process never serves two conversions. A `Ping` and an `Inspect` are not jobs: a render pool inspects before each render, and those calls must not halve its worker's life. `OFFICE_MAX_JOBS` and `RENDER_MAX_JOBS` set each pool's limit and fall back to `WORKER_MAX_JOBS`. Without either variable, the office pool takes 200 jobs and the render pool 50. In the soak an office worker lived 20 s at 50 jobs, and its RSS at recycle did not grow with the job count. A soak on 2026-11-27 measured the 200-job default on real documents, with 1 office worker and `OFFICE_MAX_RSS_MB=1024`. On the full set of 276 documents, the RSS limits ended all 24 office workers before 200 jobs. The median worker served 7 jobs, and none served more than 40. On a lighter subset of 220 documents, 7 workers reached 200 jobs. Their RSS at recycle was 616 to 764 MB and did not grow across generations. On both sets the RSS of a new worker stayed at 240 to 246 MB. Inside one life, the idle RSS rose by about 1 MB per job on the subset and 14 MB per job on the full set. `OFFICE_MAX_RSS_MB` still recycles an office worker that grows. The manager also checks the idle workers for `max_age` every `age_check`.
+With `max_jobs` at 1, a process never serves two conversions. A `Ping` and an `Inspect` are not jobs: a render pool inspects before each render, and those calls must not halve its worker's life. `OFFICE_MAX_JOBS` and `RENDER_MAX_JOBS` set each pool's limit and fall back to `WORKER_MAX_JOBS`. Without either variable, the office pool takes 200 jobs and the render pool 50. In the 120-minute [soak test](#soak-test) of 2026-11-26, an office worker lived 20 s at 50 jobs, and its RSS at recycle did not grow with the job count. A soak on 2026-11-27 measured the 200-job default on real documents, with 1 office worker and `OFFICE_MAX_RSS_MB=1024`. On the full set of 276 documents, the RSS limits ended all 24 office workers before 200 jobs. The median worker served 7 jobs, and none served more than 40. On a lighter subset of 220 documents, 7 workers reached 200 jobs. Their RSS at recycle was 616 to 764 MB and did not grow across generations. On both sets the RSS of a new worker stayed at 240 to 246 MB. Inside one life, the idle RSS rose by about 1 MB per job on the subset and 14 MB per job on the full set. `OFFICE_MAX_RSS_MB` still recycles an office worker that grows. The manager also checks the idle workers for `max_age` every `age_check`.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="slot" files="slot.rs" -->
 ## Slot directory
 
-Each worker process gets `<workers_dir>/<pool>-<slot>/` with the subdirectories `profile`, `tmp`, `cache`, `config`, `data` and `run`, all mode 0700. `SlotDir::prepare` removes the slot and creates it again for each new process, so a file that one worker plants never reaches the next. If a profile template is set, `prepare` copies it into `profile/` and skips symbolic links and special files. The slot name uses the pool name, because at level B both pools run the `test` role.
+Each worker process gets `<workers_dir>/<pool>-<slot>/` with the subdirectories `profile`, `tmp`, `cache`, `config`, `data` and `run`, all mode 0700. `SlotDir::prepare` removes the slot and creates it again for each new process, so a file that one worker plants never reaches the next. If a profile template is set, `prepare` copies it into `profile/` and skips symbolic links and special files. The slot name uses the pool name, because with the fake worker both pools run the `test` role.
 
 `WorkerEnv` builds the environment of a worker after `env_clear()`, so no service secret such as `API_KEY` reaches a worker. A worker gets exactly these variables:
 
@@ -195,8 +195,8 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 `select::start` reads `TEST_ENGINE` and starts the engines that `convertd serve` uses:
 
 - **Unset**: the office pool runs `convertd worker office` and the render pool runs `convertd worker render`. Both warm up before `Ready`.
-- **`worker`** (level B, feature `test-hooks`): both pools run `convertd worker test`, behind the same pools, queue and kills.
-- **`fake`** (level A): the in-process fakes, with no pool.
+- **`worker`** (the fake worker, feature `test-hooks`): both pools run `convertd worker test`, behind the same pools, queue and kills.
+- **`fake`** (the fake engine): the in-process fakes, with no pool.
 
 `select::start` removes `$TMP_DIR/workers` once at start. It makes one `ReaperMode::ProcessWide` spawner for both pools, so on Linux the supervisor becomes a child subreaper. The office pool has `OFFICE_WORKERS` workers and a queue of `QUEUE_CAPACITY`. The render pool has `RENDER_WORKERS` workers and a queue of 2 × `RENDER_WORKERS`. A worker has 60 s from spawn to `Ready`.
 
@@ -207,7 +207,7 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 - `starting` while a pool has never had a `Ready` worker.
 - `degraded` when a pool had a `Ready` worker and has none now.
 
-`EngineHandle::drain` stops new leases in both pools at once. `main.rs` calls it only after the requests in flight finish, or after `SHUTDOWN_GRACE_SECONDS` runs out. A request that is still running then, and needs one more engine call, gets `Unavailable`, which is 503: for example, the inspect after an office convert. The level-B test `slow_sigterm_at_level_b_finishes_office_then_render` in `tests/ops.rs` covers a drain with requests in flight. `EngineHandle::shutdown(grace)` waits up to `grace` for the calls in flight, kills every worker and removes `$TMP_DIR/workers`.
+`EngineHandle::drain` stops new leases in both pools at once. `main.rs` calls it only after the requests in flight finish, or after `SHUTDOWN_GRACE_SECONDS` runs out. A request that is still running then, and needs one more engine call, gets `Unavailable`, which is 503: for example, the inspect after an office convert. The fake-worker test `slow_sigterm_at_level_b_finishes_office_then_render` in `tests/ops.rs` covers a drain with requests in flight. `EngineHandle::shutdown(grace)` waits up to `grace` for the calls in flight, kills every worker and removes `$TMP_DIR/workers`.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="failure" files="error.rs" -->
@@ -219,7 +219,7 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 - **Call errors**: `Timeout` stays. `Crashed` and `Protocol` become `Crashed`, because the pool killed the worker in both cases. `TooBig` becomes `LimitExceeded`.
 - **Worker errors**: the password errors keep their names. `LoadFailed`, `ExportFailed` and `EmptyDocument` become `Failed`. `Io`, `Unsupported` and `Internal` become `Internal`.
 - **Disk errors**: `DiskFull` stays apart from `LimitExceeded`. A full disk comes from other jobs and is worth a retry. `LimitExceeded` is this job's own cap and is final.
-- **Test role errors**: `FakeQueueFull` and `FakeUnavailable` become `QueueFull` and `Unavailable`, so level-B fixtures give the same statuses as level A.
+- **Test role errors**: `FakeQueueFull` and `FakeUnavailable` become `QueueFull` and `Unavailable`, so fixtures for the fake worker give the same statuses as the fake engine.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="setup" files="config.rs" -->
@@ -229,7 +229,7 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 
 The worker counts, the job, RSS and age limits, and `WORKER_KILL_RSS_MB` must be at least 1. The defaults give a 14-CPU machine 7 office and 14 render workers. An office worker holds about 250 MB at `Ready`, so a container with little memory needs explicit values. The limits count private memory only: after a few DOCX an office worker had 91 MiB private and 156 MiB of shared library pages (2026-11-27).
 
-Each pool can have its own memory limits. `OFFICE_MAX_RSS_MB` and `OFFICE_KILL_RSS_MB` set the office pool's recycle and kill limits, and `RENDER_MAX_RSS_MB` and `RENDER_KILL_RSS_MB` set the render pool's. A variable that is not set takes the shared `WORKER_MAX_RSS_MB` or `WORKER_KILL_RSS_MB`. LibreOffice needs about 10 times the memory of PDFium: in an ingestion of real documents, office workers needed up to 3281 MiB and render workers stayed under 280 MiB. On a small box, a low render limit leaves the memory to the office pool. The log line `engine pools starting` shows both kill limits.
+Each pool can have its own memory limits. `OFFICE_MAX_RSS_MB` and `OFFICE_KILL_RSS_MB` set the office pool's recycle and kill limits, and `RENDER_MAX_RSS_MB` and `RENDER_KILL_RSS_MB` set the render pool's. A variable that is not set takes the shared `WORKER_MAX_RSS_MB` or `WORKER_KILL_RSS_MB`. LibreOffice needs about 10 times the memory of PDFium: in a run of 276 real documents in arm64 Docker with 2 CPUs ([deploy/README.md](../../deploy/README.md#sizing-for-2-cpus-and-4-gib)), office workers needed up to 3281 MiB and render workers stayed under 280 MiB. On a small box, a low render limit leaves the memory to the office pool. The log line `engine pools starting` shows both kill limits.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="measurement" files="pool.rs process.rs" -->
@@ -256,9 +256,9 @@ A second measurement, made on 2026-11-26, in the arm64 `dev` image. The image ra
 
 Lease, `Ping` and return took 3.6 to 3.8 µs at p50 for every role. Over HTTP, the overhead of one DOCX conversion was about 1.3 ms beside 31.7 ms of engine time, with inspect and the probe included. These numbers are not measured under gVisor.
 
-### Soak, 2026-11-26
+### Soak test
 
-A soak of 120 minutes ran on 2026-11-26 from 00:41 UTC. It used the arm64 `runtime` image `sha256:3ccbb545d9fb`. The conditions were:
+A soak of 120 minutes ran on 2026-11-26 from 00:41 UTC. It used the arm64 `runtime` image with LibreOffice 26.8.3.1 and PDFium 8179, the image of [bench/results/2026-11-26.md](../../bench/results/2026-11-26.md). The conditions were:
 
 - The Docker VM on the same Apple M4 Max had 14 CPUs and 3.9 GiB of memory.
 - The flags were `--read-only`, `--tmpfs /tmp:size=2g`, `--cap-drop ALL` and `--security-opt no-new-privileges`.
@@ -309,6 +309,6 @@ The tails come from the single office worker. Of the 757 conversions of files un
 
 These parts do not exist yet:
 
-- A fault run. The soak run used HTTP ([Soak, 2026-11-26](#soak-2026-11-26)).
+- A fault run. The [soak test](#soak-test) used HTTP.
 
 Image assembly is out of v1, and the seam for it is removed.

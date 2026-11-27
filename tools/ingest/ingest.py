@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Load driver for a running convertd container: soak and ingestion runs.
+"""Load driver for a running convertd container: long load runs and runs on real documents.
 
 Results stay outside the repository: OUT must be a scratch folder, and no
-run output, report or document is committed. The
-documents of an ingestion are often confidential.
+run output, report or document is committed. Real
+documents are often confidential.
 
 Standard library only. It sends documents to POST /v1/convert from client
 threads, records one JSON line per request, and samples the container every

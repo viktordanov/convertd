@@ -2,9 +2,9 @@
 //!
 //! It answers `Convert`, `Inspect`, `Render` and `Decrypt` with
 //! small valid files, driven by the `FAKE:` markers of `engines::fake_markers`
-//! in the input file, so level B (`TEST_ENGINE=worker`) runs the real pool,
-//! queue, deadline and kill. `TestOp`s act out the faults the pool tests
-//! need.
+//! in the input file, so the fake worker (`TEST_ENGINE=worker`) runs the
+//! real pool, queue, deadline and kill. `TestOp`s act out the faults the
+//! pool tests need.
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -61,7 +61,7 @@ impl Behavior {
 }
 
 /// The behavior that the first `FAKE:` marker in `bytes` asks for, read
-/// with the parser that level A uses too.
+/// with the parser that the fake engine uses too.
 pub fn markers(bytes: &[u8]) -> Behavior {
     use crate::engines::fake_markers::{Marker, MarkerCode, parse};
 

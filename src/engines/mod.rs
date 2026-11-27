@@ -1,6 +1,6 @@
 //! Supervisor side of the engines: pools, queue and process control.
 //!
-//! `fake.rs` and `fake_markers.rs` hold the level-A fakes.
+//! `fake.rs` and `fake_markers.rs` hold the fake engine.
 
 pub mod call;
 pub mod config;
@@ -16,6 +16,6 @@ pub mod slot;
 
 pub use config::EngineConfig;
 
-// The level-A fakes and the shared marker parser.
+// The fake engine and the shared marker parser.
 pub mod fake;
 pub mod fake_markers;

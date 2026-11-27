@@ -5,7 +5,7 @@ The corpus is the set of test files for rs-convert, and `expected.json` records 
 Know these facts before you change anything here:
 
 - The repository commits the generator, the expectations and three small fixtures, not the test files. `corpus/generate.py` writes the files into `corpus/out/`, which git ignores.
-- `expected.json` pins a SHA-256 for 45 of the 48 files that `generate.py` writes. Linux arm64, macOS arm64 and Linux amd64 (the `corpus` workflow on `ubuntu-24.04`) gave the same bytes for the first 39. The hashes of `pptx-hidden3`, `odp-hidden` and the three `docx-glyphs-*` files come from macOS arm64, and the `corpus` workflow checks them on its next run.
+- `expected.json` pins a SHA-256 for 45 of the 48 files that `generate.py` writes. On 2026-11-27 the same bytes came out on Linux amd64, where the `corpus` workflow on `ubuntu-24.04` matched all 45 hashes, and on macOS arm64, where `corpus/check.sh` matched them.
 - Private documents never enter the repository. Git ignores `corpus/private/`.
 
 ## Contents
@@ -20,7 +20,7 @@ Know these facts before you change anything here:
 <!-- memoria:section id="overview" files="generate.py expected.json" -->
 ## What the corpus proves
 
-Each file in the corpus exercises one path through the service. The public corpus has one file for each engine path and container, except the legacy `doc`, `xls` and `ppt` formats that step 7 adds. It also has a positive and a negative case for each warning, an encrypted DOCX, deck and sheet, three macro files with a VBA project, six hostile files and three network canaries. Two DOCX files carry a data descriptor on `word/document.xml`, as Go's `archive/zip` writes it. LibreOffice 26.8.3.1 cannot load the stored one, so `docx-stored-descriptor` expects `422 CONVERSION_FAILED` until a fix lands. `docx-deflated-descriptor` marks the boundary and expects 200. The image's engines confirmed both answers on 2026-11-26.
+Each file in the corpus exercises one path through the service. The public corpus has one file for each engine path and container, except the legacy `doc`, `xls` and `ppt` formats, which are planned as derived files. It also has a positive and a negative case for each warning, an encrypted DOCX, deck and sheet, three macro files with a VBA project, six hostile files and three network canaries. Two DOCX files carry a data descriptor on `word/document.xml`, as Go's `archive/zip` writes it. LibreOffice 26.8.3.1 cannot load the stored one, so `docx-stored-descriptor` expects `422 CONVERSION_FAILED` until a fix lands. `docx-deflated-descriptor` marks the boundary and expects 200. The image's engines confirmed both answers on 2026-11-26.
 
 `corpus-bench check` runs every case against the service. A pass of every case will prove these facts:
 
@@ -47,7 +47,7 @@ The `origin` field of each entry in `expected.json` names its kind:
 | `hostile` | `generate.py --hostile`: the zip bomb, the XML entity bomb, the PNG pixel bomb, a truncated DOCX, HTML named `.doc` and a DOCX with two links to local files | No, written to `out/hostile/` | Pinned |
 | `fixture` | Committed bytes that no tool here can make, under `fixtures/` | Yes | Required, with a `licence` record |
 | `derived` | LibreOffice, from a generated file (`doc`, `xls`, `ppt`) | No | A hash or an `unhashed` reason, as for generated files |
-| `private` | The owner, outside the repository | Never | Not required |
+| `private` | Real documents from outside the repository | Never | Not required |
 
 The three network canaries are `generated` files that `--hostile` also writes, into `out/canary/`. Each one asks LibreOffice to connect to the canary listener at `127.0.0.1:47123`: a Basic macro on load, an external image link and a `WEBSERVICE` formula. The service must not bind that address.
 
@@ -83,7 +83,7 @@ Two generator runs on one machine give the same bytes for every file except `doc
 
 The generator gets repeatable bytes in three ways. It rewrites every zip with a fixed time stamp, fixed attributes and deflate level 6, and it keeps the entry order and the part bytes. It replaces the save time that openpyxl writes into `docProps/core.xml`. It makes image noise from a seeded `random.Random`, not from Pillow's `effect_noise`, which uses C `rand()`.
 
-Deflate output can depend on the zlib build. The `generator` block of `expected.json` records the environment of the last `--write-hashes`: Python 3.13.5, zlib 1.3.1, Linux-aarch64, in the arm64 `dev` image. macOS arm64 with Python 3.13.18 and zlib 1.2.12 gives the same bytes for every file. `--check` prints a difference in environment first, then compares. The `corpus` workflow runs `corpus/check.sh` on `ubuntu-24.04` (x86_64). It passed on `main` with the 37 hashes of that time, and it checks the two data-descriptor files on its next run.
+Deflate output can depend on the zlib build. The `generator` block of `expected.json` records the environment of the last `--write-hashes`: Python 3.13.5, zlib 1.3.1, Linux-aarch64, in the arm64 `dev` image. macOS arm64 with Python 3.13.18 and zlib 1.2.12 gives the same bytes for every file. `--check` prints a difference in environment first, then compares. The `corpus` workflow runs `corpus/check.sh` on `ubuntu-24.04` (x86_64). On 2026-11-27 it passed with every hash in `expected.json`.
 
 `requirements.txt` pins every package, with a SHA-256 for every wheel. A change to a pin can change the bytes, so record the hashes again after it.
 

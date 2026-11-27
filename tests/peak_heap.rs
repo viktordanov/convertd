@@ -1,6 +1,6 @@
 //! Memory per request does not grow with the file size. Its own test
 //! binary, so the counting allocator below
-//! sees only this process: the in-process server with the level-A fakes
+//! sees only this process: the in-process server with the fake engine
 //! and a raw TCP client that allocates nothing per byte.
 //!
 //! The tests in this file share the allocator's counters, so they take
@@ -211,8 +211,8 @@ fn peak_for(server: &Server, size: usize, chunk: &mut [u8; 64 * 1024]) -> usize 
 
 /// Every peak ≤ 4 MiB, and the peak does not grow with the size.
 ///
-/// The growth is checked between 16 and 100 MiB, not from 1 MiB as the
-/// plan states. Every size peaks at 3.06 to 3.15 MB (macOS arm64, debug,
+/// The growth is checked between 16 and 100 MiB, not from 1 MiB.
+/// Every size peaks at 3.06 to 3.15 MB (macOS arm64, debug,
 /// 2026-11-26). The two levels are one buffer of multer or hyper more or
 /// less at the peak. Before the upload was copied into pieces of its own,
 /// each queued slice kept a whole multer buffer of about 496 KiB alive:

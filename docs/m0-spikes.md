@@ -1,8 +1,8 @@
-# M0 spike results
+# Spike measurements (2026-11-25)
 
 Run on 25 November 2026 on an Apple-silicon laptop. Linux results come from
 Docker Desktop (linux/arm64, `--cpus 2 --memory 2g` unless stated). The corpus
-is synthetic (`spikes/corpus/make_corpus.py`), so absolute numbers are a
+is synthetic (its generator is not in this repository), so absolute numbers are a
 lower bound for real documents. Use them for the decisions below, not as
 performance targets.
 
@@ -11,7 +11,7 @@ performance targets.
 | 1 | Does the Go facade build against the real generated client? | **Go** |
 | 2 | Can the Rust server emit the spec that oapi-codegen consumes? | **Go, with three rules** |
 | 3 | Does LibreOfficeKit from Rust work on LibreOffice 26.8? | **Go** |
-| 4 | PDFium throughput per image format | **Go**; the design's encoding assumptions change |
+| 4 | PDFium throughput per image format | **Go**; the earlier encoding assumptions change |
 | 5 | Cold `soffice` against warm LibreOfficeKit | Warm is 3 to 6 times faster on small files |
 | - | Kernel sandbox on the target platform | **Still unknown.** Cannot be tested here |
 
@@ -26,7 +26,7 @@ performance targets.
 
 ## 2. Code-first spec: axum + utoipa → oapi-codegen
 
-Spike: `spikes/openapi-codefirst/`. A stub axum server with the real DTOs
+Test program (not in this repository): a stub axum server with the real DTOs
 emits the spec, and oapi-codegen generates Go from it.
 
 What works:
@@ -68,7 +68,7 @@ stays as the reference until then.
 
 ## 3. LibreOfficeKit 26.8.3 from Rust
 
-Spike: `spikes/lok/`. `libreofficekit` 0.5.0 crate, TDF 26.8.3 `.deb` set on
+Test program (not in this repository): `libreofficekit` 0.5.0 crate, TDF 26.8.3 `.deb` set on
 `debian:trixie-slim`.
 
 | Check | Result |
@@ -98,7 +98,7 @@ Init itself takes about 60 ms. The first document then costs about 90 ms
 more than later ones (filter and font loading). So a worker is warm after
 about 150 ms plus one small conversion.
 
-**What this means for the "single-use workers" proposal:** a spare worker
+**What this means for single-use workers:** a spare worker
 costs about 150 ms of CPU and about 100 to 200 MB of memory per conversion,
 paid off the request path. Recycling after N jobs costs less, and no leak
 showed up. Measure again on the real corpus before choosing.
@@ -110,7 +110,7 @@ Profile it before tuning anything else.
 
 ## 4. PDFium rendering and encoding
 
-Spike: `spikes/pdfium/`. `pdfium-render` 0.9.6 with bblanchon
+Test program (not in this repository): `pdfium-render` 0.9.6 with bblanchon
 `chromium/8179`, one process, one thread, one CPU.
 
 - Binding the library takes about 1 ms and opening a PDF is close to 0,
@@ -138,7 +138,7 @@ What this changes:
   and lossless WebP are 5 to 7 times larger than JPEG. On text pages they
   are fast and compact.
 - **PNG with fast compression is not 20 times slower than JPEG** on these
-  inputs. It is about as fast or faster. The design's figure came from default
+  inputs. It is about as fast or faster. The earlier figure came from default
   PNG compression.
 - **Lossy WebP is the slow format**, 10 to 16 times slower than
   `jpeg-encoder`. Keep it but document the cost, or cap its DPI.
@@ -150,7 +150,7 @@ What this changes:
 
 The cold-against-warm numbers above come from this machine, not from the
 existing production pipeline, which is not available here. They are a
-stand-in for the baseline. M0 still needs the real baseline on real documents.
+stand-in for the baseline. The real baseline on real documents is not measured.
 
 ## Still unknown
 

@@ -2,8 +2,8 @@
 """Summarise one ingest.py run directory, with anonymous figures only.
 
 Results stay outside the repository: OUT must be a scratch folder, and no
-run output, report or document is committed. The
-documents of an ingestion are often confidential.
+run output, report or document is committed. Real
+documents are often confidential.
 
   analyze.py RUN_DIR [--warmup-min M]
 

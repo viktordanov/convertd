@@ -24,7 +24,7 @@ test-hooks = []
 [dependencies]
 # HTTP server. No http2, no multipart: multer is used directly.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
-# S4: connections served with a timer, for the header read timeout. Both
+# Connections served with a timer, for the header read timeout. Both
 # are axum's own, with the features it enables.
 hyper = { version = "1.13.0", features = ["http1", "server"] }
 hyper-util = { version = "0.1.21", features = ["tokio", "server", "service"] }
@@ -56,7 +56,7 @@ crc32fast = "1.5.6"
 flate2 = "1.1.11"
 memchr = "2.8.3"
 quick-xml = "0.41.0"
-# GLYPHS_MISSING (F2): Script, General_Category and Default_Ignorable_Code_Point,
+# GLYPHS_MISSING: Script, General_Category and Default_Ignorable_Code_Point,
 # compiled in; already in the lock through idna.
 icu_properties = "2.4.0"
 # tar.zst bundles: one zstd frame at level 1.
@@ -74,7 +74,7 @@ libreofficekit = "0.5.0"
 pdfium-render = { version = "0.9.6", default-features = false, features = ["pdfium_latest"] }
 jpeg-encoder = "0.7.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
-# PNG rows stream into the encoder, so a page is never copied to RGB whole (P2).
+# PNG rows stream into the encoder, so a page is never copied to RGB whole.
 png = "0.18.1"
 
 [dev-dependencies]

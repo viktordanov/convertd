@@ -880,7 +880,7 @@ mod tests {
 
     #[test]
     fn v2_skips_a_family_the_document_embeds() {
-        // F1: LibreOffice uses the font that the DOCX embeds, so nothing is
+        // LibreOffice uses the font that the DOCX embeds, so nothing is
         // substituted. Names compare as the catalog compares them.
         let fonts = catalog();
         let facts = SourceFacts {
@@ -901,7 +901,7 @@ mod tests {
 
     #[test]
     fn glyphs_missing_counts_per_script() {
-        // F2: Thai and Ethiopic letters that no installed face covers; the
+        // Thai and Ethiopic letters that no installed face covers; the
         // Latin text is covered.
         let fonts = latin_coverage();
         let facts = SourceFacts {

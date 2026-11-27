@@ -222,7 +222,7 @@ pub fn micros(d: Duration) -> u64 {
 /// Whether `op` counts towards `WORKER_MAX_JOBS`: a conversion does. A
 /// `Ping` and an `Inspect` (the page count, the sizes and the probe before
 /// a render) do not, so a render pool does not recycle twice as often as
-/// its jobs. `Test` stands in for a conversion at level B.
+/// its jobs. `Test` stands in for a conversion with the fake worker.
 pub fn counts_as_job(op: &Op) -> bool {
     !matches!(op, Op::Ping | Op::Inspect(_))
 }

@@ -1,4 +1,4 @@
-//! Level-A fake engines: [`FakeOffice`] and [`FakePdf`] behind
+//! The fake engine: [`FakeOffice`] and [`FakePdf`] behind
 //! the domain traits, selected with `TEST_ENGINE=fake` in `test-hooks`
 //! builds. Also [`Unwired`], an engine that answers every call with
 //! `Unavailable`, for in-process tests that need no engine.
@@ -7,7 +7,7 @@
 //! `FAKE:TOO_MANY_REQUESTS` or from the service's own permit, a 504 from
 //! the fake's own deadline check or from the handler's backstop
 //! (`FAKE:HANG`). Tests that mean to prove queue or kill behaviour belong
-//! at level B (`convertd worker test`).
+//! with the fake worker (`TEST_ENGINE=worker`, `convertd worker test`).
 //!
 //! In-process tests set a [`FakeBehavior`] directly. With `test-hooks`,
 //! `FakeOffice::from_markers` and `FakePdf::from_markers` read the `FAKE:`
@@ -640,7 +640,7 @@ impl Readiness for FakeReadiness {
 
 /// No engine: every call is `Unavailable` (503) and readiness stays
 /// `starting`. In-process tests use it where no engine is needed; `serve`
-/// runs the real pools or level B (`engines::select`).
+/// runs the real pools or the fake worker (`engines::select`).
 pub struct Unwired;
 
 #[async_trait]

@@ -49,21 +49,21 @@ The integration tests:
 
 | File | What it tests | Needs `test-hooks` |
 | --- | --- | --- |
-| `convert_pdf.rs` | `/v1/convert` through the level-A fakes: detection, the response, the backstop, the permit, the response stall and floor, a cut bundle, the deadline before packaging, owner and user passwords of encrypted PDFs, and an early `401` or `413` with a lingering close | One test, for the markers |
-| `convert_bundle.rs` | `output=images` and `output=bundle` through the level-A fakes: the tar.zst archive, page selection, render limits, warnings, and the disk budget that open downloads give back | No |
+| `convert_pdf.rs` | `/v1/convert` through the fake engine: detection, the response, the backstop, the permit, the response stall and floor, a cut bundle, the deadline before packaging, owner and user passwords of encrypted PDFs, and an early `401` or `413` with a lingering close | One test, for the markers |
+| `convert_bundle.rs` | `output=images` and `output=bundle` through the fake engine: the tar.zst archive, page selection, render limits, warnings, and the disk budget that open downloads give back | No |
 | `detect.rs` | Format detection from the bytes, with ZIP and OLE2 files that the test builds, hostile OLE2 directories included | No |
 | `errors.rs` | Errors over HTTP: auth, request IDs, fallbacks and the panic layer | No |
-| `ops.rs` | The probes, `/v1/capabilities`, `/metrics`, `convertd healthcheck` and the drain. On Linux, also that another process of the server's UID cannot read the environment of the server or of `convertd healthcheck` | Four tests: `SIGTERM` on the binary at level A and level B, and the two environment checks |
-| `observability.rs` | Every metric that `deploy/observability/` names is on `/metrics`: the scan of the files, and a scrape of the binary at level B after a few requests | The scrape only |
+| `ops.rs` | The probes, `/v1/capabilities`, `/metrics`, `convertd healthcheck` and the drain. On Linux, also that another process of the server's UID cannot read the environment of the server or of `convertd healthcheck` | Four tests: `SIGTERM` on the binary with the fake engine and with the fake worker, and the two environment checks |
+| `observability.rs` | Every metric that `deploy/observability/` names is on `/metrics`: the scan of the files, and a scrape of the binary with the fake worker after a few requests | The scrape only |
 | `openapi_spec.rs` | The cheap invariants of the spec that `convertd openapi` emits | No |
 | `upload.rs` | The streamed upload: digests, part rules, caps, the disk budget, and stalled, slow and vanished clients | No |
-| `pool.rs` | The worker pool with `test` workers (level B), including the RSS kill of a worker during its call | Yes |
+| `pool.rs` | The worker pool with `test` workers (the fake worker), including the RSS kill of a worker during its call | Yes |
 | `process.rs` | Spawning, scoped reaping and process-group kills. Some cases run on Linux only | Yes |
 | `not_dumpable.rs` | A `test` worker cannot read the environment of a supervisor that is not dumpable, and the supervisor still reads its own `/proc` entries and the worker's RSS. Linux only, in a binary of its own, because the flag stays on the test process. It skips when the process has `CAP_SYS_PTRACE` | Yes |
 | `reap_race.rs` | A worker that the process-wide reaper finds only in its stray pass still has its process group killed. Linux only, in a binary of its own, because the stray pass waits on every child of the test process | Yes |
 | `oom_kill.rs` | A real kernel OOM kill of a worker gives `LimitExceeded` at once, with no retry and no poison strike. Linux with cgroup v2 only, in a container with a memory limit and `CONVERTD_MEMORY_LIMIT_MB` set to it. Otherwise it prints `skipped` | Yes |
 | `worker_test_role.rs` | `convertd worker test`, driven over its pipes | Yes |
-| `engines_poison.rs` | The poison memory in the `OfficeLok` and `PdfPdfium` adapters, with `test` workers (level B) | Yes |
+| `engines_poison.rs` | The poison memory in the `OfficeLok` and `PdfPdfium` adapters, with `test` workers (the fake worker) | Yes |
 | `engines_office.rs` | The office worker with the real LibreOffice, through the pool and the `OfficeEngine` adapter | No |
 | `engines_render.rs` | The render worker with the real PDFium, through the pool and the `PdfEngine` adapter | No |
 | `peak_heap.rs` | Heap per request with a counting allocator: the peak does not grow from 16 MiB to 100 MiB uploads, a small request stays under 408 allocations, and a hostile OLE2 upload stays bounded during detection | No |
@@ -71,7 +71,7 @@ The integration tests:
 
 The engine tests need `LO_PROGRAM_DIR` with `soffice.bin`, `PDFIUM_LIB_DIR` with `libpdfium.so`, or both. Some also need `CONVERTD_CORPUS_DIR`, the output folder of `corpus/generate.py`. If a variable is not set, or its folder does not hold that file, the test prints `skipped` and passes without a check. One exception: when `CONVERTD_CORPUS_DIR` is set, a missing corpus file fails the encrypted-file test in `engines_office.rs`, so a renamed corpus file cannot hide. Thus a pass on a host without the engines proves nothing about the engines.
 
-The RSS measurement runs only on request, in the dev image, against a release build with the real pools: `cargo test --release --test rss_linux -- --ignored --nocapture`. It runs three rounds (`RSS_ROUNDS`) of 1 000 requests each: PDFs of 15 KB to 20 MB and a small DOCX, as pdf, images and bundle. It checks every reading against 30 MB, and the growth from the first round to the last against 1 MiB per later round, on average, because single rounds can swing by more than 1 MiB. It prints the reading after the first round as a multiple of the reading after start. The first target was at most 1.5 ×. It is missed and accepted: the first requests fault in code pages and malloc arenas, and the readings stay flat after that.
+The RSS measurement runs only on request, in the dev image, against a release build with the real pools: `cargo test --release --test rss_linux -- --ignored --nocapture`. It runs three rounds (`RSS_ROUNDS`) of 1 000 requests each: PDFs of 15 KB to 20 MB and a small DOCX, as pdf, images and bundle. It checks every reading against 30 MB, and the growth from the first round to the last against 1 MiB per later round, on average, because single rounds can swing by more than 1 MiB. It prints the reading after the first round as a multiple of the reading after start. That multiple is more than 1.5 ×: the first requests fault in code pages and malloc arenas, and the readings stay flat after that. Thus the test prints this multiple and does not check it.
 
 On 2026-11-27, in the arm64 dev image with one office worker and one render worker and `RSS_ROUNDS=10`, the supervisor used 7.6 MB after start and 18.9 to 20.1 MB after each of the 10 rounds. The readings are flat after the first round, so the growth is warm-up and not a leak.
 
@@ -83,28 +83,28 @@ On 2026-11-27, in the arm64 dev image with one office worker and one render work
 
 Two fakes replace the engines at two depths. Both read the same markers.
 
-### Level A
+### Fake engine
 
-Level A (`TEST_ENGINE=fake`) replaces the engines inside the supervisor process. `FakeOffice` and `FakePdf` in `src/engines/fake.rs` implement the engine traits. Level A has no pool, no queue, no worker process and no kill.
+The fake engine (`TEST_ENGINE=fake`) replaces the engines inside the supervisor process. `FakeOffice` and `FakePdf` in `src/engines/fake.rs` implement the engine traits. The fake engine has no pool, no queue, no worker process and no kill.
 
-In-process tests set a `FakeBehavior` on the fake directly and need no feature. `convertd serve` with `TEST_ENGINE=fake` reads markers from each upload instead. Level A tests the request path: the upload, detection, the options, the status codes and the headers.
+In-process tests set a `FakeBehavior` on the fake directly and need no feature. `convertd serve` with `TEST_ENGINE=fake` reads markers from each upload instead. Tests with the fake engine cover the request path: the upload, detection, the options, the status codes and the headers.
 
-At level A, a `429` comes from a marker or from the service's own permit. A `504` comes from the deadline check of the fake or from the backstop of the handler. A test that proves queue or kill behavior belongs at level B.
+With the fake engine, a `429` comes from a marker or from the service's own permit. A `504` comes from the deadline check of the fake or from the backstop of the handler. A test that proves queue or kill behavior uses the fake worker.
 
-### Level B
+### Fake worker
 
-Level B (`TEST_ENGINE=worker`) runs `convertd worker test` as a real worker process behind the real pool. The test worker answers `Convert`, `Inspect`, `Render` and `Decrypt` with small valid files, driven by the markers. The queue, the deadline and the kill are real. The test worker also acts out the faults that the pool tests need.
+The fake worker (`TEST_ENGINE=worker`) runs `convertd worker test` as a real worker process behind the real pool. The test worker answers `Convert`, `Inspect`, `Render` and `Decrypt` with small valid files, driven by the markers. The queue, the deadline and the kill are real. The test worker also acts out the faults that the pool tests need.
 
 `pool.rs` and `process.rs` drive the test worker directly, through the pool and the spawner. `engines_poison.rs` drives it through the engine adapters. `convertd serve` with `TEST_ENGINE=worker` runs both pools with test workers. `ops.rs` starts it that way in `slow_sigterm_at_level_b_finishes_office_then_render`.
 
 ### Markers
 
-A marker is a string anywhere in the first 1 MiB of the input file, and the first marker in the file wins. Both levels read markers with `engines::fake_markers::parse`. The markers are:
+A marker is a string anywhere in the first 1 MiB of the input file, and the first marker in the file wins. Both fakes read markers with `engines::fake_markers::parse`. The markers are:
 
 - `FAKE:DELAY_MS=<n>` answers after `n` milliseconds, never past the deadline.
 - `FAKE:PAGES=<n>` gives a PDF with `n` pages.
 - `FAKE:HANG` never answers.
-- `FAKE:PANIC` panics. Level A answers `500`, and a level-B worker exits with code 101.
+- `FAKE:PANIC` panics. The fake engine answers `500`, and the fake worker exits with code 101.
 - `FAKE:<CODE>` fails with that error code: `PASSWORD_REQUIRED`, `INVALID_PASSWORD`, `LIMIT_EXCEEDED`, `CONVERSION_FAILED`, `TOO_MANY_REQUESTS`, `SERVICE_UNAVAILABLE` or `INTERNAL_ERROR`.
 
 A fixture that must get to the office queue is a DOCX with the marker in a stored, uncompressed `word/document.xml`. Compression hides the marker bytes from the parser.

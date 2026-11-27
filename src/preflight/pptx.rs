@@ -136,7 +136,7 @@ pub(super) fn scan(
     let mut themes: HashMap<String, ThemeFonts> = HashMap::new();
     let mut budget = FONT_SCAN_CAP;
     let mut found = BTreeSet::new();
-    // E4's slide list decides which slides are hidden; without one, every
+    // The slide list decides which slides are hidden; without one, every
     // slide's text counts (a spurious warning at worst, never a missed one).
     let hidden: Vec<u32> = facts
         .slides

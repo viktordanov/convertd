@@ -14,7 +14,7 @@ import (
 	"github.com/viktordanov/rs-convert/client/convert"
 )
 
-// The level-B cases: each runs a server of its own
+// The fake-worker cases: each runs a server of its own
 // with TEST_ENGINE=worker, so both pools run `convertd worker test` behind the
 // real supervisor pool. The 504 then comes from the real deadline and kill,
 // and the 429 from the real office queue. The log is JSON (LOG_MODE=prod), so
@@ -61,7 +61,7 @@ func number(v any) float64 {
 	return f
 }
 
-// Case 14, level B: the deadline kills the office worker, the call answers
+// Case 14, fake worker: the deadline kills the office worker, the call answers
 // 504, and the pool starts a replacement.
 func TestLevelBTimeoutKillsAndReplaces(t *testing.T) {
 	t.Parallel()
@@ -101,7 +101,7 @@ func TestLevelBTimeoutKillsAndReplaces(t *testing.T) {
 	_ = res.Body.Close()
 }
 
-// Case 15b, level B: one office worker, a queue of one and a 1 s queue wait.
+// Case 15b, fake worker: one office worker, a queue of one and a 1 s queue wait.
 // A holds the worker; of B and C, one waits in the queue until its 1 s wait
 // ends and the other finds the queue full. Both get 429; which is which is
 // not asserted.

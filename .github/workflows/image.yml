@@ -87,7 +87,7 @@ jobs:
             client/contract/go.sum
       - name: Generated files are current
         run: ./generate.sh --check
-      - name: Contract tests (level A fake)
+      - name: Contract tests (fake engine)
         run: scripts/contract_test.sh
 
   test-full:

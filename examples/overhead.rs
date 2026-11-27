@@ -1,9 +1,9 @@
 //! Request overhead from `Server-Timing`: the check with the
-//! level-A fakes in-process, and the benchmark of record against a
+//! fake engine in-process, and the measurement against a
 //! running server or image (`src/README.md`, Measurement).
 //!
 //! ```text
-//! # In-process, level-A fakes
+//! # In-process, the fake engine
 //! cargo run --release --example overhead -- --requests 5000 --warmup 500 --input docx
 //! cargo run --release --example overhead -- --input docx --engine-ms 30
 //! cargo run --release --example overhead -- --cold 200
@@ -97,7 +97,7 @@ struct Args {
     #[arg(long)]
     options: Option<String>,
     /// A running server, `http://host:port`. Without it the server runs
-    /// in-process with the level-A fakes.
+    /// in-process with the fake engine.
     #[arg(long)]
     url: Option<String>,
     /// The API key for `--url`; defaults to `$CONVERT_API_KEY`.

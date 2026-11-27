@@ -21,9 +21,8 @@ extra=()
 [[ "${mode}" == dev ]] && extra+=(locales procps)
 
 apt-get update
-# Shared libraries that the M0 spike image needed (docs/m0-spikes.md). The spike named
-# libglib2.0-0; trixie's real package is libglib2.0-0t64 (the 64-bit time_t rename), which
-# provides the old name.
+# Shared libraries that LibreOffice needs beyond debian:trixie-slim. For libglib2.0-0, trixie's
+# real package is libglib2.0-0t64 (the 64-bit time_t rename), which provides the old name.
 apt-get install -y --no-install-recommends \
   fontconfig libxinerama1 libdbus-1-3 libcairo2 libnss3 libxslt1.1 libcups2 libglib2.0-0t64 \
   libsm6 libice6 libxrender1 libx11-xcb1 \

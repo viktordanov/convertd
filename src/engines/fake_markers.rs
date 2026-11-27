@@ -1,5 +1,5 @@
-//! The `FAKE:` marker grammar, shared by level A (`engines::fake`) and
-//! level B (`convertd worker test`).
+//! The `FAKE:` marker grammar, shared by the fake engine (`engines::fake`)
+//! and the fake worker (`convertd worker test`).
 //!
 //! A pure function over bytes: no I/O, no runtime, no engine types, so a
 //! worker without tokio can call it and map the result to its own errors.
@@ -10,8 +10,8 @@
 //!   deadline);
 //! - `FAKE:PAGES=<n>`: the PDF has `n` pages (`n` ≥ 1);
 //! - `FAKE:HANG`: never answer, ignoring the deadline;
-//! - `FAKE:PANIC`: panic (level A: the handler's panic layer gives 500;
-//!   level B: the worker dies with 101); the test worker uses it;
+//! - `FAKE:PANIC`: panic (the fake engine: the handler's panic layer gives
+//!   500; the fake worker: the worker dies with 101); the test worker uses it;
 //! - `FAKE:<CODE>`: fail with that code, one of [`MarkerCode`].
 //!
 //! The first marker by position wins. A `FAKE:` that is not followed by
