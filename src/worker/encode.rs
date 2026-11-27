@@ -154,6 +154,74 @@ impl Encoder {
     }
 }
 
+/// A deterministic A4-like page as a BGRA bitmap, for the encoder bench
+/// (`examples/encode_bench.rs`) and the fidelity test: a white sheet with
+/// lines of dark glyph-like runs, a grey table grid, and a colour block
+/// with a gradient and noise, as a photo would be.
+#[doc(hidden)]
+pub fn sample_page(width: u32, height: u32) -> Vec<u8> {
+    let (w, h) = (width as usize, height as usize);
+    let mut bgra = vec![255u8; w * h * 4];
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let put = |x: usize, y: usize, px: [u8; 4], bgra: &mut [u8]| {
+        let at = (y * w + x) * 4;
+        bgra[at..at + 4].copy_from_slice(&px);
+    };
+    let margin = w / 12;
+    // Text: lines of 12 px glyph rows, 20 px apart, in the upper half.
+    let mut y = h / 12;
+    while y + 12 < h / 2 {
+        let mut x = margin;
+        while x + 8 < w - margin {
+            let word = 3 + (next() % 9) as usize;
+            for g in 0..word {
+                let gx = x + g * 7;
+                if gx + 6 >= w - margin {
+                    break;
+                }
+                let shape = next();
+                for dy in 0..12 {
+                    for dx in 0..6 {
+                        if (shape >> ((dy * 6 + dx) % 64)) & 1 == 1 {
+                            let ink = 20 + (next() % 40) as u8;
+                            put(gx + dx, y + dy, [ink, ink, ink, 255], &mut bgra);
+                        }
+                    }
+                }
+            }
+            x += word * 7 + 7;
+        }
+        y += 20;
+    }
+    // A table: grey rules every 40 px across a band.
+    for row in (h / 2..h / 2 + h / 6).step_by(40) {
+        for x in margin..w - margin {
+            put(x, row, [160, 160, 160, 255], &mut bgra);
+        }
+    }
+    for col in (margin..w - margin).step_by(w / 8) {
+        for y in h / 2..h / 2 + h / 6 {
+            put(col, y, [160, 160, 160, 255], &mut bgra);
+        }
+    }
+    // A photo: a gradient with noise in the lower part.
+    for y in h * 3 / 4..h * 11 / 12 {
+        for x in margin..w - margin {
+            let n = (next() % 24) as u8;
+            let r = ((x * 255 / w) as u8).saturating_add(n);
+            let g = ((y * 255 / h) as u8).saturating_add(n / 2);
+            put(x, y, [128u8.saturating_add(n), g, r, 255], &mut bgra);
+        }
+    }
+    bgra
+}
+
 /// The zlib level of a streamed PNG.
 ///
 /// Not fdeflate, which the whole-page encoder uses: png's StreamWriter
@@ -462,6 +530,29 @@ mod tests {
             .get_pixel(10, 20)
             .0;
         assert_eq!(pixel, [200, 20, 10], "R and B swapped");
+    }
+
+    /// A page at 150 dpi on A4 streams through zlib and decodes back to
+    /// exactly the input pixels, whatever deflate backend flate2 uses.
+    #[test]
+    fn a_streamed_a4_page_decodes_to_its_pixels() {
+        let (w, h) = (1240, 1754);
+        let bgra = sample_page(w, h);
+        assert!(
+            stored_png_len(w, h) > WHOLE_PAGE_PNG,
+            "the page must stream"
+        );
+        let mut encoder = Encoder::new();
+        let png = encoder.encode(ImageFormat::Png, &bgra, w, h, 85).unwrap();
+        let decoded = image::load_from_memory(png).unwrap().to_rgb8();
+        assert_eq!(decoded.dimensions(), (w, h));
+        let want: Vec<u8> = bgra
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[2], p[1], p[0]])
+            .collect();
+        assert!(decoded.as_raw() == &want, "the pixels changed");
     }
 
     /// The peak heap of encoding one page, before and after this change.
