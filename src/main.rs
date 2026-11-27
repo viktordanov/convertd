@@ -84,6 +84,13 @@ fn openapi() -> ExitCode {
 }
 
 fn healthcheck() -> ExitCode {
+    // The image's HEALTHCHECK starts this probe with the container's
+    // environment, API_KEY included, and the workers' UID: close it to
+    // them as `serve` does, before it waits for /readyz.
+    if let Err(err) = convertd::engines::process::set_not_dumpable() {
+        eprintln!("convertd healthcheck: failed to mark the probe not dumpable: {err}");
+        return ExitCode::FAILURE;
+    }
     let port = match config::port(&Env::from_process()) {
         Ok(port) => port,
         Err(err) => {

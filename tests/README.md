@@ -53,7 +53,7 @@ The integration tests:
 | `convert_bundle.rs` | `output=images` and `output=bundle` through the level-A fakes: the tar.zst archive, page selection, render limits, warnings, and the disk budget that open downloads give back | No |
 | `detect.rs` | Format detection from the bytes, with ZIP and OLE2 files that the test builds, hostile OLE2 directories included | No |
 | `errors.rs` | Errors over HTTP: auth, request IDs, fallbacks and the panic layer | No |
-| `ops.rs` | The probes, `/v1/capabilities`, `/metrics`, `convertd healthcheck` and the drain. On Linux, also that another process of the server's UID cannot read the server's environment | Three tests: `SIGTERM` on the binary at level A and level B, and the environment check |
+| `ops.rs` | The probes, `/v1/capabilities`, `/metrics`, `convertd healthcheck` and the drain. On Linux, also that another process of the server's UID cannot read the environment of the server or of `convertd healthcheck` | Four tests: `SIGTERM` on the binary at level A and level B, and the two environment checks |
 | `observability.rs` | Every metric that `deploy/observability/` names is on `/metrics`: the scan of the files, and a scrape of the binary at level B after a few requests | The scrape only |
 | `openapi_spec.rs` | The cheap invariants of the spec that `convertd openapi` emits | No |
 | `upload.rs` | The streamed upload: digests, part rules, caps, the disk budget, and stalled, slow and vanished clients | No |

@@ -826,9 +826,20 @@ fn the_server_environment_is_closed_to_its_own_uid() {
         eprintln!("skipped: this process has CAP_SYS_PTRACE");
         return;
     }
-    let served = Served::start("not-dumpable", &[("TEST_ENGINE", "fake")]);
+    let mut served = Served::start("not-dumpable", &[("TEST_ENGINE", "fake")]);
     let err = std::fs::read(format!("/proc/{}/environ", served.child.id())).unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{err}");
+    // Denied, or hidden by procfs `hidepid=2`; the server still runs.
+    assert!(
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+        ),
+        "{err}"
+    );
+    assert!(
+        served.child.try_wait().unwrap().is_none(),
+        "the server exited"
+    );
     let metrics = served.get("/metrics");
     for gauge in [
         "convert_supervisor_rss_bytes",
@@ -841,4 +852,53 @@ fn the_server_environment_is_closed_to_its_own_uid() {
             "{gauge} is missing or 0"
         );
     }
+}
+
+#[cfg(all(target_os = "linux", feature = "test-hooks"))]
+/// The image's HEALTHCHECK runs `convertd healthcheck` with the container's
+/// environment and the workers' UID. While it waits for `/readyz`, its
+/// environment is closed to that UID too.
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test runs the binary directly; no supervisor reaper exists here"
+)]
+fn the_healthcheck_environment_is_closed_to_its_own_uid() {
+    let caps = std::fs::read_to_string("/proc/self/status").unwrap();
+    let ptrace_any = caps
+        .lines()
+        .find_map(|l| l.strip_prefix("CapEff:"))
+        .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+        .is_some_and(|caps| caps & (1 << 19) != 0);
+    if ptrace_any {
+        eprintln!("skipped: this process has CAP_SYS_PTRACE");
+        return;
+    }
+    // A listener that never answers: the probe waits up to its timeout.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = silent.local_addr().unwrap().port();
+    let mut probe = std::process::Command::new(env!("CARGO_BIN_EXE_convertd"))
+        .arg("healthcheck")
+        .env_clear()
+        .env("PORT", port.to_string())
+        .env("API_KEY", KEY)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        probe.try_wait().unwrap().is_none(),
+        "the probe exited early"
+    );
+    let err = std::fs::read(format!("/proc/{}/environ", probe.id())).unwrap_err();
+    assert!(
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+        ),
+        "{err}"
+    );
+    let _ = probe.kill();
+    let _ = probe.wait();
 }

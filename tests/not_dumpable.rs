@@ -79,16 +79,21 @@ async fn a_worker_cannot_read_the_environment_of_a_not_dumpable_supervisor() {
         other => panic!("the control read failed: {other:?}"),
     }
     set_not_dumpable().unwrap();
+    // Denied, or hidden: with procfs mounted `hidepid=2` the entry of a
+    // process the worker may not inspect is not found at all.
     match worker_reads_environ(&pool, me).await {
         TestOutput::Read {
             bytes: None,
             error: Some(kind),
-        } => assert_eq!(kind, "PermissionDenied"),
+        } => assert!(
+            kind == "PermissionDenied" || kind == "NotFound",
+            "unexpected error {kind}"
+        ),
         other => panic!("the worker read the supervisor's environment: {other:?}"),
     }
-    // The supervisor still reads its own /proc entries (the gauges of
-    // INTERFACES §11) and its worker's RSS (the watchdog).
-    assert!(std::fs::read("/proc/self/environ").unwrap().len() > 0);
+    // The supervisor still reads the /proc entries that its gauges use
+    // (INTERFACES §11) and its worker's RSS (the watchdog). Its own
+    // `environ` is now root-owned 0400, which no gauge reads.
     let status = std::fs::read_to_string("/proc/self/status").unwrap();
     let parsed = convertd::observability::metrics::parse_status(&status);
     assert!(
