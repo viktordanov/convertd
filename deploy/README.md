@@ -125,6 +125,11 @@ The service needs no outbound connection, not even DNS. The deployment must bloc
 - **Plain Docker:** a container with a published port is on a network with egress. Block its egress with a host firewall, or put it on an internal network behind a proxy that you control.
 
 The pod security settings limit what a worker can do on the node: a non-root user, a read-only root, no capabilities, no privilege escalation, `RuntimeDefault` seccomp and no service-account token. They do not separate the workers from each other.
+
+The supervisor holds `API_KEY` in its environment. It marks itself not dumpable at start, so a worker of the same UID cannot read `/proc/<supervisor>/environ`. The image's `HEALTHCHECK` starts `convertd healthcheck` with the same environment. That probe closes itself the same way, but only a few milliseconds after it starts, so a worker could read the key in that window:
+
+- **Kubernetes:** the base uses `httpGet` probes (`/readyz` and `/healthz`), not `exec`, so the kubelet never starts the probe in the container and there is no window.
+- **Plain Docker:** for no window, run with `--no-healthcheck` and probe `/readyz` from outside the container.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="observability" files="observability/grafana-dashboard.json observability/prometheusrule.yaml" -->
