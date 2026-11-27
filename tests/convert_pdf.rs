@@ -421,7 +421,14 @@ async fn each_engine_error_maps_to_its_status() {
             None,
         ),
         (EngineError::Crashed, 422, "CONVERSION_FAILED", None),
-        (EngineError::Poisoned, 422, "CONVERSION_FAILED", None),
+        (
+            EngineError::Poisoned {
+                queued: Duration::ZERO,
+            },
+            422,
+            "CONVERSION_FAILED",
+            None,
+        ),
         (
             EngineError::Internal("boom".into()),
             500,

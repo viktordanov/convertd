@@ -142,7 +142,7 @@ async fn two_timeouts_poison_a_document_before_it_takes_a_worker() {
                 )
                 .await
                 .unwrap_err();
-            assert_eq!(err, EngineError::Poisoned);
+            assert!(matches!(err, EngineError::Poisoned { .. }), "{err:?}");
             assert!(started.elapsed() < Duration::from_millis(50));
             assert_eq!(
                 generation(&pool).await,
@@ -199,7 +199,10 @@ async fn a_timeout_strike_does_not_block_a_retry_with_more_time() {
                 )
                 .await
                 .unwrap_err();
-            assert_eq!(err, EngineError::Poisoned, "the same short request");
+            assert!(
+                matches!(err, EngineError::Poisoned { .. }),
+                "the same short request: {err:?}"
+            );
             office
                 .convert(
                     office_job(&slow, dir.join("c.pdf"), key),
@@ -242,7 +245,7 @@ async fn a_crash_after_the_retry_poisons_at_once() {
             )
             .await
             .unwrap_err();
-        assert_eq!(err, EngineError::Poisoned);
+        assert!(matches!(err, EngineError::Poisoned { .. }), "{err:?}");
         pool.shutdown(Duration::from_secs(1)).await;
     })
     .await;
@@ -286,7 +289,7 @@ async fn renders_are_poisoned_too_and_ttl_zero_turns_it_off() {
                 .render(job([3; 32]), Admission::Queue, short())
                 .await
                 .unwrap_err();
-            assert_eq!(err, EngineError::Poisoned);
+            assert!(matches!(err, EngineError::Poisoned { .. }), "{err:?}");
 
             // POISON_TTL_SECONDS=0: no list, no poison.
             let off = PdfPdfium::new(pool.clone()).with_poison(PoisonList::new(Duration::ZERO));
@@ -365,7 +368,7 @@ async fn a_render_crash_counts_by_the_same_rule_as_a_convert_crash() {
                 .render(job(retried), Admission::Queue, long())
                 .await
                 .unwrap_err();
-            assert_eq!(err, EngineError::Poisoned);
+            assert!(matches!(err, EngineError::Poisoned { .. }), "{err:?}");
             pool.shutdown(Duration::from_secs(1)).await;
         },
     )
@@ -479,7 +482,10 @@ async fn inspects_and_decrypts_are_poisoned_by_the_same_rule() {
                 .inspect(inspect(key), Admission::Queue, short_wait)
                 .await
                 .unwrap_err();
-            assert_eq!(err, EngineError::Poisoned, "refused without a lease");
+            assert!(
+                matches!(err, EngineError::Poisoned { .. }),
+                "refused without a lease: {err:?}"
+            );
             drop(held);
 
             // Decrypt: the same.
@@ -493,7 +499,7 @@ async fn inspects_and_decrypts_are_poisoned_by_the_same_rule() {
                 .decrypt(decrypt(key, "b.pdf"), Admission::Queue, long())
                 .await
                 .unwrap_err();
-            assert_eq!(err, EngineError::Poisoned);
+            assert!(matches!(err, EngineError::Poisoned { .. }), "{err:?}");
 
             // Less than 1 s left: no retry, one strike; two such poison.
             let key = [13u8; 32];
@@ -584,7 +590,14 @@ async fn a_timeout_strike_records_the_time_the_worker_had() {
                 .inspect(inspect(), Admission::Queue, deadline())
                 .await
                 .unwrap_err();
-            assert_eq!(err, EngineError::Poisoned, "refused at dispatch");
+            // The refusal carries the wait behind the held worker.
+            match err {
+                EngineError::Poisoned { queued } => assert!(
+                    queued >= Duration::from_millis(600),
+                    "refused at dispatch after {queued:?} queued"
+                ),
+                other => panic!("refused at dispatch: {other:?}"),
+            }
             release.await.unwrap();
             assert_eq!(generation(&pool).await, before, "no worker was killed");
             // Same deadline, idle pool: the worker would have all of it.
@@ -678,11 +691,15 @@ async fn a_crash_whose_retry_is_refused_counts_one_strike() {
                         .await
                         .unwrap_err(),
                 };
-                assert_eq!(
-                    err,
-                    EngineError::Poisoned,
-                    "{work:?}: the retry was refused"
-                );
+                // The refusal carries the retry's wait for the replacement
+                // worker (0.8 s), the queue time a caller is charged.
+                match err {
+                    EngineError::Poisoned { queued } => assert!(
+                        queued >= Duration::from_millis(500),
+                        "{work:?}: the retry was refused after {queued:?} queued"
+                    ),
+                    other => panic!("{work:?}: the retry was refused: {other:?}"),
+                }
                 // Exactly one crash strike: a request with far more time is
                 // not refused, and one more crash strike refuses it.
                 let far = Attempt {

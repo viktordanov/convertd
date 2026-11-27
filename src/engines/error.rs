@@ -172,7 +172,9 @@ impl From<EngineFailure> for crate::domain::engine::EngineError {
             EngineFailure::LimitExceeded(m) => E::LimitExceeded(m),
             EngineFailure::Failed(m) => E::Failed(m),
             EngineFailure::Crashed => E::Crashed,
-            EngineFailure::Poisoned => E::Poisoned,
+            EngineFailure::Poisoned => E::Poisoned {
+                queued: std::time::Duration::ZERO,
+            },
             // Only `check_owner` gives it; the service passes the original on.
             EngineFailure::Restricted => E::Restricted,
             EngineFailure::Internal(m) => E::Internal(m),
@@ -207,7 +209,12 @@ mod domain_tests {
                 EngineError::Failed("b".into()),
             ),
             (EngineFailure::Crashed, EngineError::Crashed),
-            (EngineFailure::Poisoned, EngineError::Poisoned),
+            (
+                EngineFailure::Poisoned,
+                EngineError::Poisoned {
+                    queued: std::time::Duration::ZERO,
+                },
+            ),
             (
                 EngineFailure::Internal("c".into()),
                 EngineError::Internal("c".into()),

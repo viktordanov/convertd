@@ -139,6 +139,54 @@ impl Drop for PlaceReadyHook {
     }
 }
 
+#[cfg(feature = "test-hooks")]
+type LeaveHook = Arc<dyn Fn() + Send + Sync>;
+#[cfg(feature = "test-hooks")]
+static QUEUE_LEAVE_HOOKS: Mutex<Vec<(&'static str, u64, LeaveHook)>> = Mutex::new(Vec::new());
+
+/// Registers `hook` for the pool named `pool` (test hooks only). A lease
+/// that leaves the queue calls it after the waiting count drops and before
+/// the queue gauge changes. It stays registered while the guard lives.
+#[cfg(feature = "test-hooks")]
+#[must_use = "the hook is removed when the guard is dropped"]
+pub fn set_queue_leave_hook(
+    pool: &'static str,
+    hook: impl Fn() + Send + Sync + 'static,
+) -> QueueLeaveHook {
+    let id = PLACE_READY_HOOK_IDS.fetch_add(1, Ordering::Relaxed);
+    let mut hooks = lock(&QUEUE_LEAVE_HOOKS);
+    hooks.retain(|(name, _, _)| *name != pool);
+    hooks.push((pool, id, Arc::new(hook)));
+    QueueLeaveHook { pool, id }
+}
+
+/// Removes its own queue-leave hook when dropped, not a later one.
+#[cfg(feature = "test-hooks")]
+pub struct QueueLeaveHook {
+    pool: &'static str,
+    id: u64,
+}
+
+#[cfg(feature = "test-hooks")]
+impl Drop for QueueLeaveHook {
+    fn drop(&mut self) {
+        lock(&QUEUE_LEAVE_HOOKS).retain(|(name, id, _)| !(*name == self.pool && *id == self.id));
+    }
+}
+
+fn queue_leave_hook(_pool: &str) {
+    #[cfg(feature = "test-hooks")]
+    {
+        let hook = lock(&QUEUE_LEAVE_HOOKS)
+            .iter()
+            .find(|(name, _, _)| *name == _pool)
+            .map(|(_, _, hook)| Arc::clone(hook));
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+}
+
 fn place_ready_hook(_pool: &str, _stage: PlaceStage, _idle: &Mutex<Idle>) {
     #[cfg(feature = "test-hooks")]
     {
@@ -863,18 +911,23 @@ impl Drop for QueuePlace<'_> {
 
 struct WaitingGuard<'a>(&'a PoolInner);
 
+/// The gauge moves by one with each waiter, never to a value read from the
+/// counter: two leaves that overtake each other would publish a stale depth
+/// (4 after 0). Increments and decrements commute, so the gauge ends where
+/// the counter does.
 impl<'a> WaitingGuard<'a> {
     fn new(inner: &'a PoolInner) -> Self {
-        let depth = inner.waiting.fetch_add(1, Ordering::AcqRel) + 1;
-        metrics::gauge!("convert_queue_depth", "pool" => inner.spec.name).set(depth as f64);
+        inner.waiting.fetch_add(1, Ordering::AcqRel);
+        metrics::gauge!("convert_queue_depth", "pool" => inner.spec.name).increment(1.0);
         Self(inner)
     }
 }
 
 impl Drop for WaitingGuard<'_> {
     fn drop(&mut self) {
-        let depth = self.0.waiting.fetch_sub(1, Ordering::AcqRel) - 1;
-        metrics::gauge!("convert_queue_depth", "pool" => self.0.spec.name).set(depth as f64);
+        self.0.waiting.fetch_sub(1, Ordering::AcqRel);
+        queue_leave_hook(self.0.spec.name);
+        metrics::gauge!("convert_queue_depth", "pool" => self.0.spec.name).decrement(1.0);
     }
 }
 
