@@ -13,6 +13,7 @@ The product image converts documents on arm64 and amd64. On 2026-11-26 the `runt
 5. [Moving to a new LibreOffice or PDFium](#moving-to-a-new-libreoffice-or-pdfium)
 6. [Size](#size)
 7. [What is verified](#what-is-verified)
+8. [Releases](#releases)
 
 <!-- memoria:section id="overview" files="Dockerfile install-engines.sh dpkg/docs.cfg dpkg/fonts.cfg dpkg/libreoffice.cfg libreoffice/rs-convert-paper.xcd libreoffice/rs-convert-security.xcd" -->
 ## What the image holds
@@ -217,14 +218,14 @@ On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a basel
 - **Engine tests:** in the trimmed `dev` image, `engines_office`, `engines_render` and `engines_poison` passed (20 tests, one ignored). Two tests skipped: one needs `CONVERTD_SMALL_DISK`, and one finds no `encrypted/deck20.pptx` in the corpus.
 - **Build and smoke:** `build-info.json` is the same, `lib-check` passes, and `smoke.sh` passes.
 
-On 2026-11-27 the lock-down and the setuid strip (ledger item 011, S2 and S6) passed these gates on arm64, against a baseline image built from `release/0.2` at `1eaf927` without them:
+On 2026-11-27 the lock-down and the setuid strip passed these gates on arm64, against a baseline image built from `release/0.2` at `1eaf927` without them:
 
 - **Corpus:** `corpus-check.sh` passed 70 of 70 cases on the new image, `docx-file-links` included, with no `ERROR` line in the service log.
 - **Pages:** `ab-pages.sh` gave the same status, page count and page hash for all 48 files and 200 pages of both images.
 - **Smoke:** `smoke.sh` passed all six checks on the new image. On the baseline it failed only the setuid check, which listed the 11 files that the build now strips: `chage`, `chfn`, `chsh`, `expiry`, `gpasswd`, `mount`, `newgrp`, `passwd`, `su` and `umount` in `/usr/bin`, and `/usr/sbin/unix_chkpwd`.
 - **Policy:** with an extra `.xcd` that trusts `file:///` and sets Writer links to "always", `file-links.docx` gave 2 images in the PDF on the baseline and 0 on the new image. Without that file, both gave 0.
 
-The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs by hand, monthly, and on pushes to `main` and pull requests that touch `docker/`, `src/engines/`, `src/worker/`, `src/preflight/`, `corpus/` or `Cargo.lock`. A push compares with the commit before it, and a push with no such commit runs the job. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The run after the trims (45796989297) measured 578 MB on amd64 and 604 MB on arm64. The amd64 image was ready after 764 ms and converted the DOCX in 61 ms. The command:
+The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs by hand, monthly, and on pushes to `main` and pull requests that touch `docker/`, `src/engines/`, `src/worker/`, `src/preflight/`, `corpus/`, `.github/actions/image-gates/` or `Cargo.lock`. A push compares with the commit before it, and a push with no such commit runs the job. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The run after the trims (45796989297) measured 578 MB on amd64 and 604 MB on arm64. The amd64 image was ready after 764 ms and converted the DOCX in 61 ms. The command:
 
 ```sh
 docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
@@ -239,9 +240,33 @@ docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
 - That no fontconfig user cache is written.
 - That no file has a setuid or setgid bit. `find` runs as root in a container of its own, so that it can read every folder, and any error of `find` fails the check.
 
-After the smoke test, the job runs `corpus-check.sh`: the `corpus-bench check` of lane 005, every case of `corpus/expected.json`, against the image. The harness runs in a pinned Debian container inside the network namespace of the service. Only there does the canary listener see a connection from LibreOffice. On 2026-11-26 this check passed 59 of 59 cases on the arm64 image by hand. The first automatic image run on `main` (45805165059) passed it on amd64.
+After the smoke test, the job runs `corpus-check.sh`. Both gates live in `.github/actions/image-gates`, which `release.yml` runs too. `corpus-check.sh` is the `corpus-bench check` of lane 005, every case of `corpus/expected.json`, against the image. The harness runs in a pinned Debian container inside the network namespace of the service. Only there does the canary listener see a connection from LibreOffice. On 2026-11-26 this check passed 59 of 59 cases on the arm64 image by hand. The first automatic image run on `main` (45805165059) passed it on amd64.
 
 `smoke/small.docx` is the corpus entry `docx-small`, 36986 bytes. `corpus/generate.py` makes the same bytes, and its SHA-256 is in `corpus/expected.json`.
 
 Docker mounts a tmpfs with `noexec` by default. A program that runs from `/tmp` needs `--tmpfs /tmp:rw,exec`.
 <!-- /memoria:section -->
+
+## Releases
+
+A tag `vX.Y.Z` runs `.github/workflows/release.yml`. The tag must be `v` plus the `[package]` version of `Cargo.toml`, or the run stops. Tags such as `client/vX.Y.Z`, for the Go module, do not run it. The workflow has five jobs:
+
+1. **version** reads the version and decides the tags.
+2. **build** builds the `runtime` image natively on amd64 and arm64. It runs the gates of the image job: the umask guard, `smoke.sh` with the size budget and the clean start, and the corpus check. It holds no registry credential.
+3. **push** builds each image again from the cache of the build job. It checks that the config digest is the gated one, and pushes the image by digest, with provenance and an SBOM.
+4. **publish** joins the two digests into one multi-arch manifest, `ghcr.io/<owner>/rs-convert:X.Y.Z`.
+5. **release** creates the GitHub release for the tag, with generated notes and the image digest.
+
+The manifest also gets `X.Y` and `latest` only when the release is the newest `X.Y.Z` in the registry: of its line for `X.Y`, and overall for `latest`. So `1.0.5` after `1.1.0` moves `1.0`, not `latest`. The registry tag is what counts, not the run's result. A run that failed after the publish job wrote `X.Y.Z` has published that version, and later runs count it. Re-run its failed jobs, so that its aliases and its GitHub release follow.
+
+The GitHub release is marked latest only when the publish job of the same run moved `latest`. A re-run of a failed release job reuses that decision.
+
+`X.Y.Z` is immutable. A re-run of a failed job may reuse an existing `X.Y.Z` only when its digest is the one this release writes. The publish job runs one at a time across all tags. GitHub keeps only one waiting job in that group, so a third release that waits there cancels the second one's wait. Re-run the cancelled run by hand.
+
+Only the push and publish jobs may write packages, and only the release job may write the repository's contents.
+
+Run by hand (`workflow_dispatch`), the workflow is a dry run: the version and build jobs only, with no registry login, push or release. The push leg has not run yet.
+
+GitHub makes a new package private on its first publish, and the owner then makes it public once. On the package page, open **Package settings**, then **Danger Zone**, **Change visibility**, **Public**. GitHub cannot make a public package private again. The image's `org.opencontainers.image.source` label links the package to the repository, so the package takes the repository's access permissions, but not its visibility.
+
+`build_docker.sh` stays for builds outside CI, such as the CJK variant. It tags `<repo>:v<x.y.z>`; the workflow tags `X.Y.Z`, without the `v`.
