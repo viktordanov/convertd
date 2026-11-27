@@ -97,9 +97,11 @@ pub enum EngineError {
     /// The worker crashed twice (the engine retries once on a fresh worker).
     #[error("engine crashed")]
     Crashed,
-    /// The file's hash recently crashed or timed out a worker.
+    /// The file's hash recently crashed or timed out a worker. `queued` is
+    /// the time the request waited for workers before the refusal, measured
+    /// where it was refused: the service charges it to `queue`.
     #[error("document is known to crash the engine")]
-    Poisoned,
+    Poisoned { queued: Duration },
     #[error("{0}")]
     Internal(String),
 }

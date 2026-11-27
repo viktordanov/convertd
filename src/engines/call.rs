@@ -76,10 +76,14 @@ pub async fn call_with_poison(
     if let Some((p, attempt)) = &poison
         && p.list.refuses(&p.key, attempt)
     {
-        return Err(EngineError::Poisoned);
+        return Err(EngineError::Poisoned {
+            queued: Duration::ZERO,
+        });
     }
     let mut adm = adm;
     let mut first_queue = None;
+    // Every lease wait so far: a refusal carries it as its queue time.
+    let mut queued = Duration::ZERO;
     let mut retried = false;
     loop {
         // A crash retry checks before it waits for a worker, as well as
@@ -92,7 +96,7 @@ pub async fn call_with_poison(
             )
         {
             p.list.strike(&p.key, Strike::Crash(1), attempt);
-            return Err(EngineError::Poisoned);
+            return Err(EngineError::Poisoned { queued });
         }
         let mut lease = match pool.lease(deadline, adm).await {
             Ok(lease) => lease,
@@ -105,6 +109,7 @@ pub async fn call_with_poison(
                 return Err(EngineFailure::from(err).into());
             }
         };
+        queued += lease.queued();
         // Check again with the time the worker gets now (see the render
         // path): a timeout strike covers a request with no more time.
         if let Some((p, attempt)) = &poison
@@ -119,7 +124,7 @@ pub async fn call_with_poison(
             if retried {
                 p.list.strike(&p.key, Strike::Crash(1), attempt);
             }
-            return Err(EngineError::Poisoned);
+            return Err(EngineError::Poisoned { queued });
         }
         let queue = *first_queue.get_or_insert(lease.queued());
         let lease_time = lease.leased().saturating_sub(lease.queued());

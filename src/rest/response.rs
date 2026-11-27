@@ -180,7 +180,7 @@ impl ApiError {
             EngineError::LimitExceeded(message) => {
                 Self::unprocessable(ErrorCode::LimitExceeded, message.clone())
             }
-            EngineError::Failed(_) | EngineError::Crashed | EngineError::Poisoned => {
+            EngineError::Failed(_) | EngineError::Crashed | EngineError::Poisoned { .. } => {
                 Self::unprocessable(
                     ErrorCode::ConversionFailed,
                     "the document could not be converted",
@@ -361,7 +361,14 @@ mod tests {
                 None,
             ),
             (EngineError::Crashed, 422, "CONVERSION_FAILED", None),
-            (EngineError::Poisoned, 422, "CONVERSION_FAILED", None),
+            (
+                EngineError::Poisoned {
+                    queued: std::time::Duration::ZERO,
+                },
+                422,
+                "CONVERSION_FAILED",
+                None,
+            ),
             (
                 EngineError::Internal("boom".into()),
                 500,

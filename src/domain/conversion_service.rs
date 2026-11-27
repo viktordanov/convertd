@@ -466,7 +466,7 @@ impl ConversionService {
                 job.deadline,
             )
             .await
-            .inspect_err(|err| charge_render_queue(timings, called, err))
+            .inspect_err(|err| charge_queue(timings, called, err))
             .map_err(ConversionError::Engine)?;
         timings.add_call(&rendered.timing);
         timings.render = Some(rendered.timing.wall);
@@ -537,28 +537,21 @@ impl ConversionService {
     }
 }
 
-/// A convert, inspect or decrypt call that failed before it reached a
-/// worker spent its time waiting: `QueueTimeout`, `QueueFull` at once, and
-/// `Poisoned`, which the poison memory gives before the lease (about no
-/// time) or after the lease wait. Charge it to `queue`, so the error's
-/// `Server-Timing` shows the wait. An engine error carries no timing of
-/// its own. A crash whose retry is refused (`Poisoned`) or gets no worker
-/// in time (`QueueTimeout`) also counts the first attempt's time on the
-/// worker; the exact queue time would have to travel in the error.
+/// A call that failed before it reached a worker spent its time waiting.
+/// Charge it to `queue`, so the error's `Server-Timing` shows the wait. An
+/// engine error carries no timing of its own, with one exception.
+/// `Poisoned` carries the time the request waited for workers, measured
+/// where it was refused: before the first lease (none), after a lease
+/// wait, before or after a crash retry's wait, or in a render rerun. That
+/// is charged exactly, for every operation. `QueueTimeout` and `QueueFull`
+/// charge the call's whole time. A crash whose retry gets no worker in
+/// time (`QueueTimeout`) thus also counts the first attempt's time on the
+/// worker.
 fn charge_queue(timings: &mut StageTimings, called: Instant, err: &EngineError) {
-    if matches!(
-        err,
-        EngineError::QueueTimeout | EngineError::QueueFull | EngineError::Poisoned
-    ) {
-        timings.queue += called.elapsed();
-    }
-}
-
-/// [`charge_queue`] for a render, without `Poisoned`: a render refuses a
-/// rerun after its first chunks ran, so its time is mostly rendering.
-fn charge_render_queue(timings: &mut StageTimings, called: Instant, err: &EngineError) {
-    if !matches!(err, EngineError::Poisoned) {
-        charge_queue(timings, called, err);
+    match err {
+        EngineError::Poisoned { queued } => timings.queue += *queued,
+        EngineError::QueueTimeout | EngineError::QueueFull => timings.queue += called.elapsed(),
+        _ => {}
     }
 }
 
@@ -1140,14 +1133,14 @@ mod tests {
     }
 
     /// A refusal that comes after a wait for a worker shows the wait as
-    /// `queue`: `Poisoned` after the lease, as `QueueTimeout`. An error
-    /// from the worker itself charges nothing to `queue`, nor does a
-    /// render's `Poisoned`, which can come after its first chunks ran.
+    /// `queue`. `QueueTimeout` and `QueueFull` charge the call's time.
+    /// `Poisoned` charges the wait it carries, exactly, for a render too.
+    /// An error from the worker itself charges nothing to `queue`.
     #[test]
     fn a_refusal_after_the_lease_wait_charges_the_queue() {
         let wait = Duration::from_millis(30);
+        let queued = Duration::from_millis(7);
         for (error, charged) in [
-            (EngineError::Poisoned, true),
             (EngineError::QueueTimeout, true),
             (EngineError::Failed("bad".into()), false),
         ] {
@@ -1164,9 +1157,37 @@ mod tests {
                 assert_eq!(run.timings.queue, Duration::ZERO, "{error:?}");
             }
         }
+        // The call's 30 ms include work on a worker: only the carried
+        // 7 ms of waiting count.
+        let script = Arc::new(Script {
+            convert_error: Some(EngineError::Poisoned { queued }),
+            error_after: wait,
+            ..Default::default()
+        });
+        let convert = run(script, Format::Docx, RawOptions::default(), u64::MAX);
+        assert!(convert.result.is_err());
+        assert_eq!(convert.timings.queue, queued, "convert Poisoned");
+        let images = || RawOptions {
+            output: Some(Output::Images),
+            ..Default::default()
+        };
+        let script = Arc::new(Script {
+            render_error: Some(EngineError::Poisoned { queued }),
+            error_after: wait,
+            ..Default::default()
+        });
+        let run_poisoned = run(script, Format::Pdf, images(), u64::MAX);
+        assert!(run_poisoned.result.is_err());
+        // The inspection's own queue time (1 ms), plus the render's carried
+        // wait.
+        assert_eq!(
+            run_poisoned.timings.queue,
+            Duration::from_millis(1) + queued,
+            "render Poisoned"
+        );
         for (error, charged) in [
-            (EngineError::Poisoned, false),
             (EngineError::QueueFull, true),
+            (EngineError::Failed("bad".into()), false),
         ] {
             let script = Arc::new(Script {
                 render_error: Some(error.clone()),

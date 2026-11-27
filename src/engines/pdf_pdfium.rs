@@ -69,7 +69,9 @@ impl PdfPdfium {
         }
         // Before the wait for a worker, and again after it below.
         if guard.is_some_and(|g| g.refuses(deadline)) {
-            return Err(ChunkFailure::engine(EngineError::Poisoned));
+            return Err(ChunkFailure::engine(EngineError::Poisoned {
+                queued: Duration::ZERO,
+            }));
         }
         let lease = self
             .pool
@@ -77,7 +79,9 @@ impl PdfPdfium {
             .await
             .map_err(|err| ChunkFailure::engine(EngineFailure::from(err).into()))?;
         if guard.is_some_and(|g| g.refuses(deadline)) {
-            return Err(ChunkFailure::engine(EngineError::Poisoned));
+            return Err(ChunkFailure::engine(EngineError::Poisoned {
+                queued: lease.queued(),
+            }));
         }
         tracing::debug!(
             pool = self.pool.name(),
@@ -195,6 +199,8 @@ struct ChunkFailure {
     /// The worker's CPU time when the worker answered with an error: a
     /// chunk over its share spent it, and its rerun may still succeed.
     cpu: Duration,
+    /// A `Poisoned` here carries only this chunk's own lease wait. `render`
+    /// adds the wait for its first worker.
     error: EngineError,
     strike: Option<Strike>,
     /// The time its failing worker call had: a timeout strike's budget.
@@ -269,7 +275,9 @@ async fn render_chunk(
     // chunk's time can fall into a covered range, after the first lease.
     // It has not run, so it earns no strike.
     if guard.is_some_and(|g| g.refuses(deadline)) {
-        return Err(ChunkFailure::engine(EngineError::Poisoned));
+        return Err(ChunkFailure::engine(EngineError::Poisoned {
+            queued: Duration::ZERO,
+        }));
     }
     let ran = deadline.saturating_duration_since(Instant::now());
     match lease.call(op.clone(), deadline).await {
@@ -287,7 +295,9 @@ async fn render_chunk(
     // fast, and the crash counts once.
     if guard.is_some_and(|g| g.refuses(deadline)) {
         return Err(ChunkFailure {
-            error: EngineError::Poisoned,
+            error: EngineError::Poisoned {
+                queued: Duration::ZERO,
+            },
             strike: Some(Strike::Crash(1)),
             ran,
             cpu: Duration::ZERO,
@@ -309,9 +319,10 @@ async fn render_chunk(
     // The retry waited for a worker: check again with the time left. The
     // crash still counts once.
     if guard.is_some_and(|g| g.refuses(deadline)) {
+        let queued = retry.queued();
         drop(retry);
         return Err(ChunkFailure {
-            error: EngineError::Poisoned,
+            error: EngineError::Poisoned { queued },
             strike: Some(Strike::Crash(1)),
             ran,
             cpu: Duration::ZERO,
@@ -462,7 +473,9 @@ impl PdfEngine for PdfPdfium {
         if let Some(list) = &self.poison
             && list.refuses(&job.sha256, &attempt)
         {
-            return Err(EngineError::Poisoned);
+            return Err(EngineError::Poisoned {
+                queued: Duration::ZERO,
+            });
         }
         let guard = self.poison.as_deref().map(|list| Guard {
             list,
@@ -486,7 +499,7 @@ impl PdfEngine for PdfPdfium {
             )
         {
             drop(first);
-            return Err(EngineError::Poisoned);
+            return Err(EngineError::Poisoned { queued: queue });
         }
         let spawned = first.spawned_on_path();
         let wanted = job.pages.len().div_ceil(RENDER_CHUNK_MIN_PAGES).max(1);
@@ -598,7 +611,12 @@ impl PdfEngine for PdfPdfium {
                 }
             }
         }
-        if let Some(err) = failure {
+        if let Some(mut err) = failure {
+            // A chunk's refusal carries its own wait (a retry's or the
+            // rerun's lease); the request also waited for its first worker.
+            if let EngineError::Poisoned { queued } = &mut err {
+                *queued += queue;
+            }
             // One document: the strikes of its worst chunk, by the same rule
             // as call_with_poison.
             if let Some(list) = &self.poison
