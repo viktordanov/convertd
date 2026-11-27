@@ -439,6 +439,8 @@ enum Event {
         slot: u16,
         generation: u32,
         reason: Reason,
+        /// The killed process: its memory stays until it exits.
+        child: ChildHandle,
     },
     Exited {
         slot: u16,
@@ -512,6 +514,7 @@ impl Drop for Worker {
             slot: self.slot,
             generation: self.generation,
             reason: self.reason,
+            child: self.child.clone(),
         });
     }
 }
@@ -634,6 +637,7 @@ impl Pool {
             spec: Arc::clone(&inner.spec),
             spawner: spawner.clone(),
             members: BTreeMap::new(),
+            exiting: Vec::new(),
             next_generation: 1,
             failures: 0,
             backoff_until: None,
@@ -1285,6 +1289,9 @@ struct Manager {
     spec: Arc<PoolSpec>,
     spawner: Spawner,
     members: BTreeMap<u16, Member>,
+    /// Killed workers whose exit is not yet seen. They still hold their
+    /// memory, so they count against the one member above the size.
+    exiting: Vec<ChildHandle>,
     next_generation: u32,
     failures: u32,
     backoff_until: Option<tokio::time::Instant>,
@@ -1328,7 +1335,11 @@ impl Manager {
                     slot,
                     generation,
                     reason,
-                } => self.vacated(&pool, slot, generation, reason),
+                    child,
+                } => {
+                    self.exiting(&pool, child);
+                    self.vacated(&pool, slot, generation, reason);
+                }
                 Event::Exited { slot, generation } => {
                     if let Some(mut worker) =
                         pool.take_idle(|w| w.slot == slot && w.generation == generation)
@@ -1363,7 +1374,14 @@ impl Manager {
         if pool.draining.load(Ordering::Acquire) || self.backoff_until.is_some() {
             return;
         }
-        while self.standing() < usize::from(self.spec.size) {
+        // At most one member above the size: a worker being replaced and
+        // its replacement, one pair at a time. Workers due together are thus
+        // replaced in turn, and the memory budget holds one overlap per pool.
+        // A hole (a worker that died or was killed) is filled at once, since
+        // it leaves the members below the size.
+        let size = usize::from(self.spec.size);
+        self.exiting.retain(|child| !child.has_exited());
+        while self.standing() < size && self.members.len() + self.exiting.len() <= size {
             let slot = (0..=u16::MAX)
                 .find(|s| !self.members.contains_key(s))
                 .unwrap_or(u16::MAX);
@@ -1494,10 +1512,14 @@ impl Manager {
             // `retiring()` under it too, so a lease that ends now either
             // returned its worker before (and it is swapped below) or sees it
             // retired after the replacement is in `waiting` (and releases it).
+            // A free lease slot first: after a crash beside a replacement,
+            // the new worker fills the hole instead of waiting beside
+            // another leased incumbent, so the pool serves at its size.
+            let vacant = idle.workers.len() + idle.leased.len() < usize::from(self.spec.size);
             let replaced = self
                 .members
                 .iter()
-                .filter(|(_, m)| m.fate.state() == FATE_REPLACING)
+                .filter(|(_, m)| !vacant && m.fate.state() == FATE_REPLACING)
                 .min_by_key(|(_, m)| m.generation)
                 .map(|(&slot, member)| {
                     member.fate.retire();
@@ -1543,6 +1565,20 @@ impl Manager {
         if new_permit {
             pool.permits.add_permits(1);
         }
+    }
+
+    /// Counts a killed worker until the reaper sees it exit, and reconciles
+    /// then: a replacement held back by it may start.
+    fn exiting(&mut self, pool: &PoolInner, child: ChildHandle) {
+        if child.has_exited() {
+            return;
+        }
+        self.exiting.push(child.clone());
+        let events = pool.events.clone();
+        tokio::spawn(async move {
+            child.wait().await;
+            let _ = events.send(Event::Replace);
+        });
     }
 
     fn vacated(&mut self, pool: &PoolInner, slot: u16, generation: u32, reason: Reason) {
@@ -1609,7 +1645,18 @@ impl Start {
         let (slot, generation) = (self.slot, self.generation);
         let events = self.events.clone();
         let starts = Arc::clone(&self.starts);
-        let result = self.start().await.map(Box::new);
+        // A child killed during a failed start still holds its memory until
+        // it exits: its member stays counted until then, so no other start
+        // runs beside it.
+        let result = match self.start().await {
+            Ok(worker) => Ok(Box::new(worker)),
+            Err((message, child)) => {
+                if let Some(child) = child {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+                }
+                Err(message)
+            }
+        };
         // After a shutdown the manager is gone and the worker is dropped
         // (killed) with the unsent event.
         let _ = events.send(Event::Started {
@@ -1624,7 +1671,8 @@ impl Start {
         self.draining.load(Ordering::Acquire)
     }
 
-    async fn start(self) -> Result<Worker, String> {
+    /// The worker, or the error and the child it killed, if it spawned one.
+    async fn start(self) -> Result<Worker, (String, Option<ChildHandle>)> {
         let spec = &self.spec;
         let worker_id = format!("{}-{}", spec.name, self.slot);
         let slot_dir = SlotDir::new(&spec.workers_dir, spec.name, self.slot);
@@ -1632,10 +1680,13 @@ impl Start {
         let prepared = slot_dir.clone();
         tokio::task::spawn_blocking(move || prepared.prepare(template.as_deref()))
             .await
-            .map_err(|err| format!("failed to prepare the slot: {err}"))?
-            .map_err(|err| format!("failed to prepare the slot: {err}"))?;
+            .map_err(|err| (format!("failed to prepare the slot: {err}"), None))?
+            .map_err(|err| (format!("failed to prepare the slot: {err}"), None))?;
         if self.shutting_down() {
-            return Err("failed to start the worker: the pool is shutting down".into());
+            return Err((
+                "failed to start the worker: the pool is shutting down".into(),
+                None,
+            ));
         }
 
         let cmd = spec
@@ -1646,7 +1697,7 @@ impl Start {
             .spawner
             .spawn(cmd)
             .await
-            .map_err(|err| format!("failed to spawn the worker: {err}"))?;
+            .map_err(|err| (format!("failed to spawn the worker: {err}"), None))?;
         let child = spawned.child;
         lock(&self.handles).insert((self.slot, self.generation), child.clone());
         // Shutdown sets `draining` before it kills the registered handles,
@@ -1657,7 +1708,10 @@ impl Start {
             // reaped, not only killed.
             let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
             lock(&self.handles).remove(&(self.slot, self.generation));
-            return Err("failed to start the worker: the pool is shutting down".into());
+            return Err((
+                "failed to start the worker: the pool is shutting down".into(),
+                None,
+            ));
         }
         tracing::debug!(
             pool = spec.name,
@@ -1669,7 +1723,7 @@ impl Start {
         let fail = |message: String| {
             child.kill_group();
             lock(&self.handles).remove(&(self.slot, self.generation));
-            message
+            (message, Some(child.clone()))
         };
         let (Some(stdin), Some(stdout), Some(stderr)) =
             (spawned.stdin, spawned.stdout, spawned.stderr)

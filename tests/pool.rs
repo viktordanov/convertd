@@ -455,6 +455,186 @@ async fn recycle_after_replaces_the_worker() {
     .await;
 }
 
+/// Two workers that start together age together. Their replacements start
+/// one at a time, so the memory budget holds one overlap per pool, and the
+/// pool keeps at least `size - 1` live workers throughout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workers_due_together_are_replaced_one_at_a_time() {
+    within(
+        TEST,
+        "workers_due_together_are_replaced_one_at_a_time",
+        async {
+            let mut spec = spec("age-two", 2);
+            spec.max_age = Duration::from_millis(600);
+            spec.age_check = Duration::from_millis(50);
+            // A slow start keeps each replacement visible as `starting`.
+            spec.init.test.ready_delay_ms = 300;
+            let pool = ready(spec).await;
+            let first: Vec<u32> = {
+                let a = pool.lease(after(5000), Admission::Queue).await.unwrap();
+                let b = pool.lease(after(5000), Admission::Queue).await.unwrap();
+                vec![a.pid().unwrap(), b.pid().unwrap()]
+            };
+            let stop = Arc::new(AtomicBool::new(false));
+            let most_starting = Arc::new(AtomicUsize::new(0));
+            let fewest_live = Arc::new(AtomicUsize::new(usize::MAX));
+            let sampler = {
+                let pool = pool.clone();
+                let (stop, most, fewest) = (
+                    Arc::clone(&stop),
+                    Arc::clone(&most_starting),
+                    Arc::clone(&fewest_live),
+                );
+                tokio::spawn(async move {
+                    while !stop.load(Ordering::Relaxed) {
+                        let s = pool.status();
+                        most.fetch_max(s.starting, Ordering::Relaxed);
+                        fewest.fetch_min(s.idle + s.busy, Ordering::Relaxed);
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                    }
+                })
+            };
+            for pid in &first {
+                assert!(
+                    wait_gone(*pid, Duration::from_secs(10)).await,
+                    "the aged worker {pid} stayed"
+                );
+            }
+            stop.store(true, Ordering::Relaxed);
+            sampler.await.unwrap();
+            assert_eq!(
+                most_starting.load(Ordering::Relaxed),
+                1,
+                "the two replacements started together"
+            );
+            assert!(
+                fewest_live.load(Ordering::Relaxed) >= 1,
+                "the pool fell below size - 1"
+            );
+            finish(pool, "age-two").await;
+        },
+    )
+    .await;
+}
+
+/// The overlap the memory budget covers: a replacement that is ready while
+/// its incumbent is still leased waits beside it. Until that lease returns,
+/// no second replacement starts. Then the second swap completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_waiting_replacement_holds_back_the_next_one() {
+    within(
+        TEST,
+        "a_waiting_replacement_holds_back_the_next_one",
+        async {
+            let mut spec = spec("age-held", 2);
+            spec.max_age = Duration::from_millis(600);
+            spec.age_check = Duration::from_millis(50);
+            spec.init.test.ready_delay_ms = 300;
+            let pool = ready(spec).await;
+            // Both age while idle; the first replacement starts.
+            let until = Instant::now() + Duration::from_secs(10);
+            while pool.status().starting == 0 {
+                assert!(Instant::now() < until, "no replacement started");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            // Hold both incumbents across the replacement's Ready.
+            let a = pool.lease(after(10_000), Admission::Queue).await.unwrap();
+            let b = pool.lease(after(10_000), Admission::Queue).await.unwrap();
+            let (pid_a, pid_b) = (a.pid().unwrap(), b.pid().unwrap());
+            let until = Instant::now() + Duration::from_secs(10);
+            while pool.status().starting != 0 {
+                assert!(Instant::now() < until, "the replacement never got ready");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            // Ready, and waiting beside a leased incumbent: nothing else
+            // starts while both leases are held.
+            let hold = Instant::now() + Duration::from_millis(500);
+            while Instant::now() < hold {
+                assert_eq!(pool.status().starting, 0, "a second replacement started");
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            assert!(!gone(pid_a) && !gone(pid_b));
+            // Returning the incumbents lets each swap complete in turn.
+            drop(a);
+            drop(b);
+            for pid in [pid_a, pid_b] {
+                assert!(
+                    wait_gone(pid, Duration::from_secs(10)).await,
+                    "the incumbent {pid} stayed"
+                );
+            }
+            finish(pool, "age-held").await;
+        },
+    )
+    .await;
+}
+
+/// A crash while replacements wait: the worker started for the hole takes
+/// the free lease slot, so the pool serves at its size again, rather than
+/// waiting beside another leased incumbent. The setup is exact: all three
+/// incumbents are due (by job count), all three are leased, the first
+/// replacement is placed beside the oldest, and a younger one then crashes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hole_is_filled_while_replacements_wait() {
+    within(TEST, "a_hole_is_filled_while_replacements_wait", async {
+        let mut spec = spec("jobs-hole", 3);
+        spec.name = "jobs-hole";
+        spec.max_jobs = 2;
+        spec.init.test.ready_delay_ms = 300;
+        let retired = Arc::new(AtomicUsize::new(0));
+        let hook_retired = Arc::clone(&retired);
+        let _hook = convertd::engines::pool::set_place_ready_hook("jobs-hole", move |stage, _| {
+            if stage == convertd::engines::pool::PlaceStage::Retired {
+                hook_retired.fetch_add(1, Ordering::AcqRel);
+            }
+        });
+        let pool = ready(spec).await;
+        // Two jobs each: every incumbent is due when its lease returns.
+        let mut leases = Vec::new();
+        for _ in 0..3 {
+            leases.push(pool.lease(after(5000), Admission::Queue).await.unwrap());
+        }
+        for lease in &mut leases {
+            for _ in 0..2 {
+                lease
+                    .call(test_op(TestOp::Sleep { ms: 0 }), after(5000))
+                    .await
+                    .unwrap();
+            }
+        }
+        drop(leases);
+        // Lease all three again before the first replacement is ready.
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            held.push(pool.lease(after(10_000), Admission::Queue).await.unwrap());
+        }
+        held.sort_by_key(|lease| lease.worker_ref().unwrap().generation);
+        let until = Instant::now() + Duration::from_secs(10);
+        while retired.load(Ordering::Acquire) == 0 {
+            assert!(
+                Instant::now() < until,
+                "the first replacement was never placed"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        // It retired the oldest and waits beside it. Crash the youngest,
+        // which is due but not retired.
+        let mut youngest = held.pop().unwrap();
+        let _ = youngest
+            .call(test_op(TestOp::Exit { code: 3 }), after(5000))
+            .await;
+        drop(youngest);
+        // The hole's worker must become leasable while the other two stay
+        // held, instead of being placed beside the second incumbent.
+        let third = pool.lease(after(5000), Admission::Queue).await;
+        assert!(third.is_ok(), "the free lease slot stayed empty: {third:?}");
+        drop(third);
+        drop(held);
+        finish(pool, "jobs-hole").await;
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idle_workers_are_replaced_when_they_age() {
     within(TEST, "idle_workers_are_replaced_when_they_age", async {
