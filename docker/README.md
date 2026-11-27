@@ -14,7 +14,7 @@ The product image converts documents on arm64 and amd64. On 2026-11-26 the `runt
 6. [Size](#size)
 7. [What is verified](#what-is-verified)
 
-<!-- memoria:section id="overview" files="Dockerfile install-engines.sh dpkg/docs.cfg dpkg/fonts.cfg dpkg/libreoffice.cfg libreoffice/rs-convert-paper.xcd" -->
+<!-- memoria:section id="overview" files="Dockerfile install-engines.sh dpkg/docs.cfg dpkg/fonts.cfg dpkg/libreoffice.cfg libreoffice/rs-convert-paper.xcd libreoffice/rs-convert-security.xcd" -->
 ## What the image holds
 
 The image is `debian:trixie-slim` with only what convertd uses. Each part has a reason:
