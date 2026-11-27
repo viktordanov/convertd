@@ -685,29 +685,43 @@ func TestNew(t *testing.T) {
 	}
 }
 
-// countingReader counts the bytes read through it, for a server handler
-// that the test goroutine checks.
-type countingReader struct {
-	r io.Reader
+// noiseReader yields bytes that do not compress, so the compressed stream
+// is as long as the entry and its count says how much the client pulled.
+type noiseReader struct{ state uint64 }
+
+func (r *noiseReader) Read(p []byte) (int, error) {
+	for i := range p {
+		r.state ^= r.state << 13
+		r.state ^= r.state >> 7
+		r.state ^= r.state << 17
+		p[i] = byte(r.state)
+	}
+	return len(p), nil
+}
+
+// countingWriter counts the bytes written through it.
+type countingWriter struct {
+	w io.Writer
 	n atomic.Int64
 }
 
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
 	c.n.Add(int64(n))
 	return n, err
 }
 
-// TestBundleEntryOverItsManifestSize serves a PDF entry of 256 MiB that the
-// manifest says has 8 bytes. The archive is streamed as it is compressed, so
-// the test sees how much of the entry the client pulled: it must fail on the
-// tar header, before it writes, and leave no file behind.
+// TestBundleEntryOverItsManifestSize serves a PDF entry of 256 MiB of noise
+// that the manifest says has 8 bytes. The noise does not compress, so the
+// bytes the server manages to send are about the bytes the client read: it
+// must fail on the tar header, before it writes, and leave no file behind.
 func TestBundleEntryOverItsManifestSize(t *testing.T) {
 	const huge = 256 << 20
-	content := &countingReader{r: io.LimitReader(zeroReader{}, huge)}
+	sent := &countingWriter{}
 	respond := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/zstd")
-		zw, err := zstd.NewWriter(w, zstd.WithEncoderLevel(zstd.SpeedFastest))
+		sent.w = w
+		zw, err := zstd.NewWriter(sent, zstd.WithEncoderLevel(zstd.SpeedFastest))
 		if err != nil {
 			t.Errorf("zstd writer: %v", err)
 			return
@@ -718,7 +732,7 @@ func TestBundleEntryOverItsManifestSize(t *testing.T) {
 		_ = tw.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o644, Size: int64(len(raw)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR})
 		_, _ = tw.Write(raw)
 		_ = tw.WriteHeader(&tar.Header{Name: "document.pdf", Mode: 0o644, Size: huge, Typeflag: tar.TypeReg, Format: tar.FormatUSTAR})
-		_, _ = io.Copy(tw, content)
+		_, _ = io.Copy(tw, io.LimitReader(&noiseReader{state: 0x9E3779B97F4A7C15}, huge))
 	}
 	c, _, tempDir := newFakeService(t, respond)
 	_, err := c.ConvertToBundle(context.Background(), "a.docx", strings.NewReader("x"), convert.Options{})
@@ -728,18 +742,11 @@ func TestBundleEntryOverItsManifestSize(t *testing.T) {
 	if files, _ := os.ReadDir(tempDir); len(files) != 0 {
 		t.Errorf("temp files left behind: %v", files)
 	}
-	// The server stops once the client hangs up; far less than the entry
-	// was produced, so nothing of that size was written.
-	if n := content.n.Load(); n > 64<<20 {
-		t.Errorf("the client pulled %d bytes of the entry", n)
+	// What the server sent before the client hung up: the header and the
+	// socket buffers, not the entry.
+	if n := sent.n.Load(); n > 32<<20 {
+		t.Errorf("the server sent %d bytes before the client hung up", n)
 	}
-}
-
-type zeroReader struct{}
-
-func (zeroReader) Read(p []byte) (int, error) {
-	clear(p)
-	return len(p), nil
 }
 
 // TestBundleTotalCap refuses a bundle whose manifest sizes add up to more
@@ -768,13 +775,16 @@ func TestBundleTotalCap(t *testing.T) {
 	_ = bundle.Close()
 }
 
-// TestCapabilitiesBodyIsBounded serves an endless capabilities body: the
-// client reads at most its limit and fails.
+// TestCapabilitiesBodyIsBounded serves a valid capabilities answer of
+// 2 MiB: without the limit it would decode, so only the 1 MiB limit makes it
+// fail.
 func TestCapabilitiesBodyIsBounded(t *testing.T) {
-	served := &countingReader{r: io.MultiReader(strings.NewReader(`{"fonts":["`), zeroReader{})}
+	var answer atomic.Pointer[string]
+	long := `{"fonts":["` + strings.Repeat("a", 2<<20) + `"]}`
+	answer.Store(&long)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/capabilities", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.Copy(w, served)
+		_, _ = io.WriteString(w, *answer.Load())
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -784,10 +794,53 @@ func TestCapabilitiesBodyIsBounded(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := c.Capabilities(ctx); err == nil {
-		t.Fatal("expected an error")
+	_, err = c.Capabilities(ctx)
+	if err == nil || !strings.Contains(err.Error(), "at most 1048576 bytes are read") {
+		t.Fatalf("error = %v, want the limit", err)
 	}
-	if n := served.n.Load(); n > 64<<20 {
-		t.Errorf("the client read %d bytes of capabilities", n)
+	// The same answer under the limit decodes.
+	short := `{"fonts":["` + strings.Repeat("a", 1000) + `"]}`
+	answer.Store(&short)
+	if _, err := c.Capabilities(ctx); err != nil {
+		t.Fatalf("a short answer: %v", err)
+	}
+}
+
+// TestBundleZstdWindowOver8MiB serves a valid bundle in a frame that
+// declares a 16 MiB window: the decoder refuses it before it allocates the
+// window.
+func TestBundleZstdWindowOver8MiB(t *testing.T) {
+	// The tar, in one raw block of a frame built by hand: an encoder picks
+	// a smaller window for so little data.
+	var tarred bytes.Buffer
+	tw := tar.NewWriter(&tarred)
+	for _, e := range bundleEntries(t) {
+		_ = tw.WriteHeader(&tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.data)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR})
+		_, _ = tw.Write(e.data)
+	}
+	_ = tw.Close()
+	var buf bytes.Buffer
+	buf.Write([]byte{0x28, 0xB5, 0x2F, 0xFD}) // magic
+	buf.WriteByte(0x00)                       // no single segment, no content size, no checksum
+	buf.WriteByte(14 << 3)                    // window 2^(10+14) = 16 MiB
+	size := tarred.Len()
+	block := size<<3 | 1 // raw block, the last one
+	buf.Write([]byte{byte(block), byte(block >> 8), byte(block >> 16)})
+	buf.Write(tarred.Bytes())
+	c, _, tempDir := newFakeService(t, respondWith(buf.Bytes()))
+	_, err := c.ConvertToBundle(context.Background(), "a.docx", strings.NewReader("x"), convert.Options{})
+	if err == nil || !strings.Contains(err.Error(), "window size exceeded") {
+		t.Fatalf("error = %v, want the window refused", err)
+	}
+	if files, _ := os.ReadDir(tempDir); len(files) != 0 {
+		t.Errorf("temp files left behind: %v", files)
+	}
+}
+
+// TestNegativeBundleCapIsRefused: 0 means no cap, a negative cap is a
+// mistake, not unlimited.
+func TestNegativeBundleCapIsRefused(t *testing.T) {
+	if _, err := convert.New("http://x", apiKey, convert.WithMaxBundleBytes(-1)); err == nil {
+		t.Fatal("expected an error")
 	}
 }

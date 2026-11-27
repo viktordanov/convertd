@@ -73,6 +73,9 @@ func New(host, apiKey string, opts ...Option) (*Client, error) {
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	if cfg.maxBundleBytes < 0 {
+		return nil, fmt.Errorf("failed to create convert client: WithMaxBundleBytes is %d, want 0 (no cap) or more", cfg.maxBundleBytes)
+	}
 
 	authorize := func(_ context.Context, req *http.Request) error {
 		req.Header.Set("Authorization", "Bearer "+apiKey)

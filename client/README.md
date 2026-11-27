@@ -95,7 +95,7 @@ Next: read [Errors and retries](#errors-and-retries) before you call the client 
 | `Capabilities` | The accepted formats, the limits, the engine versions and the fonts. The answer is fixed for a deployment |
 | `Ready` | `true` when `/readyz` answers 200, `false` when it answers 503. Any other status is an error |
 
-`New` takes three options. `WithHTTPClient` sets the HTTP client. `WithTempDir` sets the parent directory for unpacked bundles, and the default is the system temp directory. `WithMaxBundleBytes` caps the disk space that one bundle may take: the sum of the file sizes in its manifest. A bundle over the cap fails before any file is written. The default, 0, sets no cap.
+`New` takes three options. `WithHTTPClient` sets the HTTP client. `WithTempDir` sets the parent directory for unpacked bundles, and the default is the system temp directory. `WithMaxBundleBytes` caps the disk space that one bundle may take: the sum of the file sizes in its manifest. A bundle over the cap fails before any file is written. The default, 0, sets no cap, and a negative value makes `New` fail.
 
 Each conversion takes a `convert.Options`. The zero value asks for the server defaults, because the client leaves every zero field out of the request:
 
