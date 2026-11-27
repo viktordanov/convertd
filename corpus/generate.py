@@ -379,6 +379,39 @@ def docx_remote_image_canary(_ctx):
     return docx_bytes(d)
 
 
+# Two files of the service image (debian:trixie-slim) that a document may link to.
+FILE_LINK_TEXT = "file:///etc/os-release"
+FILE_LINK_PICTURE = "file:///opt/libreoffice/program/intro.png"
+FILE_LINK_CACHED = "CACHED FIELD RESULT"
+
+
+def docx_file_links(_ctx):
+    """An INCLUDETEXT field and a picture, both linked to files of the service image."""
+    d = docx.Document()
+    d.add_paragraph("This document links two files of the service image. "
+                    "The engine must read neither.")
+    field = d.add_paragraph()._p
+    for run in ('<w:fldChar w:fldCharType="begin"/>',
+                f'<w:instrText xml:space="preserve"> INCLUDETEXT "{FILE_LINK_TEXT}" </w:instrText>',
+                '<w:fldChar w:fldCharType="separate"/>',
+                f"<w:t>{FILE_LINK_CACHED}</w:t>",
+                '<w:fldChar w:fldCharType="end"/>'):
+        field.append(parse_xml(f'<w:r {nsdecls("w")}>{run}</w:r>'))
+    rid = d.part.relate_to(FILE_LINK_PICTURE, RT.IMAGE, is_external=True)
+    drawing = parse_xml(
+        f'<w:r {nsdecls("w", "wp", "a", "pic", "r")}><w:drawing>'
+        '<wp:inline distT="0" distB="0" distL="0" distR="0">'
+        '<wp:extent cx="914400" cy="914400"/><wp:docPr id="1" name="Linked picture"/>'
+        '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        '<pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="intro.png"/><pic:cNvPicPr/></pic:nvPicPr>'
+        f'<pic:blipFill><a:blip r:link="{rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+        '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>'
+        '</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>')
+    d.add_paragraph()._p.append(drawing)
+    return docx_bytes(d)
+
+
 # --- PPTX -----------------------------------------------------------------------
 
 def pptx_bytes(pres, edits=None):
@@ -952,6 +985,7 @@ ENTRIES = [
     ("odt-basic-canary", "canary/odt-basic.odt", odt_basic_canary, True),
     ("docx-remote-image-canary", "canary/remote-image.docx", docx_remote_image_canary, True),
     ("xlsx-webservice-canary", "canary/webservice.xlsx", xlsx_webservice_canary, True),
+    ("docx-file-links", "hostile/file-links.docx", docx_file_links, True),
     ("zip-ratio", "hostile/zip-ratio.docx", zip_ratio, True),
     ("xml-entities", "hostile/xml-entities.docx", xml_entities, True),
     ("png-bomb", "hostile/png-bomb.png", png_bomb, True),
@@ -1152,6 +1186,13 @@ def check_facts(entry_id, data):
                 "docx-glyphs-cjk": CJK_TEXT}[entry_id]
         body = members(data).read("word/document.xml").decode()
         require(f"<w:t>{text}</w:t>" in body, "the text run")
+    elif entry_id == "docx-file-links":
+        z = members(data)
+        body = z.read("word/document.xml").decode()
+        rels = z.read("word/_rels/document.xml.rels").decode()
+        require(f'INCLUDETEXT "{FILE_LINK_TEXT}"' in body, "the INCLUDETEXT field")
+        require(f"<w:t>{FILE_LINK_CACHED}</w:t>" in body, "the cached field result")
+        require(f'Target="{FILE_LINK_PICTURE}" TargetMode="External"' in rels, "the picture link")
     elif entry_id in ("docx-aptos-theme", "docx-headings"):
         theme = members(data).read("word/theme/theme1.xml").decode()
         slot, family = {"docx-aptos-theme": ("minorFont", "Aptos"),
