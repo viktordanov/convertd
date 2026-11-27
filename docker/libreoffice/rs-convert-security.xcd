@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Installed into /opt/libreoffice/share/registry by docker/install-engines.sh.
+     The macro and link lock-down for documents from callers that the service does not
+     control (ledger item 011, S2). LibreOffice 26.8.3.1 under LibreOfficeKit already runs no
+     macro and follows no file link of the corpus with its defaults; this layer keeps it so
+     if a default changes. oor:finalized at the install layer makes a value stick: a user
+     profile cannot change it.
+
+     Names, types and defaults are those of main.xcd in 26.8.3.1. The meaning of each integer
+     comes from the source of tag libreoffice-26.8.3.1:
+       Common/Security/Scripting/MacroSecurityLevel   xs:int, default 2. Common.xcs allows 0
+         (lowest) to 3 (highest).
+       Common/Security/Scripting/DisableMacrosExecution   xs:boolean, default false. Not
+         finalized: LibreOfficeKit sets it to true and commits it at each load
+         (desktop/source/lib/init.cxx, documentLoadWithOptions, without
+         EnableMacrosExecution). A commit to a finalized value throws, and then every load
+         fails.
+       Common/Security/Scripting/DisableActiveContent   xs:boolean, default false. Blocks
+         active embedded content (OLE) and DDE.
+       Common/Security/Scripting/BlockUntrustedRefererLinks   xs:boolean, default false.
+       Writer/Content/Update/Link   xs:int, default 1. sw/source/uibase/config/usrpref.cxx
+         reads it as enum UpdateLinks (sw/inc/linkenum.hxx): 0 NEVER, 1 MANUAL, 2 AUTOMATIC.
+         The enumeration text in Writer.xcs gives 0 as "Always" and 2 as "Never"; the code
+         and a test with 2 (links followed) say otherwise.
+       Calc/Content/Update/Link   xs:int, default 2. Calc.xcs and ScLkUpdMode
+         (sc/inc/global.hxx, read in sc/source/core/tool/appoptio.cxx): 0 always, 1 never,
+         2 on request. -->
+<oor:data xmlns:oor="http://openoffice.org/2001/registry" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+ <!-- The three components are defined in main.xcd. configmgr reads the .xcd files in directory
+      order, which is not sorted on every file system, so the dependency makes it read main first. -->
+ <dependency file="main"/>
+ <oor:component-data oor:package="org.openoffice.Office" oor:name="Common">
+  <node oor:name="Security">
+   <node oor:name="Scripting">
+    <prop oor:name="MacroSecurityLevel" oor:finalized="true">
+     <value>3</value>
+    </prop>
+    <prop oor:name="DisableMacrosExecution">
+     <value>true</value>
+    </prop>
+    <prop oor:name="DisableActiveContent" oor:finalized="true">
+     <value>true</value>
+    </prop>
+    <prop oor:name="BlockUntrustedRefererLinks" oor:finalized="true">
+     <value>true</value>
+    </prop>
+   </node>
+  </node>
+ </oor:component-data>
+ <oor:component-data oor:package="org.openoffice.Office" oor:name="Writer">
+  <node oor:name="Content">
+   <node oor:name="Update">
+    <prop oor:name="Link" oor:finalized="true">
+     <value>0</value>
+    </prop>
+   </node>
+  </node>
+ </oor:component-data>
+ <oor:component-data oor:package="org.openoffice.Office" oor:name="Calc">
+  <node oor:name="Content">
+   <node oor:name="Update">
+    <prop oor:name="Link" oor:finalized="true">
+     <value>1</value>
+    </prop>
+   </node>
+  </node>
+ </oor:component-data>
+</oor:data>
