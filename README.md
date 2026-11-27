@@ -1,8 +1,13 @@
 # rs-convert
 
+[![Go client](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fproxy.golang.org%2Fgithub.com%2Fviktordanov%2Frs-convert%2Fclient%2F%40latest&query=%24.Version&label=go%20client)](https://pkg.go.dev/github.com/viktordanov/rs-convert/client)
+[![GHCR image](https://img.shields.io/github/v/release/viktordanov/rs-convert?label=ghcr%20image)](https://github.com/viktordanov/rs-convert/pkgs/container/rs-convert)
+[![API](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fviktordanov%2Frs-convert%2Fmain%2Fapi%2Fopenapi.json&query=%24.info.version&label=api&prefix=v)](api/openapi.json)
+[![Memoria](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fviktordanov%2Frs-convert%2Fmain%2F.github%2Fworkflows%2Fmemoria.yml&query=%24.jobs.memoria.steps%5B1%5D.with.version&label=memoria&prefix=v)](https://github.com/viktordanov/rs-memoria)
+
 rs-convert is an HTTP service that converts office documents and PDFs into a PDF and per-page images.
 
-**Status: the service converts office documents and PDFs. No container image is published yet.** `convertd serve` runs LibreOffice and PDFium in pools of worker processes. To run the real engines, build the `runtime` image from `docker/Dockerfile`. The quick start shows this image, and a build from source with the level-A fake engine. The API is version `1.0.0`.
+**Status: the service converts office documents and PDFs. Version 0.2.0 is published as the container image `ghcr.io/viktordanov/rs-convert`, for linux/amd64 and linux/arm64.** `convertd serve` runs LibreOffice and PDFium in pools of worker processes. The quick start runs this image, and a build from source with a fake engine. The API is version `1.0.0`.
 
 ## Contents
 
@@ -10,13 +15,15 @@ rs-convert is an HTTP service that converts office documents and PDFs into a PDF
 2. [What it does not do](#what-it-does-not-do)
 3. [Quick start](#quick-start)
 4. [The API](#the-api)
-5. [Boundaries](#boundaries)
-6. [Documentation](#documentation)
-7. [License](#license)
+5. [Deployment](#deployment)
+6. [Observability](#observability)
+7. [Boundaries](#boundaries)
+8. [Documentation](#documentation)
+9. [License](#license)
 
 ## The problem
 
-A service that converts office files with `soffice --convert-to` starts a new LibreOffice process for each file. In the M0 spikes, a warm LibreOfficeKit instance converted small files 3 to 6 times faster than a cold `soffice` process. That measurement used an Apple-silicon laptop and a synthetic corpus ([docs/m0-spikes.md](docs/m0-spikes.md)).
+A service that converts office files with `soffice --convert-to` starts a new LibreOffice process for each file. A warm LibreOfficeKit instance converted small files 3 to 6 times faster than a cold `soffice` process, on an Apple-silicon laptop with a synthetic corpus ([docs/m0-spikes.md](docs/m0-spikes.md)).
 
 LibreOffice and PDFium also parse files from callers that the service does not control. A file that hangs or crashes a parser must not stop the service.
 
@@ -36,23 +43,25 @@ The service has a narrow scope:
 <!-- memoria:section id="setup" files="Cargo.toml rust-toolchain.toml" -->
 ## Quick start
 
-The quick start has two paths. The container image runs the real engines and needs Docker. A build from source runs the level-A fake engine and needs only Rust.
+The quick start has two paths. The container image runs the real engines and needs Docker. A build from source runs a fake engine in place of LibreOffice and PDFium, and needs only Rust.
 
 ### The container image
 
-No image is published yet, so build it from the repository root. These commands ran on an Apple-silicon Mac (linux/arm64) with a Docker VM of about 4 GB. [docker/README.md](docker/README.md) gives the other targets and the build arguments.
+The image is on GHCR for linux/amd64 and linux/arm64. These commands ran on an Apple-silicon Mac (linux/arm64) with a Docker VM of about 4 GB.
 
-1. Build the `runtime` target:
+1. Pull the image:
 
    ```bash
-   docker buildx build -f docker/Dockerfile --target runtime --build-arg CARGO_JOBS=4 --load -t rs-convert:local .
+   docker pull ghcr.io/viktordanov/rs-convert:0.2.0
    ```
+
+   To build it yourself instead, run `docker buildx build -f docker/Dockerfile --target runtime --build-arg CARGO_JOBS=4 --load -t rs-convert:local .` from the repository root, and use `rs-convert:local` in the next step. [docker/README.md](docker/README.md) gives the other targets and the build arguments.
 
 2. Start the image with a read-only root and a writable `/tmp`. One office worker and two render workers keep the run small. The defaults are half of the CPUs and all of the CPUs:
 
    ```bash
    docker run -d --name rs-convert --read-only --tmpfs /tmp:size=2g --cap-drop ALL --security-opt no-new-privileges \
-     -e API_KEY=dev-key -e OFFICE_WORKERS=1 -e RENDER_WORKERS=2 -p 127.0.0.1:8080:8080 rs-convert:local
+     -e API_KEY=dev-key -e OFFICE_WORKERS=1 -e RENDER_WORKERS=2 -p 127.0.0.1:8080:8080 ghcr.io/viktordanov/rs-convert:0.2.0
    ```
 
    This container is on Docker's default network, so it can open outbound connections. The service needs none. For anything beyond a local test, block its egress, as [deploy/README.md](deploy/README.md#worker-isolation) explains.
@@ -142,6 +151,22 @@ Every `/v1` route needs the API key as a bearer token. The probes (`/healthz`, `
 `convertd openapi` emits the OpenAPI 3.1 spec. The repository holds its output as [api/openapi.json](api/openapi.json), and the server serves the same bytes at `/swagger/doc.json`. `generate.sh` generates the Go client from this file. The committed file is the contract. `generate.sh --check` fails when the spec that `convertd openapi` emits differs from it. `speccheck validate`, in `client/contract/`, checks its structure, its examples and the rules of the project for the spec.
 <!-- /memoria:section -->
 
+## Deployment
+
+The image runs on any container platform with a read-only root, a writable `/tmp`, the probes on `/readyz` and `/healthz`, and a termination grace longer than `SHUTDOWN_GRACE_SECONDS`. The service opens no outbound connections, so block its egress. [deploy/README.md](deploy/README.md) gives the reasons for each setting.
+
+- **Kubernetes:** `deploy/k8s/base` is a kustomize base with a Deployment, a Service and a NetworkPolicy that blocks egress. `deploy/k8s/overlays/gvisor` runs the pods under gVisor. Point an overlay of your own at `ghcr.io/viktordanov/rs-convert:0.2.0`.
+- **Docker or another platform:** start from the quick start's `docker run` line, and block the container's egress.
+- **Sizing:** LibreOffice needs the memory. An office worker used 462 MiB at p50 and 1546 MiB at p99 on a set of 276 office files and PDFs. The [memory budget](deploy/README.md#memory-budget) gives the rule for the per-pool limits, and the values for 2 CPUs and 4 GiB.
+
+## Observability
+
+convertd serves Prometheus metrics on `GET /metrics`, without the API key: requests by error code, the time of each stage, the queue, the workers, memory, disk and CPU per job. `deploy/observability/` holds a Grafana dashboard and a `PrometheusRule` with four alerts. [deploy/README.md](deploy/README.md#observability) explains both.
+
+![The convertd Grafana dashboard: the request rate, the error share, requests by status and error code, and p50 and p99 per stage](deploy/observability/dashboard-overview.png)
+
+The image shows the top of the dashboard during 11 minutes of conversions of the test corpus, two at a time, against the `0.2.0` image with 1 office worker and 2 render workers. The corpus includes files that fail on purpose, so 18 % of the requests are errors: encrypted files without a password and files that LibreOffice cannot load (422), and an image upload (415).
+
 ## Boundaries
 
 Each folder in this list has a README for its own readers.
@@ -172,9 +197,9 @@ Each folder in this list has a README for its own readers.
 
 ## Documentation
 
-[docs/README.md](docs/README.md) maps the other documents: the measured spike results, the writing guidance and the architecture diagram.
+[docs/README.md](docs/README.md) maps the other documents: the engine measurements, the writing guidance and the architecture diagram.
 
-`bench/results/` holds the benchmark records. In the first record, [2026-11-26.md](bench/results/2026-11-26.md), the service added 0.88 ms at p50 to the conversion of a one-page DOCX to PDF, beside 22.7 ms in LibreOffice. That run used the arm64 image on an Apple-silicon Mac, with 4 CPUs for the container. `examples/overhead.rs` produces these numbers: `src/README.md` explains it.
+`bench/results/` holds the benchmark records. In [2026-11-26.md](bench/results/2026-11-26.md), the service added 0.88 ms at p50 to the conversion of a one-page DOCX to PDF, beside 22.7 ms in LibreOffice. That run used the arm64 image on an Apple-silicon Mac, with 4 CPUs for the container. `examples/overhead.rs` produces these numbers: `src/README.md` explains it.
 
 ## License
 

@@ -60,21 +60,21 @@ OFFICE_WORKERS × OFFICE_KILL_RSS_MB + 256 MiB + RENDER_WORKERS × RENDER_KILL_R
 2 × 992 MiB + 256 MiB + 2 × 320 MiB + 512 MiB = 3392 MiB ≤ 4096 MiB
 ```
 
-The rule holds one replacement for each pool, not one for each worker. With 2 office and 2 render workers in 4 GiB, the rule leaves 704 MiB free. It lets `OFFICE_KILL_RSS_MB` rise to 1344 MiB: 2 × 1344 + 256 + 2 × 320 + 512 = 4096 MiB. The base manifest keeps 992 MiB until a soak measures a higher limit. A render replacement is small, about 8 MiB when it is ready, and the 512 MiB covers it.
+The rule holds one replacement for each pool, not one for each worker. With 2 office and 2 render workers in 4 GiB, the rule leaves 704 MiB free. It lets `OFFICE_KILL_RSS_MB` rise to 1344 MiB: 2 × 1344 + 256 + 2 × 320 + 512 = 4096 MiB. The base manifest keeps 992 MiB, because no long run has measured a higher limit. A render replacement is small, about 8 MiB when it is ready, and the 512 MiB covers it.
 
-The rule counts private memory: the kill and recycle limits read a worker's `RssAnon` + `RssShmem`. The shared library pages that every worker maps are page cache, which the cgroup counts once, inside the 512 MiB: about 157 MiB for LibreOffice and 8 MiB for PDFium. The 512 MiB also holds the supervisor, the rest of the page cache and a margin. Until 2026-11-27 the limits counted `VmRSS`, shared pages included. The office values 992 and 736 keep the old cut-off of 1152 and 896, less the 160 MiB of shared pages. So after a soak, a deployment can give each office worker about 156 MiB more. On cgroup v2 with Kubernetes 1.28 or later, a container that passes its memory limit loses every process. Then every job on the pod fails. This is not verified on a live cluster. Change the worker counts, the RSS values and the memory limit together. `OFFICE_MAX_RSS_MB` and `RENDER_MAX_RSS_MB` recycle a worker after a job that leaves it above that size.
+The rule counts private memory: the kill and recycle limits read a worker's `RssAnon` + `RssShmem`. The shared library pages that every worker maps are page cache, which the cgroup counts once, inside the 512 MiB: about 157 MiB for LibreOffice and 8 MiB for PDFium. The 512 MiB also holds the supervisor, the rest of the page cache and a margin. The office values 992 and 736 equal a `VmRSS` cut-off of 1152 and 896, less the 160 MiB of shared pages. So a deployment that measures its own documents can give each office worker about 156 MiB more. On cgroup v2 with Kubernetes 1.28 or later, a container that passes its memory limit loses every process. Then every job on the pod fails. This is not verified on a live cluster. Change the worker counts, the RSS values and the memory limit together. `OFFICE_MAX_RSS_MB` and `RENDER_MAX_RSS_MB` recycle a worker after a job that leaves it above that size.
 
 `/tmp` here is an `emptyDir` on node disk. An `emptyDir` with `medium: Memory`, or a tmpfs, adds its use to the memory limit. Then add `TMP_MAX_BYTES` to the left side.
 
 ### Sizing for 2 CPUs and 4 GiB
 
-The values come from an ingestion of 276 real documents on 2026-11-26: 128 DOCX, 93 PPTX, 30 PDF, 23 XLSX and 2 PPT, of up to 43 MB. It ran in arm64 Docker with 2 CPUs, 3584 MiB, no swap and `/tmp` on disk. It counted `VmRSS`, shared pages included, so the private figures of office workers are about 156 MiB lower. The figures:
+The values come from a run of 276 real documents: 128 DOCX, 93 PPTX, 30 PDF, 23 XLSX and 2 PPT, of up to 43 MB. It ran in arm64 Docker with 2 CPUs, 3584 MiB, no swap and `/tmp` on disk. It counted `VmRSS`, shared pages included, so the private figures of office workers are about 156 MiB lower. The figures:
 
 - LibreOffice is the bottleneck and needs the memory. One office worker needed 462 MiB at p50, 1546 MiB at p99, and up to 3281 MiB for heavy decks of 84 to 127 slides.
 - PDFium needed at most 279 MiB, at 150 and 300 DPI.
 - The second office worker raised the throughput by 50 to 61 %. A second render worker added 12 to 20 %.
 - Two concurrent requests filled the two CPUs. Four doubled the p99 and gave no more throughput.
-- With the watchdog on, no ingestion run had an OOM kill. A worker over its limit was killed, and its request got 422 `LIMIT_EXCEEDED`.
+- With the watchdog on, no run of these documents had an OOM kill. A worker over its limit was killed, and its request got 422 `LIMIT_EXCEEDED`.
 
 Pick by the documents:
 
@@ -85,7 +85,7 @@ Pick by the documents:
 
 Both profiles are projections from the measured peaks. The throughput figures come from cells with one shared kill limit, and no cell ran with these per-pool values. With one office worker, a heavy deck holds it for 20 to 55 s, so the next request waits `QUEUE_WAIT_SECONDS` (10 s) and gets 429. Clients must retry 429.
 
-The watchdog samples each worker's RSS every 200 ms, so a fast burst of memory can pass the kill limit before a sample sees it. Then the kernel's OOM killer is the real backstop. convertd reads the kill from the cgroup and answers 422 `LIMIT_EXCEEDED`, as for a watchdog kill. A 35-minute soak on 2026-11-27 measured this. It ran the same 276 documents with 2 clients in 3584 MiB. The settings were 1 office worker (`OFFICE_KILL_RSS_MB=2176`, `OFFICE_MAX_RSS_MB=1024`) and 2 render workers (320 and 256 MiB). The kernel killed the office worker 3 times in 311 office jobs. 9 of the 484 requests got 422 `LIMIT_EXCEEDED`, these 3 included. For fewer kernel kills, lower `OFFICE_KILL_RSS_MB` or raise the memory limit.
+The watchdog samples each worker's RSS every 200 ms, so a fast burst of memory can pass the kill limit before a sample sees it. Then the kernel's OOM killer is the real backstop. convertd reads the kill from the cgroup and answers 422 `LIMIT_EXCEEDED`, as for a watchdog kill. A 35-minute run of the same 276 documents with 2 clients in 3584 MiB measured this. The settings were 1 office worker (`OFFICE_KILL_RSS_MB=2176`, `OFFICE_MAX_RSS_MB=1024`) and 2 render workers (320 and 256 MiB). The kernel killed the office worker 3 times in 311 office jobs. 9 of the 484 requests got 422 `LIMIT_EXCEEDED`, these 3 included. For fewer kernel kills, lower `OFFICE_KILL_RSS_MB` or raise the memory limit.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="kubernetes" files="k8s/base/kustomization.yaml k8s/base/deployment.yaml k8s/overlays/gvisor/kustomization.yaml k8s/overlays/gvisor/runtimeclass.yaml" -->
@@ -94,7 +94,7 @@ The watchdog samples each worker's RSS every 200 ms, so a fast burst of memory c
 The base names its image `rs-convert`. Your own overlay, outside this repository, sets the real image. Deploy into a namespace that you choose:
 
 1. Create the key once: `kubectl create secret generic convertd-api-key --from-literal=API_KEY='<key>'`.
-2. Write an overlay with `resources: [<path>/deploy/k8s/base]` and `images: [{name: rs-convert, newName: <registry>/rs-convert, newTag: v<x.y.z>}]`.
+2. Write an overlay with `resources: [<path>/deploy/k8s/base]` and `images: [{name: rs-convert, newName: ghcr.io/viktordanov/rs-convert, newTag: <x.y.z>}]`. The published tags have no `v`: `0.2.0`, `0.2` and `latest`. For an image of your own, use your registry and tag.
 3. Make sure that the overlay renders: `kubectl kustomize <overlay>`.
 4. Apply it: `kubectl apply -k <overlay>`.
 5. Wait for the pod: `kubectl rollout status deployment/convertd`.
@@ -180,6 +180,10 @@ If Prometheus runs in another namespace, its `serviceMonitorNamespaceSelector` a
 
 ### Dashboard
 
+![The whole convertd dashboard: requests, latency per stage, pools, supervisor and disk, quality, and CPU per job](observability/dashboard.png)
+
+The image shows the whole dashboard during 11 minutes of conversions of the test corpus, two at a time, against the `0.2.0` image with 1 office worker and 2 render workers. Prometheus scraped every 5 s and added the `namespace` and `pod` labels that the dashboard filters on. The corpus includes files that fail on purpose: encrypted files, files that LibreOffice cannot load, a file over a limit and an image upload. Each failed office conversion replaces the office worker, which the "Worker restarts" panels show.
+
 To change the dashboard, edit `tools/observability/gen_dashboard.py`, not the JSON. Then run `python3 -I tools/observability/gen_dashboard.py deploy/observability/grafana-dashboard.json` and commit both files.
 
 The dashboard computes rates over `$__rate_interval`, which is at least four scrape intervals. Each query takes its minimum step from the `scrape_interval` variable, and Grafana uses that step as the scrape interval. With 15 s, a rate window can be as short as 1 minute. The dashboard tells processes apart by their `namespace` and `pod` labels, which a `ServiceMonitor` adds. A scrape without them merges the counters of all processes.
@@ -194,7 +198,7 @@ convertd does not export the queue capacity, so the queue alert has a fixed thre
 
 ### Name check
 
-`tests/observability.rs` keeps the files and the code in sync. It starts convertd at level B, sends requests until the metric families exist, and reads `/metrics`. It compares two kinds of name with the samples of the scrape: each `convert_*` name in the files, and each metric that a query selects. A missing name fails the test, and so does a misspelled prefix such as `covert_workers`. The test runs in the CI test job, with `test-hooks`.
+`tests/observability.rs` keeps the files and the code in sync. It starts convertd with the fake worker (`TEST_ENGINE=worker`), sends requests until the metric families exist, and reads `/metrics`. It compares two kinds of name with the samples of the scrape: each `convert_*` name in the files, and each metric that a query selects. A missing name fails the test, and so does a misspelled prefix such as `covert_workers`. The test runs in the CI test job, with `test-hooks`.
 
 Two names are exceptions. `tests/convert_pdf.rs` makes a stalled response and asserts `convert_responses_cut_total` on its own scrape. On a host that is not Linux, the test looks for the supervisor gauges in `src/observability/metrics.rs`. The test also limits the form of the rules file: each `expr` is a block or a plain value on its own `expr:` line.
 
@@ -207,8 +211,8 @@ The test checks metric names only. It does not check label values, a Grafana imp
 A live cluster has not run these manifests yet, with or without gVisor. These checks have run:
 
 - **Render:** `kubectl kustomize` (v1.33.9) renders the base and the `gvisor` overlay.
-- **Schema:** `kubeconform -strict` (v0.8.0) passed for all 7 resources on 2026-11-26, after the base got `TIMEOUT_DEFAULT_SECONDS`.
-- **Observability examples:** on 2026-11-26, by hand, the dashboard JSON and the rules YAML parsed, and all 50 queries parsed with the PromQL parser of Prometheus v0.54.1. The 6 CPU queries that came later did not run through that parser. No Grafana import, `promtool` check or Prometheus Operator load has run. Two Grafana behaviors are not checked live: a query Min step replaces the scrape interval of the data source in `$__rate_interval`, and Min step accepts the `$scrape_interval` variable.
+- **Schema:** `kubeconform -strict` (v0.8.0) passed for all 7 resources of the base on 2026-11-26.
+- **Observability examples:** on 2026-11-26, by hand, the dashboard JSON and the rules YAML parsed, and all 50 queries parsed with the PromQL parser of Prometheus v0.54.1. The 6 CPU queries did not run through that parser. On 2026-11-27 Grafana 13.3.2 loaded the dashboard from a file, and every panel showed data from Prometheus 3.16.0, which scraped the `0.2.0` image ([the image above](#dashboard)). No `promtool` check or Prometheus Operator load has run. Two Grafana behaviors are not checked live: a query Min step replaces the scrape interval of the data source in `$__rate_interval`, and Min step accepts the `$scrape_interval` variable.
 - **Not done:** a live deployment and a gVisor run. Also not checked are the native `preStop` sleep on a given Kubernetes version and egress denial by the CNI of the cluster. Time to ready and worker memory under gVisor are not measured.
 
 A passing render and schema check proves that the files are valid Kubernetes objects. It does not prove that the probes, limits or network policy behave as intended on a real cluster.

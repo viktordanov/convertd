@@ -10,10 +10,11 @@ This guidance applies to every document in the repository. [Boundaries](boundari
 4. [Structure](#structure)
 5. [Names](#names)
 6. [Facts, numbers and claims](#facts-numbers-and-claims)
-7. [Examples](#examples)
-8. [Diagrams](#diagrams)
-9. [Architecture maps](#architecture-maps)
-10. [Maintenance](#maintenance)
+7. [No context anchors](#no-context-anchors)
+8. [Examples](#examples)
+9. [Diagrams](#diagrams)
+10. [Architecture maps](#architecture-maps)
+11. [Maintenance](#maintenance)
 
 ## Required skills
 
@@ -65,7 +66,7 @@ Use one name for each concept, and use it on every page. The project's names are
 - **Job directory**: the per-request folder under `TMP_DIR`. **Disk budget**: `TMP_MAX_BYTES`.
 - **Pre-flight**: the scan of an office file in the office worker before LibreOffice loads it. **Detection**: the supervisor's identification of a format from the bytes.
 - **Overhead**: total time minus queue time minus engine time. **Strict overhead** also counts the service's own PDF checks. Use these two terms only with these meanings.
-- **Level A** and **level B**: the two test fakes, `TEST_ENGINE=fake` and `TEST_ENGINE=worker`.
+- **Fake engine** and **fake worker**: the two test fakes, `TEST_ENGINE=fake` (in the supervisor, no worker process) and `TEST_ENGINE=worker` (a real worker process with a scripted engine). Contributor pages only. Identifiers such as `levelb_test.go` keep their names.
 - **Warning**: one of the quality signals in the manifest, such as `FONT_SUBSTITUTED`. Do not use "warning" for log lines.
 
 ## Facts, numbers and claims
@@ -75,6 +76,21 @@ Keep every command, flag, path, identifier, environment variable, error code and
 Give every performance number its conditions: what was measured, on which machine, with which build and input. Say whether it is a measurement or an estimate. A number from `docs/m0-spikes.md` or a benchmark result keeps its source next to it. Do not state an unmeasured speed or size as fact.
 
 Say plainly what a passing check proves and what it does not prove. For example, the contract tests prove that the server and the spec agree. They do not prove that LibreOffice output matches Microsoft Office.
+
+## No context anchors
+
+A context anchor is a word that makes sense only to someone who followed how the project was built. A reader of the repository never saw that history, so documentation and code comments never use one. Context anchors include:
+
+- Milestone, phase, wave or round names: "M0", "the spikes", "wave 2b", "round 3 of the review".
+- Planning labels: item, effort or finding numbers ("item 006", "S4", "P8"), plan steps and lane names.
+- Process events: a review, a colleague, a soak, an ingestion or a bench named as an event ("the 2026-11-26 ingestion", "the benchmark of record").
+- Pointers into private or transient state: CI run IDs, commit hashes, branch names, local image tags and scratch scripts.
+
+State the fact and its conditions, and link the file that holds the evidence. Write "A warm LibreOfficeKit instance converted small files 3 to 6 times faster than a cold `soffice` process, on an Apple-silicon laptop with a synthetic corpus ([docs/m0-spikes.md](../m0-spikes.md))", not "In the M0 spikes, a warm instance was 3 to 6 times faster". The link is the source. The history name is not.
+
+A name that the code or the repository really uses is not an anchor: a file name such as `docs/m0-spikes.md`, a dated record in `bench/results/`, a dependency version, an environment variable, a test name. Refer to it by what it holds where the reader needs the content, for example "the spike measurements". A contributor term from [Names](#names) belongs on contributor pages, never in the root README or a user guide.
+
+A code comment says why the code is as it is in terms of the code: the constraint, the failure it prevents, the measured cost. It does not say which review found the problem, which item asked for it or which round changed it. Git history holds that.
 
 ## Examples
 
