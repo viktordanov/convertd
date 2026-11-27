@@ -809,3 +809,106 @@ fn level_b_metrics_show_worker_cpu() {
     served.sigterm();
     assert!(served.wait_exit().success());
 }
+
+#[cfg(all(target_os = "linux", feature = "test-hooks"))]
+/// S1 on the real binary: `serve` marks itself not dumpable, so another
+/// process of its UID cannot read its environment, which holds `API_KEY`.
+/// Its own `/proc` reads still feed the supervisor gauges.
+#[test]
+fn the_server_environment_is_closed_to_its_own_uid() {
+    let caps = std::fs::read_to_string("/proc/self/status").unwrap();
+    let ptrace_any = caps
+        .lines()
+        .find_map(|l| l.strip_prefix("CapEff:"))
+        .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+        .is_some_and(|caps| caps & (1 << 19) != 0);
+    if ptrace_any {
+        eprintln!("skipped: this process has CAP_SYS_PTRACE");
+        return;
+    }
+    let served = Served::start("not-dumpable", &[("TEST_ENGINE", "fake")]);
+    let err = std::fs::read(format!("/proc/{}/environ", served.child.id())).unwrap_err();
+    // Denied, or hidden by procfs `hidepid=2`. The scrape below shows that
+    // the server still runs.
+    assert!(
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+        ),
+        "{err}"
+    );
+    let metrics = served.get("/metrics");
+    for gauge in [
+        "convert_supervisor_rss_bytes",
+        "convert_supervisor_open_fds",
+    ] {
+        assert!(
+            metrics
+                .lines()
+                .any(|l| l.starts_with(gauge) && !l.ends_with(" 0")),
+            "{gauge} is missing or 0"
+        );
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "test-hooks"))]
+/// The image's HEALTHCHECK runs `convertd healthcheck` with the container's
+/// environment and the workers' UID. While it waits for `/readyz`, its
+/// environment is closed to that UID too.
+#[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test runs the binary directly; no supervisor reaper exists here"
+)]
+fn the_healthcheck_environment_is_closed_to_its_own_uid() {
+    let caps = std::fs::read_to_string("/proc/self/status").unwrap();
+    let ptrace_any = caps
+        .lines()
+        .find_map(|l| l.strip_prefix("CapEff:"))
+        .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+        .is_some_and(|caps| caps & (1 << 19) != 0);
+    if ptrace_any {
+        eprintln!("skipped: this process has CAP_SYS_PTRACE");
+        return;
+    }
+    // A listener that accepts and never answers: the probe waits up to its
+    // timeout, after its call to set_not_dumpable.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = silent.local_addr().unwrap().port();
+    silent.set_nonblocking(true).unwrap();
+    let mut probe = std::process::Command::new(env!("CARGO_BIN_EXE_convertd"))
+        .arg("healthcheck")
+        .env_clear()
+        .env("PORT", port.to_string())
+        .env("API_KEY", KEY)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    // The probe's connection shows that it reached the check, which comes
+    // after the protection. Keep it open while /proc is read.
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let _connection = loop {
+        match silent.accept() {
+            Ok((stream, _)) => break stream,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < until,
+                    "the probe never connected"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(err) => panic!("accept: {err}"),
+        }
+    };
+    let err = std::fs::read(format!("/proc/{}/environ", probe.id())).unwrap_err();
+    assert!(
+        matches!(
+            err.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+        ),
+        "{err}"
+    );
+    let _ = probe.kill();
+    let _ = probe.wait();
+}

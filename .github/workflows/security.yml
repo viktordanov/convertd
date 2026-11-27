@@ -1,0 +1,62 @@
+# Dependency advisories (ledger item 011, S3): the RustSec database for the Rust crates and
+# the Go vulnerability database for the client. On every pull request, weekly, and by hand.
+# A new advisory can land while the code stays the same, so the weekly run matters.
+# Actions are pinned by commit SHA (the tag is in the comment); tools by version.
+name: security
+
+on:
+  pull_request: {}
+  schedule:
+    - cron: "0 5 * * 1"      # weekly, Monday 05:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  rust-advisories:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
+        with:
+          tool: cargo-deny@0.22.1
+      # deny.toml checks advisories only. The corpus tool has its own Cargo.lock.
+      - name: cargo deny (convertd)
+        run: cargo deny --locked check advisories
+      - name: cargo deny (tools/corpus)
+        run: cargo deny --manifest-path tools/corpus/Cargo.toml --config deny.toml --locked check advisories
+
+  go-vulnerabilities:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The newest patch of the Go line that client/go.mod names: govulncheck reports the
+      # standard library of the toolchain it runs with, and a caller builds with a patched one.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: |
+            client/go.sum
+            client/contract/go.sum
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.10.0
+      - name: govulncheck (client)
+        working-directory: client
+        run: govulncheck ./...
+      # A module of its own: the contract tests and the speccheck tool that CI runs.
+      - name: govulncheck (client/contract)
+        working-directory: client/contract
+        # The contract tests build with the tag that scripts/contract_test.sh uses.
+        run: govulncheck -test -tags contract ./...

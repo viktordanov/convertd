@@ -60,7 +60,9 @@ After that, it sweeps the groups of dead children with `waitid(P_PGID)` until `E
 
 `drain_stderr(fd, worker_id)` reads a worker's stderr until EOF, so a full pipe never blocks the worker. With debug logging on, it logs each line as `worker stderr`, cut to 512 bytes. With debug logging off, it reads the bytes and drops them. EOF does not mean that the worker is gone, because its children can hold the pipe open.
 
-`set_not_dumpable()` marks the supervisor as not dumpable on Linux, so a worker with the same UID cannot read `/proc/<supervisor>/environ`. No code calls it yet.
+`set_not_dumpable()` marks the supervisor as not dumpable on Linux, so a worker with the same UID cannot read `/proc/<supervisor>/environ`, which holds `API_KEY`. `serve` calls it first, before it reads the configuration, and it fails to start if the call fails. `convertd healthcheck` calls it first too, because the image's `HEALTHCHECK` starts it with the container's environment. A worker is dumpable again after its `execve`. The supervisor still reads its own `/proc/self/status` and `/proc/self/fd` for its gauges, and each worker's RSS for the watchdog. Its own `/proc/self/environ` becomes root-owned with mode 0400, and no gauge reads it. `tests/not_dumpable.rs` and two tests in `tests/ops.rs` prove this on Linux. With procfs mounted `hidepid=2`, the read gives `NotFound` instead of `PermissionDenied`.
+
+Known limit: between its `execve` and the call, a new `convertd healthcheck` is dumpable for a few milliseconds while it holds the container's environment. The image's `HEALTHCHECK` starts it every 30 s, while workers run. A worker that polls `/proc` can read `API_KEY` in that window. Only a separate worker UID, item 006, closes it. Kubernetes with `httpGet` probes, as in `deploy/k8s/base`, has no such window. [deploy/README.md](../../deploy/README.md#worker-isolation) gives the Docker options. A process with `CAP_SYS_PTRACE` can still read the environment, so the image must not grant it.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="pool" files="pool.rs conn.rs" -->

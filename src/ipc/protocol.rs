@@ -241,6 +241,9 @@ pub enum TestOp {
     SpawnSleeper,
     /// Answer the worker's environment.
     Env,
+    /// Read `/proc/<pid>/environ` and answer its size or the error kind:
+    /// the supervisor must not be readable this way (S1).
+    ReadEnviron { pid: u32 },
 }
 
 /// Worker to supervisor.
@@ -490,10 +493,23 @@ pub struct DecryptedOut {
 #[serde(tag = "test", content = "data", rename_all = "snake_case")]
 pub enum TestOutput {
     Slept,
-    Allocated { rss_bytes: u64 },
-    Wrote { bytes: u32 },
-    Spawned { pid: u32 },
-    Env { vars: Vec<(String, String)> },
+    Allocated {
+        rss_bytes: u64,
+    },
+    Wrote {
+        bytes: u32,
+    },
+    Spawned {
+        pid: u32,
+    },
+    Env {
+        vars: Vec<(String, String)>,
+    },
+    /// `bytes` when the read succeeded, else the `io::ErrorKind` by name.
+    Read {
+        bytes: Option<u64>,
+        error: Option<String>,
+    },
 }
 
 /// An error the engine reported. The worker stays usable unless the

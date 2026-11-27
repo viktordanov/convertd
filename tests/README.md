@@ -36,7 +36,7 @@ Build the tests with the cargo feature `test-hooks`. Without it, `pool.rs`, `pro
 
 `cargo test --features test-hooks` also runs every test, but it has no per-test time limit and it runs the `slow_` tests. To run the engine tests for real, run them in the `dev` image that [docker/README.md](../docker/README.md) describes. That image sets `LO_PROGRAM_DIR` and `PDFIUM_LIB_DIR`. Next: read [Fakes](#fakes) before you write a test that needs an engine.
 
-<!-- memoria:section id="levels" files="convert_pdf.rs convert_bundle.rs detect.rs errors.rs ops.rs openapi_spec.rs upload.rs pool.rs process.rs reap_race.rs oom_kill.rs worker_test_role.rs engines_poison.rs engines_office.rs engines_render.rs peak_heap.rs rss_linux.rs observability.rs" -->
+<!-- memoria:section id="levels" files="convert_pdf.rs convert_bundle.rs detect.rs errors.rs ops.rs openapi_spec.rs upload.rs pool.rs process.rs reap_race.rs not_dumpable.rs oom_kill.rs worker_test_role.rs engines_poison.rs engines_office.rs engines_render.rs peak_heap.rs rss_linux.rs observability.rs" -->
 ## Test levels
 
 The tests have three levels:
@@ -53,12 +53,13 @@ The integration tests:
 | `convert_bundle.rs` | `output=images` and `output=bundle` through the level-A fakes: the tar.zst archive, page selection, render limits, warnings, and the disk budget that open downloads give back | No |
 | `detect.rs` | Format detection from the bytes, with ZIP and OLE2 files that the test builds, hostile OLE2 directories included | No |
 | `errors.rs` | Errors over HTTP: auth, request IDs, fallbacks and the panic layer | No |
-| `ops.rs` | The probes, `/v1/capabilities`, `/metrics`, `convertd healthcheck` and the drain | Two tests, for `SIGTERM` on the binary at level A and level B |
+| `ops.rs` | The probes, `/v1/capabilities`, `/metrics`, `convertd healthcheck` and the drain. On Linux, also that another process of the server's UID cannot read the environment of the server or of `convertd healthcheck` | Four tests: `SIGTERM` on the binary at level A and level B, and the two environment checks |
 | `observability.rs` | Every metric that `deploy/observability/` names is on `/metrics`: the scan of the files, and a scrape of the binary at level B after a few requests | The scrape only |
 | `openapi_spec.rs` | The cheap invariants of the spec that `convertd openapi` emits | No |
 | `upload.rs` | The streamed upload: digests, part rules, caps, the disk budget, and stalled, slow and vanished clients | No |
 | `pool.rs` | The worker pool with `test` workers (level B), including the RSS kill of a worker during its call | Yes |
 | `process.rs` | Spawning, scoped reaping and process-group kills. Some cases run on Linux only | Yes |
+| `not_dumpable.rs` | A `test` worker cannot read the environment of a supervisor that is not dumpable, and the supervisor still reads its own `/proc` entries and the worker's RSS. Linux only, in a binary of its own, because the flag stays on the test process. It skips when the process has `CAP_SYS_PTRACE` | Yes |
 | `reap_race.rs` | A worker that the process-wide reaper finds only in its stray pass still has its process group killed. Linux only, in a binary of its own, because the stray pass waits on every child of the test process | Yes |
 | `oom_kill.rs` | A real kernel OOM kill of a worker gives `LimitExceeded` at once, with no retry and no poison strike. Linux with cgroup v2 only, in a container with a memory limit and `CONVERTD_MEMORY_LIMIT_MB` set to it. Otherwise it prints `skipped` | Yes |
 | `worker_test_role.rs` | `convertd worker test`, driven over its pipes | Yes |

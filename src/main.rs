@@ -84,6 +84,13 @@ fn openapi() -> ExitCode {
 }
 
 fn healthcheck() -> ExitCode {
+    // The image's HEALTHCHECK starts this probe with the container's
+    // environment, API_KEY included, and the workers' UID: close it to
+    // them as `serve` does, before it waits for /readyz.
+    if let Err(err) = convertd::engines::process::set_not_dumpable() {
+        eprintln!("convertd healthcheck: failed to mark the probe not dumpable: {err}");
+        return ExitCode::FAILURE;
+    }
     let port = match config::port(&Env::from_process()) {
         Ok(port) => port,
         Err(err) => {
@@ -101,6 +108,11 @@ fn healthcheck() -> ExitCode {
 }
 
 fn serve() -> Result<(), String> {
+    // First, before anything reads the configuration: a worker with this
+    // UID must not read `/proc/<supervisor>/environ`, which holds API_KEY.
+    // Linux only; workers are dumpable again after their execve.
+    convertd::engines::process::set_not_dumpable()
+        .map_err(|err| format!("failed to mark the supervisor not dumpable: {err}"))?;
     let config = Config::from_process().map_err(|err| err.to_string())?;
     logging::init(config.server.log_mode).map_err(|err| err.to_string())?;
     // Held until serve returns: before the sweep below and before the
