@@ -113,7 +113,7 @@ fn skip_all(facts: &mut SourceFacts, reason: SkipReason) {
 fn scan_package(mut package: Package, family: Family, printed: Printed, facts: &mut SourceFacts) {
     let mut text = TextCollector::new();
     if package.has("mimetype") {
-        odf::scan(&mut package, &mut text, printed, facts);
+        odf::scan(&mut package, family, &mut text, printed, facts);
         finish(text, facts);
         return;
     }
@@ -175,29 +175,46 @@ impl TextCollector {
     /// or not; after the first one past the cap, nothing can change the
     /// result, so the rest is not looked at.
     fn add(&mut self, text: &str) {
-        if self.full {
-            return;
-        }
         for c in text.chars() {
-            let cp = u32::from(c);
-            let (word, bit) = ((cp / 64) as usize, 1u64 << (cp % 64));
-            let Some(slot) = self.seen.get_mut(word) else {
-                continue;
-            };
-            if *slot & bit != 0 {
-                continue;
-            }
-            if !needs_glyph(cp) {
-                *slot |= bit;
-                continue;
-            }
-            if self.kept.len() >= MAX_CODE_POINTS {
-                self.full = true;
+            if !self.add_cp(u32::from(c)) {
                 return;
             }
-            *slot |= bit;
-            self.kept.push(cp);
         }
+    }
+
+    /// Adds one code point; false once the cap is passed.
+    fn add_cp(&mut self, cp: u32) -> bool {
+        if self.full {
+            return false;
+        }
+        let (word, bit) = ((cp / 64) as usize, 1u64 << (cp % 64));
+        let Some(slot) = self.seen.get_mut(word) else {
+            return true;
+        };
+        if *slot & bit != 0 {
+            return true;
+        }
+        if !needs_glyph(cp) {
+            *slot |= bit;
+            return true;
+        }
+        if self.kept.len() >= MAX_CODE_POINTS {
+            self.full = true;
+            return false;
+        }
+        *slot |= bit;
+        self.kept.push(cp);
+        true
+    }
+
+    /// Adds what `other` collected, and its cap.
+    fn absorb(&mut self, other: TextCollector) {
+        for &cp in &other.kept {
+            if !self.add_cp(cp) {
+                return;
+            }
+        }
+        self.full |= other.full;
     }
 
     fn into_sorted(self) -> Vec<u32> {

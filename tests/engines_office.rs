@@ -11,12 +11,15 @@ use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use convertd::domain::conversion::{ExportOptions, SlideNotes};
+use convertd::domain::conversion::{ExportOptions, ImageFormat, SlideNotes};
 use convertd::domain::document::Family;
 use convertd::domain::engine::{
     Admission as DomainAdmission, EngineError, InspectJob, OfficeEngine, OfficeJob, PdfEngine,
+    RenderJob,
 };
+use convertd::domain::pages::hidden_pages;
 use convertd::domain::secret::Password;
+use convertd::domain::verification::Slides;
 use convertd::engines::config::Paper;
 use convertd::engines::office_lok::OfficeLok;
 use convertd::engines::pdf_pdfium::PdfPdfium;
@@ -533,6 +536,132 @@ async fn slow_corpus_files_convert_with_their_page_counts() {
             );
             office_pool.shutdown(Duration::from_secs(5)).await;
             render_pool.shutdown(Duration::from_secs(5)).await;
+        },
+    )
+    .await;
+}
+
+/// The pages of `pdf` whose render is more than 1 % pure red: the pages
+/// of the corpus's red hidden slide, and its notes pages, which show the
+/// slide as a thumbnail.
+async fn red_pages(pdf: &PdfPdfium, path: &Path, count: u32, out: &Path) -> Vec<u32> {
+    std::fs::create_dir_all(out).unwrap();
+    let rendered = pdf
+        .render(
+            RenderJob {
+                pdf: path.to_path_buf(),
+                password: None,
+                pages: (1..=count).collect(),
+                format: ImageFormat::Png,
+                dpi: 36,
+                quality: 85,
+                max_edge: 4096,
+                out_dir: out.to_path_buf(),
+                sha256: [0; 32],
+                max_output_bytes: 64 << 20,
+            },
+            DomainAdmission::Queue,
+            deadline(),
+        )
+        .await
+        .expect("a render");
+    rendered
+        .pages
+        .iter()
+        .filter(|page| {
+            let image = image::open(out.join(&page.file_name)).unwrap().to_rgb8();
+            let red = image
+                .pixels()
+                .filter(|p| p[0] > 200 && p[1] < 60 && p[2] < 60)
+                .count();
+            red * 100 > image.pixels().len()
+        })
+        .map(|page| page.number)
+        .collect()
+}
+
+/// Hidden slides with each notes mode, on the real LibreOffice: the page
+/// counts that `domain::pages::hidden_pages` predicts from the slide list,
+/// and the pages it marks against the pages that show the hidden slide.
+/// `pptx-hidden3` and `odp-hidden` have 3 slides, the 2nd hidden and red.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_hidden_slides_give_the_pages_the_slide_list_predicts() {
+    let (Some(lo), Some(pdfium), Some(corpus)) = (lo(), pdfium(), corpus()) else {
+        return;
+    };
+    within(
+        TEST,
+        "slow_hidden_slides_give_the_pages_the_slide_list_predicts",
+        async {
+            let dir = Scratch::new("office-hidden");
+            let office_pool = ready(office_spec(dir.path(), &lo, true)).await;
+            let render_pool = ready(render_spec(dir.path(), &pdfium)).await;
+            let office = OfficeLok::new(office_pool.clone());
+            let pdf = PdfPdfium::new(render_pool.clone());
+            let three = Slides {
+                count: 3,
+                hidden: vec![2],
+            };
+            let mut failures = Vec::new();
+            let mut n = 0;
+            for rel in ["pptx/hidden3.pptx", "odf/hidden.odp"] {
+                for notes in [SlideNotes::None, SlideNotes::Append, SlideNotes::Only] {
+                    for include_hidden_slides in [false, true] {
+                        let export = ExportOptions {
+                            notes,
+                            include_hidden_slides,
+                            one_page_per_sheet: false,
+                        };
+                        let ext = rel.rsplit('.').next().unwrap();
+                        n += 1;
+                        let source = copy_in(
+                            &corpus,
+                            rel,
+                            &dir,
+                            &format!("hidden-{notes:?}-{include_hidden_slides}-{n}.{ext}"),
+                        );
+                        let output =
+                            dir.join(&format!("hidden-{notes:?}-{include_hidden_slides}-{n}.pdf"));
+                        let mut job = job(source, output.clone(), Family::Presentation);
+                        job.export = export;
+                        let converted = office
+                            .convert(job, DomainAdmission::Queue, deadline())
+                            .await
+                            .unwrap_or_else(|err| panic!("{rel} {export:?}: {err:?}"));
+                        assert_eq!(
+                            converted.facts.and_then(|f| f.slides).as_ref(),
+                            Some(&three),
+                            "{rel}"
+                        );
+                        let count = pages_of(&pdf, &output).await;
+                        // Slides or notes pages: one per exported slide.
+                        let slides = if include_hidden_slides { 3 } else { 2 };
+                        let expected = match notes {
+                            SlideNotes::Append => 2 * slides,
+                            SlideNotes::None | SlideNotes::Only => slides,
+                        };
+                        let marks = hidden_pages(Some(&three), &export, count);
+                        let pages = dir.join(&format!("pages-{n}"));
+                        let red = red_pages(&pdf, &output, count, &pages).await;
+                        eprintln!("{rel} {export:?}: {count} pages, marks {marks:?}, red {red:?}");
+                        if count != expected {
+                            failures.push(format!(
+                                "{rel} {export:?}: {count} pages, expected {expected}"
+                            ));
+                        }
+                        // The marks are the pages that show the hidden slide:
+                        // none without the option, where LibreOffice drops it.
+                        if red != marks {
+                            failures.push(format!(
+                                "{rel} {export:?}: red pages {red:?}, marks {marks:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+            office_pool.shutdown(Duration::from_secs(5)).await;
+            render_pool.shutdown(Duration::from_secs(5)).await;
+            assert!(failures.is_empty(), "{failures:#?}");
         },
     )
     .await;

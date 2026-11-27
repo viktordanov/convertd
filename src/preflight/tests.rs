@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use super::package::Package;
 use super::*;
-use crate::domain::verification::DeclaredPages;
+use crate::domain::verification::{DeclaredPages, Slides};
 
 const W: &str = r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#;
 const A: &str = r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main""#;
@@ -782,6 +782,19 @@ fn docm_macros_only_with_a_vba_project() {
 
 /// A deck: one entry per slide, (root tag with attributes, inner XML).
 fn pptx(slides: &[(&str, &str)], with_list: bool) -> Vec<u8> {
+    pptx_extra(slides, with_list, "")
+}
+
+/// `pptx`, with `extra` after the slide list in `ppt/presentation.xml`.
+fn pptx_extra(slides: &[(&str, &str)], with_list: bool, extra: &str) -> Vec<u8> {
+    pptx_custom(slides, with_list.then_some(None), extra)
+}
+
+/// `pptx` with the slide list's children given as XML (`Some(Some(..))`),
+/// built from `slides` (`Some(None)`), or no list (`None`). Slide `n` has
+/// the relationship `rId{n+1}`.
+fn pptx_custom(slides: &[(&str, &str)], list_xml: Option<Option<&str>>, extra: &str) -> Vec<u8> {
+    let with_list = list_xml.is_some();
     let content_types = types("");
     let root = rels(&[("rId1", "officeDocument", "ppt/presentation.xml")]);
     let mut pres_rels: Vec<(String, String, String)> = vec![(
@@ -802,10 +815,13 @@ fn pptx(slides: &[(&str, &str)], with_list: bool) -> Vec<u8> {
             i + 2
         ));
     }
+    if let Some(Some(custom)) = list_xml {
+        list = custom.to_owned();
+    }
     let presentation = if with_list {
-        format!(r#"<p:presentation {P}><p:sldIdLst>{list}</p:sldIdLst></p:presentation>"#)
+        format!(r#"<p:presentation {P}><p:sldIdLst>{list}</p:sldIdLst>{extra}</p:presentation>"#)
     } else {
-        format!(r#"<p:presentation {P}/>"#)
+        format!(r#"<p:presentation {P}>{extra}</p:presentation>"#)
     };
     let pres_rels: Vec<(&str, &str, &str)> = pres_rels
         .iter()
@@ -891,10 +907,191 @@ fn pptx_counts_visible_slides_and_follows_the_master_theme() {
             source: "ppt/presentation.xml"
         })
     );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 5,
+            hidden: vec![2, 4]
+        })
+    );
     // +mj-lt (layout) and +mn-lt (master) resolve through the master's
     // theme; the unreached layout's Zzyzx Grotesk is not read.
     assert_eq!(facts.requested_fonts, ["Aptos", "Calibri", "Georgia"]);
     assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn pptx_lists_the_hidden_slides_in_slide_order() {
+    // pptx-hidden3: 3 slides, the 2nd hidden; `show="false"` is hidden too.
+    let slides = [("p:sld", ""), ("p:sld show=\"0\"", ""), ("p:sld", "")];
+    let facts = scan_bytes("hidden3.pptx", &pptx(&slides, true), Family::Presentation);
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 3,
+            hidden: vec![2]
+        })
+    );
+    let slides = [("p:sld show=\"false\"", ""), ("p:sld show=\"1\"", "")];
+    let facts = scan_bytes("false.pptx", &pptx(&slides, true), Family::Presentation);
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![1]
+        })
+    );
+    // No hidden slide: the list is empty, not absent.
+    let slides = [("p:sld", ""), ("p:sld", "")];
+    let facts = scan_bytes("plain.pptx", &pptx(&slides, true), Family::Presentation);
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![]
+        })
+    );
+}
+
+#[test]
+fn pptx_reads_slides_only_from_the_slide_list() {
+    // An extension that refers to a slide adds no slide.
+    let slides = [("p:sld", ""), ("p:sld show=\"0\"", "")];
+    let extra = r#"<p:extLst><p:ext uri="{x}"><p:sldId id="900" r:id="rId2"/></p:ext></p:extLst>"#;
+    let facts = scan_bytes(
+        "ext.pptx",
+        &pptx_extra(&slides, true, extra),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![2]
+        })
+    );
+    assert_eq!(facts.declared_pages.map(|d| d.count), Some(1));
+}
+
+#[test]
+fn pptx_reads_the_relationship_id_by_namespace() {
+    // Another vocabulary's `id` comes first and names the hidden slide;
+    // only the relationship namespace's `id` counts, whatever its prefix.
+    let slides = [("p:sld", ""), ("p:sld show=\"0\"", "")];
+    let list = concat!(
+        r#"<p:sldId xmlns:ext="urn:example:ext" ext:id="rId3" id="256" r:id="rId2"/>"#,
+        r#"<p:sldId xmlns:rel="http://schemas.openxmlformats.org/officeDocument/2006/relationships" id="257" rel:id="rId3"/>"#,
+    );
+    let facts = scan_bytes(
+        "ids.pptx",
+        &pptx_custom(&slides, Some(Some(list)), ""),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![2]
+        })
+    );
+}
+
+#[test]
+fn pptx_with_a_compatibility_block_in_the_slide_list_skips_the_list() {
+    // Which branch an exporter takes is unknown: no slide list, no V1.
+    let slides = [("p:sld", ""), ("p:sld show=\"0\"", "")];
+    let list = concat!(
+        r#"<p:sldId id="256" r:id="rId2"/>"#,
+        r#"<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Fallback><p:sldId id="257" r:id="rId3"/></mc:Fallback></mc:AlternateContent>"#,
+    );
+    let facts = scan_bytes(
+        "mc.pptx",
+        &pptx_custom(&slides, Some(Some(list)), ""),
+        Family::Presentation,
+    );
+    assert_unknown_slides(&facts);
+}
+
+/// No slide list, no declared count, and both checks that read the slides
+/// skipped: a partial list would give wrong marks or miss a font warning.
+fn assert_unknown_slides(facts: &SourceFacts) {
+    assert_eq!(facts.slides, None);
+    assert_eq!(facts.declared_pages, None);
+    for check in [Check::PageCount, Check::Fonts] {
+        assert!(
+            facts.skipped.iter().any(|(c, _)| *c == check),
+            "{check:?} not skipped: {:?}",
+            facts.skipped
+        );
+    }
+}
+
+#[test]
+fn pptx_with_an_unreadable_slide_list_entry_skips_the_list() {
+    let slides = [("p:sld", ""), ("p:sld show=\"0\"", "")];
+    let cases = [
+        // Another vocabulary's sldId in the list.
+        concat!(
+            r#"<p:sldId id="256" r:id="rId2"/>"#,
+            r#"<ext:sldId xmlns:ext="urn:example:ext" id="257" r:id="rId3"/>"#,
+        ),
+        // A slide entry without a relationship id.
+        r#"<p:sldId id="256" r:id="rId2"/><p:sldId id="257"/>"#,
+    ];
+    for list in cases {
+        let facts = scan_bytes(
+            "entry.pptx",
+            &pptx_custom(&slides, Some(Some(list)), ""),
+            Family::Presentation,
+        );
+        assert_unknown_slides(&facts);
+    }
+}
+
+#[test]
+fn pptx_with_a_wrapped_or_second_slide_list_skips_the_list() {
+    let slides = [("p:sld", ""), ("p:sld show=\"0\"", "")];
+    // A compatibility block around the whole list: the branch is unknown.
+    let wrapped = concat!(
+        r#"<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">"#,
+        r#"<mc:Choice Requires="p14"><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst></mc:Choice>"#,
+        r#"</mc:AlternateContent>"#,
+    );
+    let facts = scan_bytes(
+        "wrapped.pptx",
+        &pptx_custom(&slides, None, wrapped),
+        Family::Presentation,
+    );
+    assert_unknown_slides(&facts);
+    // Two lists: which order is the deck's is unknown.
+    let second = r#"<p:sldIdLst><p:sldId id="257" r:id="rId3"/></p:sldIdLst>"#;
+    let facts = scan_bytes(
+        "two-lists.pptx",
+        &pptx_custom(
+            &slides,
+            Some(Some(r#"<p:sldId id="256" r:id="rId2"/>"#)),
+            second,
+        ),
+        Family::Presentation,
+    );
+    assert_unknown_slides(&facts);
+}
+
+#[test]
+fn pptx_with_too_many_namespace_declarations_skips_the_list() {
+    // Each slide entry would search every declaration: past the cap, the
+    // slides are unknown.
+    let slides = [("p:sld", "")];
+    let decls: String = (0..300)
+        .map(|i| format!(r#" xmlns:n{i}="urn:example:{i}""#))
+        .collect();
+    let list = format!(r#"<p:sldId{decls} id="256" r:id="rId2"/>"#);
+    let facts = scan_bytes(
+        "decls.pptx",
+        &pptx_custom(&slides, Some(Some(&list)), ""),
+        Family::Presentation,
+    );
+    assert_unknown_slides(&facts);
 }
 
 #[test]
@@ -1010,6 +1207,258 @@ fn odf_fonts_and_basic_macros() {
     let script: (&str, &[u8]) = ("Scripts/python/x.py", b"x");
     let facts = scan_bytes("script.odt", &odt(&[script]), Family::Document);
     assert_eq!(facts.macros.map(|m| m.kind), Some(MacroKind::Script));
+}
+
+/// An ODP whose pages use the given drawing-page styles. `styles` holds
+/// the automatic styles of `content.xml`, `common` those of `styles.xml`.
+fn odp(pages: &[Option<&str>], styles: &str, common: &str) -> Vec<u8> {
+    let pages: String = pages
+        .iter()
+        .map(|style| match style {
+            Some(name) => format!(r#"<draw:page draw:name="p" draw:style-name="{name}"/>"#),
+            None => r#"<draw:page draw:name="p"/>"#.to_owned(),
+        })
+        .collect();
+    odp_parts(&pages, styles, common, "")
+}
+
+/// An ODP from its parts: the children of `office:presentation`, the
+/// automatic styles of `content.xml`, and the common and automatic styles
+/// of `styles.xml` (the latter belong to master pages).
+fn odp_parts(pages: &str, styles: &str, common: &str, master_automatic: &str) -> Vec<u8> {
+    const NS: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0""#;
+    let content = format!(
+        r#"<office:document-content {NS}><office:automatic-styles>{styles}</office:automatic-styles><office:body><office:presentation>{pages}</office:presentation></office:body></office:document-content>"#
+    );
+    let common = format!(
+        r#"<office:document-styles {NS}><office:styles>{common}</office:styles><office:automatic-styles>{master_automatic}</office:automatic-styles></office:document-styles>"#
+    );
+    zip(&[
+        (
+            "mimetype",
+            b"application/vnd.oasis.opendocument.presentation",
+        ),
+        ("content.xml", content.as_bytes()),
+        ("styles.xml", common.as_bytes()),
+    ])
+}
+
+#[test]
+fn odp_styles_resolve_only_in_their_own_scope() {
+    // styles.xml may reuse an automatic style name of content.xml for a
+    // master page: that style never applies to a slide.
+    let slide = page_style("dp1", None, None);
+    let master = page_style("dp1", Some("hidden"), None);
+    let pages = r#"<draw:page draw:style-name="dp1"/><draw:page/>"#;
+    let facts = scan_bytes(
+        "scope.odp",
+        &odp_parts(pages, &slide, "", &master),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![]
+        })
+    );
+    // A slide style defined only among the master-page styles is unknown.
+    let pages = r#"<draw:page draw:style-name="dpM"/>"#;
+    let master = page_style("dpM", Some("hidden"), None);
+    let facts = scan_bytes(
+        "master-only.odp",
+        &odp_parts(pages, "", "", &master),
+        Family::Presentation,
+    );
+    assert_eq!(facts.slides, None);
+}
+
+#[test]
+fn odp_properties_apply_only_inside_their_open_style() {
+    // A self-closing slide style has no properties. The properties of a
+    // style inside an inline object must not land on it.
+    let styles = r#"<style:style style:name="dp1" style:family="drawing-page"/>"#;
+    let pages = concat!(
+        r#"<draw:page draw:style-name="dp1"><draw:frame><draw:object><office:document>"#,
+        r#"<office:automatic-styles><style:style style:name="x" style:family="drawing-page"><style:drawing-page-properties presentation:visibility="hidden"/></style:style></office:automatic-styles>"#,
+        r#"</office:document></draw:object></draw:frame></draw:page><draw:page/>"#,
+    );
+    let facts = scan_bytes(
+        "empty-style.odp",
+        &odp_parts(pages, styles, "", ""),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![]
+        })
+    );
+}
+
+#[test]
+fn odp_visibility_is_read_by_namespace() {
+    // `ext:visibility` is another vocabulary's attribute; a prefix other
+    // than `presentation` bound to the presentation namespace counts.
+    let styles = concat!(
+        r#"<style:style xmlns:ext="urn:example:ext" style:name="dp1" style:family="drawing-page"><style:drawing-page-properties ext:visibility="hidden"/></style:style>"#,
+        r#"<style:style xmlns:pr="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" style:name="dp2" style:family="drawing-page"><style:drawing-page-properties pr:visibility="hidden"/></style:style>"#,
+    );
+    let pages = r#"<draw:page draw:style-name="dp1"/><draw:page draw:style-name="dp2"/>"#;
+    let facts = scan_bytes(
+        "namespaces.odp",
+        &odp_parts(pages, styles, "", ""),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![2]
+        })
+    );
+}
+
+#[test]
+fn odp_with_too_many_namespace_declarations_lists_no_slides() {
+    // Each element would search every open declaration: past the cap, the
+    // slide list is unknown, and the fonts are still read.
+    let decls: String = (0..300)
+        .map(|i| format!(r#" xmlns:n{i}="urn:example:{i}""#))
+        .collect();
+    let styles = page_style("dp1", Some("hidden"), None);
+    let pages = format!(r#"<draw:page{decls} draw:style-name="dp1"/>"#);
+    let facts = scan_bytes(
+        "decls.odp",
+        &odp_parts(&pages, &styles, "", ""),
+        Family::Presentation,
+    );
+    assert_eq!(facts.slides, None);
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn odp_takes_the_last_visibility_of_an_open_style() {
+    // Many properties elements in one style with a long name: the last
+    // visibility wins, and properties inside a child element do not count.
+    let name = "dp".repeat(2000);
+    let mut props = String::new();
+    for _ in 0..50 {
+        props.push_str(r#"<style:drawing-page-properties presentation:visibility="visible"/>"#);
+    }
+    props.push_str(r#"<style:drawing-page-properties presentation:visibility="hidden"/>"#);
+    props.push_str(
+        r#"<style:x><style:drawing-page-properties presentation:visibility="visible"/></style:x>"#,
+    );
+    let styles = format!(
+        r#"<style:style style:name="{name}" style:family="drawing-page">{props}</style:style>"#
+    );
+    let pages = format!(r#"<draw:page draw:style-name="{name}"/><draw:page/>"#);
+    let facts = scan_bytes(
+        "long.odp",
+        &odp_parts(&pages, &styles, "", ""),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![1]
+        })
+    );
+}
+
+#[test]
+fn odp_counts_only_the_slides_of_the_presentation() {
+    // An inline object inside a slide holds a draw:page of its own; it is
+    // not a slide. A style inside it is not a slide style either.
+    let styles = page_style("dp2", Some("hidden"), None);
+    let pages = concat!(
+        r#"<draw:page/>"#,
+        r#"<draw:page draw:style-name="dp2"><draw:frame><draw:object><office:document>"#,
+        r#"<office:automatic-styles><style:style style:name="dp2" style:family="drawing-page"><style:drawing-page-properties presentation:visibility="visible"/></style:style></office:automatic-styles>"#,
+        r#"<office:body><office:presentation><draw:page draw:name="inner"/></office:presentation></office:body>"#,
+        r#"</office:document></draw:object></draw:frame></draw:page>"#,
+    );
+    let facts = scan_bytes(
+        "nested.odp",
+        &odp_parts(pages, &styles, "", ""),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![2]
+        })
+    );
+}
+
+fn page_style(name: &str, visibility: Option<&str>, parent: Option<&str>) -> String {
+    let parent = parent
+        .map(|p| format!(r#" style:parent-style-name="{p}""#))
+        .unwrap_or_default();
+    let props = visibility
+        .map(|v| format!(r#"<style:drawing-page-properties presentation:visibility="{v}"/>"#))
+        .unwrap_or_default();
+    format!(
+        r#"<style:style style:name="{name}" style:family="drawing-page"{parent}>{props}</style:style>"#
+    )
+}
+
+#[test]
+fn odp_lists_the_pages_whose_style_hides_them() {
+    let styles = [
+        page_style("dp1", None, None),
+        page_style("dp2", Some("hidden"), None),
+        page_style("dp3", Some("visible"), None),
+    ]
+    .concat();
+    let pages = [Some("dp1"), Some("dp2"), None, Some("dp3"), Some("dp2")];
+    let facts = scan_bytes("deck.odp", &odp(&pages, &styles, ""), Family::Presentation);
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 5,
+            hidden: vec![2, 5]
+        })
+    );
+    // A style inherits the visibility of its parent, here a common style
+    // in styles.xml.
+    let styles = page_style("dp1", None, Some("Hide"));
+    let common = page_style("Hide", Some("hidden"), None);
+    let pages = [Some("dp1"), None];
+    let facts = scan_bytes(
+        "inherit.odp",
+        &odp(&pages, &styles, &common),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![1]
+        })
+    );
+    // A page whose style is defined nowhere: the visibility is unknown, so
+    // no slide list.
+    let facts = scan_bytes(
+        "unknown.odp",
+        &odp(&[Some("dp9")], "", ""),
+        Family::Presentation,
+    );
+    assert_eq!(facts.slides, None);
+}
+
+#[test]
+fn only_presentations_list_slides() {
+    let facts = scan_bytes("plain.odt", &odt(&[]), Family::Document);
+    assert_eq!(facts.slides, None);
+    // A legacy .ppt: no slide list is read from the binary format.
+    let bytes = ole2(&["PowerPoint Document", "Current User"]);
+    let facts = scan_bytes("deck.ppt", &bytes, Family::Presentation);
+    assert_eq!(facts.slides, None);
 }
 
 fn ole2(names: &[&str]) -> Vec<u8> {
@@ -1457,15 +1906,22 @@ fn pptx_notes_text_counts_when_notes_are_printed() {
 
 #[test]
 fn odp_notes_and_hidden_pages_count_when_printed() {
-    let content = r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0"><office:body><office:presentation><draw:page><draw:frame><draw:text-box><text:p>x</text:p></draw:text-box></draw:frame><presentation:notes><draw:frame><draw:text-box><text:p>ሀ</text:p></draw:text-box></draw:frame></presentation:notes></draw:page><draw:page presentation:visibility="hidden"><draw:frame><draw:text-box><text:p>ก</text:p></draw:text-box></draw:frame></draw:page></office:presentation></office:body></office:document-content>"#;
-    let bytes = zip(&[
-        (
-            "mimetype",
-            b"application/vnd.oasis.opendocument.presentation",
-        ),
-        ("content.xml", content.as_bytes()),
-    ]);
+    // Page 2's style hides it (E4's slide list); page 1 has notes.
+    let pages = r#"<draw:page draw:style-name="dp1"><draw:frame><draw:text-box><text:p>x</text:p></draw:text-box></draw:frame><presentation:notes><draw:frame><draw:text-box><text:p>ሀ</text:p></draw:text-box></draw:frame></presentation:notes></draw:page><draw:page draw:style-name="dp2"><draw:frame><draw:text-box><text:p>ก</text:p></draw:text-box></draw:frame></draw:page>"#;
+    let styles = [
+        page_style("dp1", None, None),
+        page_style("dp2", Some("hidden"), None),
+    ]
+    .concat();
+    let bytes = odp_parts(pages, &styles, "", "");
     let facts = scan_bytes("notes.odp", &bytes, Family::Presentation);
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![2]
+        })
+    );
     assert_eq!(facts.text_code_points, cps("x"));
     let notes = Printed {
         notes: true,
@@ -1480,6 +1936,12 @@ fn odp_notes_and_hidden_pages_count_when_printed() {
     };
     let facts = scan_printed("notes.odp", &bytes, Family::Presentation, all);
     assert_eq!(facts.text_code_points, cps("x\u{0E01}\u{1200}"));
+    // A page style defined nowhere leaves the list unknown: every page's
+    // text counts.
+    let unknown = odp_parts(pages, &page_style("dp1", None, None), "", "");
+    let facts = scan_bytes("unknown.odp", &unknown, Family::Presentation);
+    assert_eq!(facts.slides, None);
+    assert_eq!(facts.text_code_points, cps("x\u{0E01}"));
 }
 
 #[test]

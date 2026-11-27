@@ -165,6 +165,29 @@ impl RssReader {
     }
 }
 
+/// The CPU time of this whole process so far, user plus system, from
+/// `getrusage(RUSAGE_SELF)`. It covers every thread, LibreOffice's
+/// included, and not the children. Zero if the call fails.
+pub fn cpu_time() -> std::time::Duration {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: RUSAGE_SELF is a valid target, and the buffer is a `rusage`
+    // that the call fills; it is read only when the call succeeds.
+    let rc = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
+    if rc != 0 {
+        return std::time::Duration::ZERO;
+    }
+    // SAFETY: `getrusage` succeeded and filled the whole struct.
+    let usage = unsafe { usage.assume_init() };
+    timeval(usage.ru_utime).saturating_add(timeval(usage.ru_stime))
+}
+
+/// A `timeval` as a `Duration`; a negative field counts as zero.
+fn timeval(tv: libc::timeval) -> std::time::Duration {
+    let secs = u64::try_from(tv.tv_sec).unwrap_or(0);
+    let micros = u64::try_from(tv.tv_usec).unwrap_or(0);
+    std::time::Duration::from_secs(secs).saturating_add(std::time::Duration::from_micros(micros))
+}
+
 #[cfg(target_os = "linux")]
 fn page_size() -> u64 {
     // SAFETY: sysconf has no preconditions.
@@ -283,4 +306,32 @@ pub fn rss_of(pid: u32) -> Option<u64> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn rss_of(_pid: u32) -> Option<u64> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::cpu_time;
+
+    /// `cargo test` runs tests as threads of one process, and
+    /// `RUSAGE_SELF` counts them all. So the test checks only that the
+    /// value never goes down and that this thread's own work raises it.
+    #[test]
+    fn cpu_time_is_monotonic_and_counts_work() {
+        let start = cpu_time();
+        let mut last = start;
+        let spin_until = Instant::now() + Duration::from_millis(50);
+        let mut x = 0u64;
+        while Instant::now() < spin_until {
+            x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(7));
+            let now = cpu_time();
+            assert!(now >= last, "the CPU time went down: {now:?} < {last:?}");
+            last = now;
+        }
+        assert!(
+            last > start,
+            "50 ms of spinning added no CPU time: {start:?} to {last:?}"
+        );
+    }
 }

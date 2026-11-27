@@ -220,13 +220,16 @@ pub enum PdfOrigin {
 }
 
 /// Where the time went, per stage. `None` means the stage did not run.
-/// Queue, lease, spawn and bind are summed over the engine calls.
+/// Queue, lease, spawn, bind and the worker CPU time are summed over the
+/// engine calls.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StageTimings {
     pub queue: Duration,
     pub lease: Duration,
     pub spawn: Duration,
     pub bind: Duration,
+    /// Worker CPU time, user plus system, of the calls that succeeded.
+    pub cpu: Duration,
     pub convert: Option<Duration>,
     pub convert_engine: Option<Duration>,
     pub inspect: Option<Duration>,
@@ -246,12 +249,13 @@ pub struct StageTimings {
 }
 
 impl StageTimings {
-    /// Adds one engine call's queue, lease, spawn and bind.
+    /// Adds one engine call's queue, lease, spawn, bind and CPU time.
     pub fn add_call(&mut self, timing: &EngineTiming) {
         self.queue += timing.queue;
         self.lease += timing.lease;
         self.spawn += timing.spawn.unwrap_or_default();
         self.bind += timing.bind.unwrap_or_default();
+        self.cpu += timing.cpu;
     }
 
     /// Σ worker engine time of INTERFACES §11: convert, inspect, probe and
@@ -287,6 +291,9 @@ pub struct ConversionResult {
     pub page_count: u32,
     /// Empty for `output=pdf`.
     pub pages: Vec<RenderedPage>,
+    /// The PDF pages that come from hidden slides, ascending
+    /// ([`super::pages::hidden_pages`]). Empty when none or not known.
+    pub hidden_pages: Vec<u32>,
     pub warnings: Vec<Warning>,
     /// The checks that could not run, for the metrics.
     pub skipped: Vec<(Check, &'static str)>,
@@ -310,6 +317,18 @@ mod tests {
             Err(ConversionError::Validation(message)) => message,
             other => panic!("expected a validation error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn add_call_sums_the_cpu_time() {
+        let mut stages = StageTimings::default();
+        for ms in [30, 5] {
+            stages.add_call(&EngineTiming {
+                cpu: Duration::from_millis(ms),
+                ..EngineTiming::default()
+            });
+        }
+        assert_eq!(stages.cpu, Duration::from_millis(35));
     }
 
     #[test]

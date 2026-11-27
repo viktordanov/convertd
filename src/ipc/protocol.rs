@@ -223,6 +223,10 @@ pub struct DecryptArgs {
 pub enum TestOp {
     /// Sleep, then answer.
     Sleep { ms: u64 },
+    /// Spin until the process has used `ms` more CPU time, then answer.
+    /// It gives up after 10 × `ms` of wall time, so a broken CPU clock
+    /// fails a test instead of hanging it.
+    Burn { ms: u64 },
     /// Never answer.
     Hang,
     /// `abort()`: dies with SIGABRT.
@@ -280,9 +284,10 @@ pub struct Reply {
     pub result: Result<Output, WorkerError>,
 }
 
-/// Measured inside the worker, from just before the document is loaded or
-/// opened to just after the last engine call. Process start, the library
-/// bind and IPC are outside it. Fields that do not apply are 0.
+/// Measured inside the worker. The `_us` times other than `cpu_us` run
+/// from just before the document is loaded or opened to just after the
+/// last engine call. Process start, the library bind and IPC are outside
+/// them. Fields that do not apply are 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct EngineTimes {
     /// The whole engine span.
@@ -295,6 +300,12 @@ pub struct EngineTimes {
     pub decrypt_us: u64,
     /// The office pre-flight scan; not engine time (INTERFACES.md §15).
     pub preflight_us: u64,
+    /// The worker process's CPU time over the whole call, user plus
+    /// system, every thread included. Unlike the other fields it spans
+    /// the whole call, the pre-flight scan included. 0 from a worker that
+    /// predates the field.
+    #[serde(default)]
+    pub cpu_us: u64,
 }
 
 /// A successful answer.
@@ -339,6 +350,9 @@ pub struct SourceFactsWire {
     #[serde(default, deserialize_with = "bounded_code_points")]
     pub text_code_points: Vec<u32>,
     pub macros: Option<MacroFactWire>,
+    /// The slides in show order and the hidden ones (presentations).
+    #[serde(default)]
+    pub slides: Option<SlidesWire>,
     pub skipped: Vec<(CheckWire, SkipReasonWire)>,
 }
 
@@ -363,6 +377,13 @@ fn bounded_code_points<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<u3
         }
     }
     de.deserialize_seq(Bounded)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlidesWire {
+    pub count: u32,
+    /// 1-based positions, ascending.
+    pub hidden: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -457,9 +478,6 @@ pub struct RenderedPage {
     pub flat: bool,
     pub colour: [u8; 3],
     pub effective_dpi: f32,
-    /// CRC-32 of the file, computed from the bytes that were written.
-    #[serde(default)]
-    pub crc32: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

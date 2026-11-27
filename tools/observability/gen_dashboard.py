@@ -242,13 +242,34 @@ ts("Pages rendered by format", "Image pages rendered per second.",
    [(f'sum by (format) (rate(convert_pages_rendered_total{{{S}}}[{RI}]))', "{{format}}")], "short", 18, 6, stack=True)
 y[0] += 8
 
-# ---- O2 placeholder
-row("CPU per job (O2)")
-text("CPU per job",
-     "CPU time per worker call (user plus system), by pool and operation, arrives with effort O2 of ledger item 010. "
-     "Its panels go in this row.\n\nUntil then, the stage durations above are wall time: a burst that uses six cores shows as time, not as cores.",
-     0, 24, 4)
-y[0] += 4
+# ---- CPU per job (effort O2: convert_worker_cpu_seconds{pool,op}, user plus system time per worker call)
+CPU = "convert_worker_cpu_seconds"
+CPU_NOTE = ("A call adds all of its CPU time when its reply arrives, so a call longer than the rate window shows as idle while it runs "
+            "and above its real cores when it ends. A call that times out, crashes or passes its kill RSS sends no reply and records nothing.")
+row("CPU per job")
+ts("Cores per pool",
+   "CPU seconds per second of the finished worker calls: the cores each pool used. " + CPU_NOTE +
+   " The second series rates over the cpu_window variable (5m by default, at least four scrape intervals), which smooths long calls. "
+   "It averages that rate over each graph step, so a step longer than cpu_window skips no call.",
+   [(f'sum by (pool) (rate({CPU}_sum{{{S}}}[{RI}]))', "{{pool}}"),
+    (f'avg_over_time(sum by (pool) (rate({CPU}_sum{{{S}}}[$cpu_window]))[$__interval:$scrape_interval])', "{{pool}} ($cpu_window)")],
+   "short", 0, 6)
+ts("CPU per call, p50 and p99",
+   "CPU time (user plus system) of one worker call, per pool and operation. A conversion makes one or more calls (convert, inspect, render). "
+   "Each call counts once, in the window where its reply arrives. The highest bucket bound is 60 s, so a quantile above it shows as 60 s.",
+   [(q(0.5, CPU, "pool, op"), "p50 {{pool}} {{op}}"),
+    (q(0.99, CPU, "pool, op"), "p99 {{pool}} {{op}}")],
+   "s", 6, 6)
+ts("Mean CPU per call",
+   "The rate of the CPU time over the rate of the calls, per pool and operation: the mean CPU seconds of one call in the window.",
+   [(f'sum by (pool, op) (rate({CPU}_sum{{{S}}}[{RI}])) / sum by (pool, op) (rate({CPU}_count{{{S}}}[{RI}]))', "{{pool}} {{op}}")],
+   "s", 12, 6)
+ts("CPU seconds since the process started",
+   "The counter itself, per pod, pool and operation. A series starts at the first reply of its pool and operation, "
+   "so a rate does not show an isolated first call; this panel does.",
+   [(f'sum by (namespace, pod, pool, op) ({CPU}_sum{{{S}}})', "{{pool}} {{op}} {{namespace}}/{{pod}}")],
+   "s", 18, 6)
+y[0] += 8
 
 
 def var_query(name, label, query, multi=True):
@@ -293,6 +314,11 @@ dashboard = {
          "query": "15s", "hide": 0,
          "current": {"selected": False, "text": "15s", "value": "15s"},
          "options": [{"selected": True, "text": "15s", "value": "15s"}]},
+        {"name": "cpu_window", "label": "CPU window", "type": "textbox",
+         "description": "The longer rate window of the Cores per pool panel. Keep it at least four scrape intervals and longer than a typical call.",
+         "query": "5m", "hide": 0,
+         "current": {"selected": False, "text": "5m", "value": "5m"},
+         "options": [{"selected": True, "text": "5m", "value": "5m"}]},
         var_query("namespace", "Namespace", "label_values(convert_disk_budget_bytes, namespace)"),
         var_query("pod", "Pod", 'label_values(convert_disk_budget_bytes{namespace=~"$namespace"}, pod)'),
         var_query("family", "Input family", 'label_values(convert_requests_total{namespace=~"$namespace", pod=~"$pod"}, family)'),

@@ -1,8 +1,9 @@
 //! `POST /v1/convert`.
 
 use std::fs::File;
+use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
@@ -117,17 +118,28 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
         metrics::request("unknown", "unknown", ErrorCode::TooManyRequests.as_str());
         return ApiError::busy().into_response();
     };
-    let job = match JobDir::create(&state.tmp_dir, &state.disk_budget) {
-        Ok(job) => job,
+    // mkdir can block on a slow disk: off the runtime, as every file call.
+    // The task holds the permit, so a client that leaves meanwhile does
+    // not free its slot while the mkdir still runs.
+    let (tmp_dir, disk_budget) = (state.tmp_dir.clone(), state.disk_budget.clone());
+    let created = tokio::task::spawn_blocking(move || {
+        JobDir::create(&tmp_dir, &disk_budget).map(|job| (job, permit))
+    })
+    .await
+    .unwrap_or_else(|err| Err(std::io::Error::other(err)));
+    let (mut job, permit) = match created {
+        Ok(created) => created,
         Err(err) => {
             return ApiError::from_upload(&upload::map_io(err), state.queue_wait_seconds)
                 .into_response();
         }
     };
     let mut detected = None;
+    let shared = Arc::new(permit);
     let received = match upload::receive(
         request,
         &job,
+        Arc::clone(&shared),
         state.service.limits(),
         state.upload_rate,
         &mut detected,
@@ -155,6 +167,11 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
             return response;
         }
     };
+    // receive awaited its sink, so the permit is the handler's alone again.
+    let Ok(mut permit) = Arc::try_unwrap(shared) else {
+        return ApiError::internal("the upload sink still holds the permit".to_owned())
+            .into_response();
+    };
 
     let mut timings = RequestTimings {
         recv: Some(received.upload_done - started),
@@ -164,15 +181,36 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
     let deadline = received.upload_done + received.request.timeout;
     let paths = job.paths(received.detection.format);
     // The supervisor creates pages/; the render engine writes into it.
-    if received.request.output != Output::Pdf
-        && let Err(err) = std::fs::create_dir(&paths.pages_dir)
-    {
-        let api = ApiError::from_upload(&upload::map_io(err), state.queue_wait_seconds);
-        let mut response = api.into_response();
-        response
-            .headers_mut()
-            .insert(SERVER_TIMING, timings.header());
-        return response;
+    if received.request.output != Output::Pdf {
+        let pages_dir = paths.pages_dir.clone();
+        #[cfg(feature = "test-hooks")]
+        let gate_name = received.upload.file_name.clone();
+        let made = off_runtime((permit, job), move |_| {
+            #[cfg(feature = "test-hooks")]
+            while test_hooks::pages_gated(gate_name.as_deref()) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::fs::create_dir(pages_dir)
+        });
+        // The deadline runs from the end of the upload: a wait for a
+        // blocking thread counts too.
+        let until = tokio::time::Instant::from_std(deadline);
+        match tokio::time::timeout_at(until, made).await {
+            Ok(Some((Ok(()), held))) => (permit, job) = held,
+            Ok(Some((Err(err), _))) => {
+                return pages_failed(state.queue_wait_seconds, &timings, err);
+            }
+            Ok(None) => {
+                let err = std::io::Error::other("the task that makes pages/ panicked");
+                return pages_failed(state.queue_wait_seconds, &timings, err);
+            }
+            Err(_) => {
+                let timeout = ConversionError::Timeout {
+                    seconds: received.request.timeout.as_secs(),
+                };
+                return conversion_failed(&state, &received, &request_id, &mut timings, &timeout);
+            }
+        }
     }
     let outcome = {
         let conversion = state.service.convert(
@@ -210,23 +248,27 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
             )
             .await
         }
-        Err(err) => {
-            let api = ApiError::from_conversion(&err, state.queue_wait_seconds);
-            timings.total = Some(received.upload_done.elapsed());
-            log_finished(
-                &request_id,
-                &received,
-                None,
-                &timings,
-                Some(api.code.as_str()),
-            );
-            let mut response = api.into_response();
-            response
-                .headers_mut()
-                .insert(SERVER_TIMING, timings.header());
-            response
-        }
+        Err(err) => conversion_failed(&state, &received, &request_id, &mut timings, &err),
     }
+}
+
+/// The answer to a conversion that failed after detection: logged as
+/// `conversion finished`, counted in the metrics, with Server-Timing.
+fn conversion_failed(
+    state: &AppState,
+    received: &Received,
+    request_id: &str,
+    timings: &mut RequestTimings,
+    err: &ConversionError,
+) -> Response {
+    let api = ApiError::from_conversion(err, state.queue_wait_seconds);
+    timings.total = Some(received.upload_done.elapsed());
+    log_finished(request_id, received, None, timings, Some(api.code.as_str()));
+    let mut response = api.into_response();
+    response
+        .headers_mut()
+        .insert(SERVER_TIMING, timings.header());
+    response
 }
 
 /// How long after the deadline the backstop fires, so that the engine's
@@ -238,6 +280,56 @@ const SOURCE_FORMAT: HeaderName = HeaderName::from_static("convert-source-format
 const PAGE_COUNT: HeaderName = HeaderName::from_static("convert-page-count");
 const WARNING_COUNT: HeaderName = HeaderName::from_static("convert-warning-count");
 const FINGERPRINT: HeaderName = HeaderName::from_static("convert-engine-fingerprint");
+
+/// The answer when `pages/` cannot be made.
+fn pages_failed(
+    queue_wait_seconds: u32,
+    timings: &RequestTimings,
+    err: std::io::Error,
+) -> Response {
+    let api = ApiError::from_upload(&upload::map_io(err), queue_wait_seconds);
+    let mut response = api.into_response();
+    response
+        .headers_mut()
+        .insert(SERVER_TIMING, timings.header());
+    response
+}
+
+/// A request's admission permit and job directory.
+type Held = (tokio::sync::OwnedSemaphorePermit, Arc<JobDir>);
+
+/// Runs `work` on the blocking pool with the request's permit and job
+/// directory, and hands both back. A client that leaves, or a deadline
+/// that passes, drops this future, not the task: work that has started
+/// keeps the slot taken and the directory until it ends. Work that no
+/// thread has taken up yet is skipped then, so a full pool does not
+/// spend threads on answers nobody receives. `None` if the task panicked
+/// or was skipped; the permit and the directory went with it.
+async fn off_runtime<T: Send + 'static>(
+    held: Held,
+    work: impl FnOnce(&JobDir) -> T + Send + 'static,
+) -> Option<(T, Held)> {
+    let ended = Ended(Arc::new(AtomicBool::new(false)));
+    let skip = Arc::clone(&ended.0);
+    let task = tokio::task::spawn_blocking(move || {
+        if skip.load(Ordering::SeqCst) {
+            return None;
+        }
+        Some((work(&held.1), held))
+    });
+    let out = task.await.ok().flatten();
+    drop(ended);
+    out
+}
+
+/// Set when [`off_runtime`]'s future is dropped or done.
+struct Ended(Arc<AtomicBool>);
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
 
 /// The 200: headers first, then the body pump, which owns the job
 /// directory and the permit from here on. Anything that fails before the
@@ -266,40 +358,54 @@ async fn success(
             state.queue_wait_seconds,
         )
     };
-    let prepared = match output {
-        _ if Instant::now() >= deadline => Err(timed_out()),
-        Output::Pdf => {
-            // A few entries: cheap enough on this thread.
-            settle(&job);
-            File::open(&result.pdf)
+    let held = (permit, job);
+    // The wait for a blocking thread and the work both end at the deadline.
+    // A task still running then keeps the permit and the job until it ends.
+    let until = tokio::time::Instant::from_std(deadline);
+    let done = if Instant::now() >= deadline {
+        Ok(Some((Err(timed_out()), held)))
+    } else if output == Output::Pdf {
+        let pdf = result.pdf.clone();
+        let opened = off_runtime(held, move |job| {
+            settle(job);
+            File::open(pdf)
                 .and_then(|file| Ok((file.metadata()?.len(), file)))
                 .map(|(size, file)| Prepared::Pdf { file, size })
                 .map_err(|err| ApiError::internal(format!("failed to open the result: {err}")))
-        }
-        Output::Images | Output::Bundle => {
-            let manifest = ManifestInput::new(state, received, request_id, timings);
-            let job = Arc::clone(&job);
-            let result = result.clone();
-            tokio::task::spawn_blocking(move || plan_tar(&job, &manifest, &result))
-                .await
-                .unwrap_or_else(|err| {
-                    Err(ApiError::internal(format!(
-                        "failed to plan the bundle: {err}"
-                    )))
-                })
-        }
+        });
+        tokio::time::timeout_at(until, opened).await
+    } else {
+        let manifest = ManifestInput::new(state, received, request_id, timings);
+        let result = result.clone();
+        let planned = off_runtime(held, move |job| plan_tar(job, &manifest, &result));
+        tokio::time::timeout_at(until, planned).await
     };
-    // The second check, just before the 200.
-    let prepared = prepared.and_then(|prepared| {
-        if Instant::now() >= deadline {
-            Err(timed_out())
-        } else {
-            Ok(prepared)
-        }
-    });
-    let prepared = match prepared {
-        Ok(prepared) => prepared,
-        Err(api) => {
+    let (prepared, held) = match done {
+        // The second check, just before the 200.
+        Ok(Some((prepared, held))) => (
+            prepared.and_then(|prepared| {
+                if Instant::now() >= deadline {
+                    Err(timed_out())
+                } else {
+                    Ok(prepared)
+                }
+            }),
+            Some(held),
+        ),
+        Ok(None) => (
+            Err(ApiError::internal(
+                "failed to prepare the response: the task panicked".to_owned(),
+            )),
+            None,
+        ),
+        Err(_) => (Err(timed_out()), None),
+    };
+    let (prepared, (permit, job)) = match (prepared, held) {
+        (Ok(prepared), Some(held)) => (prepared, held),
+        (prepared, _) => {
+            let api = prepared
+                .err()
+                .unwrap_or_else(|| ApiError::internal("failed to prepare the response".to_owned()));
             timings.total = Some(received.upload_done.elapsed());
             log_finished(request_id, received, None, timings, Some(api.code.as_str()));
             let mut response = api.into_response();
@@ -405,14 +511,39 @@ impl ManifestInput {
 /// whole reservation stays until the job ends, which is safe.
 fn settle(job: &JobDir) {
     if let Err(err) = job.settle_budget() {
-        tracing::warn!(error = %err, "failed to measure the job directory; its reservation stays");
+        settle_failed(&err);
     }
 }
 
+/// [`settle`], which also returns the size of each of `wanted` that the
+/// walk measured. The others, and all on an error, get their own stat.
+fn settle_with_sizes(job: &JobDir, wanted: &[&Path]) -> std::io::Result<Vec<u64>> {
+    let measured = match job.settle_budget_with_sizes(wanted) {
+        Ok(settled) => settled.sizes,
+        Err(err) => {
+            settle_failed(&err);
+            vec![None; wanted.len()]
+        }
+    };
+    wanted
+        .iter()
+        .zip(measured)
+        .map(|(path, size)| match size {
+            Some(len) => Ok(len),
+            None => std::fs::metadata(path).map(|m| m.len()),
+        })
+        .collect()
+}
+
+fn settle_failed(err: &std::io::Error) {
+    tracing::warn!(error = %err, "failed to measure the job directory; its reservation stays");
+}
+
 /// Builds the tar.zst plan: `manifest.json`, then `document.pdf` for a
-/// bundle, then `pages/NNNN.<ext>` in page order. Sizes come from `fstat`;
-/// the page paths come from the page numbers, never from the engine's file
-/// names.
+/// bundle, then `pages/NNNN.<ext>` in page order. Sizes come from the
+/// `fstat` of the settle walk, one per file (a file it did not count gets
+/// its own); the page paths come from the page numbers, never from the
+/// engine's file names.
 fn plan_tar(
     job: &JobDir,
     input: &ManifestInput,
@@ -420,12 +551,19 @@ fn plan_tar(
 ) -> Result<Prepared, ApiError> {
     #[cfg(feature = "test-hooks")]
     {
-        let ms = test_hooks::PLAN_DELAY_MS.load(std::sync::atomic::Ordering::Relaxed);
+        use std::sync::atomic::Ordering::SeqCst;
+        let name = input.upload.file_name.as_deref();
+        if test_hooks::gated(name) {
+            test_hooks::PLAN_ENTERED.store(true, SeqCst);
+            while test_hooks::gated(name) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        let ms = test_hooks::PLAN_DELAY_MS.load(SeqCst);
         if ms > 0 {
             std::thread::sleep(Duration::from_millis(ms));
         }
     }
-    settle(job);
     let format = input.request.images.format;
     let io = |err: std::io::Error| ApiError::internal(format!("failed to plan the bundle: {err}"));
     let pages: Vec<(String, std::path::PathBuf)> = result
@@ -437,17 +575,13 @@ fn plan_tar(
             (name, path)
         })
         .collect();
-    let page_sizes = pages
-        .iter()
-        .map(|(_, path)| std::fs::metadata(path).map(|m| m.len()))
-        .collect::<Result<Vec<u64>, _>>()
-        .map_err(io)?;
     let bundle = input.request.output == Output::Bundle;
-    let pdf_size = if bundle {
-        Some(std::fs::metadata(&result.pdf).map_err(io)?.len())
-    } else {
-        None
-    };
+    let mut wanted: Vec<&Path> = pages.iter().map(|(_, path)| path.as_path()).collect();
+    if bundle {
+        wanted.push(&result.pdf);
+    }
+    let mut page_sizes = settle_with_sizes(job, &wanted).map_err(io)?;
+    let pdf_size = if bundle { page_sizes.pop() } else { None };
     let manifest = Manifest::new(ManifestParts {
         request_id: &input.request_id,
         upload: &input.upload,
@@ -470,19 +604,20 @@ fn plan_tar(
     let mut plan = TarPlan::new();
     plan.add_bytes("manifest.json", bytes::Bytes::from(manifest))
         .map_err(plan_error)?;
-    if bundle {
-        plan.add_file("document.pdf", result.pdf.clone())
+    if let Some(size) = pdf_size {
+        plan.add_file_sized("document.pdf", result.pdf.clone(), size)
             .map_err(plan_error)?;
     }
-    for (name, path) in pages {
-        plan.add_file(name, path).map_err(plan_error)?;
+    for ((name, path), size) in pages.into_iter().zip(page_sizes) {
+        plan.add_file_sized(name, path, size).map_err(plan_error)?;
     }
     let size = plan.tar_length();
     Ok(Prepared::Tar { plan, size })
 }
 
 /// The `conversion finished` line: PLAN's fields plus the §11 overheads,
-/// in microseconds.
+/// in microseconds, and the workers' CPU time of the calls that succeeded,
+/// in milliseconds with microsecond resolution.
 fn log_finished(
     request_id: &str,
     received: &Received,
@@ -520,6 +655,7 @@ fn log_finished(
         total_us = timings.total.map(micros),
         overhead_us = micros(timings.overhead()),
         overhead_strict_us = micros(timings.overhead_strict()),
+        cpu_ms = micros(s.cpu) as f64 / 1000.0,
         error_code,
         "conversion finished"
     );
@@ -593,9 +729,97 @@ pub struct Binary(Vec<u8>);
 /// Hooks for tests (feature `test-hooks`).
 #[cfg(feature = "test-hooks")]
 pub mod test_hooks {
-    use std::sync::atomic::AtomicU64;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicU64};
 
     /// Milliseconds that planning a bundle sleeps first: a slow plan, to
     /// test the deadline check after it. Zero in every other test.
     pub static PLAN_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+    /// The upload file name whose bundle plan the gate holds. The plan of
+    /// that upload sets `PLAN_ENTERED`, then waits while the name stays;
+    /// every other request's plan passes. `None`: no gate.
+    pub static PLAN_GATE: Mutex<Option<String>> = Mutex::new(None);
+    /// Set when the gated plan starts.
+    pub static PLAN_ENTERED: AtomicBool = AtomicBool::new(false);
+    /// The upload file name whose mkdir of `pages/` waits while the name
+    /// stays. `None`: no gate.
+    pub static PAGES_GATE: Mutex<Option<String>> = Mutex::new(None);
+
+    /// Whether the plan of the upload named `name` is held.
+    pub fn gated(name: Option<&str>) -> bool {
+        holds(&PLAN_GATE, name)
+    }
+
+    /// Whether the mkdir of `pages/` for the upload named `name` is held.
+    pub fn pages_gated(name: Option<&str>) -> bool {
+        holds(&PAGES_GATE, name)
+    }
+
+    fn holds(gate: &Mutex<Option<String>>, name: Option<&str>) -> bool {
+        let Some(name) = name else {
+            return false;
+        };
+        gate.lock()
+            .map(|gate| gate.as_deref() == Some(name))
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::sync::Semaphore;
+
+    use super::*;
+    use crate::jobs::DiskBudget;
+
+    /// Work still queued for a blocking thread when the request ends is
+    /// skipped, and its permit and job go back; work that started runs.
+    #[test]
+    fn queued_work_is_skipped_once_the_request_ends() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = std::env::temp_dir().join(format!("convertd-off-runtime-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        runtime.block_on(async {
+            let semaphore = Arc::new(Semaphore::new(1));
+            let held = (
+                Arc::clone(&semaphore).try_acquire_owned().unwrap(),
+                JobDir::create(&tmp, &DiskBudget::new(u64::MAX)).unwrap(),
+            );
+            // The only blocking thread is busy for 300 ms.
+            let busy =
+                tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_millis(300)));
+            let ran = Arc::new(AtomicBool::new(false));
+            let flag = Arc::clone(&ran);
+            let waited = tokio::time::timeout(
+                Duration::from_millis(50),
+                off_runtime(held, move |_| flag.store(true, Ordering::SeqCst)),
+            )
+            .await;
+            assert!(waited.is_err(), "the work got a thread at once");
+            busy.await.unwrap();
+            // The skipped task gives the permit back without running.
+            let permit = tokio::time::timeout(Duration::from_secs(2), semaphore.acquire())
+                .await
+                .expect("the permit never came back");
+            drop(permit);
+            assert!(!ran.load(Ordering::SeqCst), "the work ran for nobody");
+            // Work that is not dropped runs.
+            let held = (
+                Arc::clone(&semaphore).try_acquire_owned().unwrap(),
+                JobDir::create(&tmp, &DiskBudget::new(u64::MAX)).unwrap(),
+            );
+            let done = off_runtime(held, |_| 7).await;
+            assert_eq!(done.map(|(value, _)| value), Some(7));
+        });
+        drop(runtime);
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
 }

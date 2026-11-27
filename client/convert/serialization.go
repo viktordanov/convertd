@@ -152,6 +152,7 @@ func transformManifestToResult(m api.Manifest) Manifest {
 			HeightPt:  float64(p.HeightPt),
 			SizeBytes: int64(p.SizeBytes),
 			Blank:     p.Blank,
+			Hidden:    p.Hidden != nil && *p.Hidden,
 		})
 	}
 

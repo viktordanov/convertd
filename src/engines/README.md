@@ -96,7 +96,12 @@ The pool logs these events:
 - `worker recycled`, with the reason `jobs`, `rss`, `age` or `error`, and `worker killed`, with the reason `timeout`, `cancelled` or `rss`. A kill over `kill_rss` also logs `worker over its memory limit` with `rss_bytes` and `kill_rss`.
 - `worker start failed`, with `error` and `backoff_ms`. `worker started` is a debug event.
 
-The pool sets three metrics: `convert_workers{pool,state}` for `idle`, `busy` and `starting`, `convert_worker_restarts_total{pool,reason}`, and `convert_queue_depth{pool}`. Each lease, each return and each manager event sets `convert_workers` under the idle lock, so the gauges agree with `/readyz`.
+The pool sets four metrics:
+
+- `convert_workers{pool,state}`, for `idle`, `busy` and `starting`. Each lease, each return and each manager event sets it under the idle lock, so the gauges agree with `/readyz`.
+- `convert_worker_restarts_total{pool,reason}`.
+- `convert_queue_depth{pool}`.
+- `convert_worker_cpu_seconds{pool,op}`, a histogram of the `cpu_us` of each reply, with buckets from 1 ms to 60 s. `op` is `convert`, `inspect`, `render`, `decrypt`, or `test` at level B. `Ping` is not recorded. A reply with an engine error is recorded, because the worker spent the CPU time. A call that times out, crashes or passes `kill_rss` sends no reply, so it records nothing. The histogram's `_sum` is the series for cores: `sum by (pool) (rate(convert_worker_cpu_seconds_sum[$__rate_interval]))` gives the cores that each pool used for its finished calls. A call adds all of its CPU time when it replies. Thus a worker that is busy on a call longer than the rate window shows as idle during the call, and above one core when the call ends. Thus use a window that is much longer than a typical call, for example 5 m.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="contract" files="pool.rs" -->
@@ -127,7 +132,7 @@ When a lease ends, `recycle_decision` uses the numbers in the worker's last repl
 
 A replacement that is `Ready` while its old worker is still leased waits outside the idle list, without a permit. It becomes leasable when the old worker leaves. A pool thus never runs more jobs at once than its size. The memory of a swap is one extra idle worker, about 250 MB for LibreOffice after its warm-up, never a second worker at its kill limit. The memory rule for a container is therefore (workers × kill) + one idle office worker + 512 MiB.
 
-With `max_jobs` at 1, a process never serves two conversions. A `Ping` and an `Inspect` are not jobs: a render pool inspects before each render, and those calls must not halve its worker's life. `OFFICE_MAX_JOBS` and `RENDER_MAX_JOBS` set each pool's limit and fall back to `WORKER_MAX_JOBS`. Without either variable, the office pool takes 200 jobs and the render pool 50. In the soak an office worker lived 20 s at 50 jobs, and its RSS at recycle did not grow with the job count. `OFFICE_MAX_RSS_MB` still recycles an office worker that grows. The manager also checks the idle workers for `max_age` every `age_check`.
+With `max_jobs` at 1, a process never serves two conversions. A `Ping` and an `Inspect` are not jobs: a render pool inspects before each render, and those calls must not halve its worker's life. `OFFICE_MAX_JOBS` and `RENDER_MAX_JOBS` set each pool's limit and fall back to `WORKER_MAX_JOBS`. Without either variable, the office pool takes 200 jobs and the render pool 50. In the soak an office worker lived 20 s at 50 jobs, and its RSS at recycle did not grow with the job count. A soak on 2026-11-27 measured the 200-job default on real documents, with 1 office worker and `OFFICE_MAX_RSS_MB=1024`. On the full set of 276 documents, the RSS limits ended all 24 office workers before 200 jobs. The median worker served 7 jobs, and none served more than 40. On a lighter subset of 220 documents, 7 workers reached 200 jobs. Their RSS at recycle was 616 to 764 MB and did not grow across generations. On both sets the RSS of a new worker stayed at 240 to 246 MB. Inside one life, the idle RSS rose by about 1 MB per job on the subset and 14 MB per job on the full set. `OFFICE_MAX_RSS_MB` still recycles an office worker that grows. The manager also checks the idle workers for `max_age` every `age_check`.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="slot" files="slot.rs" -->
@@ -160,14 +165,14 @@ Each worker process gets `<workers_dir>/<pool>-<slot>/` with the subdirectories 
 `OfficeLok` implements `OfficeEngine` over the office pool, and `PdfPdfium` implements `PdfEngine` over the render pool. Each call runs these steps through `call::call`:
 
 1. It leases a worker with the request's admission mode and sends one operation, with the request's deadline.
-2. It fills `EngineTiming` with the queue, lease, wall and engine times, and with the pre-flight time that the office worker reports (zero for other calls). When the worker started on the request's path, it adds the spawn and bind times.
+2. It fills `EngineTiming` with the queue, lease, wall and engine times, and with the pre-flight time that the office worker reports (zero for other calls). It also fills `cpu`, the worker's `cpu_us`. When the worker started on the request's path, it adds the spawn and bind times.
 3. It records `convert_engine_overhead_seconds{pool,op}`, the wall time less the engine and queue times.
 4. If the worker crashed and at least 1 s is left, it retries once on a new lease with `Continue`. It never retries after a timeout or an error that the engine reported.
 5. It maps the error through `EngineFailure` to the domain's `EngineError`, and logs the worker's message at debug only.
 
 After a load, export, empty-document, limit or internal error, `OfficeLok` recycles the office worker, because LibreOffice's state is suspect. The password errors leave the worker in the pool. `PdfPdfium` recycles a render worker only after an internal error.
 
-`PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`, so the files on disk stay within the job's reservation. The chunks run together. A crashed chunk is retried once on a fresh lease, if at least 1 s is left. A chunk that goes over its share runs again on one lease, with the cap minus the bytes of the finished chunks, if at least 1 s is left. A job thus fails on its cap exactly when one worker fails, and the cap never adds a poison strike. The pages come back in order. `engine` is the longest chunk, plus the rerun. The most severe chunk error wins: a timeout, then a crash, then a password error.
+`PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`, so the files on disk stay within the job's reservation. The chunks run together. A crashed chunk is retried once on a fresh lease, if at least 1 s is left. A chunk that goes over its share runs again on one lease, with the cap minus the bytes of the finished chunks, if at least 1 s is left. A job thus fails on its cap exactly when one worker fails, and the cap never adds a poison strike. The pages come back in order. `engine` is the longest chunk, plus the rerun. `cpu` is the sum of every chunk that answered, a chunk over its share and the rerun included. The most severe chunk error wins: a timeout, then a crash, then a password error.
 
 There is no image assembly: image inputs are out of v1 (the owner's decision), and detection refuses them with 415 before any engine call.
 

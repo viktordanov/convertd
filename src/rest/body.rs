@@ -14,7 +14,9 @@
 //!
 //! Why not `tokio::fs` + `ReaderStream`: every read would be its own
 //! `spawn_blocking` hop, about 1 600 for 100 MiB against one task here.
-//! Peak memory per response is about five chunks.
+//! The chunks in flight are the queued ones and the ones hyper holds while
+//! it writes: 13 chunks for an 8 MiB PDF over loopback. Their buffers are
+//! allocated once per response and reused (`Chunks`).
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -22,10 +24,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use tokio::runtime::Handle;
 use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
+use super::chunks::Chunks;
 use super::throughput::{Meter, MinRate};
 use crate::bundle::TarPlan;
 use crate::jobs::JobDir;
@@ -65,7 +68,7 @@ pub enum PumpEnd {
 /// Streams exactly `size` bytes of `file`.
 pub fn file_body(file: File, size: u64, pump: Pump) -> Body {
     spawn_pump(pump, move |tx, handle, idle, meter| {
-        run(file, size, tx, handle, idle, meter)
+        run(file, size, &mut Chunks::default(), tx, handle, idle, meter)
     })
 }
 
@@ -73,37 +76,50 @@ pub fn file_body(file: File, size: u64, pump: Pump) -> Body {
 /// length known in advance.
 pub fn tar_body(plan: TarPlan, pump: Pump) -> Body {
     spawn_pump(pump, move |tx, handle, idle, meter| {
-        let writer = ChannelWriter {
-            buf: BytesMut::with_capacity(READ_CHUNK),
-            tx,
-            handle,
-            idle,
-            meter,
-            end: None,
-        };
-        match plan
-            .write_to(writer)
-            .and_then(|mut writer| writer.flush().map(|()| writer))
-        {
-            Ok(_) => PumpEnd::Complete,
-            Err(err) => {
-                // A file shorter than planned or a read error, unless the
-                // client stalled or left (the writer recorded that). The
-                // writer moved into the encoder, so the reason comes back
-                // through the error kind.
-                match err.kind() {
-                    io::ErrorKind::TimedOut => PumpEnd::Stalled,
-                    io::ErrorKind::WouldBlock => PumpEnd::TooSlow,
-                    io::ErrorKind::BrokenPipe => PumpEnd::Disconnected,
-                    _ => {
-                        let _ = handle
-                            .block_on(tokio::time::timeout(idle, tx.send(Piece::Failed(err))));
-                        PumpEnd::Aborted
-                    }
+        write_tar(&plan, &mut Chunks::default(), tx, handle, idle, meter)
+    })
+}
+
+fn write_tar(
+    plan: &TarPlan,
+    chunks: &mut Chunks,
+    tx: &Sender,
+    handle: &Handle,
+    idle: Duration,
+    meter: Meter,
+) -> PumpEnd {
+    let current = chunks.free(READ_CHUNK);
+    let writer = ChannelWriter {
+        chunks,
+        current,
+        tx,
+        handle,
+        idle,
+        meter,
+        end: None,
+    };
+    match plan
+        .write_to(writer)
+        .and_then(|mut writer| writer.flush().map(|()| writer))
+    {
+        Ok(_) => PumpEnd::Complete,
+        Err(err) => {
+            // A file shorter than planned or a read error, unless the
+            // client stalled or left (the writer recorded that). The
+            // writer moved into the encoder, so the reason comes back
+            // through the error kind.
+            match err.kind() {
+                io::ErrorKind::TimedOut => PumpEnd::Stalled,
+                io::ErrorKind::WouldBlock => PumpEnd::TooSlow,
+                io::ErrorKind::BrokenPipe => PumpEnd::Disconnected,
+                _ => {
+                    let _ =
+                        handle.block_on(tokio::time::timeout(idle, tx.send(Piece::Failed(err))));
+                    PumpEnd::Aborted
                 }
             }
         }
-    })
+    }
 }
 
 /// What the pump sends to the body. The body ends cleanly only on `Done`:
@@ -178,7 +194,9 @@ fn spawn_pump(
 /// timeout. A stalled or vanished client makes `write` fail and records
 /// why in `end`.
 struct ChannelWriter<'a> {
-    buf: BytesMut,
+    chunks: &'a mut Chunks,
+    /// The slot that collects the next chunk.
+    current: usize,
     tx: &'a Sender,
     handle: &'a Handle,
     idle: Duration,
@@ -187,11 +205,12 @@ struct ChannelWriter<'a> {
 }
 
 impl ChannelWriter<'_> {
-    fn send(&mut self, len: usize) -> io::Result<()> {
-        let chunk = self.buf.split_to(len).freeze();
+    /// Sends the current slot's bytes as one chunk and moves to a free slot.
+    fn send(&mut self) -> io::Result<()> {
+        let chunk = self.chunks.slots[self.current].split().freeze();
         let bytes = chunk.len() as u64;
-        // The sent chunk keeps its allocation alive while it is queued.
-        self.buf.reserve(READ_CHUNK);
+        // The sent chunk keeps its slot busy until hyper drops it.
+        self.current = self.chunks.free(READ_CHUNK);
         match self.handle.block_on(tokio::time::timeout(
             self.idle,
             self.tx.send(Piece::Data(chunk)),
@@ -222,16 +241,22 @@ impl Write for ChannelWriter<'_> {
         if self.end.is_some() {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
-        self.buf.extend_from_slice(data);
-        while self.buf.len() >= READ_CHUNK {
-            self.send(READ_CHUNK)?;
+        let mut rest = data;
+        while !rest.is_empty() {
+            let buf = &mut self.chunks.slots[self.current];
+            let n = (READ_CHUNK - buf.len()).min(rest.len());
+            buf.extend_from_slice(&rest[..n]);
+            rest = &rest[n..];
+            if buf.len() == READ_CHUNK {
+                self.send()?;
+            }
         }
         Ok(data.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if !self.buf.is_empty() {
-            self.send(self.buf.len())?;
+        if !self.chunks.slots[self.current].is_empty() {
+            self.send()?;
         }
         Ok(())
     }
@@ -240,6 +265,7 @@ impl Write for ChannelWriter<'_> {
 fn run(
     mut file: File,
     size: u64,
+    chunks: &mut Chunks,
     tx: &Sender,
     handle: &Handle,
     idle: Duration,
@@ -248,9 +274,10 @@ fn run(
     let mut left = size;
     while left > 0 {
         let len = READ_CHUNK.min(usize::try_from(left).unwrap_or(READ_CHUNK));
-        // A fresh allocation per chunk: queued chunks keep theirs alive.
-        let mut chunk = BytesMut::zeroed(len);
-        if let Err(err) = file.read_exact(&mut chunk) {
+        let slot = chunks.free(len);
+        let buf = &mut chunks.slots[slot];
+        buf.resize(len, 0);
+        if let Err(err) = file.read_exact(buf) {
             // After the 200 a read error cannot become a status: abort the
             // body so hyper drops the connection.
             let _ = handle.block_on(tokio::time::timeout(idle, tx.send(Piece::Failed(err))));
@@ -258,7 +285,7 @@ fn run(
         }
         match handle.block_on(tokio::time::timeout(
             idle,
-            tx.send(Piece::Data(chunk.freeze())),
+            tx.send(Piece::Data(buf.split().freeze())),
         )) {
             Ok(Ok(())) => {
                 left -= len as u64;
@@ -447,6 +474,94 @@ mod tests {
         let read = axum::body::to_bytes(body, 64 << 20).await;
         assert!(read.is_err(), "the body ended cleanly without its marker");
         std::fs::remove_dir_all(tmp).unwrap();
+    }
+
+    /// Reads `body` to its end, dropping each chunk at once as hyper does
+    /// after writing it, and returns the bytes read.
+    async fn drain(mut body: Body) -> usize {
+        let mut read = 0;
+        while let Some(frame) =
+            std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await
+        {
+            if let Ok(data) = frame.unwrap().into_data() {
+                read += data.len();
+            }
+        }
+        read
+    }
+
+    /// A pump whose buffers the test can count afterwards: slots are only
+    /// ever added, so their count is the number of buffers allocated.
+    fn counted(
+        job: Arc<JobDir>,
+        semaphore: &Arc<Semaphore>,
+        work: impl FnOnce(&mut Chunks, &Sender, &Handle, Duration, Meter) -> PumpEnd + Send + 'static,
+    ) -> (Body, Arc<std::sync::atomic::AtomicUsize>) {
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&count);
+        let pump = Pump {
+            job,
+            permit: Arc::clone(semaphore).try_acquire_owned().unwrap(),
+            idle: Duration::from_secs(5),
+            rate: MinRate::off(),
+            request_id: "t".into(),
+        };
+        let body = spawn_pump(pump, move |tx, handle, idle, meter| {
+            let mut chunks = Chunks::default();
+            let end = work(&mut chunks, tx, handle, idle, meter);
+            seen.store(chunks.slots.len(), std::sync::atomic::Ordering::SeqCst);
+            end
+        });
+        (body, count)
+    }
+
+    /// The pumps reuse their buffers: 64 chunks come from a handful of
+    /// them. The count does not depend on the allocator handing a freed
+    /// address back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pumps_reuse_a_few_buffers() {
+        const CHUNKS: usize = 64;
+        let data = noise(CHUNKS * READ_CHUNK);
+        let semaphore = Arc::new(Semaphore::new(1));
+        let mut dirs = Vec::new();
+        let mut buffers = Vec::new();
+        for (name, len) in [("reuse-pdf", data.len())] {
+            let (job, tmp) = job(name);
+            std::fs::write(job.pdf_path(), &data[..len]).unwrap();
+            let file = File::open(job.pdf_path()).unwrap();
+            let root = job.root().to_path_buf();
+            let (body, count) = counted(job, &semaphore, move |chunks, tx, h, idle, m| {
+                run(file, len as u64, chunks, tx, h, idle, m)
+            });
+            assert_eq!(drain(body).await, len);
+            wait_for_cleanup(&root, &semaphore).await;
+            buffers.push(count.load(std::sync::atomic::Ordering::SeqCst));
+            dirs.push(tmp);
+        }
+        let (job, tmp) = job("reuse-tar");
+        std::fs::write(job.pdf_path(), &data).unwrap();
+        let mut plan = TarPlan::new();
+        plan.add_file("document.pdf", job.pdf_path()).unwrap();
+        let root = job.root().to_path_buf();
+        let (body, count) = counted(job, &semaphore, move |chunks, tx, h, idle, m| {
+            write_tar(&plan, chunks, tx, h, idle, m)
+        });
+        assert!(drain(body).await > data.len());
+        wait_for_cleanup(&root, &semaphore).await;
+        buffers.push(count.load(std::sync::atomic::Ordering::SeqCst));
+        dirs.push(tmp);
+        eprintln!("buffers for {CHUNKS} chunks: pdf, tar.zst {buffers:?}");
+        // Queued chunks, the one the reader holds, and the one being
+        // filled; the tar writer also holds the chunk it is sending.
+        assert!(buffers[0] <= BODY_QUEUE_CHUNKS + 2, "pdf: {}", buffers[0]);
+        assert!(
+            buffers[1] <= BODY_QUEUE_CHUNKS + 3,
+            "tar.zst: {}",
+            buffers[1]
+        );
+        for dir in dirs {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[tokio::test]

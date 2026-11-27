@@ -211,6 +211,7 @@ mod tests {
                 check_owner: true,
             })),
             call(Op::Test(TestOp::Sleep { ms: 3 })),
+            call(Op::Test(TestOp::Burn { ms: 3 })),
             call(Op::Test(TestOp::Hang)),
             call(Op::Test(TestOp::Abort)),
             call(Op::Test(TestOp::Exit { code: 3 })),
@@ -229,6 +230,7 @@ mod tests {
                 engine_us: 10,
                 render_us: 4,
                 encode_us: 6,
+                cpu_us: 9,
                 ..EngineTimes::default()
             },
             rss_bytes: 1 << 20,
@@ -249,7 +251,6 @@ mod tests {
             flat: false,
             colour: [255, 255, 255],
             effective_dpi: 150.0,
-            crc32: Some(7),
         };
         let mut out = vec![
             Response::Ready(Ready {
@@ -277,6 +278,10 @@ mod tests {
                     macros: Some(MacroFactWire {
                         kind: MacroKindWire::Vba,
                         part: "word/vbaProject.bin".into(),
+                    }),
+                    slides: Some(SlidesWire {
+                        count: 3,
+                        hidden: vec![2],
                     }),
                     skipped: vec![(CheckWire::Fonts, SkipReasonWire::CapReached)],
                 })),
@@ -342,6 +347,17 @@ mod tests {
         for msg in responses() {
             round_trip(msg);
         }
+    }
+
+    /// A worker from before `cpu_us` still parses, with 0.
+    #[test]
+    fn a_reply_without_cpu_us_parses() {
+        let json = r#"{"type":"reply","id":7,"job":1,"engine":{"engine_us":5,"convert_us":0,"inspect_us":0,"probe_us":0,"render_us":0,"encode_us":0,"decrypt_us":0,"preflight_us":0},"rss_bytes":0,"result":{"Ok":{"output":"pong"}}}"#;
+        let Response::Reply(reply) = serde_json::from_str::<Response>(json).unwrap() else {
+            panic!("not a reply");
+        };
+        assert_eq!(reply.engine.engine_us, 5);
+        assert_eq!(reply.engine.cpu_us, 0);
     }
 
     #[test]

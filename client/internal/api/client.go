@@ -540,6 +540,11 @@ type PageInfo struct {
 	HeightPt float32 `json:"height_pt"`
 	HeightPx int32   `json:"height_px"`
 
+	// Hidden Present, and true, when the page comes from a slide marked hidden.
+	// Only with `slides.include_hidden`, and only when the slide list
+	// predicts the page count exactly. A legacy `.ppt` never has it.
+	Hidden *bool `json:"hidden,omitempty"`
+
 	// Number 1-based page number in the PDF.
 	Number int32 `json:"number"`
 
@@ -637,7 +642,8 @@ type SlideNotes string
 
 // SlideOptions Options that only affect presentations.
 type SlideOptions struct {
-	// IncludeHidden Also export slides that are marked hidden.
+	// IncludeHidden Also export slides that are marked hidden, in slide order. The
+	// manifest marks their pages with `hidden`.
 	IncludeHidden *bool `json:"include_hidden,omitempty"`
 
 	// Notes What to do with speaker notes.

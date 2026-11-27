@@ -200,6 +200,12 @@
           "uniqueItems": true,
           "items": { "type": "integer", "minimum": 1 }
         },
+        "hidden_pages": {
+          "description": "The pages whose manifest entry has hidden: true; no other page has it.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1 }
+        },
         "connections": {
           "description": "Connections the canary listener may see during the case.",
           "const": 0

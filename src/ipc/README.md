@@ -27,16 +27,16 @@ One call is in flight for each worker at a time, and the reply echoes the call's
 - **`Request::Init`**: the first frame after the spawn. It carries `PROTOCOL_VERSION` (1), the engine paths, the warm-up flag and the start faults of the `test` role.
 - **`Request::Call`**: one operation with its `id`. The operations are `Ping`, `Convert`, `Inspect`, `Render`, `Decrypt`, and `Test` for the `test` role only.
 - **`Response::Ready`** or **`Response::Fatal`**: the answer to `Init`. `Ready` carries the PID, the engine version, `bind_us` and the RSS.
-- **`Response::Reply`**: the answer to a call. It carries the conversion count of the process (`job`, without `Ping` and `Inspect`), the engine times, the RSS, and the result or a `WorkerError`.
+- **`Response::Reply`**: the answer to a call. It carries the conversion count of the process (`job`, without `Ping` and `Inspect`), the engine times, the RSS, and the result or a `WorkerError`. The engine times include `cpu_us`, the CPU time of the worker process over the whole call. A reply without `cpu_us` parses with 0, so an older worker still works with the same `PROTOCOL_VERSION`.
 
 A `Ping` call and its reply look like this on the wire:
 
 ```json
 {"type":"call","id":7,"op":{"op":"ping"}}
-{"type":"reply","id":7,"job":1,"engine":{"engine_us":0,"convert_us":0,"inspect_us":0,"probe_us":0,"render_us":0,"encode_us":0,"decrypt_us":0,"preflight_us":0},"rss_bytes":0,"result":{"Ok":{"output":"pong"}}}
+{"type":"reply","id":7,"job":1,"engine":{"engine_us":0,"convert_us":0,"inspect_us":0,"probe_us":0,"render_us":0,"encode_us":0,"decrypt_us":0,"preflight_us":0,"cpu_us":12},"rss_bytes":0,"result":{"Ok":{"output":"pong"}}}
 ```
 
-`Convert` names the office family of the source: `document`, `spreadsheet` or `presentation`. Its reply carries the PDF size, LibreOffice's document type and the pre-flight facts as `SourceFactsWire`. Each `RenderedPage` carries the CRC-32 of its file.
+`Convert` names the office family of the source: `document`, `spreadsheet` or `presentation`. Its reply carries the PDF size, LibreOffice's document type and the pre-flight facts as `SourceFactsWire`.
 
 A `WorkerError` has a `kind` and a message for the log. The message can hold paths, so it never reaches an HTTP body. `DiskFull` is apart from `LimitExceeded`: a full disk comes from other jobs, and `LimitExceeded` is the job's own cap. `FakeQueueFull` and `FakeUnavailable` come only from the `test` role.
 
@@ -46,5 +46,5 @@ A `WorkerError` has a `kind` and a message for the log. The message can hold pat
 <!-- memoria:section id="facts" files="facts.rs" -->
 ## Pre-flight facts
 
-`facts.rs` converts the domain's `SourceFacts` to `SourceFactsWire` and back. `embedded_fonts` and `text_code_points` default to empty when a reply lacks them. The worker parses hostile files, so decoding keeps at most 4096 code points, and the supervisor then drops the code points that need no glyph, sorts them and removes duplicates. The domain type keeps `DeclaredPages::source` as a `&'static str`, so the supervisor maps the wire string back to a static one. `ppt/presentation.xml` and `docProps/app.xml`, the sources that the scanners name, map to themselves. Any other source reads as `other`.
+`facts.rs` converts the domain's `SourceFacts` to `SourceFactsWire` and back. `embedded_fonts` and `text_code_points` default to empty when a reply lacks them, and `slides` to none. The supervisor keeps a slide list only when its hidden positions ascend and lie in `1..=count`. Any other list reads as none, so the manifest marks no page. The worker parses hostile files, so decoding keeps at most 4096 code points, and the supervisor then drops the code points that need no glyph, sorts them and removes duplicates. The domain type keeps `DeclaredPages::source` as a `&'static str`, so the supervisor maps the wire string back to a static one. `ppt/presentation.xml` and `docProps/app.xml`, the sources that the scanners name, map to themselves. Any other source reads as `other`.
 <!-- /memoria:section -->

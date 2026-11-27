@@ -15,10 +15,11 @@
 //! parsed and validated as soon as it arrives, so a bad option fails
 //! before the upload is stored.
 
+use super::chunks::Chunks;
 use super::framing::{FramingBody, FramingTooLarge, framing_too_large};
 use super::throughput::{MeteredBody, MinRate, too_slow};
 use std::error::Error as StdError;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,7 +30,7 @@ use axum::http::header;
 use bytes::Bytes;
 use multer::{Constraints, Multipart, SizeLimit};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
+use tokio::sync::{OwnedSemaphorePermit, mpsc};
 
 use super::serialization::options::{ConvertOptions, OptionsError};
 use crate::detect;
@@ -41,6 +42,9 @@ use crate::jobs::JobDir;
 
 /// Chunks queued between the handler and the sink.
 const UPLOAD_QUEUE_CHUNKS: usize = 4;
+/// The most bytes of one queued piece of the upload. 128 KiB costs about
+/// a memcpy of the upload; 64 KiB pieces cost more in queue hand-offs.
+const UPLOAD_PIECE: usize = 128 * 1024;
 /// The largest accepted `options` part.
 pub const OPTIONS_PART_MAX: u64 = 64 * 1024;
 /// Room for the multipart framing around the parts.
@@ -126,13 +130,16 @@ pub fn is_disk_full(err: &io::Error) -> bool {
 
 /// Reads the multipart body into `job`. Called after auth and the
 /// concurrency permit; rejects an oversized `Content-Length` before a byte
-/// is read.
+/// is read. The sink holds a share of `permit` until its blocking task
+/// ends, so a client that leaves meanwhile does not free its slot while
+/// the open or the writes still run.
 /// `detected` is set as soon as detection has run, so the caller knows
 /// that an error after it (such as an options part after the file) still
 /// gets `Server-Timing`.
 pub async fn receive(
     request: Request,
     job: &Arc<JobDir>,
+    permit: Arc<OwnedSemaphorePermit>,
     limits: &Limits,
     rate: MinRate,
     detected: &mut Option<Duration>,
@@ -193,15 +200,13 @@ pub async fn receive(
                     return Err(UploadError::DuplicatePart("file"));
                 }
                 let file_name = field.file_name().and_then(sanitize_file_name);
-                let file = OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create_new(true)
-                    .open(job.upload_part())
-                    .map_err(map_io)?;
                 let (tx, rx) = mpsc::channel(UPLOAD_QUEUE_CHUNKS);
                 let sink_job = Arc::clone(job);
-                let sink = tokio::task::spawn_blocking(move || sink(file, &sink_job, rx));
+                let sink_permit = Arc::clone(&permit);
+                let sink = tokio::task::spawn_blocking(move || {
+                    let _held = sink_permit;
+                    sink(&sink_job, rx)
+                });
                 let forwarded = forward(&mut field, &tx, max_upload).await;
                 drop(tx);
                 let result = sink
@@ -231,7 +236,6 @@ pub async fn receive(
         upload: UploadFacts {
             size_bytes: result.size,
             sha256: result.sha256,
-            crc32: result.crc32,
             file_name,
         },
         detection: result.detection,
@@ -243,23 +247,70 @@ pub async fn receive(
 
 /// Sends the file part's chunks to the sink, then the end marker. Stops
 /// early when the sink is gone (it failed; its error is the answer).
-async fn forward(
-    field: &mut multer::Field<'_>,
+async fn forward<S>(
+    field: &mut S,
     tx: &mpsc::Sender<SinkMessage>,
     max_upload: u64,
-) -> Result<(), UploadError> {
+) -> Result<(), UploadError>
+where
+    S: futures_util::Stream<Item = Result<Bytes, multer::Error>> + Unpin,
+{
+    use futures_util::StreamExt;
+    let mut pieces = Chunks::default();
+    // The slot that collects the next piece, chosen when bytes arrive.
+    let mut current: Option<usize> = None;
+    let mut seen = 0usize;
     loop {
-        match field.chunk().await {
-            Ok(Some(chunk)) => {
-                if tx.send(SinkMessage::Chunk(chunk)).await.is_err() {
-                    return Ok(());
+        // A sink that stopped (its open or a write failed) drops its
+        // receiver: stop now, not when the client sends the next chunk,
+        // so the sink's error answers at once.
+        let next = tokio::select! {
+            biased;
+            () = tx.closed() => return Ok(()),
+            next = field.next() => next,
+        };
+        match next {
+            Some(Ok(chunk)) => {
+                // Copied into pieces of our own, and dropped before multer
+                // is polled again: a queued slice of multer's buffer would
+                // keep the whole buffer alive (about 496 KiB each), and how
+                // many it kept depended on hyper's read sizes.
+                let mut rest = &chunk[..];
+                while !rest.is_empty() {
+                    // A new slot grows with the bytes seen so far, so a
+                    // small upload gets no 128 KiB, and a large one has
+                    // only a few small slots before its full pieces.
+                    let at = match current {
+                        Some(at) => at,
+                        None => {
+                            *current.insert(pieces.free(UPLOAD_PIECE.min(rest.len().max(seen))))
+                        }
+                    };
+                    let buf = &mut pieces.slots[at];
+                    let n = (buf.capacity() - buf.len()).min(rest.len());
+                    buf.extend_from_slice(&rest[..n]);
+                    rest = &rest[n..];
+                    seen += n;
+                    if buf.len() == buf.capacity() {
+                        let piece = buf.split().freeze();
+                        current = None;
+                        if tx.send(SinkMessage::Chunk(piece)).await.is_err() {
+                            return Ok(());
+                        }
+                    }
                 }
             }
-            Ok(None) => {
+            None => {
+                if let Some(at) = current {
+                    let last = pieces.slots[at].split().freeze();
+                    if !last.is_empty() && tx.send(SinkMessage::Chunk(last)).await.is_err() {
+                        return Ok(());
+                    }
+                }
                 let _ = tx.send(SinkMessage::Done).await;
                 return Ok(());
             }
-            Err(err) => return Err(map_multer(err, max_upload)),
+            Some(Err(err)) => return Err(map_multer(err, max_upload)),
         }
     }
 }
@@ -343,7 +394,6 @@ struct SinkResult {
     source: PathBuf,
     size: u64,
     sha256: [u8; 32],
-    crc32: u32,
     detection: Detection,
     detect: Duration,
 }
@@ -353,17 +403,20 @@ struct SinkResult {
 pub struct Written {
     pub size: u64,
     pub sha256: [u8; 32],
-    pub crc32: u32,
 }
 
-/// Runs on one blocking thread. Owns the file and a clone of the
-/// `Arc<JobDir>`, so the directory outlives it even if the handler future
-/// is dropped (hyper drops it on peer EOF mid-request).
-fn sink(
-    mut file: File,
-    job: &JobDir,
-    mut rx: mpsc::Receiver<SinkMessage>,
-) -> Result<SinkResult, UploadError> {
+/// Runs on one blocking thread, which also creates `upload.part`, so no
+/// open runs on the runtime. Owns a clone of the `Arc<JobDir>`, so the
+/// directory outlives it even if the handler future is dropped (hyper
+/// drops it on peer EOF mid-request). If the open fails, the receiver
+/// drops, `forward` stops at once, and the open's error is the result.
+fn sink(job: &JobDir, mut rx: mpsc::Receiver<SinkMessage>) -> Result<SinkResult, UploadError> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(job.upload_part())
+        .map_err(map_io)?;
     let written = write_chunks(&mut file, || rx.blocking_recv())?;
     let Some(written) = written else {
         return Err(UploadError::Incomplete("the client went away".into()));
@@ -384,7 +437,6 @@ fn sink(
         source,
         size: written.size,
         sha256: written.sha256,
-        crc32: written.crc32,
         detection,
         detect,
     })
@@ -398,13 +450,11 @@ fn write_chunks<W: Write>(
 ) -> Result<Option<Written>, UploadError> {
     let mut out = BufWriter::with_capacity(WRITE_BUFFER, writer);
     let mut sha = Sha256::new();
-    let mut crc = crc32fast::Hasher::new();
     let mut size = 0u64;
     loop {
         match next() {
             Some(SinkMessage::Chunk(chunk)) => {
                 sha.update(&chunk);
-                crc.update(&chunk);
                 out.write_all(&chunk).map_err(map_io)?;
                 size += chunk.len() as u64;
             }
@@ -416,7 +466,6 @@ fn write_chunks<W: Write>(
     Ok(Some(Written {
         size,
         sha256: sha.finalize().into(),
-        crc32: crc.finalize(),
     }))
 }
 
@@ -436,6 +485,81 @@ mod tests {
         move || queue.pop()
     }
 
+    /// A sink that is gone stops the forwarding while it waits for the
+    /// client's next chunk.
+    #[tokio::test]
+    async fn forward_stops_when_the_sink_is_gone() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut silent = futures_util::stream::pending::<Result<Bytes, multer::Error>>();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(rx);
+        });
+        let forwarded =
+            tokio::time::timeout(Duration::from_secs(2), forward(&mut silent, &tx, 10)).await;
+        assert!(matches!(forwarded, Ok(Ok(()))), "{forwarded:?}");
+    }
+
+    /// Owns the bytes of one input chunk and records when it drops.
+    struct Tracked(Vec<u8>, Arc<std::sync::atomic::AtomicUsize>);
+
+    impl AsRef<[u8]> for Tracked {
+        fn as_ref(&self) -> &[u8] {
+            &self.0
+        }
+    }
+
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// The pieces hold the same bytes in order, none passes 128 KiB, and
+    /// every input chunk is dropped before the next is asked for: a queued
+    /// slice of multer's buffer would keep the whole buffer alive.
+    #[tokio::test]
+    async fn forward_copies_into_pieces_and_drops_each_chunk() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let sizes = [10usize, 496 * 1024, 3, 200 * 1024, 128 * 1024];
+        let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut expected = Vec::new();
+        let mut asked = 0usize;
+        let chunks: Vec<Bytes> = sizes
+            .iter()
+            .enumerate()
+            .map(|(at, &len)| {
+                let data: Vec<u8> = (0..len).map(|i| (i * 7 + at) as u8).collect();
+                expected.extend_from_slice(&data);
+                Bytes::from_owner(Tracked(data, Arc::clone(&dropped)))
+            })
+            .collect();
+        let seen = Arc::clone(&dropped);
+        let mut input = futures_util::stream::iter(chunks.into_iter().map(move |chunk| {
+            assert_eq!(seen.load(SeqCst), asked, "the last chunk is still held");
+            asked += 1;
+            Ok::<_, multer::Error>(chunk)
+        }));
+        let (tx, mut rx) = mpsc::channel(64);
+        forward(&mut input, &tx, u64::MAX).await.unwrap();
+        drop(tx);
+        let mut got = Vec::new();
+        let mut done = false;
+        while let Some(message) = rx.recv().await {
+            match message {
+                SinkMessage::Chunk(piece) => {
+                    assert!(!done);
+                    assert!(piece.len() <= UPLOAD_PIECE, "{}", piece.len());
+                    got.extend_from_slice(&piece);
+                }
+                SinkMessage::Done => done = true,
+            }
+        }
+        assert!(done);
+        assert!(got == expected, "the bytes differ");
+        assert_eq!(dropped.load(SeqCst), sizes.len());
+    }
+
     #[test]
     fn digests_match_the_bytes() {
         let mut out = Vec::new();
@@ -448,7 +572,6 @@ mod tests {
             written.sha256,
             <[u8; 32]>::from(Sha256::digest(b"hello world"))
         );
-        assert_eq!(written.crc32, crc32fast::hash(b"hello world"));
     }
 
     #[test]

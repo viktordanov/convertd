@@ -125,6 +125,9 @@ pub struct EngineTiming {
     /// §13). Worker time but not engine time, so it counts as overhead;
     /// zero for calls without pre-flight.
     pub preflight: Duration,
+    /// The worker CPU time, user plus system, of the calls that answered:
+    /// summed over the chunks of a split render, not the longest.
+    pub cpu: Duration,
 }
 
 /// Which worker ran a job, for logs.
@@ -303,8 +306,6 @@ pub struct RenderedPage {
     /// Below the requested DPI when `max_edge` reduced the page; the domain
     /// raises `RENDER_CLAMPED` from it.
     pub effective_dpi: f32,
-    /// CRC-32 of the file, computed while encoding. Optional.
-    pub crc32: Option<u32>,
 }
 
 #[derive(Debug, Clone)]

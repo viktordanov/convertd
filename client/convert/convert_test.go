@@ -108,7 +108,7 @@ func testManifest(withPDF bool) map[string]any {
 		"images":     map[string]any{"format": "jpeg", "dpi": 150, "quality": 85},
 		"pages": []map[string]any{
 			{"number": 1, "path": "pages/0001.jpg", "width_px": 2000, "height_px": 1125,
-				"width_pt": 960, "height_pt": 540, "size_bytes": 6, "blank": false},
+				"width_pt": 960, "height_pt": 540, "size_bytes": 6, "blank": false, "hidden": true},
 		},
 		"warnings": []map[string]any{
 			{"code": "FONT_SUBSTITUTED", "message": "Aptos was replaced by Carlito",
@@ -307,7 +307,7 @@ func TestConvertToBundle(t *testing.T) {
 		if m.PDF == nil || m.PDF.Path != "document.pdf" || m.PDF.Origin != "converted" {
 			t.Errorf("pdf = %+v", m.PDF)
 		}
-		if len(m.Pages) != 1 || m.Pages[0].Number != 1 || m.Pages[0].WidthPx != 2000 || m.Pages[0].WidthPt != 960 {
+		if len(m.Pages) != 1 || m.Pages[0].Number != 1 || m.Pages[0].WidthPx != 2000 || m.Pages[0].WidthPt != 960 || !m.Pages[0].Hidden {
 			t.Errorf("pages = %+v", m.Pages)
 		}
 		if m.Engine.LibreOffice != "26.8.3.2" || m.Engine.PDFium != "8125" || m.Engine.Fingerprint != "sha256:abc" {

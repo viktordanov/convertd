@@ -205,6 +205,10 @@ impl TestEngine {
                 std::thread::sleep(Duration::from_millis(ms));
                 TestOutput::Slept
             }
+            TestOp::Burn { ms } => {
+                burn(Duration::from_millis(ms));
+                TestOutput::Slept
+            }
             TestOp::Hang => hang(),
             TestOp::Abort => std::process::abort(),
             TestOp::Exit { code } => sys::exit(code),
@@ -342,7 +346,6 @@ impl TestEngine {
                     flat: false,
                     colour: [255, 255, 255],
                     effective_dpi: scale * 72.0,
-                    crc32: Some(crc32fast::hash(&image)),
                 });
             }
             Ok(Output::Rendered(RenderedOut { pages: out }))
@@ -355,6 +358,19 @@ impl TestEngine {
             let pdf_bytes = budget.write_file(&args.output, &fake_pdf(pages))?;
             Ok(Output::Decrypted(DecryptedOut { pdf_bytes }))
         })
+    }
+}
+
+/// Spins until the process has used `cpu` more CPU time, or until 10 ×
+/// `cpu` of wall time has passed, whichever comes first.
+fn burn(cpu: Duration) {
+    let start = sys::cpu_time();
+    let give_up = Instant::now() + cpu.saturating_mul(10);
+    let mut x = 0u64;
+    while sys::cpu_time().saturating_sub(start) < cpu && Instant::now() < give_up {
+        for _ in 0..10_000 {
+            x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(7));
+        }
     }
 }
 

@@ -183,6 +183,12 @@ pub struct PageInfo {
     pub size_bytes: u64,
     /// True when the rendered page is a single flat colour.
     pub blank: bool,
+    /// Present, and true, when the page comes from a slide marked hidden.
+    /// Only with `slides.include_hidden`, and only when the slide list
+    /// predicts the page count exactly. A legacy `.ppt` never has it.
+    #[schema(nullable = false)]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 /// `type: number` with no `format`, as in the reference.
@@ -369,6 +375,7 @@ impl Manifest {
                     height_pt: f64::from(page.height_pt),
                     size_bytes: size,
                     blank: page.flat,
+                    hidden: result.hidden_pages.binary_search(&page.number).is_ok(),
                 })
                 .collect(),
             warnings: result.warnings.iter().map(WarningDto::from).collect(),
