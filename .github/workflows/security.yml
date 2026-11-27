@@ -58,4 +58,5 @@ jobs:
       # A module of its own: the contract tests and the speccheck tool that CI runs.
       - name: govulncheck (client/contract)
         working-directory: client/contract
-        run: govulncheck -test ./...
+        # The contract tests build with the tag that scripts/contract_test.sh uses.
+        run: govulncheck -test -tags contract ./...
