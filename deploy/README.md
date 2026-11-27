@@ -53,14 +53,14 @@ convertd reserves space for each upload and job output under `TMP_DIR` (`/tmp/co
 <!-- memoria:section id="memory-budget" files="k8s/base/deployment.yaml" -->
 ## Memory budget
 
-Each worker can grow to its pool's kill limit before the watchdog kills it, and convertd has no limit for all workers together. `OFFICE_KILL_RSS_MB` and `RENDER_KILL_RSS_MB` set the kill limit of each pool. A pool without its own value takes `WORKER_KILL_RSS_MB`. When workers are due for a job count or an age, the manager replaces them one at a time per pool. So at most one replacement, with about 256 MiB after its warm-up, waits beside the office workers. A worker that died is replaced at once, which needs no extra memory. The memory limit of the container must hold all of this:
+Each worker can grow to its pool's kill limit before the watchdog kills it, and convertd has no limit for all workers together. `OFFICE_KILL_RSS_MB` and `RENDER_KILL_RSS_MB` set the kill limit of each pool. A pool without its own value takes `WORKER_KILL_RSS_MB`. When workers are due for a job count or an age, the manager replaces them one at a time per pool. So at most one replacement, with about 256 MiB after its warm-up, waits beside the office workers. A worker that died is replaced as soon as its process is gone, which needs no extra memory. A killed worker counts against the one overlap until its exit is seen, because it holds its memory until then. The memory limit of the container must hold all of this:
 
 ```text
 OFFICE_WORKERS × OFFICE_KILL_RSS_MB + 256 MiB + RENDER_WORKERS × RENDER_KILL_RSS_MB + 512 MiB ≤ limits.memory
 2 × 1152 MiB + 256 MiB + 2 × 320 MiB + 512 MiB = 3712 MiB ≤ 4096 MiB
 ```
 
-The rule holds one replacement for each pool, not one for each worker. With 2 office and 2 render workers in 4 GiB, the 384 MiB that this frees lets `OFFICE_KILL_RSS_MB` rise to 1344 MiB: 2 × 1344 + 256 + 2 × 320 + 512 = 4096 MiB. The base manifest keeps 1152 MiB until a soak measures the higher limit. A render replacement is small, about 8 MiB when it is ready, and the 512 MiB covers it.
+The rule holds one replacement for each pool, not one for each worker. With 2 office and 2 render workers in 4 GiB, the rule leaves 384 MiB free. That is the 256 MiB that one overlap per pool saves, and 128 MiB that the old rule already left unused. It lets `OFFICE_KILL_RSS_MB` rise to 1344 MiB: 2 × 1344 + 256 + 2 × 320 + 512 = 4096 MiB. The base manifest keeps 1152 MiB until a soak measures the higher limit. A render replacement is small, about 8 MiB when it is ready, and the 512 MiB covers it.
 
 The 512 MiB holds the supervisor, the page cache and a margin. On cgroup v2 with Kubernetes 1.28 or later, a container that passes its memory limit loses every process. Then every job on the pod fails. This is not verified on the cluster of the owner. Change the worker counts, the RSS values and the memory limit together. `OFFICE_MAX_RSS_MB` and `RENDER_MAX_RSS_MB` recycle a worker after a job that leaves it above that size.
 

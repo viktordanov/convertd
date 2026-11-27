@@ -439,6 +439,8 @@ enum Event {
         slot: u16,
         generation: u32,
         reason: Reason,
+        /// The killed process: its memory stays until it exits.
+        child: ChildHandle,
     },
     Exited {
         slot: u16,
@@ -512,6 +514,7 @@ impl Drop for Worker {
             slot: self.slot,
             generation: self.generation,
             reason: self.reason,
+            child: self.child.clone(),
         });
     }
 }
@@ -634,6 +637,7 @@ impl Pool {
             spec: Arc::clone(&inner.spec),
             spawner: spawner.clone(),
             members: BTreeMap::new(),
+            exiting: Vec::new(),
             next_generation: 1,
             failures: 0,
             backoff_until: None,
@@ -1285,6 +1289,9 @@ struct Manager {
     spec: Arc<PoolSpec>,
     spawner: Spawner,
     members: BTreeMap<u16, Member>,
+    /// Killed workers whose exit is not yet seen. They still hold their
+    /// memory, so they count against the one member above the size.
+    exiting: Vec<ChildHandle>,
     next_generation: u32,
     failures: u32,
     backoff_until: Option<tokio::time::Instant>,
@@ -1328,7 +1335,11 @@ impl Manager {
                     slot,
                     generation,
                     reason,
-                } => self.vacated(&pool, slot, generation, reason),
+                    child,
+                } => {
+                    self.exiting(&pool, child);
+                    self.vacated(&pool, slot, generation, reason);
+                }
                 Event::Exited { slot, generation } => {
                     if let Some(mut worker) =
                         pool.take_idle(|w| w.slot == slot && w.generation == generation)
@@ -1369,7 +1380,8 @@ impl Manager {
         // A hole (a worker that died or was killed) is filled at once, since
         // it leaves the members below the size.
         let size = usize::from(self.spec.size);
-        while self.standing() < size && self.members.len() <= size {
+        self.exiting.retain(|child| !child.has_exited());
+        while self.standing() < size && self.members.len() + self.exiting.len() <= size {
             let slot = (0..=u16::MAX)
                 .find(|s| !self.members.contains_key(s))
                 .unwrap_or(u16::MAX);
@@ -1500,10 +1512,14 @@ impl Manager {
             // `retiring()` under it too, so a lease that ends now either
             // returned its worker before (and it is swapped below) or sees it
             // retired after the replacement is in `waiting` (and releases it).
+            // A free lease slot first: after a crash beside a replacement,
+            // the new worker fills the hole instead of waiting beside
+            // another leased incumbent, so the pool serves at its size.
+            let vacant = idle.workers.len() + idle.leased.len() < usize::from(self.spec.size);
             let replaced = self
                 .members
                 .iter()
-                .filter(|(_, m)| m.fate.state() == FATE_REPLACING)
+                .filter(|(_, m)| !vacant && m.fate.state() == FATE_REPLACING)
                 .min_by_key(|(_, m)| m.generation)
                 .map(|(&slot, member)| {
                     member.fate.retire();
@@ -1549,6 +1565,20 @@ impl Manager {
         if new_permit {
             pool.permits.add_permits(1);
         }
+    }
+
+    /// Counts a killed worker until the reaper sees it exit, and reconciles
+    /// then: a replacement held back by it may start.
+    fn exiting(&mut self, pool: &PoolInner, child: ChildHandle) {
+        if child.has_exited() {
+            return;
+        }
+        self.exiting.push(child.clone());
+        let events = pool.events.clone();
+        tokio::spawn(async move {
+            child.wait().await;
+            let _ = events.send(Event::Replace);
+        });
     }
 
     fn vacated(&mut self, pool: &PoolInner, slot: u16, generation: u32, reason: Reason) {
