@@ -24,6 +24,10 @@ test-hooks = []
 [dependencies]
 # HTTP server (001). No http2, no multipart: multer is used directly.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
+# S4: connections served with a timer, for the header read timeout. Both
+# are axum's own, with the features it enables.
+hyper = { version = "1.13.0", features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "server", "service"] }
 tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread", "macros", "net", "signal", "time", "sync", "fs", "io-util"] }
 tower-http = { version = "0.6.11", features = ["catch-panic", "timeout"] }
 http = "1.5.0"

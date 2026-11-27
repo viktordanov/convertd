@@ -240,6 +240,12 @@ pub struct ServerConfig {
     /// The response body's floor, the same way; 0 is off.
     pub response_min_bytes_per_second: u64,
     pub shutdown_grace: Duration,
+    /// `HEADER_READ_TIMEOUT_SECONDS`: the longest a connection may take to
+    /// send a request's headers, on a new or an idle keep-alive connection.
+    pub header_read_timeout: Duration,
+    /// `MAX_CONNECTIONS`: open connections that serve every route; a few
+    /// more serve only the probes.
+    pub max_connections: usize,
     /// Root of the job directories and the worker slots.
     pub tmp_dir: PathBuf,
     /// The disk budget for everything under `tmp_dir`.
@@ -306,6 +312,8 @@ impl ServerConfig {
             upload_min_bytes_per_second: env.parse("UPLOAD_MIN_BYTES_PER_SECOND", 16_384)?,
             response_min_bytes_per_second: env.parse("RESPONSE_MIN_BYTES_PER_SECOND", 16_384)?,
             shutdown_grace: env.seconds("SHUTDOWN_GRACE_SECONDS", 30)?,
+            header_read_timeout: env.positive_seconds("HEADER_READ_TIMEOUT_SECONDS", 10)?,
+            max_connections: env.positive("MAX_CONNECTIONS", 1024)?,
             tmp_dir: env.path("TMP_DIR", "/tmp/convert")?,
             tmp_max_bytes: env.positive("TMP_MAX_BYTES", 3_221_225_472)?,
             verify_probe_render: env.parse("VERIFY_PROBE_RENDER", true)?,

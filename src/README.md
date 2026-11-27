@@ -144,10 +144,12 @@ The scanners stream each part through quick-xml under fixed caps: 4 MiB per part
 1. It sets the draining flag: `/readyz` answers 503 with `draining`, and new conversions answer 503 `SERVICE_UNAVAILABLE` with `Retry-After: 5`.
 2. It waits until no request holds a permit, at most `SHUTDOWN_GRACE_SECONDS`. The listener stays open during this time. A request admitted before the signal finishes, even if its upload is still arriving, and its later engine calls still get a worker.
 3. It calls the engines' `drain`, so the pools lease no more workers.
-4. It stops axum, which stops accepting and gives open connections 2 s more.
+4. It stops the server, which stops accepting, asks each open connection to close after its current request, and gives them 2 s more.
 5. It calls the engines' `shutdown` with what is left of the deadline, or zero, then exits 0.
 
 The deadline is set once, at the signal: `SHUTDOWN_GRACE_SECONDS` from then. Steps 2 and 5 share it, so a worker that hangs cannot stretch the exit past one grace plus the 2 s for connections.
+
+`rest/server.rs` serves each connection with hyper's HTTP/1 builder and a Tokio timer, not with `axum::serve`, which sets no timer, so hyper's header read timeout would be off. A connection must send a request's headers within `HEADER_READ_TIMEOUT_SECONDS`, on a new connection and on an idle keep-alive one alike, or it is closed. At most `MAX_CONNECTIONS` connections serve every route. 16 more serve only `/healthz`, `/readyz` and `/metrics`, one request each, without keep-alive and under a 2 s header timeout, so the probes answer while the cap is full; any other path gets 503 `SERVICE_UNAVAILABLE` with the detail `connections`. Past those, a new connection is closed as it is accepted. Every accepted socket gets `TCP_NODELAY`.
 
 `/metrics` renders one process-wide Prometheus recorder in the text format. 001 records `convert_requests_total`, `convert_stage_duration_seconds`, `convert_input_bytes`, `convert_warnings_total`, `convert_verify_skipped_total`, `convert_pages_rendered_total`, `convert_responses_cut_total` and `convert_disk_budget_bytes`. On Linux it adds the supervisor's RSS, peak RSS, open descriptors and threads from `/proc/self` at each scrape. A 200 whose body stalls or aborts counts once in `convert_requests_total` with code `OK` and once in `convert_responses_cut_total`. The pools and the adapters in `engines/` record their own metrics, which [engines/README.md](engines/README.md) lists. `METRICS_ENABLED=false` makes `/metrics` answer 404.
 <!-- /memoria:section -->
@@ -220,6 +222,8 @@ This is every variable that an operator can set. An empty value counts as unset.
 | `UPLOAD_MIN_BYTES_PER_SECOND` | `16384` | The upload floor over each idle window; `0` turns it off |
 | `RESPONSE_MIN_BYTES_PER_SECOND` | `16384` | The response floor over each idle window; `0` turns it off |
 | `SHUTDOWN_GRACE_SECONDS` | `30` | How long SIGTERM waits for requests in flight |
+| `HEADER_READ_TIMEOUT_SECONDS` | `10` | The longest a connection may take to send a request's headers; then it is closed |
+| `MAX_CONNECTIONS` | `1024` | Open connections that serve every route; 16 more serve only the probes, and past them a new connection is closed |
 | `TMP_DIR` | `/tmp/convert` | Job directories and worker slots |
 | `TMP_MAX_BYTES` | `3221225472` (3 GiB) | The disk budget under `TMP_DIR`; one job writes at most a quarter of it |
 | `TOKIO_WORKER_THREADS` | `2` | The supervisor's async threads |

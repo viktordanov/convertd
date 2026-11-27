@@ -3,6 +3,9 @@
 use std::future::Future;
 use std::io;
 use std::net::IpAddr;
+use std::pin::pin;
+use std::sync::Arc;
+use std::time::Duration;
 
 use std::any::Any;
 
@@ -10,9 +13,12 @@ use axum::Router;
 use axum::middleware::{from_fn, from_fn_with_state, map_request};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::serve::ListenerExt;
+use hyper::server::conn::http1;
+use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::service::TowerToHyperService;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::{Semaphore, watch};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::timeout::RequestBodyTimeoutLayer;
 use utoipa_axum::router::OpenApiRouter;
@@ -119,21 +125,144 @@ pub async fn bind(host: IpAddr, port: u16) -> io::Result<TcpListener> {
     TcpListener::bind((host, port)).await
 }
 
-/// Serves `app` on `listener` until `shutdown` completes, then waits for
-/// open connections to finish. Every accepted socket gets `TCP_NODELAY`,
+/// The bounds on connections before any request is read
+/// (`HEADER_READ_TIMEOUT_SECONDS`, `MAX_CONNECTIONS`).
+#[derive(Debug, Clone, Copy)]
+pub struct ConnectionLimits {
+    /// The longest a connection may take to send a request's headers,
+    /// from when the server is ready to read them: on a new connection and
+    /// on an idle keep-alive one alike.
+    pub header_read_timeout: Duration,
+    /// The most open connections that serve every route.
+    pub max_connections: usize,
+}
+
+/// Connections past [`ConnectionLimits::max_connections`] that still get an
+/// answer, so the probes work while the cap is full: each serves one
+/// request without keep-alive, under [`PROBE_HEADER_READ_TIMEOUT`], and only
+/// `/healthz`, `/readyz` and `/metrics`; any other path gets 503. Past
+/// these, a connection is closed as it is accepted.
+pub const PROBE_CONNECTIONS: usize = 16;
+/// The header timeout of a probe connection.
+pub const PROBE_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(2);
+/// The pause after an accept error such as `EMFILE`, so the loop does not
+/// spin while descriptors are short.
+const ACCEPT_ERROR_PAUSE: Duration = Duration::from_millis(100);
+
+/// Serves `app` on `listener` until `shutdown` completes, then stops
+/// accepting, asks each open connection to close after its current
+/// request, and waits for them. Every accepted socket gets `TCP_NODELAY`,
 /// so a small write after the headers never waits for a delayed ACK.
-pub async fn serve<F>(listener: TcpListener, app: Router, shutdown: F) -> io::Result<()>
+///
+/// hyper serves each connection with a timer, so the header read timeout
+/// holds; `axum::serve` builds connections without one. At most
+/// `max_connections` connections serve every route, and
+/// [`PROBE_CONNECTIONS`] more serve only the probes.
+pub async fn serve<F>(
+    listener: TcpListener,
+    app: Router,
+    limits: ConnectionLimits,
+    shutdown: F,
+) -> io::Result<()>
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let listener = listener.tap_io(|tcp| {
+    let open = Arc::new(Semaphore::new(limits.max_connections));
+    let probes = Arc::new(Semaphore::new(PROBE_CONNECTIONS));
+    let probe_app = app.clone().layer(from_fn(probes_only));
+
+    // Dropping the receiver tells every connection task to close.
+    let (signal_tx, signal_rx) = watch::channel(());
+    tokio::spawn(async move {
+        shutdown.await;
+        drop(signal_rx);
+    });
+    // Each connection task holds a receiver; all gone means all closed.
+    let (close_tx, close_rx) = watch::channel(());
+
+    loop {
+        let (tcp, _) = tokio::select! {
+            accepted = listener.accept() => match accepted {
+                Ok(accepted) => accepted,
+                Err(err) => {
+                    tracing::warn!(error = %err, "failed to accept a connection");
+                    tokio::time::sleep(ACCEPT_ERROR_PAUSE).await;
+                    continue;
+                }
+            },
+            () = signal_tx.closed() => break,
+        };
+        let (permit, probe_only) = match Arc::clone(&open).try_acquire_owned() {
+            Ok(permit) => (permit, false),
+            Err(_) => match Arc::clone(&probes).try_acquire_owned() {
+                Ok(permit) => (permit, true),
+                Err(_) => {
+                    // Closed unread: the probes' reserve is full too.
+                    tracing::debug!("connection limit reached; closing a new connection");
+                    drop(tcp);
+                    continue;
+                }
+            },
+        };
         if let Err(err) = tcp.set_nodelay(true) {
             tracing::warn!(error = %err, "failed to set TCP_NODELAY");
         }
-    });
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await
+        let service = if probe_only {
+            probe_app.clone()
+        } else {
+            app.clone()
+        };
+        let header_read_timeout = if probe_only {
+            limits.header_read_timeout.min(PROBE_HEADER_READ_TIMEOUT)
+        } else {
+            limits.header_read_timeout
+        };
+        let signal_tx = signal_tx.clone();
+        let close_rx = close_rx.clone();
+        tokio::spawn(async move {
+            let mut builder = http1::Builder::new();
+            builder
+                .timer(TokioTimer::new())
+                .header_read_timeout(header_read_timeout)
+                .keep_alive(!probe_only);
+            let conn =
+                builder.serve_connection(TokioIo::new(tcp), TowerToHyperService::new(service));
+            let mut conn = pin!(conn);
+            let mut signal_closed = pin!(signal_tx.closed());
+            let mut draining = false;
+            loop {
+                tokio::select! {
+                    result = conn.as_mut() => {
+                        if let Err(err) = result {
+                            tracing::debug!(error = %err, "connection ended with an error");
+                        }
+                        break;
+                    }
+                    () = &mut signal_closed, if !draining => {
+                        draining = true;
+                        conn.as_mut().graceful_shutdown();
+                    }
+                }
+            }
+            drop(permit);
+            drop(close_rx);
+        });
+    }
+    drop(close_rx);
+    drop(listener);
+    close_tx.closed().await;
+    Ok(())
+}
+
+/// On a probe connection: the probes and metrics pass, anything else is
+/// 503, because the connection cap is full.
+async fn probes_only(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    match request.uri().path() {
+        "/healthz" | "/readyz" | "/metrics" => next.run(request).await,
+        _ => ApiError::unavailable("too many open connections; retry later")
+            .with_detail("connections")
+            .into_response(),
+    }
 }
 
 /// Installs the SIGTERM and SIGINT handlers now and returns a future that

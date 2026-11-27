@@ -135,9 +135,14 @@ fn serve() -> Result<(), String> {
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         // In its own task, so that it keeps accepting (and answering 503)
         // while the drain below waits.
+        let limits = server::ConnectionLimits {
+            header_read_timeout: config.server.header_read_timeout,
+            max_connections: config.server.max_connections,
+        };
         let mut serving = tokio::spawn(server::serve(
             listener,
             server::router(state.clone()),
+            limits,
             async move {
                 let _ = stopped.await;
             },
@@ -167,7 +172,7 @@ fn serve() -> Result<(), String> {
                 }
                 selected.handle.drain().await;
                 let _ = stop.send(());
-                // axum now stops accepting and finishes open connections.
+                // The server now stops accepting and finishes open connections.
                 match tokio::time::timeout(CLOSE_GRACE, &mut serving).await {
                     Ok(result) => joined(result),
                     Err(_) => {
