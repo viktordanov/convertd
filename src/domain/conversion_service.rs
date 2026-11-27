@@ -403,6 +403,11 @@ impl ConversionService {
             family: format.family(),
             encrypted: job.detection.encrypted || inspection.encrypted,
             page_count: inspection.page_count,
+            hidden_pages: super::pages::hidden_pages(
+                facts.as_ref().and_then(|f| f.slides.as_ref()),
+                &job.request.export,
+                inspection.page_count,
+            ),
             pages,
             warnings: verdict.warnings,
             skipped: verdict.skipped,

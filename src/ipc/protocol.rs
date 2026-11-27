@@ -342,7 +342,17 @@ pub struct SourceFactsWire {
     #[serde(default)]
     pub embedded_fonts: Vec<String>,
     pub macros: Option<MacroFactWire>,
+    /// The slides in show order and the hidden ones (presentations).
+    #[serde(default)]
+    pub slides: Option<SlidesWire>,
     pub skipped: Vec<(CheckWire, SkipReasonWire)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlidesWire {
+    pub count: u32,
+    /// 1-based positions, ascending.
+    pub hidden: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

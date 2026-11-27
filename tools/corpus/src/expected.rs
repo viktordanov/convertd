@@ -67,6 +67,8 @@ pub struct Expect {
     #[serde(default)]
     pub warnings_mode: WarningsMode,
     pub blank_pages: Option<Vec<u32>>,
+    /// The pages whose manifest entry has `hidden: true`.
+    pub hidden_pages: Option<Vec<u32>>,
     pub connections: Option<u64>,
 }
 

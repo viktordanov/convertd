@@ -831,6 +831,30 @@
           }
         },
         {
+          "name": "include-hidden",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            },
+            "slides": {
+              "include_hidden": true
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "pptx",
+            "family": "presentation",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": 20,
+            "warnings": [],
+            "hidden_pages": []
+          }
+        },
+        {
           "name": "pdf",
           "options": {
             "output": "pdf"
@@ -939,7 +963,8 @@
             "encrypted": false,
             "pdf_origin": "converted",
             "page_count": 3,
-            "warnings": []
+            "warnings": [],
+            "hidden_pages": []
           }
         },
         {
@@ -962,7 +987,95 @@
             "encrypted": false,
             "pdf_origin": "converted",
             "page_count": 5,
-            "warnings": []
+            "warnings": [],
+            "hidden_pages": [
+              2,
+              4
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "pptx-hidden3",
+      "path": "out/pptx/hidden3.pptx",
+      "origin": "generated",
+      "sha256": "79e2f246ce24000eb6b0fbd1a62817d9f03aa42f6d4ab4575b0394c60dab309c",
+      "tags": [
+        "pages"
+      ],
+      "notes": "3 slides, slide 2 with show=0 and a red background, so a test can find its pages. Default: 2 pages. With slides.include_hidden: 3 pages in slide order, and only page 2 has hidden: true.",
+      "preflight": {
+        "format": "pptx",
+        "encrypted": false,
+        "declared_pages": 2,
+        "hidden_slides": 1,
+        "requested_fonts": [
+          "Calibri"
+        ],
+        "macros": []
+      },
+      "cases": [
+        {
+          "name": "bundle",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "pptx",
+            "family": "presentation",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": 2,
+            "warnings": [],
+            "hidden_pages": []
+          }
+        },
+        {
+          "name": "include-hidden",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            },
+            "slides": {
+              "include_hidden": true
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "pptx",
+            "family": "presentation",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": 3,
+            "warnings": [],
+            "hidden_pages": [
+              2
+            ]
+          }
+        },
+        {
+          "name": "include-hidden-pdf",
+          "options": {
+            "output": "pdf",
+            "slides": {
+              "include_hidden": true
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "pptx",
+            "page_count": 3,
+            "warning_count": 0
           }
         }
       ]
@@ -1263,6 +1376,76 @@
             "pdf_origin": "converted",
             "page_count": 3,
             "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "odp-hidden",
+      "path": "out/odf/hidden.odp",
+      "origin": "generated",
+      "sha256": "8e4e72da255aba44c27eede1713af1f94902b007f8aa8b162bb616d72bcc36ef",
+      "tags": [
+        "formats",
+        "pages"
+      ],
+      "notes": "The odp deck with page 2 on a drawing-page style with presentation:visibility=\"hidden\" and a red fill. Default: 2 pages. With slides.include_hidden: 3 pages, and only page 2 has hidden: true.",
+      "preflight": {
+        "format": "odp",
+        "encrypted": false,
+        "declared_pages": null,
+        "requested_fonts": [
+          "Liberation Sans"
+        ],
+        "macros": [],
+        "hidden_slides": 1
+      },
+      "cases": [
+        {
+          "name": "bundle",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "odp",
+            "family": "presentation",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": 2,
+            "warnings": [],
+            "hidden_pages": []
+          }
+        },
+        {
+          "name": "include-hidden",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            },
+            "slides": {
+              "include_hidden": true
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "odp",
+            "family": "presentation",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": 3,
+            "warnings": [],
+            "hidden_pages": [
+              2
+            ]
           }
         }
       ]

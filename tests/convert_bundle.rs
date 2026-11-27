@@ -516,6 +516,7 @@ fn content_types(main: &str) -> String {
 }
 
 const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const PML: &str = "http://schemas.openxmlformats.org/presentationml/2006/main";
 
 fn rels(entries: &[(&str, &str, &str)]) -> String {
     let mut out = String::from(
@@ -606,28 +607,124 @@ fn minimal_font() -> String {
 
 /// A deck that declares 3 visible slides; the fake PDF has 1 page.
 fn three_slide_pptx() -> Vec<u8> {
+    deck(&[false, false, false])
+}
+
+/// A deck of `hidden.len()` slides; `hidden[i]` gives slide i+1 `show="0"`.
+fn deck(hidden: &[bool]) -> Vec<u8> {
     let main = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml";
+    let ids: Vec<String> = (1..=hidden.len())
+        .map(|n| format!("rId{}", n + 1))
+        .collect();
+    let targets: Vec<String> = (1..=hidden.len())
+        .map(|n| format!("slides/slide{n}.xml"))
+        .collect();
+    let links: Vec<(&str, &str, &str)> = ids
+        .iter()
+        .zip(&targets)
+        .map(|(id, target)| (id.as_str(), "slide", target.as_str()))
+        .collect();
+    let list: String = ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| format!(r#"<p:sldId id="{}" r:id="{id}"/>"#, 256 + i))
+        .collect();
     let mut entries = vec![
-        ("[Content_Types].xml", content_types(main)),
-        ("_rels/.rels", rels(&[("rId1", "officeDocument", "ppt/presentation.xml")])),
+        ("[Content_Types].xml".to_owned(), content_types(main)),
         (
-            "ppt/_rels/presentation.xml.rels",
-            rels(&[
-                ("rId2", "slide", "slides/slide1.xml"),
-                ("rId3", "slide", "slides/slide2.xml"),
-                ("rId4", "slide", "slides/slide3.xml"),
-            ]),
+            "_rels/.rels".to_owned(),
+            rels(&[("rId1", "officeDocument", "ppt/presentation.xml")]),
         ),
+        ("ppt/_rels/presentation.xml.rels".to_owned(), rels(&links)),
         (
-            "ppt/presentation.xml",
-            r#"<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId id="256" r:id="rId2"/><p:sldId id="257" r:id="rId3"/><p:sldId id="258" r:id="rId4"/></p:sldIdLst></p:presentation>"#.to_owned(),
+            "ppt/presentation.xml".to_owned(),
+            format!(
+                r#"<p:presentation xmlns:p="{PML}" xmlns:r="{REL}"><p:sldIdLst>{list}</p:sldIdLst></p:presentation>"#
+            ),
         ),
     ];
-    let slide = r#"<p:sld xmlns:p="p"/>"#.to_owned();
-    entries.push(("ppt/slides/slide1.xml", slide.clone()));
-    entries.push(("ppt/slides/slide2.xml", slide.clone()));
-    entries.push(("ppt/slides/slide3.xml", slide));
+    for (i, &is_hidden) in hidden.iter().enumerate() {
+        let show = if is_hidden { r#" show="0""# } else { "" };
+        entries.push((
+            format!("ppt/slides/slide{}.xml", i + 1),
+            format!(r#"<p:sld xmlns:p="{PML}"{show}/>"#),
+        ));
+    }
+    let entries: Vec<(&str, String)> = entries
+        .iter()
+        .map(|(name, data)| (name.as_str(), data.clone()))
+        .collect();
     package(&entries)
+}
+
+/// The manifest of a bundle response, after a 200.
+fn manifest_of(response: &Response, body: &[u8]) -> Value {
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(body)
+    );
+    serde_json::from_slice(&read_bundle(body)[0].1).unwrap()
+}
+
+/// The `hidden` value of each page: `None` where the key is absent.
+fn hidden_marks(manifest: &Value) -> Vec<Option<bool>> {
+    manifest["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|page| page.get("hidden").map(|v| v.as_bool().unwrap()))
+        .collect()
+}
+
+#[tokio::test]
+async fn pages_of_hidden_slides_are_marked_in_the_manifest() {
+    // The fake PDF engine reports the page count LibreOffice would give.
+    let pages = |n| App::new(&format!("hidden-slides-{n}"), &[], FakeBehavior::Pages(n));
+    let (three, two, four) = (pages(3), pages(2), pages(4));
+    let with = r#"{"output":"bundle","images":{"dpi":36},"slides":{"include_hidden":true}}"#;
+    let without = r#"{"output":"bundle","images":{"dpi":36}}"#;
+    let hidden_second = deck(&[false, true, false]);
+
+    // With the option LibreOffice exports all 3 slides: only page 2 is marked.
+    let (response, body) = three.send("deck.pptx", &hidden_second, with).await;
+    let manifest = manifest_of(&response, &body);
+    assert_eq!(hidden_marks(&manifest), [None, Some(true), None]);
+    assert_eq!(
+        manifest["warnings"],
+        serde_json::json!([]),
+        "V1 counts all 3 slides"
+    );
+
+    // Without it, 2 pages and no mark, as before.
+    let (response, body) = two.send("deck.pptx", &hidden_second, without).await;
+    let manifest = manifest_of(&response, &body);
+    assert_eq!(hidden_marks(&manifest), [None, None]);
+    assert_eq!(manifest["warnings"], serde_json::json!([]));
+
+    // A page count the slides do not predict: no mark, and V1 warns.
+    let (response, body) = four.send("deck.pptx", &hidden_second, with).await;
+    let manifest = manifest_of(&response, &body);
+    assert_eq!(hidden_marks(&manifest), [None, None, None, None]);
+    assert_eq!(manifest["warnings"][0]["code"], "PAGE_COUNT_MISMATCH");
+    assert_eq!(
+        manifest["warnings"][0]["detail"],
+        serde_json::json!({"expected": 3, "actual": 4, "source": "ppt/presentation.xml"})
+    );
+
+    // A deck with no hidden slide: the same pages and warnings either way.
+    let plain = deck(&[false, false, false]);
+    let (response, body) = three.send("plain.pptx", &plain, with).await;
+    let on = manifest_of(&response, &body);
+    let (response, body) = three.send("plain.pptx", &plain, without).await;
+    let off = manifest_of(&response, &body);
+    assert_eq!(on["pages"], off["pages"]);
+    assert_eq!(on["warnings"], off["warnings"]);
+    assert_eq!(hidden_marks(&on), [None, None, None]);
+    for app in [three, two, four] {
+        app.assert_no_jobs().await;
+    }
 }
 
 #[tokio::test]
@@ -709,9 +806,9 @@ async fn warnings_reach_the_manifest_and_the_header() {
         .await;
     let manifest: Value = serde_json::from_slice(&read_bundle(&body)[0].1).unwrap();
     assert_eq!(
-        manifest["warnings"],
-        serde_json::json!([]),
-        "V1 is skipped with hidden slides"
+        manifest["warnings"][0]["detail"],
+        serde_json::json!({"expected": 3, "actual": 1, "source": "ppt/presentation.xml"}),
+        "with hidden slides included, V1 counts every slide"
     );
     app.assert_no_jobs().await;
 }

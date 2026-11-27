@@ -124,7 +124,8 @@ pub enum ImageFormatDto {
 #[derive(Debug, Default, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SlideOptions {
-    /// Also export slides that are marked hidden.
+    /// Also export slides that are marked hidden, in slide order. The
+    /// manifest marks their pages with `hidden`.
     #[schema(nullable = false, default = false)]
     #[serde(default)]
     pub include_hidden: Option<bool>,

@@ -104,6 +104,10 @@ type Page struct {
 	HeightPt  float64
 	SizeBytes int64
 	Blank     bool
+	// Hidden is true when the page comes from a slide marked hidden. It is
+	// set only with Slides.IncludeHidden, and only when the service could
+	// map the slides to the pages exactly.
+	Hidden bool
 }
 
 // Warning is a quality signal. Warnings never fail a conversion.

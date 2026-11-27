@@ -5,7 +5,7 @@ The corpus is the set of test files for rs-convert, and `expected.json` records 
 Know these facts before you change anything here:
 
 - The repository commits the generator, the expectations and three small fixtures, not the test files. `corpus/generate.py` writes the files into `corpus/out/`, which git ignores.
-- `expected.json` pins a SHA-256 for 39 of the 42 files that `generate.py` writes. Linux arm64, macOS arm64 and Linux amd64 (the `corpus` workflow on `ubuntu-24.04`) gave the same bytes.
+- `expected.json` pins a SHA-256 for 41 of the 44 files that `generate.py` writes. Linux arm64, macOS arm64 and Linux amd64 (the `corpus` workflow on `ubuntu-24.04`) gave the same bytes for the first 39. The hashes of `pptx-hidden3` and `odp-hidden` come from macOS arm64, and the `corpus` workflow checks them on its next run.
 - Private documents never enter the repository. Git ignores `corpus/private/`.
 
 ## Contents
@@ -67,7 +67,7 @@ The private corpus lives in `CORPUS_PRIVATE_DIR`, by default `corpus/private/`, 
 
 - **`preflight`** gives what the scanners must read from the bytes alone: format, encryption, the declared slide count, the requested Latin font families and the macro parts. It is for the unit tests of lane 001, which run with no engine. No test reads it yet. `null` means that a scan does not apply or cannot run. An empty list means that the scan ran and found nothing.
 - **`cases`** gives one request each: the `options` part, as the API takes it, and an `expect` block. Most cases set `output` to `bundle`, because only a bundle carries both the manifest and the PDF. `images` and `bundle` answers are a tar stream in one zstd frame (`.tar.zst`). The options go to the service as they are, so a case without `output` gets the API default, `pdf`.
-- **`expect`** gives the status, and the error `code` when the status is not 200. It can also give the format, family, PDF origin, page count, warnings, blank pages and the allowed canary connections (always 0).
+- **`expect`** gives the status, and the error `code` when the status is not 200. It can also give the format, family, PDF origin, page count, warnings, blank pages, hidden pages and the allowed canary connections (always 0). `hidden_pages` lists the pages whose manifest entry has `hidden: true`. `pptx-hidden`, `pptx-hidden3` and `odp-hidden` test it with `slides.include_hidden`, and `pptx-deck20` tests that a deck without hidden slides gets no mark.
 - **`warnings`** match as a multiset on code and page. `detail` matches as a subset, and `"*"` matches any value. `unless_installed` drops a font warning when `/v1/capabilities` lists the family.
 - **`page_count`** is a number, a `{min, max}` range or `"unrecorded"`. An `"unrecorded"` count depends on layout: a person copies it from a reviewed `check` run. The nine counts of this kind (`docx-long`, `docx-one-page`, `potx`, the sheets) came from the image's engines on 2026-11-26.
 

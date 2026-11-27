@@ -83,6 +83,7 @@ Each answer must meet these invariants:
 - For `images` and `bundle`, the body is a tar stream in one zstd frame (`application/zstd`). Its entries are `manifest.json`, then `document.pdf` for a bundle, then the page images in the order of the manifest.
 - In such an answer, `Convert-Page-Count` and `Convert-Warning-Count` agree with `manifest.json`, and `pages` lists the requested pages.
 - No page image has an edge longer than `max_edge_px` from `/v1/capabilities`.
+- A page of the manifest has no `hidden` key, or `hidden: true`. The service leaves the key out of a page that it does not mark, so `false` and `null` fail.
 
 Then `check` compares the fields that the expectation gives. For each `FONT_SUBSTITUTED` warning, it also reads the `/BaseFont` names of the PDF: the requested family must be absent, and the claimed substitute must be present. A disagreement points to the `font_substitutes` entry in `build-info.json`.
 
@@ -97,6 +98,8 @@ On 2026-11-26, `check` ran the same way against `rs-convert-lead-runtime:wave2b`
 Later on 2026-11-26, with two data-descriptor cases added, `check` ran again against `rs-convert-lead-runtime:wave2b`, and all 59 cases passed. The listener control passed inside the namespace of the service. `docx-stored-descriptor` gave `422 CONVERSION_FAILED` and `docx-deflated-descriptor` gave 200 with 2 pages, as expected.
 
 `expected.json` then gained a 60th case, `pdf-text3/webp-refused`, when WebP output left the service. It expects `422 VALIDATION_ERROR`, as lane 001 answers an unknown image format. No `check` run with that case is recorded yet.
+
+The hidden-slide work added `hidden_pages` to the expectations and six cases: `pptx-hidden3` (three), `odp-hidden` (two) and `pptx-deck20/include-hidden`. `check` compares `hidden_pages` with the pages that carry `hidden: true` in the manifest, as it does for `blank_pages`. No `check` run with these cases is recorded yet.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="listen" files="src/main.rs src/check/listener.rs" -->
