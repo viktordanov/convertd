@@ -18,6 +18,8 @@
        Common/Security/Scripting/DisableActiveContent   xs:boolean, default false. Blocks
          active embedded content (OLE) and DDE.
        Common/Security/Scripting/BlockUntrustedRefererLinks   xs:boolean, default false.
+       Common/Security/Scripting/SecureURL   oor:string-list, default empty: the trusted
+         locations. Kept empty, because a trusted location lets a linked picture load.
        Writer/Content/Update/Link   xs:int, default 1. sw/source/uibase/config/usrpref.cxx
          reads it as enum UpdateLinks (sw/inc/linkenum.hxx): 0 NEVER, 1 MANUAL, 2 AUTOMATIC.
          The enumeration text in Writer.xcs gives 0 as "Always" and 2 as "Never"; the code
@@ -43,6 +45,9 @@
     </prop>
     <prop oor:name="BlockUntrustedRefererLinks" oor:finalized="true">
      <value>true</value>
+    </prop>
+    <prop oor:name="SecureURL" oor:finalized="true">
+     <value/>
     </prop>
    </node>
   </node>
