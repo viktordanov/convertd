@@ -3,6 +3,9 @@
 use std::future::Future;
 use std::io;
 use std::net::IpAddr;
+use std::pin::pin;
+use std::sync::Arc;
+use std::time::Duration;
 
 use std::any::Any;
 
@@ -10,9 +13,12 @@ use axum::Router;
 use axum::middleware::{from_fn, from_fn_with_state, map_request};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::serve::ListenerExt;
+use hyper::server::conn::http1;
+use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::service::TowerToHyperService;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::{Semaphore, watch};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::timeout::RequestBodyTimeoutLayer;
 use utoipa_axum::router::OpenApiRouter;
@@ -67,6 +73,7 @@ pub fn router_with(state: AppState, extra: Router<AppState>) -> Router {
         .merge(extra)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
+        .layer(from_fn(connection_gate))
         // Outermost last: linger, request_id, access_log, then the panic
         // layer. linger wraps the body before anything can drop it early.
         .layer(CatchPanicLayer::custom(panic_response))
@@ -119,21 +126,230 @@ pub async fn bind(host: IpAddr, port: u16) -> io::Result<TcpListener> {
     TcpListener::bind((host, port)).await
 }
 
-/// Serves `app` on `listener` until `shutdown` completes, then waits for
-/// open connections to finish. Every accepted socket gets `TCP_NODELAY`,
+/// The bounds on connections before any request is read
+/// (`HEADER_READ_TIMEOUT_SECONDS`, `MAX_CONNECTIONS`).
+#[derive(Debug, Clone, Copy)]
+pub struct ConnectionLimits {
+    /// The longest a connection may take to send a request's headers,
+    /// from when the server is ready to read them: on a new connection and
+    /// on an idle keep-alive one alike.
+    pub header_read_timeout: Duration,
+    /// The most open connections that serve every route.
+    pub max_connections: usize,
+}
+
+/// Connections past [`ConnectionLimits::max_connections`] that still get an
+/// answer, so the probes work while the cap is full: each serves one
+/// request without keep-alive, under [`PROBE_HEADER_READ_TIMEOUT`], and only
+/// `/healthz`, `/readyz` and `/metrics`; any other path gets 503. Past
+/// these, a connection is closed as it is accepted.
+pub const PROBE_CONNECTIONS: usize = 16;
+/// The header timeout of a probe connection.
+pub const PROBE_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(2);
+/// The pause after an accept error such as `EMFILE`, so the loop does not
+/// spin while descriptors are short.
+const ACCEPT_ERROR_PAUSE: Duration = Duration::from_millis(100);
+/// Descriptors kept free beside the connections: the listener, the worker
+/// pipes, job files, logs.
+pub const DESCRIPTOR_MARGIN: u64 = 256;
+
+/// The router that [`serve`] takes. It can only be built from the state, so
+/// it always has the connection gate that keeps probe connections to the
+/// probes, inside the common layers; a route cannot be added to it later.
+#[derive(Clone)]
+pub struct Served(Router);
+
+impl Served {
+    /// Every route the service serves ([`router`]).
+    pub fn new(state: AppState) -> Self {
+        Self(router(state))
+    }
+
+    /// [`router_with`]: plus `extra` routes, under the same layers and gate.
+    #[doc(hidden)]
+    pub fn with(state: AppState, extra: Router<AppState>) -> Self {
+        Self(router_with(state, extra))
+    }
+}
+
+/// `max_connections`, lowered when the soft `RLIMIT_NOFILE` (`nofile`)
+/// cannot hold it, [`PROBE_CONNECTIONS`] and [`DESCRIPTOR_MARGIN`]: past the
+/// descriptor limit `accept` fails before the reserve is ever reached, and
+/// the probes would stop answering. At least 1.
+pub fn effective_max_connections(max_connections: usize, nofile: Option<u64>) -> usize {
+    let Some(nofile) = nofile else {
+        return max_connections;
+    };
+    let room = nofile.saturating_sub(PROBE_CONNECTIONS as u64 + DESCRIPTOR_MARGIN);
+    let room = usize::try_from(room).unwrap_or(usize::MAX).max(1);
+    max_connections.min(room)
+}
+
+/// An accept error that concerns one pending connection, not the listener:
+/// the next accept can go on at once.
+fn per_connection(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::Interrupted
+    )
+}
+
+/// Serves `app` on `listener` until `shutdown` completes, then stops
+/// accepting, asks each open connection to close after its current
+/// request, and waits for them. Every accepted socket gets `TCP_NODELAY`,
 /// so a small write after the headers never waits for a delayed ACK.
-pub async fn serve<F>(listener: TcpListener, app: Router, shutdown: F) -> io::Result<()>
+///
+/// hyper serves each connection with a timer, so the header read timeout
+/// holds; `axum::serve` builds connections without one. At most
+/// `max_connections` connections serve every route, and
+/// [`PROBE_CONNECTIONS`] more serve only the probes. When the process's
+/// descriptor limit cannot hold that many, the cap is lowered with a
+/// warning ([`effective_max_connections`]).
+pub async fn serve<F>(
+    listener: TcpListener,
+    app: Served,
+    limits: ConnectionLimits,
+    shutdown: F,
+) -> io::Result<()>
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let listener = listener.tap_io(|tcp| {
+    let Served(app) = app;
+    let nofile = rustix::process::getrlimit(rustix::process::Resource::Nofile).current;
+    let max_connections = effective_max_connections(limits.max_connections, nofile);
+    if max_connections < limits.max_connections {
+        tracing::warn!(
+            max_connections = limits.max_connections,
+            effective = max_connections,
+            nofile = nofile.unwrap_or_default(),
+            "MAX_CONNECTIONS lowered to fit the descriptor limit (RLIMIT_NOFILE), with room for the probe reserve"
+        );
+    }
+    let open = Arc::new(Semaphore::new(max_connections));
+    let probes = Arc::new(Semaphore::new(PROBE_CONNECTIONS));
+    // The mark is set outermost; the gate that reads it runs inside the
+    // common layers (`router_with`), so a refusal still gets a request id,
+    // an access log line and the lingering close.
+    let probe_app = app.clone().layer(map_request(mark_probe_only));
+
+    // Dropping the receiver tells every connection task to close.
+    let (signal_tx, signal_rx) = watch::channel(());
+    tokio::spawn(async move {
+        shutdown.await;
+        drop(signal_rx);
+    });
+    // Each connection task holds a receiver; all gone means all closed.
+    let (close_tx, close_rx) = watch::channel(());
+
+    loop {
+        let (tcp, _) = tokio::select! {
+            accepted = listener.accept() => match accepted {
+                Ok(accepted) => accepted,
+                // One aborted connection: the next one waits for nothing.
+                Err(err) if per_connection(&err) => {
+                    tracing::debug!(error = %err, "a connection failed before it was accepted");
+                    continue;
+                }
+                // EMFILE, ENFILE and other resource errors: pause.
+                Err(err) => {
+                    tracing::warn!(error = %err, "failed to accept a connection");
+                    tokio::time::sleep(ACCEPT_ERROR_PAUSE).await;
+                    continue;
+                }
+            },
+            () = signal_tx.closed() => break,
+        };
+        let (permit, probe_only) = match Arc::clone(&open).try_acquire_owned() {
+            Ok(permit) => (permit, false),
+            Err(_) => match Arc::clone(&probes).try_acquire_owned() {
+                Ok(permit) => (permit, true),
+                Err(_) => {
+                    // Closed unread: the probes' reserve is full too.
+                    tracing::debug!("connection limit reached; closing a new connection");
+                    drop(tcp);
+                    continue;
+                }
+            },
+        };
         if let Err(err) = tcp.set_nodelay(true) {
             tracing::warn!(error = %err, "failed to set TCP_NODELAY");
         }
-    });
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await
+        let service = if probe_only {
+            probe_app.clone()
+        } else {
+            app.clone()
+        };
+        let header_read_timeout = if probe_only {
+            limits.header_read_timeout.min(PROBE_HEADER_READ_TIMEOUT)
+        } else {
+            limits.header_read_timeout
+        };
+        let signal_tx = signal_tx.clone();
+        let close_rx = close_rx.clone();
+        tokio::spawn(async move {
+            let mut builder = http1::Builder::new();
+            builder
+                .timer(TokioTimer::new())
+                .header_read_timeout(header_read_timeout)
+                .keep_alive(!probe_only);
+            let conn =
+                builder.serve_connection(TokioIo::new(tcp), TowerToHyperService::new(service));
+            let mut conn = pin!(conn);
+            let mut signal_closed = pin!(signal_tx.closed());
+            let mut draining = false;
+            loop {
+                tokio::select! {
+                    result = conn.as_mut() => {
+                        if let Err(err) = result {
+                            tracing::debug!(error = %err, "connection ended with an error");
+                        }
+                        break;
+                    }
+                    () = &mut signal_closed, if !draining => {
+                        draining = true;
+                        conn.as_mut().graceful_shutdown();
+                    }
+                }
+            }
+            drop(permit);
+            drop(close_rx);
+        });
+    }
+    drop(close_rx);
+    drop(listener);
+    close_tx.closed().await;
+    Ok(())
+}
+
+/// Marks a request that came on a probe connection.
+#[derive(Debug, Clone, Copy)]
+struct ProbeOnly;
+
+async fn mark_probe_only(mut request: axum::extract::Request) -> axum::extract::Request {
+    request.extensions_mut().insert(ProbeOnly);
+    request
+}
+
+/// On a probe connection: the probes and metrics pass, anything else is
+/// 503, because the connection cap is full. Inside the common layers, so
+/// the refusal is logged, has a request id, and an upload in progress is
+/// drained before the connection closes.
+async fn connection_gate(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if request.extensions().get::<ProbeOnly>().is_none() {
+        return next.run(request).await;
+    }
+    match request.uri().path() {
+        "/healthz" | "/readyz" | "/metrics" => next.run(request).await,
+        _ => ApiError::unavailable("too many open connections; retry later")
+            .with_detail("connections")
+            .into_response(),
+    }
 }
 
 /// Installs the SIGTERM and SIGINT handlers now and returns a future that
@@ -173,6 +389,38 @@ mod tests {
             readiness: unwired,
         };
         AppState::new(&config, engines)
+    }
+
+    #[test]
+    fn the_cap_leaves_room_for_the_reserve_and_other_files() {
+        use super::{DESCRIPTOR_MARGIN, PROBE_CONNECTIONS, effective_max_connections};
+        let reserved = PROBE_CONNECTIONS as u64 + DESCRIPTOR_MARGIN;
+        assert_eq!(effective_max_connections(1024, None), 1024);
+        assert_eq!(effective_max_connections(1024, Some(1_048_576)), 1024);
+        // A soft limit of 1024: 1024 - 16 - 256 connections.
+        assert_eq!(
+            effective_max_connections(1024, Some(1024)),
+            (1024 - reserved) as usize
+        );
+        assert_eq!(effective_max_connections(1024, Some(10)), 1);
+    }
+
+    #[test]
+    fn only_per_connection_accept_errors_skip_the_pause() {
+        use std::io::{Error, ErrorKind};
+        assert!(super::per_connection(&Error::from(
+            ErrorKind::ConnectionAborted
+        )));
+        assert!(super::per_connection(&Error::from(
+            ErrorKind::ConnectionReset
+        )));
+        // EMFILE and ENFILE pause the loop.
+        assert!(!super::per_connection(&Error::from_raw_os_error(
+            libc::EMFILE
+        )));
+        assert!(!super::per_connection(&Error::from_raw_os_error(
+            libc::ENFILE
+        )));
     }
 
     #[tokio::test]

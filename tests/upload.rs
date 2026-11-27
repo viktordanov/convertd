@@ -779,3 +779,50 @@ async fn unterminated_multipart_framing_is_400_at_once() {
     }
     app.assert_no_jobs().await;
 }
+
+/// A one-file multipart body under `boundary`, sent with that boundary.
+async fn send_with_boundary(app: &App, boundary: &str) -> (StatusCode, Value) {
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file\"; filename=\"a.pdf\"\r\n\r\n",
+    );
+    body.extend_from_slice(PDF);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let request = Request::post("/v1/convert")
+        .header(header::AUTHORIZATION, format!("Bearer {KEY}"))
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary=\"{boundary}\""),
+        )
+        .header(header::CONTENT_LENGTH, body.len().to_string())
+        .body(Body::from(body))
+        .unwrap();
+    let response = app.router().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 64 << 20).await.unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn a_boundary_of_more_than_70_characters_or_none_is_400() {
+    // S7, RFC 2046: 1 to 70 characters. A longer one would make every body
+    // frame's delimiter search as long.
+    let app = App::new("boundary", &[]);
+    let (status, _) = send_with_boundary(&app, &"b".repeat(70)).await;
+    assert_eq!(status, StatusCode::OK);
+    for boundary in ["b".repeat(71), "b".repeat(16 << 10), String::new()] {
+        let (status, body) = send_with_boundary(&app, &boundary).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{} bytes: {body}",
+            boundary.len()
+        );
+        assert_eq!(body["code"], "BAD_REQUEST", "{body}");
+    }
+    app.assert_no_jobs().await;
+}

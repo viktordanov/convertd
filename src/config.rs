@@ -240,6 +240,12 @@ pub struct ServerConfig {
     /// The response body's floor, the same way; 0 is off.
     pub response_min_bytes_per_second: u64,
     pub shutdown_grace: Duration,
+    /// `HEADER_READ_TIMEOUT_SECONDS`: the longest a connection may take to
+    /// send a request's headers, on a new or an idle keep-alive connection.
+    pub header_read_timeout: Duration,
+    /// `MAX_CONNECTIONS`: open connections that serve every route; a few
+    /// more serve only the probes.
+    pub max_connections: usize,
     /// Root of the job directories and the worker slots.
     pub tmp_dir: PathBuf,
     /// The disk budget for everything under `tmp_dir`.
@@ -284,6 +290,28 @@ impl Config {
     }
 }
 
+/// The largest `HEADER_READ_TIMEOUT_SECONDS`: an hour. Far larger values
+/// would overflow hyper's deadline arithmetic.
+pub const MAX_HEADER_READ_TIMEOUT_SECONDS: u64 = 3600;
+/// The largest `MAX_CONNECTIONS`, well inside a semaphore's permits and any
+/// descriptor limit.
+pub const MAX_CONNECTIONS_LIMIT: usize = 1 << 20;
+
+/// `value`, or an error naming `name` when it is over `max`.
+fn at_most<T: PartialOrd + std::fmt::Debug>(
+    name: &'static str,
+    value: T,
+    max: T,
+) -> Result<T, ConfigError> {
+    if value > max {
+        return Err(ConfigError::new(
+            name,
+            format!("must be at most {max:?}, got {value:?}"),
+        ));
+    }
+    Ok(value)
+}
+
 /// `PORT`, default 8080. `convertd healthcheck` reads only this.
 pub fn port(env: &Env) -> Result<u16, ConfigError> {
     env.parse("PORT", 8080)
@@ -306,6 +334,16 @@ impl ServerConfig {
             upload_min_bytes_per_second: env.parse("UPLOAD_MIN_BYTES_PER_SECOND", 16_384)?,
             response_min_bytes_per_second: env.parse("RESPONSE_MIN_BYTES_PER_SECOND", 16_384)?,
             shutdown_grace: env.seconds("SHUTDOWN_GRACE_SECONDS", 30)?,
+            header_read_timeout: at_most(
+                "HEADER_READ_TIMEOUT_SECONDS",
+                env.positive_seconds("HEADER_READ_TIMEOUT_SECONDS", 10)?,
+                Duration::from_secs(MAX_HEADER_READ_TIMEOUT_SECONDS),
+            )?,
+            max_connections: at_most(
+                "MAX_CONNECTIONS",
+                env.positive("MAX_CONNECTIONS", 1024)?,
+                MAX_CONNECTIONS_LIMIT,
+            )?,
             tmp_dir: env.path("TMP_DIR", "/tmp/convert")?,
             tmp_max_bytes: env.positive("TMP_MAX_BYTES", 3_221_225_472)?,
             verify_probe_render: env.parse("VERIFY_PROBE_RENDER", true)?,
@@ -499,6 +537,10 @@ mod tests {
             ("METRICS_ENABLED", "yes"),
             ("LOG_MODE", "verbose"),
             ("DEFAULT_PAPER", "A3"),
+            ("HEADER_READ_TIMEOUT_SECONDS", "0"),
+            ("HEADER_READ_TIMEOUT_SECONDS", "3601"),
+            ("MAX_CONNECTIONS", "0"),
+            ("MAX_CONNECTIONS", "1048577"),
         ] {
             let err = parse(&[("API_KEY", "k"), (name, value)]).unwrap_err();
             assert_eq!(err.name, name, "{err}");

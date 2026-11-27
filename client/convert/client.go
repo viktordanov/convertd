@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/viktordanov/rs-convert/client/internal/api"
@@ -20,14 +21,20 @@ import (
 
 // Client talks to one Convert service. It is safe for concurrent use.
 type Client struct {
-	api     *api.Client
-	tempDir string
+	api            *api.Client
+	tempDir        string
+	maxBundleBytes int64
 }
 
 type config struct {
-	httpClient *http.Client
-	tempDir    string
+	httpClient     *http.Client
+	tempDir        string
+	maxBundleBytes int64
 }
+
+// capabilitiesLimit caps how much of a capabilities answer is read. The
+// service's answer is a few KiB.
+const capabilitiesLimit = 1 << 20
 
 // Option customises a Client.
 type Option func(*config)
@@ -44,6 +51,14 @@ func WithTempDir(dir string) Option {
 	return func(c *config) { c.tempDir = dir }
 }
 
+// WithMaxBundleBytes caps the bytes a bundle may unpack to disk: the sum of
+// the file sizes its manifest gives. A larger bundle fails before any file
+// is written. The default, 0, sets no cap beyond the manifest's own sizes,
+// which every entry must match before it is written.
+func WithMaxBundleBytes(n int64) Option {
+	return func(c *config) { c.maxBundleBytes = n }
+}
+
 // New creates a client for the service at host, for example
 // "http://convert.internal:8080", authenticating with apiKey.
 func New(host, apiKey string, opts ...Option) (*Client, error) {
@@ -58,6 +73,9 @@ func New(host, apiKey string, opts ...Option) (*Client, error) {
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	if cfg.maxBundleBytes < 0 {
+		return nil, fmt.Errorf("failed to create convert client: WithMaxBundleBytes is %d, want 0 (no cap) or more", cfg.maxBundleBytes)
+	}
 
 	authorize := func(_ context.Context, req *http.Request) error {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -71,7 +89,7 @@ func New(host, apiKey string, opts ...Option) (*Client, error) {
 		return nil, fmt.Errorf("failed to create convert client: %w", err)
 	}
 
-	return &Client{api: generated, tempDir: cfg.tempDir}, nil
+	return &Client{api: generated, tempDir: cfg.tempDir, maxBundleBytes: cfg.maxBundleBytes}, nil
 }
 
 // Capabilities reports what the service accepts, its limits and its engine
@@ -88,8 +106,8 @@ func (c *Client) Capabilities(ctx context.Context) (*Capabilities, error) {
 	}
 
 	var body api.Capabilities
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, fmt.Errorf("failed to decode capabilities: %w", err)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, capabilitiesLimit)).Decode(&body); err != nil {
+		return nil, fmt.Errorf("failed to decode capabilities (at most %d bytes are read): %w", capabilitiesLimit, err)
 	}
 	return transformCapabilitiesToResult(body), nil
 }

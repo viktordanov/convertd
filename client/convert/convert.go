@@ -98,7 +98,7 @@ func (c *Client) convertToBundle(ctx context.Context, output, filename string, f
 	}
 	defer resp.Body.Close()
 
-	bundle, err := readBundle(resp.Body, c.tempDir)
+	bundle, err := readBundle(resp.Body, c.tempDir, c.maxBundleBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read bundle: %w", err)
 	}
