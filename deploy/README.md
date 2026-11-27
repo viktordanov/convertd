@@ -68,9 +68,9 @@ The rule counts private memory: the kill and recycle limits read a worker's `Rss
 
 ### Sizing for 2 CPUs and 4 GiB
 
-The values come from a run of 276 real documents: 128 DOCX, 93 PPTX, 30 PDF, 23 XLSX and 2 PPT, of up to 43 MB. It ran in arm64 Docker with 2 CPUs, 3584 MiB, no swap and `/tmp` on disk. It counted `VmRSS`, shared pages included, so the private figures of office workers are about 156 MiB lower. The figures:
+The values come from a run of about 300 office documents and PDFs, mostly DOCX and PPTX, with some XLSX and legacy PPT, of up to about 40 MB. It ran in arm64 Docker with 2 CPUs, 3584 MiB, no swap and `/tmp` on disk. It counted `VmRSS`, shared pages included, so the private figures of office workers are about 156 MiB lower. The figures:
 
-- LibreOffice is the bottleneck and needs the memory. One office worker needed 462 MiB at p50, 1546 MiB at p99, and up to 3281 MiB for heavy decks of 84 to 127 slides.
+- LibreOffice is the bottleneck and needs the memory. One office worker needed 462 MiB at p50, 1546 MiB at p99, and up to 3281 MiB for heavy decks of about 80 to 130 slides.
 - PDFium needed at most 279 MiB, at 150 and 300 DPI.
 - The second office worker raised the throughput by 50 to 61 %. A second render worker added 12 to 20 %.
 - Two concurrent requests filled the two CPUs. Four doubled the p99 and gave no more throughput.
@@ -81,11 +81,11 @@ Pick by the documents:
 | Profile | Settings | Trade-off |
 | --- | --- | --- |
 | Throughput (the base) | `OFFICE_WORKERS=2`, `OFFICE_KILL_RSS_MB=992`, `OFFICE_MAX_RSS_MB=736`, `RENDER_WORKERS=2`, `RENDER_KILL_RSS_MB=320`, `RENDER_MAX_RSS_MB=256` | About 57 to 74 documents a minute on a mixed set. Documents that need more than 992 MiB of private memory, about 1152 MiB of `VmRSS`, get 422. In the test set that was between 4 % (at 1536 MiB) and 13 % (at 768 MiB) of the files. |
-| Coverage | `OFFICE_WORKERS=1`, `OFFICE_KILL_RSS_MB=2528`, `OFFICE_MAX_RSS_MB=864`, `RENDER_WORKERS=2`, `RENDER_KILL_RSS_MB=320`, `RENDER_MAX_RSS_MB=256` | About 30 documents a minute. Only the decks over 2528 MiB of private memory, about 2688 MiB of `VmRSS`, get 422: 3 of the 276 test files. 1 × 2528 + 256 + 2 × 320 + 512 = 3936 MiB. |
+| Coverage | `OFFICE_WORKERS=1`, `OFFICE_KILL_RSS_MB=2528`, `OFFICE_MAX_RSS_MB=864`, `RENDER_WORKERS=2`, `RENDER_KILL_RSS_MB=320`, `RENDER_MAX_RSS_MB=256` | About 30 documents a minute. Only the decks over 2528 MiB of private memory, about 2688 MiB of `VmRSS`, get 422: about 1 % of the files. 1 × 2528 + 256 + 2 × 320 + 512 = 3936 MiB. |
 
 Both profiles are projections from the measured peaks. The throughput figures come from cells with one shared kill limit, and no cell ran with these per-pool values. With one office worker, a heavy deck holds it for 20 to 55 s, so the next request waits `QUEUE_WAIT_SECONDS` (10 s) and gets 429. Clients must retry 429.
 
-The watchdog samples each worker's RSS every 200 ms, so a fast burst of memory can pass the kill limit before a sample sees it. Then the kernel's OOM killer is the real backstop. convertd reads the kill from the cgroup and answers 422 `LIMIT_EXCEEDED`, as for a watchdog kill. A 35-minute run of the same 276 documents with 2 clients in 3584 MiB measured this. The settings were 1 office worker (`OFFICE_KILL_RSS_MB=2176`, `OFFICE_MAX_RSS_MB=1024`) and 2 render workers (320 and 256 MiB). The kernel killed the office worker 3 times in 311 office jobs. 9 of the 484 requests got 422 `LIMIT_EXCEEDED`, these 3 included. For fewer kernel kills, lower `OFFICE_KILL_RSS_MB` or raise the memory limit.
+The watchdog samples each worker's RSS every 200 ms, so a fast burst of memory can pass the kill limit before a sample sees it. Then the kernel's OOM killer is the real backstop. convertd reads the kill from the cgroup and answers 422 `LIMIT_EXCEEDED`, as for a watchdog kill. A 35-minute run of the same documents with 2 clients in 3584 MiB measured this. The settings were 1 office worker (`OFFICE_KILL_RSS_MB=2176`, `OFFICE_MAX_RSS_MB=1024`) and 2 render workers (320 and 256 MiB). The kernel killed the office worker 3 times in 311 office jobs. 9 of the 484 requests got 422 `LIMIT_EXCEEDED`, these 3 included. For fewer kernel kills, lower `OFFICE_KILL_RSS_MB` or raise the memory limit.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="kubernetes" files="k8s/base/kustomization.yaml k8s/base/deployment.yaml k8s/overlays/gvisor/kustomization.yaml k8s/overlays/gvisor/runtimeclass.yaml" -->

@@ -158,7 +158,7 @@ The image runs on any container platform with a read-only root, a writable `/tmp
 
 - **Kubernetes:** `deploy/k8s/base` is a kustomize base with a Deployment, a Service and a NetworkPolicy that blocks egress. `deploy/k8s/overlays/gvisor` runs the pods under gVisor. Point an overlay of your own at `ghcr.io/viktordanov/convertd:0.3.0`.
 - **Docker or another platform:** start from the quick start's `docker run` line, and block the container's egress.
-- **Sizing:** LibreOffice needs the memory. An office worker used 462 MiB at p50 and 1546 MiB at p99 on a set of 276 office files and PDFs. The [memory budget](deploy/README.md#memory-budget) gives the rule for the per-pool limits, and the values for 2 CPUs and 4 GiB.
+- **Sizing:** LibreOffice needs the memory. An office worker used 462 MiB at p50 and 1546 MiB at p99 on a set of about 300 office documents and PDFs. The [memory budget](deploy/README.md#memory-budget) gives the rule for the per-pool limits, and the values for 2 CPUs and 4 GiB.
 
 ## Observability
 

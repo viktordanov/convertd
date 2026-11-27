@@ -69,7 +69,7 @@ spec:
             # cut-off of 1152 and 896, less the 160 MiB of shared pages. A deployment that measures
             # its own documents can give each office worker about 156 MiB more.
             # Change the worker counts, these values and the memory limit together: a container
-            # OOM can kill every job in the pod. Measured on 276 real documents (2026-11-26,
+            # OOM can kill every job in the pod. Measured on about 300 office documents and PDFs (2026-11-26,
             # 2 CPUs): LibreOffice needed up to 3281 MiB for heavy decks (p99 1546 MiB), PDFium at
             # most 279 MiB. MAX_RSS_MB recycles a worker after a job above it.
             - {name: OFFICE_KILL_RSS_MB, value: "992"}

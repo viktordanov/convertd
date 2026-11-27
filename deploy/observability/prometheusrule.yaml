@@ -42,7 +42,7 @@ spec:
               workers, or look at the queue depth on the convertd dashboard.
 
         # 422 LIMIT_EXCEEDED: a document passed a limit, usually the kill RSS of its worker pool.
-        # On 276 real documents (2026-11-26) the base profile gave 422 for 4 to 13 % of the files,
+        # On about 300 office documents and PDFs (2026-11-26) the base profile gave 422 for 4 to 13 % of the files,
         # by the kill limit (deploy/README.md, Sizing). So the threshold is 15 % for 30 minutes:
         # above it the documents are heavier than the profile allows for. The second condition
         # (at least 5 such failures in the window) ignores an isolated failure, also at low load.
