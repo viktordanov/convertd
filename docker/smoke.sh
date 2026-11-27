@@ -6,6 +6,7 @@
 #   3. one DOCX to PDF over HTTP: curl exits 0, the body has its Content-Length, ends with
 #      %%EOF and has the expected Convert-Page-Count; no job-<hex> directory is left after
 #   4. the baked fontconfig cache is used (no user cache written)
+#   5. no file in the image has a setuid or setgid bit (ledger item 011, S6)
 # The container runs as the manifests run it: no network, read-only root, writable /tmp only,
 # UID 10001, no capabilities. The curl client joins the container's network namespace, so it
 # reaches the service on loopback and nothing reaches the outside.
@@ -115,5 +116,13 @@ if [[ "${left}" == 0 ]]; then note "job dirs cleaned" "ok"; else bad "job dirs c
 fcu="$(docker exec "${name}" sh -c 'find /tmp -path "*fontconfig*" -name "*.cache-*" 2>/dev/null | wc -l')"
 if [[ "${fcu}" == 0 ]]; then note "baked font cache used" "ok"
 else bad "baked font cache used" "${fcu} user cache files"; fi
+
+# 5. No setuid or setgid file. find runs as root in a container of its own, so that no folder
+# is too private for it to read; any error of find fails the check too.
+suid_rc=0
+suid="$(docker run --rm --network none --read-only --user 0:0 --entrypoint find "${image}" \
+  / -xdev -type f -perm /6000 2>&1)" || suid_rc=$?
+if [[ "${suid_rc}" == 0 && -z "${suid}" ]]; then note "no setuid or setgid" "ok"
+else bad "no setuid or setgid" "find exit ${suid_rc}"; printf '%s\n' "${suid}"; fi
 
 exit "${fail}"
