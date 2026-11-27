@@ -217,6 +217,13 @@ On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a basel
 - **Engine tests:** in the trimmed `dev` image, `engines_office`, `engines_render` and `engines_poison` passed (20 tests, one ignored). Two tests skipped: one needs `CONVERTD_SMALL_DISK`, and one finds no `encrypted/deck20.pptx` in the corpus.
 - **Build and smoke:** `build-info.json` is the same, `lib-check` passes, and `smoke.sh` passes.
 
+On 2026-11-27 the lock-down and the setuid strip (ledger item 011, S2 and S6) passed these gates on arm64, against a baseline image built from `release/0.2` at `1eaf927` without them:
+
+- **Corpus:** `corpus-check.sh` passed 70 of 70 cases on the new image, `docx-file-links` included, with no `ERROR` line in the service log.
+- **Pages:** `ab-pages.sh` gave the same status, page count and page hash for all 48 files and 200 pages of both images.
+- **Smoke:** `smoke.sh` passed all six checks on the new image. On the baseline it failed only the setuid check, which listed the 11 files that the build now strips: `chage`, `chfn`, `chsh`, `expiry`, `gpasswd`, `mount`, `newgrp`, `passwd`, `su` and `umount` in `/usr/bin`, and `/usr/sbin/unix_chkpwd`.
+- **Policy:** with an extra `.xcd` that trusts `file:///` and sets Writer links to "always", `file-links.docx` gave 2 images in the PDF on the baseline and 0 on the new image. Without that file, both gave 0.
+
 The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs by hand, monthly, and on pushes to `main` and pull requests that touch `docker/`, `src/engines/`, `src/worker/`, `src/preflight/`, `corpus/` or `Cargo.lock`. A push compares with the commit before it, and a push with no such commit runs the job. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The run after the trims (45796989297) measured 578 MB on amd64 and 604 MB on arm64. The amd64 image was ready after 764 ms and converted the DOCX in 61 ms. The command:
 
 ```sh
