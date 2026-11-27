@@ -59,10 +59,12 @@ spec:
             # TMP_MAX_BYTES <= 4Gi - 1Gi. Change them together, or a full volume evicts the pod.
             - {name: TMP_MAX_BYTES, value: "3221225472"}     # 3 GiB
             # The memory budget of the workers. Each worker may grow to its pool's KILL_RSS_MB (MiB)
-            # before the watchdog kills it, and a replacement waits beside each office worker it
-            # replaces (about 256 MiB after its warm-up). All of them MUST fit in the memory limit:
-            # OFFICE_WORKERS x (OFFICE_KILL_RSS_MB + 256) + RENDER_WORKERS x RENDER_KILL_RSS_MB
-            # + 512 MiB <= limits.memory: 2 x (1152 + 256) + 2 x 320 + 512 = 3968 MiB <= 4096 MiB.
+            # before the watchdog kills it, and the pool replaces one worker at a time, so one
+            # replacement waits beside the office workers (about 256 MiB after its warm-up). All of
+            # them MUST fit in the memory limit: OFFICE_WORKERS x OFFICE_KILL_RSS_MB + 256
+            # + RENDER_WORKERS x RENDER_KILL_RSS_MB + 512 MiB <= limits.memory:
+            # 2 x 1152 + 256 + 2 x 320 + 512 = 3712 MiB <= 4096 MiB. OFFICE_KILL_RSS_MB can rise to
+            # 1344 (4096 MiB); 1152 stays until a soak measures the higher limit.
             # Change the worker counts, these values and the memory limit together: a container
             # OOM can kill every job in the pod. Measured on 276 real documents (2026-11-26,
             # 2 CPUs): LibreOffice needed up to 3281 MiB for heavy decks (p99 1546 MiB), PDFium at
