@@ -168,6 +168,7 @@ Image inputs are out of v1 (owner, 2026-11-26). Detection still names a PNG, JPE
 The crate has three targets of its own. They are 1 ms p50 of overhead, 30 MB of idle RSS, and memory per request that does not grow with the file. Three tools measure them, the first two with the level-A fakes:
 
 - `examples/overhead.rs` sends keep-alive requests from a raw client, one at a time. It serves in-process with the fakes, or drives a running server or image with `--url`. It prints p50, p95 and p99 of every `Server-Timing` stage and of five figures: `overhead` (`total` − `queue` − Σ `*_engine`), `overhead_strict`, 001's share (`total` − Σ engine-stage walls), 002's share and the client time. Run it with `cargo run --release --example overhead -- --help`.
+- `examples/encode_bench.rs` times the deflate work on the host: the streamed PNG encoder on 20 A4 pages at 150 dpi (1240 x 1754, `worker::encode::sample_page`), and `preflight::scan` on DOCX files, the median of 5 runs each. Run it with `cargo run --release --example encode_bench -- corpus/out/docx/*.docx`.
 - `tests/peak_heap.rs` counts the live heap with its own allocator while it uploads PDFs of 1, 16 and 100 MiB.
 - `tests/rss_linux.rs` reads `VmRSS` of `convertd serve` after start and after each round of 1 000 requests. It runs only on Linux, with `--ignored`, against the real pools when the engines are installed, as in the dev image; `RSS_ENGINE=fake` with `--features test-hooks` runs the fakes. [The tests README](../tests/README.md) gives the command and the checks.
 
