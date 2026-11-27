@@ -149,6 +149,53 @@ pub const PROBE_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// The pause after an accept error such as `EMFILE`, so the loop does not
 /// spin while descriptors are short.
 const ACCEPT_ERROR_PAUSE: Duration = Duration::from_millis(100);
+/// Descriptors kept free beside the connections: the listener, the worker
+/// pipes, job files, logs.
+pub const DESCRIPTOR_MARGIN: u64 = 256;
+
+/// The router that [`serve`] takes. It can only be built from the state, so
+/// it always has the connection gate that keeps probe connections to the
+/// probes, inside the common layers; a route cannot be added to it later.
+#[derive(Clone)]
+pub struct Served(Router);
+
+impl Served {
+    /// Every route the service serves ([`router`]).
+    pub fn new(state: AppState) -> Self {
+        Self(router(state))
+    }
+
+    /// [`router_with`]: plus `extra` routes, under the same layers and gate.
+    #[doc(hidden)]
+    pub fn with(state: AppState, extra: Router<AppState>) -> Self {
+        Self(router_with(state, extra))
+    }
+}
+
+/// `max_connections`, lowered when the soft `RLIMIT_NOFILE` (`nofile`)
+/// cannot hold it, [`PROBE_CONNECTIONS`] and [`DESCRIPTOR_MARGIN`]: past the
+/// descriptor limit `accept` fails before the reserve is ever reached, and
+/// the probes would stop answering. At least 1.
+pub fn effective_max_connections(max_connections: usize, nofile: Option<u64>) -> usize {
+    let Some(nofile) = nofile else {
+        return max_connections;
+    };
+    let room = nofile.saturating_sub(PROBE_CONNECTIONS as u64 + DESCRIPTOR_MARGIN);
+    let room = usize::try_from(room).unwrap_or(usize::MAX).max(1);
+    max_connections.min(room)
+}
+
+/// An accept error that concerns one pending connection, not the listener:
+/// the next accept can go on at once.
+fn per_connection(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::Interrupted
+    )
+}
 
 /// Serves `app` on `listener` until `shutdown` completes, then stops
 /// accepting, asks each open connection to close after its current
@@ -158,17 +205,30 @@ const ACCEPT_ERROR_PAUSE: Duration = Duration::from_millis(100);
 /// hyper serves each connection with a timer, so the header read timeout
 /// holds; `axum::serve` builds connections without one. At most
 /// `max_connections` connections serve every route, and
-/// [`PROBE_CONNECTIONS`] more serve only the probes.
+/// [`PROBE_CONNECTIONS`] more serve only the probes. When the process's
+/// descriptor limit cannot hold that many, the cap is lowered with a
+/// warning ([`effective_max_connections`]).
 pub async fn serve<F>(
     listener: TcpListener,
-    app: Router,
+    app: Served,
     limits: ConnectionLimits,
     shutdown: F,
 ) -> io::Result<()>
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let open = Arc::new(Semaphore::new(limits.max_connections));
+    let Served(app) = app;
+    let nofile = rustix::process::getrlimit(rustix::process::Resource::Nofile).current;
+    let max_connections = effective_max_connections(limits.max_connections, nofile);
+    if max_connections < limits.max_connections {
+        tracing::warn!(
+            max_connections = limits.max_connections,
+            effective = max_connections,
+            nofile = nofile.unwrap_or_default(),
+            "MAX_CONNECTIONS lowered to fit the descriptor limit (RLIMIT_NOFILE), with room for the probe reserve"
+        );
+    }
+    let open = Arc::new(Semaphore::new(max_connections));
     let probes = Arc::new(Semaphore::new(PROBE_CONNECTIONS));
     // The mark is set outermost; the gate that reads it runs inside the
     // common layers (`router_with`), so a refusal still gets a request id,
@@ -188,6 +248,12 @@ where
         let (tcp, _) = tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok(accepted) => accepted,
+                // One aborted connection: the next one waits for nothing.
+                Err(err) if per_connection(&err) => {
+                    tracing::debug!(error = %err, "a connection failed before it was accepted");
+                    continue;
+                }
+                // EMFILE, ENFILE and other resource errors: pause.
                 Err(err) => {
                     tracing::warn!(error = %err, "failed to accept a connection");
                     tokio::time::sleep(ACCEPT_ERROR_PAUSE).await;
@@ -323,6 +389,38 @@ mod tests {
             readiness: unwired,
         };
         AppState::new(&config, engines)
+    }
+
+    #[test]
+    fn the_cap_leaves_room_for_the_reserve_and_other_files() {
+        use super::{DESCRIPTOR_MARGIN, PROBE_CONNECTIONS, effective_max_connections};
+        let reserved = PROBE_CONNECTIONS as u64 + DESCRIPTOR_MARGIN;
+        assert_eq!(effective_max_connections(1024, None), 1024);
+        assert_eq!(effective_max_connections(1024, Some(1_048_576)), 1024);
+        // A soft limit of 1024: 1024 - 16 - 256 connections.
+        assert_eq!(
+            effective_max_connections(1024, Some(1024)),
+            (1024 - reserved) as usize
+        );
+        assert_eq!(effective_max_connections(1024, Some(10)), 1);
+    }
+
+    #[test]
+    fn only_per_connection_accept_errors_skip_the_pause() {
+        use std::io::{Error, ErrorKind};
+        assert!(super::per_connection(&Error::from(
+            ErrorKind::ConnectionAborted
+        )));
+        assert!(super::per_connection(&Error::from(
+            ErrorKind::ConnectionReset
+        )));
+        // EMFILE and ENFILE pause the loop.
+        assert!(!super::per_connection(&Error::from_raw_os_error(
+            libc::EMFILE
+        )));
+        assert!(!super::per_connection(&Error::from_raw_os_error(
+            libc::ENFILE
+        )));
     }
 
     #[tokio::test]

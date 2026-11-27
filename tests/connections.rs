@@ -7,9 +7,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
+use axum::routing;
 use convertd::config::{Config, Env};
 use convertd::engines::fake::{FakeBehavior, FakeOffice, FakePdf, FakeReadiness};
-use convertd::rest::server::{ConnectionLimits, PROBE_CONNECTIONS, router, serve};
+use convertd::rest::server::{ConnectionLimits, PROBE_CONNECTIONS, Served, serve};
 use convertd::rest::state::{AppState, Engines};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -57,9 +59,16 @@ async fn start(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (stop, stopped) = oneshot::channel::<()>();
-    let served = tokio::spawn(serve(listener, router(state(name)), limits, async move {
-        let _ = stopped.await;
-    }));
+    // An extra route: the reserve's gate holds for any route of the app.
+    let extra = Router::new().route("/extra", routing::get(|| async { "extra" }));
+    let served = tokio::spawn(serve(
+        listener,
+        Served::with(state(name), extra),
+        limits,
+        async move {
+            let _ = stopped.await;
+        },
+    ));
     (addr, stop, served)
 }
 
@@ -170,6 +179,10 @@ async fn with_the_cap_full_the_probes_still_answer() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(get(addr, "/healthz").await, "HTTP/1.1 200 OK");
     assert_eq!(get(addr, "/readyz").await, "HTTP/1.1 200 OK");
+    assert_eq!(
+        get(addr, "/extra").await,
+        "HTTP/1.1 503 Service Unavailable"
+    );
     // Any other route on a reserve connection is refused, with the usual
     // error body.
     let refused = get_full(addr, "/v1/capabilities").await;
@@ -281,7 +294,7 @@ async fn a_refused_upload_on_the_reserve_still_gets_its_answer() {
         .await
         .unwrap()
         .unwrap();
-    let head = "POST /v1/convert HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer test-key\r\nContent-Type: multipart/form-data; boundary=b\r\nContent-Length: 1048576\r\n\r\n";
+    let head = "POST /v1/convert HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer test-key\r\nContent-Type: multipart/form-data; boundary=b\r\nContent-Length: 16777216\r\n\r\n";
     upload.write_all(head.as_bytes()).await.unwrap();
     // Part of the body, written before the answer is read.
     let chunk = vec![b'x'; 64 << 10];
@@ -312,4 +325,21 @@ async fn a_refused_upload_on_the_reserve_still_gets_its_answer() {
     assert!(text.starts_with("http/1.1 503"), "{text}");
     assert!(text.contains("x-request-id: "), "{text}");
     assert!(text.contains(r#""code":"service_unavailable""#), "{text}");
+    // The rest of the 16 MiB, far more than the socket buffers hold, still
+    // goes through: the body is drained, not cut, so the client's writes
+    // succeed and it could read the answer.
+    let mut left = (16usize << 20) - 4 * chunk.len();
+    let finished = timeout(DEADLINE, async {
+        while left > 0 {
+            let n = left.min(chunk.len());
+            upload.write_all(&chunk[..n]).await?;
+            left -= n;
+        }
+        upload.flush().await
+    })
+    .await;
+    assert!(
+        matches!(finished, Ok(Ok(()))),
+        "the upload was cut with {left} bytes left: {finished:?}"
+    );
 }

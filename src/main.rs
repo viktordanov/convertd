@@ -141,7 +141,7 @@ fn serve() -> Result<(), String> {
         };
         let mut serving = tokio::spawn(server::serve(
             listener,
-            server::router(state.clone()),
+            server::Served::new(state.clone()),
             limits,
             async move {
                 let _ = stopped.await;
