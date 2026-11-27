@@ -249,9 +249,10 @@ CPU_NOTE = ("A call adds all of its CPU time when its reply arrives, so a call l
 row("CPU per job")
 ts("Cores per pool",
    "CPU seconds per second of the finished worker calls: the cores each pool used. " + CPU_NOTE +
-   " The second series rates over the cpu_window variable (5m by default, at least four scrape intervals), which smooths long calls.",
+   " The second series rates over the cpu_window variable (5m by default, at least four scrape intervals), which smooths long calls. "
+   "It averages that rate over each graph step, so a step longer than cpu_window skips no call.",
    [(f'sum by (pool) (rate({CPU}_sum{{{S}}}[{RI}]))', "{{pool}}"),
-    (f'sum by (pool) (rate({CPU}_sum{{{S}}}[$cpu_window]))', "{{pool}} ($cpu_window)")],
+    (f'avg_over_time(sum by (pool) (rate({CPU}_sum{{{S}}}[$cpu_window]))[$__interval:$scrape_interval])', "{{pool}} ($cpu_window)")],
    "short", 0, 6)
 ts("CPU per call, p50 and p99",
    "CPU time (user plus system) of one worker call, per pool and operation. A conversion makes one or more calls (convert, inspect, render). "

@@ -2272,7 +2272,7 @@
       "type": "timeseries",
       "id": 36,
       "title": "Cores per pool",
-      "description": "CPU seconds per second of the finished worker calls: the cores each pool used. A call adds all of its CPU time when its reply arrives, so a call longer than the rate window shows as idle while it runs and above its real cores when it ends. A call that times out, crashes or passes its kill RSS sends no reply and records nothing. The second series rates over the cpu_window variable (5m by default, at least four scrape intervals), which smooths long calls.",
+      "description": "CPU seconds per second of the finished worker calls: the cores each pool used. A call adds all of its CPU time when its reply arrives, so a call longer than the rate window shows as idle while it runs and above its real cores when it ends. A call that times out, crashes or passes its kill RSS sends no reply and records nothing. The second series rates over the cpu_window variable (5m by default, at least four scrape intervals), which smooths long calls. It averages that rate over each graph step, so a step longer than cpu_window skips no call.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2333,7 +2333,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (pool) (rate(convert_worker_cpu_seconds_sum{namespace=~\"$namespace\", pod=~\"$pod\"}[$cpu_window]))",
+          "expr": "avg_over_time(sum by (pool) (rate(convert_worker_cpu_seconds_sum{namespace=~\"$namespace\", pod=~\"$pod\"}[$cpu_window]))[$__interval:$scrape_interval])",
           "legendFormat": "{{pool}} ($cpu_window)",
           "refId": "B",
           "range": true,
