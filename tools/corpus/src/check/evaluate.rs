@@ -257,15 +257,21 @@ fn pdf_facts(v: &mut Verdict, expect: &Expect, facts: Option<&PdfFacts>) {
         v.failures.push("no PDF text or images to read".into());
         return;
     };
-    for want in expect.text_present.iter().flatten() {
-        if !facts.text.contains(&squeeze(want)) {
-            v.failures.push(format!("the PDF text lacks {want:?}"));
+    match (&facts.text, expect.reads_pdf_text()) {
+        (Some(text), _) => {
+            for want in expect.text_present.iter().flatten() {
+                if !text.contains(&squeeze(want)) {
+                    v.failures.push(format!("the PDF text lacks {want:?}"));
+                }
+            }
+            for unwanted in expect.text_absent.iter().flatten() {
+                if text.contains(&squeeze(unwanted)) {
+                    v.failures.push(format!("the PDF text holds {unwanted:?}"));
+                }
+            }
         }
-    }
-    for unwanted in expect.text_absent.iter().flatten() {
-        if facts.text.contains(&squeeze(unwanted)) {
-            v.failures.push(format!("the PDF text holds {unwanted:?}"));
-        }
+        (None, true) => v.failures.push("the PDF text was not read".into()),
+        (None, false) => {}
     }
     if let Some(want) = expect.pdf_images
         && facts.images != want
@@ -620,7 +626,7 @@ mod tests {
             warning_count: Some(0),
             pdf_valid: Some(true),
             pdf_facts: Some(PdfFacts {
-                text: squeeze(text),
+                text: Some(squeeze(text)),
                 images,
             }),
             healthy_after: true,
@@ -652,6 +658,16 @@ mod tests {
             ..pdf_answer("", 0)
         };
         assert_eq!(failures(&c, &unread), ["no PDF text or images to read"]);
+        let images_only = case(json!({}), json!({"status": 200, "pdf_images": 0}));
+        let no_text = Observed {
+            pdf_facts: Some(PdfFacts {
+                text: None,
+                images: 0,
+            }),
+            ..pdf_answer("", 0)
+        };
+        assert!(failures(&images_only, &no_text).is_empty());
+        assert_eq!(failures(&c, &no_text), ["the PDF text was not read"]);
     }
 
     #[test]

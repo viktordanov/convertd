@@ -82,7 +82,13 @@ pub struct Expect {
 impl Expect {
     /// Whether the case reads the text or the images of the PDF.
     pub fn reads_pdf(&self) -> bool {
-        self.text_present.is_some() || self.text_absent.is_some() || self.pdf_images.is_some()
+        self.reads_pdf_text() || self.pdf_images.is_some()
+    }
+
+    /// Whether the case reads the text of the PDF. An image count alone
+    /// needs no text extraction.
+    pub fn reads_pdf_text(&self) -> bool {
+        self.text_present.is_some() || self.text_absent.is_some()
     }
 }
 

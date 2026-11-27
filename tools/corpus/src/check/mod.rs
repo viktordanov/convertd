@@ -317,13 +317,29 @@ async fn request(
             return obs;
         }
     };
-    read_body(&mut obs, case.output(), case.expect.reads_pdf(), &bytes);
+    read_body(&mut obs, case.output(), PdfReads::of(&case.expect), &bytes);
     obs
 }
 
-/// Fills the body facts of `obs` from the response bytes. `reads_pdf`
-/// also reads the text and the images of the PDF, which only some cases need.
-fn read_body(obs: &mut Observed, output: &str, reads_pdf: bool, bytes: &[u8]) {
+/// What a case reads from the PDF beyond its markers: only some cases need
+/// the image count, and fewer the text.
+#[derive(Debug, Clone, Copy, Default)]
+struct PdfReads {
+    images: bool,
+    text: bool,
+}
+
+impl PdfReads {
+    fn of(expect: &crate::expected::Expect) -> Self {
+        PdfReads {
+            images: expect.reads_pdf(),
+            text: expect.reads_pdf_text(),
+        }
+    }
+}
+
+/// Fills the body facts of `obs` from the response bytes.
+fn read_body(obs: &mut Observed, output: &str, reads: PdfReads, bytes: &[u8]) {
     if obs.status != 200 {
         obs.error_code = serde_json::from_slice::<Value>(bytes)
             .ok()
@@ -357,8 +373,8 @@ fn read_body(obs: &mut Observed, output: &str, reads_pdf: bool, bytes: &[u8]) {
                 Err(err) => obs.body_error = Some(err),
             }
         }
-        if reads_pdf {
-            match pdftext::read(&pdf) {
+        if reads.images {
+            match pdftext::read(&pdf, reads.text) {
                 Ok(facts) => obs.pdf_facts = Some(facts),
                 Err(err) => obs.body_error = Some(err),
             }
@@ -545,7 +561,7 @@ mod tests {
         read_body(
             &mut obs,
             "bundle",
-            false,
+            PdfReads::default(),
             br#"{"error":"x","code":"LIMIT_EXCEEDED"}"#,
         );
         assert_eq!(obs.error_code.as_deref(), Some("LIMIT_EXCEEDED"));
@@ -557,9 +573,14 @@ mod tests {
             status: 200,
             ..Observed::default()
         };
-        read_body(&mut obs, "pdf", false, b"%PDF-1.4\n...\n%%EOF\n");
+        read_body(
+            &mut obs,
+            "pdf",
+            PdfReads::default(),
+            b"%PDF-1.4\n...\n%%EOF\n",
+        );
         assert_eq!(obs.pdf_valid, Some(true));
-        read_body(&mut obs, "pdf", false, b"<html>");
+        read_body(&mut obs, "pdf", PdfReads::default(), b"<html>");
         assert_eq!(obs.pdf_valid, Some(false));
     }
 
@@ -592,7 +613,7 @@ mod tests {
             status: 200,
             ..Observed::default()
         };
-        read_body(&mut obs, "bundle", false, &bytes);
+        read_body(&mut obs, "bundle", PdfReads::default(), &bytes);
         assert_eq!(obs.body_error, None);
         assert_eq!(
             obs.entries.as_deref(),
@@ -614,7 +635,12 @@ mod tests {
             status: 200,
             ..Observed::default()
         };
-        read_body(&mut obs, "bundle", false, b"PK\x03\x04 not zstd");
+        read_body(
+            &mut obs,
+            "bundle",
+            PdfReads::default(),
+            b"PK\x03\x04 not zstd",
+        );
         assert!(
             obs.body_error
                 .is_some_and(|e| e.starts_with("not a zstd stream"))
@@ -626,7 +652,7 @@ mod tests {
         read_body(
             &mut obs,
             "images",
-            false,
+            PdfReads::default(),
             &tar_zst(&[("pages/0001.png", b"png")]),
         );
         assert_eq!(
