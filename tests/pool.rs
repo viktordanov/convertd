@@ -571,33 +571,66 @@ async fn a_waiting_replacement_holds_back_the_next_one() {
 
 /// A crash while replacements wait: the worker started for the hole takes
 /// the free lease slot, so the pool serves at its size again, rather than
-/// waiting beside another leased incumbent.
+/// waiting beside another leased incumbent. The setup is exact: all three
+/// incumbents are due (by job count), all three are leased, the first
+/// replacement is placed beside the oldest, and a younger one then crashes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hole_is_filled_while_replacements_wait() {
     within(TEST, "a_hole_is_filled_while_replacements_wait", async {
-        let mut spec = spec("age-hole", 3);
-        spec.max_age = Duration::from_millis(600);
-        spec.age_check = Duration::from_millis(50);
+        let mut spec = spec("jobs-hole", 3);
+        spec.name = "jobs-hole";
+        spec.max_jobs = 2;
         spec.init.test.ready_delay_ms = 300;
+        let retired = Arc::new(AtomicUsize::new(0));
+        let hook_retired = Arc::clone(&retired);
+        let _hook = convertd::engines::pool::set_place_ready_hook("jobs-hole", move |stage, _| {
+            if stage == convertd::engines::pool::PlaceStage::Retired {
+                hook_retired.fetch_add(1, Ordering::AcqRel);
+            }
+        });
         let pool = ready(spec).await;
+        // Two jobs each: every incumbent is due when its lease returns.
+        let mut leases = Vec::new();
+        for _ in 0..3 {
+            leases.push(pool.lease(after(5000), Admission::Queue).await.unwrap());
+        }
+        for lease in &mut leases {
+            for _ in 0..2 {
+                lease
+                    .call(test_op(TestOp::Sleep { ms: 0 }), after(5000))
+                    .await
+                    .unwrap();
+            }
+        }
+        drop(leases);
+        // Lease all three again before the first replacement is ready.
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            held.push(pool.lease(after(10_000), Admission::Queue).await.unwrap());
+        }
+        held.sort_by_key(|lease| lease.worker_ref().unwrap().generation);
         let until = Instant::now() + Duration::from_secs(10);
-        while pool.status().starting == 0 {
-            assert!(Instant::now() < until, "no replacement started");
+        while retired.load(Ordering::Acquire) == 0 {
+            assert!(
+                Instant::now() < until,
+                "the first replacement was never placed"
+            );
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
-        // All three age together; hold two, and crash the third.
-        let a = pool.lease(after(10_000), Admission::Queue).await.unwrap();
-        let b = pool.lease(after(10_000), Admission::Queue).await.unwrap();
-        let mut c = pool.lease(after(10_000), Admission::Queue).await.unwrap();
-        let _ = c.call(test_op(TestOp::Exit { code: 3 }), after(5000)).await;
-        drop(c);
-        // The hole's worker must become leasable while a and b stay held.
+        // It retired the oldest and waits beside it. Crash the youngest,
+        // which is due but not retired.
+        let mut youngest = held.pop().unwrap();
+        let _ = youngest
+            .call(test_op(TestOp::Exit { code: 3 }), after(5000))
+            .await;
+        drop(youngest);
+        // The hole's worker must become leasable while the other two stay
+        // held, instead of being placed beside the second incumbent.
         let third = pool.lease(after(5000), Admission::Queue).await;
         assert!(third.is_ok(), "the free lease slot stayed empty: {third:?}");
         drop(third);
-        drop(a);
-        drop(b);
-        finish(pool, "age-hole").await;
+        drop(held);
+        finish(pool, "jobs-hole").await;
     })
     .await;
 }

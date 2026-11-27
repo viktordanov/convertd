@@ -1645,7 +1645,18 @@ impl Start {
         let (slot, generation) = (self.slot, self.generation);
         let events = self.events.clone();
         let starts = Arc::clone(&self.starts);
-        let result = self.start().await.map(Box::new);
+        // A child killed during a failed start still holds its memory until
+        // it exits: its member stays counted until then, so no other start
+        // runs beside it.
+        let result = match self.start().await {
+            Ok(worker) => Ok(Box::new(worker)),
+            Err((message, child)) => {
+                if let Some(child) = child {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+                }
+                Err(message)
+            }
+        };
         // After a shutdown the manager is gone and the worker is dropped
         // (killed) with the unsent event.
         let _ = events.send(Event::Started {
@@ -1660,7 +1671,8 @@ impl Start {
         self.draining.load(Ordering::Acquire)
     }
 
-    async fn start(self) -> Result<Worker, String> {
+    /// The worker, or the error and the child it killed, if it spawned one.
+    async fn start(self) -> Result<Worker, (String, Option<ChildHandle>)> {
         let spec = &self.spec;
         let worker_id = format!("{}-{}", spec.name, self.slot);
         let slot_dir = SlotDir::new(&spec.workers_dir, spec.name, self.slot);
@@ -1668,10 +1680,13 @@ impl Start {
         let prepared = slot_dir.clone();
         tokio::task::spawn_blocking(move || prepared.prepare(template.as_deref()))
             .await
-            .map_err(|err| format!("failed to prepare the slot: {err}"))?
-            .map_err(|err| format!("failed to prepare the slot: {err}"))?;
+            .map_err(|err| (format!("failed to prepare the slot: {err}"), None))?
+            .map_err(|err| (format!("failed to prepare the slot: {err}"), None))?;
         if self.shutting_down() {
-            return Err("failed to start the worker: the pool is shutting down".into());
+            return Err((
+                "failed to start the worker: the pool is shutting down".into(),
+                None,
+            ));
         }
 
         let cmd = spec
@@ -1682,7 +1697,7 @@ impl Start {
             .spawner
             .spawn(cmd)
             .await
-            .map_err(|err| format!("failed to spawn the worker: {err}"))?;
+            .map_err(|err| (format!("failed to spawn the worker: {err}"), None))?;
         let child = spawned.child;
         lock(&self.handles).insert((self.slot, self.generation), child.clone());
         // Shutdown sets `draining` before it kills the registered handles,
@@ -1693,7 +1708,10 @@ impl Start {
             // reaped, not only killed.
             let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
             lock(&self.handles).remove(&(self.slot, self.generation));
-            return Err("failed to start the worker: the pool is shutting down".into());
+            return Err((
+                "failed to start the worker: the pool is shutting down".into(),
+                None,
+            ));
         }
         tracing::debug!(
             pool = spec.name,
@@ -1705,7 +1723,7 @@ impl Start {
         let fail = |message: String| {
             child.kill_group();
             lock(&self.handles).remove(&(self.slot, self.generation));
-            message
+            (message, Some(child.clone()))
         };
         let (Some(stdin), Some(stdout), Some(stderr)) =
             (spawned.stdin, spawned.stdout, spawned.stderr)
