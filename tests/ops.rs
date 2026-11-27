@@ -809,3 +809,36 @@ fn level_b_metrics_show_worker_cpu() {
     served.sigterm();
     assert!(served.wait_exit().success());
 }
+
+#[cfg(all(target_os = "linux", feature = "test-hooks"))]
+/// S1 on the real binary: `serve` marks itself not dumpable, so another
+/// process of its UID cannot read its environment, which holds `API_KEY`.
+/// Its own `/proc` reads still feed the supervisor gauges.
+#[test]
+fn the_server_environment_is_closed_to_its_own_uid() {
+    let caps = std::fs::read_to_string("/proc/self/status").unwrap();
+    let ptrace_any = caps
+        .lines()
+        .find_map(|l| l.strip_prefix("CapEff:"))
+        .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+        .is_some_and(|caps| caps & (1 << 19) != 0);
+    if ptrace_any {
+        eprintln!("skipped: this process has CAP_SYS_PTRACE");
+        return;
+    }
+    let served = Served::start("not-dumpable", &[("TEST_ENGINE", "fake")]);
+    let err = std::fs::read(format!("/proc/{}/environ", served.child.id())).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{err}");
+    let metrics = served.get("/metrics");
+    for gauge in [
+        "convert_supervisor_rss_bytes",
+        "convert_supervisor_open_fds",
+    ] {
+        assert!(
+            metrics
+                .lines()
+                .any(|l| l.starts_with(gauge) && !l.ends_with(" 0")),
+            "{gauge} is missing or 0"
+        );
+    }
+}

@@ -101,6 +101,11 @@ fn healthcheck() -> ExitCode {
 }
 
 fn serve() -> Result<(), String> {
+    // First, before anything reads the configuration: a worker with this
+    // UID must not read `/proc/<supervisor>/environ`, which holds API_KEY.
+    // Linux only; workers are dumpable again after their execve.
+    convertd::engines::process::set_not_dumpable()
+        .map_err(|err| format!("failed to mark the supervisor not dumpable: {err}"))?;
     let config = Config::from_process().map_err(|err| err.to_string())?;
     logging::init(config.server.log_mode).map_err(|err| err.to_string())?;
     // Held until serve returns: before the sweep below and before the

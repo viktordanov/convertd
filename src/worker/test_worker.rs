@@ -251,6 +251,16 @@ impl TestEngine {
                 vars.sort();
                 TestOutput::Env { vars }
             }
+            TestOp::ReadEnviron { pid } => match std::fs::read(format!("/proc/{pid}/environ")) {
+                Ok(bytes) => TestOutput::Read {
+                    bytes: Some(bytes.len() as u64),
+                    error: None,
+                },
+                Err(err) => TestOutput::Read {
+                    bytes: None,
+                    error: Some(format!("{:?}", err.kind())),
+                },
+            },
         };
         Ok(Output::Test(out))
     }
