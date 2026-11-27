@@ -90,15 +90,30 @@ async fn get_full(addr: SocketAddr, path: &str) -> String {
 }
 
 /// Waits until the peer closes `stream`, and returns how long that took.
+/// One deadline covers the whole wait, however much the peer sends.
 async fn closed_within(stream: &mut TcpStream, limit: Duration) -> Duration {
     let started = tokio::time::Instant::now();
     let mut buf = [0u8; 256];
-    loop {
-        match timeout(limit, stream.read(&mut buf)).await {
-            Err(_) => panic!("still open after {limit:?}"),
-            Ok(Ok(0) | Err(_)) => return started.elapsed(),
-            Ok(Ok(_)) => {}
+    let drained = timeout(limit, async {
+        loop {
+            match stream.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
+            }
         }
+    })
+    .await;
+    assert!(drained.is_ok(), "still open after {limit:?}");
+    started.elapsed()
+}
+
+/// Waits until the peer closes `stream` without sending a byte.
+async fn closed_unanswered(stream: &mut TcpStream, limit: Duration) {
+    let mut buf = [0u8; 256];
+    match timeout(limit, stream.read(&mut buf)).await {
+        Err(_) => panic!("still open after {limit:?}"),
+        Ok(Ok(0) | Err(_)) => {}
+        Ok(Ok(n)) => panic!("answered: {:?}", String::from_utf8_lossy(&buf[..n])),
     }
 }
 
@@ -184,7 +199,7 @@ async fn with_the_cap_full_the_probes_still_answer() {
     let _ = over
         .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
         .await;
-    closed_within(&mut over, Duration::from_secs(5)).await;
+    closed_unanswered(&mut over, Duration::from_secs(5)).await;
 
     // The reserve's idle connections close at its 2 s header timeout, so
     // its places free again while the cap stays full.
@@ -245,4 +260,56 @@ async fn the_stop_closes_idle_connections_and_returns() {
             .is_err(),
         "the listener still accepts"
     );
+}
+
+#[tokio::test]
+async fn a_refused_upload_on_the_reserve_still_gets_its_answer() {
+    // The cap is full; a convert upload in progress on a reserve
+    // connection gets the 503 with a request id, and its body is drained,
+    // so the client reads the answer instead of a reset.
+    let limits = ConnectionLimits {
+        header_read_timeout: Duration::from_secs(30),
+        max_connections: 1,
+    };
+    let (addr, _stop, _served) = start("reserve-upload", limits).await;
+    let _held = timeout(DEADLINE, TcpStream::connect(addr))
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut upload = timeout(DEADLINE, TcpStream::connect(addr))
+        .await
+        .unwrap()
+        .unwrap();
+    let head = "POST /v1/convert HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer test-key\r\nContent-Type: multipart/form-data; boundary=b\r\nContent-Length: 1048576\r\n\r\n";
+    upload.write_all(head.as_bytes()).await.unwrap();
+    // Part of the body, written before the answer is read.
+    let chunk = vec![b'x'; 64 << 10];
+    for _ in 0..4 {
+        timeout(DEADLINE, upload.write_all(&chunk))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    let mut response = Vec::new();
+    let mut buf = [0u8; 4096];
+    let read = timeout(DEADLINE, async {
+        loop {
+            match upload.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    response.extend_from_slice(&buf[..n]);
+                    if response.windows(4).any(|w| w == b"\r\n\r\n") && response.ends_with(b"}") {
+                        break;
+                    }
+                }
+            }
+        }
+    })
+    .await;
+    assert!(read.is_ok(), "no answer within {DEADLINE:?}");
+    let text = String::from_utf8_lossy(&response).to_lowercase();
+    assert!(text.starts_with("http/1.1 503"), "{text}");
+    assert!(text.contains("x-request-id: "), "{text}");
+    assert!(text.contains(r#""code":"service_unavailable""#), "{text}");
 }

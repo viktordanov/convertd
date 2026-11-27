@@ -73,6 +73,7 @@ pub fn router_with(state: AppState, extra: Router<AppState>) -> Router {
         .merge(extra)
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
+        .layer(from_fn(connection_gate))
         // Outermost last: linger, request_id, access_log, then the panic
         // layer. linger wraps the body before anything can drop it early.
         .layer(CatchPanicLayer::custom(panic_response))
@@ -169,7 +170,10 @@ where
 {
     let open = Arc::new(Semaphore::new(limits.max_connections));
     let probes = Arc::new(Semaphore::new(PROBE_CONNECTIONS));
-    let probe_app = app.clone().layer(from_fn(probes_only));
+    // The mark is set outermost; the gate that reads it runs inside the
+    // common layers (`router_with`), so a refusal still gets a request id,
+    // an access log line and the lingering close.
+    let probe_app = app.clone().layer(map_request(mark_probe_only));
 
     // Dropping the receiver tells every connection task to close.
     let (signal_tx, signal_rx) = watch::channel(());
@@ -254,9 +258,26 @@ where
     Ok(())
 }
 
+/// Marks a request that came on a probe connection.
+#[derive(Debug, Clone, Copy)]
+struct ProbeOnly;
+
+async fn mark_probe_only(mut request: axum::extract::Request) -> axum::extract::Request {
+    request.extensions_mut().insert(ProbeOnly);
+    request
+}
+
 /// On a probe connection: the probes and metrics pass, anything else is
-/// 503, because the connection cap is full.
-async fn probes_only(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+/// 503, because the connection cap is full. Inside the common layers, so
+/// the refusal is logged, has a request id, and an upload in progress is
+/// drained before the connection closes.
+async fn connection_gate(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if request.extensions().get::<ProbeOnly>().is_none() {
+        return next.run(request).await;
+    }
     match request.uri().path() {
         "/healthz" | "/readyz" | "/metrics" => next.run(request).await,
         _ => ApiError::unavailable("too many open connections; retry later")
