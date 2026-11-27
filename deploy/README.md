@@ -62,13 +62,13 @@ OFFICE_WORKERS × OFFICE_KILL_RSS_MB + 256 MiB + RENDER_WORKERS × RENDER_KILL_R
 
 The rule holds one replacement for each pool, not one for each worker. With 2 office and 2 render workers in 4 GiB, the rule leaves 384 MiB free. That is the 256 MiB that one overlap per pool saves, and 128 MiB that the old rule already left unused. It lets `OFFICE_KILL_RSS_MB` rise to 1344 MiB: 2 × 1344 + 256 + 2 × 320 + 512 = 4096 MiB. The base manifest keeps 1152 MiB until a soak measures the higher limit. A render replacement is small, about 8 MiB when it is ready, and the 512 MiB covers it.
 
-The 512 MiB holds the supervisor, the page cache and a margin. On cgroup v2 with Kubernetes 1.28 or later, a container that passes its memory limit loses every process. Then every job on the pod fails. This is not verified on the cluster of the owner. Change the worker counts, the RSS values and the memory limit together. `OFFICE_MAX_RSS_MB` and `RENDER_MAX_RSS_MB` recycle a worker after a job that leaves it above that size.
+The kill and recycle limits count a worker's private memory, `RssAnon` + `RssShmem`. The shared library pages that every worker maps are page cache, which the cgroup counts once: about 156 MiB for LibreOffice. The 512 MiB holds them, the supervisor, the rest of the page cache and a margin. On cgroup v2 with Kubernetes 1.28 or later, a container that passes its memory limit loses every process. Then every job on the pod fails. This is not verified on the cluster of the owner. Change the worker counts, the RSS values and the memory limit together. `OFFICE_MAX_RSS_MB` and `RENDER_MAX_RSS_MB` recycle a worker after a job that leaves it above that size.
 
 `/tmp` here is an `emptyDir` on node disk. An `emptyDir` with `medium: Memory`, or a tmpfs, adds its use to the memory limit. Then add `TMP_MAX_BYTES` to the left side.
 
 ### Sizing for 2 CPUs and 4 GiB
 
-The values come from an ingestion of 276 real documents on 2026-11-26: 128 DOCX, 93 PPTX, 30 PDF, 23 XLSX and 2 PPT, of up to 43 MB. It ran in arm64 Docker with 2 CPUs, 3584 MiB, no swap and `/tmp` on disk. The figures:
+The values come from an ingestion of 276 real documents on 2026-11-26: 128 DOCX, 93 PPTX, 30 PDF, 23 XLSX and 2 PPT, of up to 43 MB. It ran in arm64 Docker with 2 CPUs, 3584 MiB, no swap and `/tmp` on disk. It counted `VmRSS`, shared pages included, so the private figures of office workers are about 156 MiB lower. The figures:
 
 - LibreOffice is the bottleneck and needs the memory. One office worker needed 462 MiB at p50, 1546 MiB at p99, and up to 3281 MiB for heavy decks of 84 to 127 slides.
 - PDFium needed at most 279 MiB, at 150 and 300 DPI.
