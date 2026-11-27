@@ -829,6 +829,102 @@ fn gauge(state: &str) -> Option<f64> {
         .find_map(|line| line.strip_prefix(&prefix)?.parse().ok())
 }
 
+/// `convert_queue_depth{pool}` as the recorder renders it.
+fn queue_depth(pool: &str) -> Option<f64> {
+    let prefix = format!("convert_queue_depth{{pool=\"{pool}\"}} ");
+    prometheus()
+        .render()
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix)?.parse().ok())
+}
+
+/// Many waiters give up at the same instant on several threads. Their
+/// updates of the queue gauge must not publish a stale depth: once every
+/// waiter has left, the gauge reads 0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_queue_gauge_reads_zero_after_concurrent_waiters_leave() {
+    prometheus();
+    within(
+        TEST,
+        "the_queue_gauge_reads_zero_after_concurrent_waiters_leave",
+        async {
+            let mut spec = spec("queue-gauge", 1);
+            spec.name = "queue-gauge";
+            spec.queue_capacity = 1024;
+            let pool = ready(spec).await;
+            let busy = pool.lease(after(30_000), Admission::Queue).await.unwrap();
+            for round in 0..8 {
+                let until = after(200);
+                let waiters: Vec<_> = (0..256)
+                    .map(|_| {
+                        let pool = pool.clone();
+                        tokio::spawn(async move { pool.lease(until, Admission::Queue).await })
+                    })
+                    .collect();
+                for waiter in waiters {
+                    let err = waiter.await.unwrap().unwrap_err();
+                    assert!(matches!(err, LeaseError::DeadlineExpired), "{err:?}");
+                }
+                assert_eq!(queue_depth("queue-gauge"), Some(0.0), "round {round}");
+            }
+            drop(busy);
+            finish(pool, "queue-gauge").await;
+        },
+    )
+    .await;
+}
+
+/// The race behind the stale gauge, made certain: the first waiter that
+/// leaves stops between its count and its gauge update until the second
+/// waiter has left. The gauge must still read 0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_queue_gauge_survives_a_leave_that_is_overtaken() {
+    prometheus();
+    within(
+        TEST,
+        "the_queue_gauge_survives_a_leave_that_is_overtaken",
+        async {
+            let mut spec = spec("queue-overtaken", 1);
+            spec.name = "queue-overtaken";
+            let pool = ready(spec).await;
+            let busy = pool.lease(after(30_000), Admission::Queue).await.unwrap();
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            let released = Mutex::new(Some(released));
+            let _hook =
+                convertd::engines::pool::set_queue_leave_hook("queue-overtaken", move || {
+                    // Only the first leave waits.
+                    let taken = released.lock().unwrap().take();
+                    if let Some(released) = taken {
+                        let _ = released.recv_timeout(Duration::from_secs(10));
+                    }
+                });
+            // The first waiter blocks a thread in the hook: a runtime of its
+            // own keeps that off the test's workers.
+            let first = {
+                let pool = pool.clone();
+                std::thread::spawn(move || {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap()
+                        .block_on(async { pool.lease(after(100), Admission::Queue).await.is_err() })
+                })
+            };
+            let second = {
+                let pool = pool.clone();
+                tokio::spawn(async move { pool.lease(after(400), Admission::Queue).await })
+            };
+            assert!(second.await.unwrap().is_err());
+            release.send(()).unwrap();
+            assert!(first.join().unwrap());
+            assert_eq!(queue_depth("queue-overtaken"), Some(0.0));
+            drop(busy);
+            finish(pool, "queue-overtaken").await;
+        },
+    )
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_worker_gauges_follow_a_lease_and_its_return() {
     prometheus();
