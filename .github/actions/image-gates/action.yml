@@ -1,0 +1,71 @@
+# The image gates (ledger items 003 and 007): the smoke test and the corpus check against an
+# image that is already loaded into the runner's Docker. image.yml runs them on every image
+# build; release.yml runs them before anything is pushed. The caller does the umask guard and
+# the build, because the two workflows build with different arguments and caches.
+# Actions are pinned by commit SHA (the tag is in the comment).
+name: image-gates
+description: Smoke test (size budget, time to ready, clean start, one DOCX) and corpus check
+inputs:
+  image:
+    description: The loaded image to test, such as rs-convert:ci
+    required: true
+  arch:
+    description: amd64 or arm64; keys the corpus-bench build cache
+    required: true
+  max-mb:
+    description: The image size budget in MB for smoke.sh
+    required: true
+runs:
+  using: composite
+  steps:
+    # The size budget is the measured arm64 runtime image (605 MB, 2026-11-26, after the
+    # LibreOffice trims) plus 5 %. The 600 MB working target in docker/README.md is the goal
+    # of the size trims, not this gate.
+    - name: Smoke (size, time to ready, clean start, one DOCX, font cache)
+      shell: bash
+      env:
+        CURL_IMAGE: curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
+        IMAGE: ${{ inputs.image }}
+        MAX_MB: ${{ inputs.max-mb }}
+      run: docker/smoke.sh "${IMAGE}" docker/smoke/small.docx "${MAX_MB}" | tee -a "$GITHUB_STEP_SUMMARY"
+    # The corpus check: lane 005's corpus-bench against the image, every case of
+    # corpus/expected.json. The generator needs Python 3.13 and the hashed pins.
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: "3.13"
+    - name: Generate the corpus
+      shell: bash
+      run: |
+        python -m venv "${RUNNER_TEMP}/corpus-venv"
+        "${RUNNER_TEMP}/corpus-venv/bin/python" -I -m pip install --require-hashes -r corpus/requirements.txt
+        "${RUNNER_TEMP}/corpus-venv/bin/python" -I corpus/generate.py corpus/out --hostile
+    # corpus-bench needs only rustc and cargo. rust-toolchain.toml also asks for clippy and
+    # rustfmt, and an implicit install of those failed once on the arm64 runner ("detected
+    # conflict: 'bin/cargo-clippy'", run 45805165059). So the pinned toolchain is installed
+    # here, before rust-cache calls rustc, with the minimal profile. RUSTUP_TOOLCHAIN then
+    # overrides the toolchain file, so no later step installs a component.
+    - name: Install Rust 1.99.0 (minimal profile)
+      shell: bash
+      run: |
+        rustup --version
+        if ! rustup toolchain install 1.99.0 --profile minimal --no-self-update; then
+          echo "retrying after removing the partial 1.99.0 install"
+          rustup toolchain uninstall 1.99.0 || true
+          rustup toolchain install 1.99.0 --profile minimal --no-self-update
+        fi
+        echo "RUSTUP_TOOLCHAIN=1.99.0" >> "$GITHUB_ENV"
+        rustup run 1.99.0 cargo --version
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        workspaces: "tools/corpus -> target"
+        shared-key: corpus-${{ inputs.arch }}
+    - name: Build corpus-bench
+      shell: bash
+      run: cargo build --release --locked --manifest-path tools/corpus/Cargo.toml
+    - name: Corpus check (every case of corpus/expected.json, canary listener in the service namespace)
+      shell: bash
+      env:
+        # The image's own base: glibc for the harness binary built on the runner.
+        HARNESS_IMAGE: debian:trixie-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
+        IMAGE: ${{ inputs.image }}
+      run: docker/corpus-check.sh "${IMAGE}" tools/corpus/target/release/corpus-bench | tee -a "$GITHUB_STEP_SUMMARY"
