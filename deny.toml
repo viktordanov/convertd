@@ -9,6 +9,7 @@ all-features = true
 # A vulnerability fails the check. An unmaintained or unsound notice fails it too, for any
 # crate in the graph. An ignored advisory needs its ID and a reason here.
 unmaintained = "all"
+unsound = "all"
 yanked = "deny"
 ignore = [
     # chrono is unmaintained, with no safe upgrade. Only pdfium-render 0.9.6 pulls it in,

@@ -165,7 +165,7 @@ Each folder in this list has a README for its own readers.
 - [tools/corpus/README.md](tools/corpus/README.md) covers `corpus-bench`, the tool that checks the corpus and its expectations.
 - `tools/ingest/` sends a folder of your own documents through a running image under fixed limits, and samples the memory of every worker. Each script's header gives its usage. Its results stay outside the repository.
 - `generate.sh` emits the spec with `convertd openapi`, regenerates the Go client from it and tests the client. `scripts/contract_test.sh` runs the contract tests against a real `convertd`.
-- `.github/workflows/security.yml` checks the dependency advisories on every pull request and weekly. `cargo deny check advisories` reads the RustSec database for the crates, with the rules in `deny.toml`. `govulncheck` reads the Go vulnerability database for `client/`, with the newest patch of the Go line that `client/go.mod` names.
+- `.github/workflows/security.yml` checks the dependency advisories on every pull request and weekly. `cargo deny check advisories` reads the RustSec database for the crates, with the rules in `deny.toml`. `govulncheck` reads the Go vulnerability database for `client/` and for `client/contract/`, with the newest patch of the Go line that `client/go.mod` names.
 - Every push and pull request runs `memoria check` (`.github/workflows/memoria.yml`). The check fails while a README waits for review after a change to its sources. [Memoria in this repository](docs/documentation/memoria.md) gives the review steps.
 <!-- /memoria:section -->
 
