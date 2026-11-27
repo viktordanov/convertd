@@ -132,7 +132,6 @@ fn rendered_page(p: ipc::RenderedPage) -> RenderedPage {
         flat: p.flat,
         colour: p.colour,
         effective_dpi: p.effective_dpi,
-        crc32: p.crc32,
     }
 }
 

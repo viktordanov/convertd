@@ -89,6 +89,23 @@ impl TarPlan {
                 source,
             })?
             .len();
+        self.push_file(name, path, size)
+    }
+
+    /// An entry from a file whose size the caller measured, with its own
+    /// stat, after the last write to it. The writer copies exactly `size`
+    /// bytes and fails on a file that is shorter.
+    pub fn add_file_sized(
+        &mut self,
+        name: impl Into<String>,
+        path: PathBuf,
+        size: u64,
+    ) -> Result<(), PlanError> {
+        let name = checked_name(name.into())?;
+        self.push_file(name, path, size)
+    }
+
+    fn push_file(&mut self, name: String, path: PathBuf, size: u64) -> Result<(), PlanError> {
         if size > MAX_SIZE {
             return Err(PlanError::TooLarge);
         }
@@ -285,6 +302,35 @@ mod tests {
         std::fs::write(dir.join("0001.png"), vec![7u8; 10]).unwrap();
         let err = plan.write_to(Vec::new()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_sized_file_is_not_stat_again_and_must_hold_its_size() {
+        let dir = scratch("sized");
+        std::fs::write(dir.join("a.png"), vec![7u8; 10]).unwrap();
+        let mut plan = TarPlan::new();
+        // No stat at planning: a missing file plans, and fails when written.
+        plan.add_file_sized("missing", dir.join("missing"), 5)
+            .unwrap();
+        assert_eq!(
+            plan.write_to(Vec::new()).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        let mut plan = TarPlan::new();
+        plan.add_file_sized("a.png", dir.join("a.png"), 11).unwrap();
+        assert_eq!(
+            plan.write_to(Vec::new()).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        let mut plan = TarPlan::new();
+        plan.add_file_sized("a.png", dir.join("a.png"), 10).unwrap();
+        assert_eq!(plan.tar_length(), 3 * BLOCK as u64 + BLOCK as u64);
+        assert!(matches!(
+            plan.add_file_sized("big", dir.join("a.png"), MAX_SIZE + 1),
+            Err(PlanError::TooLarge)
+        ));
+        plan.write_to(Vec::new()).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
     }
 

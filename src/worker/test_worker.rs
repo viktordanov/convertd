@@ -346,7 +346,6 @@ impl TestEngine {
                     flat: false,
                     colour: [255, 255, 255],
                     effective_dpi: scale * 72.0,
-                    crc32: Some(crc32fast::hash(&image)),
                 });
             }
             Ok(Output::Rendered(RenderedOut { pages: out }))

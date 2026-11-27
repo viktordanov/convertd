@@ -194,16 +194,27 @@ async fn digests_of_a_five_mib_file_match() {
         .unwrap()
         .limits;
     let mut detected = None;
-    let received = receive(request, &job, &limits, MinRate::off(), &mut detected)
-        .await
-        .unwrap();
+    let permit = Arc::new(
+        Arc::new(tokio::sync::Semaphore::new(1))
+            .try_acquire_owned()
+            .unwrap(),
+    );
+    let received = receive(
+        request,
+        &job,
+        permit,
+        &limits,
+        MinRate::off(),
+        &mut detected,
+    )
+    .await
+    .unwrap();
     assert!(detected.is_some());
     assert_eq!(received.upload.size_bytes, data.len() as u64);
     assert_eq!(
         received.upload.sha256,
         <[u8; 32]>::from(Sha256::digest(&data))
     );
-    assert_eq!(received.upload.crc32, crc32fast::hash(&data));
     assert_eq!(received.upload.file_name.as_deref(), Some("noise.pdf"));
     assert_eq!(received.detection.format, Format::Pdf);
     assert_eq!(received.source, job.root().join("source.pdf"));

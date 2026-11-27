@@ -3,6 +3,7 @@
 
 pub mod body;
 pub mod capabilities_handlers;
+mod chunks;
 pub mod convert_handlers;
 pub mod framing;
 pub mod healthcheck;

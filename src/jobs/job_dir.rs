@@ -7,6 +7,7 @@
 //! drops the handler future on peer EOF mid-request, while a blocking task
 //! may still be writing.
 
+use std::collections::HashMap;
 use std::fs::DirBuilder;
 use std::io;
 use std::os::unix::fs::DirBuilderExt;
@@ -89,10 +90,35 @@ impl JobDir {
     /// process's own `fstat` of every file under the job directory, never
     /// from an engine. Returns the bytes on disk. Blocks briefly.
     pub fn settle_budget(&self) -> io::Result<u64> {
-        let used = disk_usage(&self.root, 2)?;
+        let used = disk_usage(&self.root, 2, &mut |_, _| {})?;
+        self.settle_to(used);
+        Ok(used)
+    }
+
+    /// [`Self::settle_budget`], which also returns the size of each of
+    /// `wanted`, in its order, so the caller needs no stat of its own.
+    /// Only those sizes are kept, however many files the walk counts. A
+    /// path the walk did not count as a regular file has `None`.
+    pub fn settle_budget_with_sizes(&self, wanted: &[&Path]) -> io::Result<Settled> {
+        let mut measured: HashMap<&Path, Option<u64>> =
+            wanted.iter().map(|path| (*path, None)).collect();
+        let used = disk_usage(&self.root, 2, &mut |entry, len| {
+            if let Some(size) = measured.get_mut(entry.path().as_path()) {
+                *size = Some(len);
+            }
+        })?;
+        self.settle_to(used);
+        // In the order asked, a path named twice included.
+        let sizes = wanted
+            .iter()
+            .map(|path| measured.get(path).copied().flatten())
+            .collect();
+        Ok(Settled { used, sizes })
+    }
+
+    fn settle_to(&self, used: u64) {
         self.budget
             .release(self.budget.reserved().saturating_sub(used));
-        Ok(used)
     }
 
     /// Removes the directory now. Call on a thread that may block, such as
@@ -123,15 +149,32 @@ impl Drop for JobDir {
 
 /// The sizes of the files under `dir`, `depth` levels deep at most (the
 /// job directory and `pages/`). Symbolic links are not followed.
-fn disk_usage(dir: &Path, depth: u8) -> io::Result<u64> {
+/// What [`JobDir::settle_budget`] measured.
+#[derive(Debug)]
+pub struct Settled {
+    /// The bytes on disk under the job directory.
+    pub used: u64,
+    /// The size of each wanted path, in the order asked.
+    pub sizes: Vec<Option<u64>>,
+}
+
+/// The bytes of the regular files under `dir`, `depth` levels deep. Each
+/// file and its size go to `seen`.
+fn disk_usage(
+    dir: &Path,
+    depth: u8,
+    seen: &mut dyn FnMut(&std::fs::DirEntry, u64),
+) -> io::Result<u64> {
     let mut total = 0u64;
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let kind = entry.file_type()?;
         if kind.is_dir() && depth > 1 {
-            total = total.saturating_add(disk_usage(&entry.path(), depth - 1)?);
+            total = total.saturating_add(disk_usage(&entry.path(), depth - 1, seen)?);
         } else if kind.is_file() {
-            total = total.saturating_add(entry.metadata()?.len());
+            let len = entry.metadata()?.len();
+            total = total.saturating_add(len);
+            seen(&entry, len);
         }
     }
     Ok(total)
@@ -286,6 +329,17 @@ mod tests {
         std::fs::write(job.pdf_path(), vec![0u8; 1000]).unwrap();
         std::fs::create_dir(job.pages_dir()).unwrap();
         std::fs::write(job.pages_dir().join("0001.png"), vec![0u8; 300]).unwrap();
+        std::fs::write(job.root().join("stray"), vec![0u8; 5]).unwrap();
+        let page = job.pages_dir().join("0001.png");
+        let missing = job.pages_dir().join("0002.png");
+        let pdf = job.pdf_path();
+        let settled = job
+            .settle_budget_with_sizes(&[&page, &pdf, &missing, &page])
+            .unwrap();
+        assert_eq!(settled.used, 1305);
+        // Only the wanted sizes, by the paths that JobDir hands out.
+        assert_eq!(settled.sizes, [Some(300), Some(1000), None, Some(300)]);
+        std::fs::remove_file(job.root().join("stray")).unwrap();
         assert_eq!(job.settle_budget().unwrap(), 1300);
         assert_eq!(job.budget().reserved(), 1300);
         assert_eq!(budget.used(), 1300);

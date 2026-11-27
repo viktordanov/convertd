@@ -251,7 +251,6 @@ mod tests {
             flat: false,
             colour: [255, 255, 255],
             effective_dpi: 150.0,
-            crc32: Some(7),
         };
         let mut out = vec![
             Response::Ready(Ready {

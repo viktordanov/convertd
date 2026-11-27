@@ -284,7 +284,6 @@ async fn a_corpus_pdf_inspects_and_renders_in_every_format() {
                 for p in &rendered.pages {
                     let bytes = std::fs::read(out.join(&p.file_name)).unwrap();
                     assert_eq!(bytes.len() as u64, p.size_bytes);
-                    assert_eq!(Some(crc32fast::hash(&bytes)), p.crc32);
                     let expected = (p.width_pt * f32::from(dpi) / 72.0).round() as u32;
                     assert_eq!(p.width_px, expected, "{p:?}");
                 }
@@ -411,7 +410,9 @@ async fn slow_encrypted_pdfs_inspect_and_decrypt() {
             )
             .await
             .unwrap();
-        assert_eq!(a.pages[0].crc32, b.pages[0].crc32, "the decrypted page differs");
+        let from_a = std::fs::read(dir.join("a").join(&a.pages[0].file_name)).unwrap();
+        let from_b = std::fs::read(dir.join("b").join(&b.pages[0].file_name)).unwrap();
+        assert!(from_a == from_b, "the decrypted page differs");
         pool.shutdown(Duration::from_secs(5)).await;
     })
     .await;

@@ -52,7 +52,6 @@ pub struct JobPaths {
 pub struct UploadFacts {
     pub size_bytes: u64,
     pub sha256: [u8; 32],
-    pub crc32: u32,
     /// The sanitised base name of the part's file name, if any.
     pub file_name: Option<String>,
 }
@@ -462,7 +461,7 @@ impl ConversionService {
                 job.deadline,
             )
             .await
-            .inspect_err(|err| charge_queue(timings, called, err))
+            .inspect_err(|err| charge_render_queue(timings, called, err))
             .map_err(ConversionError::Engine)?;
         timings.add_call(&rendered.timing);
         timings.render = Some(rendered.timing.wall);
@@ -533,13 +532,28 @@ impl ConversionService {
     }
 }
 
-/// An engine call that failed in the queue (`QueueTimeout`, or `QueueFull`
-/// at once) spent all its time waiting there: charge it to `queue`, so the
-/// error's `Server-Timing` shows the wait. An engine error carries no
-/// timing of its own.
+/// A convert, inspect or decrypt call that failed before it reached a
+/// worker spent its time waiting: `QueueTimeout`, `QueueFull` at once, and
+/// `Poisoned`, which the poison memory gives before the lease (about no
+/// time) or after the lease wait. Charge it to `queue`, so the error's
+/// `Server-Timing` shows the wait. An engine error carries no timing of
+/// its own. A crash whose retry is refused (`Poisoned`) or gets no worker
+/// in time (`QueueTimeout`) also counts the first attempt's time on the
+/// worker; the exact queue time would have to travel in the error.
 fn charge_queue(timings: &mut StageTimings, called: Instant, err: &EngineError) {
-    if matches!(err, EngineError::QueueTimeout | EngineError::QueueFull) {
+    if matches!(
+        err,
+        EngineError::QueueTimeout | EngineError::QueueFull | EngineError::Poisoned
+    ) {
         timings.queue += called.elapsed();
+    }
+}
+
+/// [`charge_queue`] for a render, without `Poisoned`: a render refuses a
+/// rerun after its first chunks ran, so its time is mostly rendering.
+fn charge_render_queue(timings: &mut StageTimings, called: Instant, err: &EngineError) {
+    if !matches!(err, EngineError::Poisoned) {
+        charge_queue(timings, called, err);
     }
 }
 
@@ -690,6 +704,11 @@ mod tests {
         decrypted: Mutex<Option<DecryptJob>>,
         /// decrypt answers `Restricted`: only the user password was given.
         restricted: bool,
+        /// How long `convert` waits before it returns `convert_error`, and
+        /// `render` before `render_error`, as a pool that refuses after a
+        /// lease wait does.
+        error_after: Duration,
+        render_error: Option<EngineError>,
     }
 
     impl Script {
@@ -711,6 +730,7 @@ mod tests {
         ) -> Result<Converted, EngineError> {
             self.record("convert", adm);
             if let Some(err) = &self.convert_error {
+                std::thread::sleep(self.error_after);
                 return Err(err.clone());
             }
             Ok(Converted {
@@ -793,6 +813,10 @@ mod tests {
             _: Instant,
         ) -> Result<Rendered, EngineError> {
             self.record("render", adm);
+            if let Some(err) = &self.render_error {
+                std::thread::sleep(self.error_after);
+                return Err(err.clone());
+            }
             let mut numbers = job.pages.clone();
             if self.drop_a_page {
                 numbers.pop();
@@ -811,7 +835,6 @@ mod tests {
                     flat: false,
                     colour: [0; 3],
                     effective_dpi: f32::from(job.dpi),
-                    crc32: None,
                 })
                 .collect();
             *self.rendered.lock().unwrap() = Some(job);
@@ -866,7 +889,6 @@ mod tests {
         let upload = UploadFacts {
             size_bytes: 1000,
             sha256: [0; 32],
-            crc32: 0,
             file_name: None,
         };
         let request = ConversionRequest::new(raw, &test_limits()).unwrap();
@@ -1110,6 +1132,64 @@ mod tests {
             script.calls().is_empty(),
             "no engine call without a reservation"
         );
+    }
+
+    /// A refusal that comes after a wait for a worker shows the wait as
+    /// `queue`: `Poisoned` after the lease, as `QueueTimeout`. An error
+    /// from the worker itself charges nothing to `queue`, nor does a
+    /// render's `Poisoned`, which can come after its first chunks ran.
+    #[test]
+    fn a_refusal_after_the_lease_wait_charges_the_queue() {
+        let wait = Duration::from_millis(30);
+        for (error, charged) in [
+            (EngineError::Poisoned, true),
+            (EngineError::QueueTimeout, true),
+            (EngineError::Failed("bad".into()), false),
+        ] {
+            let script = Arc::new(Script {
+                convert_error: Some(error.clone()),
+                error_after: wait,
+                ..Default::default()
+            });
+            let run = run(script, Format::Docx, RawOptions::default(), u64::MAX);
+            assert!(run.result.is_err(), "{error:?}");
+            if charged {
+                assert!(run.timings.queue >= wait, "{error:?}: {:?}", run.timings);
+            } else {
+                assert_eq!(run.timings.queue, Duration::ZERO, "{error:?}");
+            }
+        }
+        for (error, charged) in [
+            (EngineError::Poisoned, false),
+            (EngineError::QueueFull, true),
+        ] {
+            let script = Arc::new(Script {
+                render_error: Some(error.clone()),
+                error_after: wait,
+                ..Default::default()
+            });
+            let raw = RawOptions {
+                output: Some(Output::Images),
+                ..Default::default()
+            };
+            let run = run(script.clone(), Format::Pdf, raw, u64::MAX);
+            assert!(run.result.is_err(), "render {error:?}");
+            assert!(script.calls().iter().any(|(op, _)| *op == "render"));
+            if charged {
+                assert!(
+                    run.timings.queue >= wait,
+                    "render {error:?}: {:?}",
+                    run.timings
+                );
+            } else {
+                // The inspection's own queue time (1 ms) stays.
+                assert!(
+                    run.timings.queue < wait,
+                    "render {error:?}: {:?}",
+                    run.timings
+                );
+            }
+        }
     }
 
     #[test]

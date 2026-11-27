@@ -436,9 +436,6 @@ pub struct RenderedPage {
     pub flat: bool,
     pub colour: [u8; 3],
     pub effective_dpi: f32,
-    /// CRC-32 of the file, computed from the bytes that were written.
-    #[serde(default)]
-    pub crc32: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
