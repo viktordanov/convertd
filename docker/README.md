@@ -247,7 +247,11 @@ A tag `vX.Y.Z` runs `.github/workflows/release.yml`. The tag must be `v` plus th
 4. **publish** joins the two digests into one multi-arch manifest, `ghcr.io/<owner>/rs-convert:X.Y.Z`.
 5. **release** creates the GitHub release for the tag, with generated notes and the image digest.
 
-The manifest also gets `X.Y` when the release is the newest of its line, and `latest` when it is the newest of all. A patch to an older line thus moves neither tag. The workflow refuses to overwrite an existing `X.Y.Z`. It checks before the push and again before the manifest. Only the push and publish jobs may write packages, and only the release job may write the repository's contents.
+The manifest also gets `X.Y` when the release is the newest published one of its line, and `latest` when it is the newest of all. Each rule stands alone: `1.0.5` after `1.1.0` moves `1.0`, not `latest`. "Published" means an `X.Y.Z` tag in GHCR, so a tag whose run failed does not count. The GitHub release is marked latest by the same rule, over the published releases.
+
+The workflow never overwrites an existing `X.Y.Z`. It checks before the push and again before the manifest. A re-run of a failed publish or release job goes on only when the existing `X.Y.Z` holds the same images. The publish and the release jobs each run one at a time across all tags, so two releases cannot move `latest` in the wrong order. GitHub keeps one waiting job per group, so a third release that waits cancels the second one's wait, and that run needs a re-run.
+
+Only the push and publish jobs may write packages, and only the release job may write the repository's contents.
 
 Run by hand (`workflow_dispatch`), the workflow is a dry run: the version and build jobs only, with no registry login, push or release. The push leg has not run yet.
 
