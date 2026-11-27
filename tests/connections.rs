@@ -65,6 +65,16 @@ async fn start(
 
 /// Sends one request with `Connection: close` and returns the status line.
 async fn get(addr: SocketAddr, path: &str) -> String {
+    get_full(addr, path)
+        .await
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// Sends one request with `Connection: close` and returns the response.
+async fn get_full(addr: SocketAddr, path: &str) -> String {
     let mut stream = timeout(DEADLINE, TcpStream::connect(addr))
         .await
         .expect("connect timed out")
@@ -76,11 +86,7 @@ async fn get(addr: SocketAddr, path: &str) -> String {
         .await
         .expect("the response timed out")
         .unwrap();
-    String::from_utf8_lossy(&response)
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_owned()
+    String::from_utf8_lossy(&response).into_owned()
 }
 
 /// Waits until the peer closes `stream`, and returns how long that took.
@@ -149,10 +155,16 @@ async fn with_the_cap_full_the_probes_still_answer() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(get(addr, "/healthz").await, "HTTP/1.1 200 OK");
     assert_eq!(get(addr, "/readyz").await, "HTTP/1.1 200 OK");
-    // Any other route on a reserve connection is refused.
-    assert_eq!(
-        get(addr, "/v1/capabilities").await,
-        "HTTP/1.1 503 Service Unavailable"
+    // Any other route on a reserve connection is refused, with the usual
+    // error body.
+    let refused = get_full(addr, "/v1/capabilities").await;
+    assert!(
+        refused.starts_with("HTTP/1.1 503 Service Unavailable"),
+        "{refused}"
+    );
+    assert!(
+        refused.contains(r#""code":"SERVICE_UNAVAILABLE""#) && refused.contains("connections"),
+        "{refused}"
     );
 
     // With the reserve full too, a new connection is closed unread.
@@ -173,6 +185,18 @@ async fn with_the_cap_full_the_probes_still_answer() {
         .write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
         .await;
     closed_within(&mut over, Duration::from_secs(5)).await;
+
+    // The reserve's idle connections close at its 2 s header timeout, so
+    // its places free again while the cap stays full.
+    for reserve in held.iter_mut().skip(2) {
+        let took = closed_within(reserve, Duration::from_secs(5)).await;
+        assert!(
+            took <= Duration::from_secs(4),
+            "a reserve place held {took:?}"
+        );
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(get(addr, "/healthz").await, "HTTP/1.1 200 OK");
 
     // A held connection that closes frees its place.
     held.clear();
