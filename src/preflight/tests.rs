@@ -1617,16 +1617,15 @@ fn docx_text_code_points_from_runs_headers_and_entities() {
 }
 
 #[test]
-fn text_code_points_stop_at_the_cap() {
-    // More distinct letters than MAX_CODE_POINTS: the first ones are kept
-    // and the cap is recorded, so the check still runs on what was read.
+fn text_code_points_past_the_cap_skip_the_glyph_check() {
+    // More distinct letters than MAX_CODE_POINTS: which ones came first
+    // must not decide, so nothing is kept and the check is skipped.
     let many: String = (0x4E00..0x4E00 + MAX_CODE_POINTS as u32 + 10)
         .filter_map(char::from_u32)
         .collect();
     let document = body(&format!("<w:p><w:r><w:t>{many}</w:t></w:r></w:p>"));
     let facts = scan_bytes("many.docx", &docx(&[], &document), Family::Document);
-    assert_eq!(facts.text_code_points.len(), MAX_CODE_POINTS);
-    assert_eq!(facts.text_code_points[0], 0x4E00);
+    assert!(facts.text_code_points.is_empty());
     assert!(
         facts
             .skipped
@@ -2151,6 +2150,101 @@ fn docx_headers_past_the_cap_skip_the_glyph_check() {
         facts
             .skipped
             .contains(&(Check::Glyphs, SkipReason::CapReached)),
+        "{:?}",
+        facts.skipped
+    );
+}
+
+#[test]
+fn ods_hidden_sheets_count_with_one_page_per_sheet() {
+    let content = r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:spreadsheet><table:table table:name="A"><table:table-row><table:table-cell><text:p>a</text:p></table:table-cell></table:table-row></table:table><table:table table:name="B" table:display="false"><table:table-row><table:table-cell><text:p>ก</text:p></table:table-cell></table:table-row></table:table></office:spreadsheet></office:body></office:document-content>"#;
+    let bytes = zip(&[
+        (
+            "mimetype",
+            b"application/vnd.oasis.opendocument.spreadsheet",
+        ),
+        ("content.xml", content.as_bytes()),
+    ]);
+    let facts = scan_bytes("hidden.ods", &bytes, Family::Spreadsheet);
+    assert_eq!(facts.text_code_points, cps("a"));
+    let whole = Printed {
+        hidden_sheets: true,
+        ..Printed::default()
+    };
+    let facts = scan_printed("hidden.ods", &bytes, Family::Spreadsheet, whole);
+    assert_eq!(facts.text_code_points, cps("a\u{0E01}"));
+}
+
+#[test]
+fn xlsx_repeated_sheet_ids_resolve_once() {
+    // Many entries for one id, and a missing id among them.
+    let mut list = String::new();
+    for n in 0..1000 {
+        list.push_str(&format!(
+            r#"<sheet name="S{n}" sheetId="{n}" r:id="rId2"/>"#
+        ));
+    }
+    let workbook = format!(r#"<workbook xmlns:r="{R_NS}"><sheets>{list}</sheets></workbook>"#);
+    let facts = scan_bytes("ids.xlsx", &xlsx_workbook(&workbook), Family::Spreadsheet);
+    assert_eq!(facts.text_code_points, cps("a"));
+    let workbook = format!(
+        r#"<workbook xmlns:r="{R_NS}"><sheets>{list}<sheet name="X" sheetId="9" r:id="rId9"/></sheets></workbook>"#
+    );
+    let facts = scan_bytes("ids.xlsx", &xlsx_workbook(&workbook), Family::Spreadsheet);
+    assert!(
+        facts
+            .skipped
+            .contains(&(Check::Glyphs, SkipReason::MissingPart)),
+        "{:?}",
+        facts.skipped
+    );
+}
+
+#[test]
+fn present_text_parts_that_cannot_be_opened_skip_the_glyph_check() {
+    // A linked DOCX header with a compression method the reader lacks.
+    let header = format!(r#"<w:hdr {W}><w:p><w:r><w:t>ก</w:t></w:r></w:p></w:hdr>"#);
+    let document = body("<w:p><w:r><w:t>a</w:t></w:r></w:p>");
+    let mut bytes = docx(&[("word/header1.xml", header.as_bytes())], &document);
+    set_method(&mut bytes, "word/header1.xml", 12);
+    let facts = scan_bytes("header.docx", &bytes, Family::Document);
+    assert!(facts.text_code_points.is_empty());
+    assert!(
+        facts
+            .skipped
+            .contains(&(Check::Glyphs, SkipReason::MissingPart)),
+        "{:?}",
+        facts.skipped
+    );
+    // A linked header that is truly absent has no text.
+    let facts = scan_bytes("nohead.docx", &docx(&[], &document), Family::Document);
+    assert_eq!(facts.text_code_points, cps("a"));
+    assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+
+    // An ODF styles part that cannot be opened, and a missing content part.
+    let content = r#"<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:text><text:p>a</text:p></office:text></office:body></office:document-content>"#;
+    let styles = r#"<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>"#;
+    let mut bytes = zip(&[
+        ("mimetype", b"application/vnd.oasis.opendocument.text"),
+        ("content.xml", content.as_bytes()),
+        ("styles.xml", styles.as_bytes()),
+    ]);
+    set_method(&mut bytes, "styles.xml", 12);
+    let facts = scan_bytes("styles.odt", &bytes, Family::Document);
+    assert!(facts.text_code_points.is_empty());
+    assert!(
+        facts
+            .skipped
+            .contains(&(Check::Glyphs, SkipReason::MissingPart)),
+        "{:?}",
+        facts.skipped
+    );
+    let bytes = zip(&[("mimetype", b"application/vnd.oasis.opendocument.text")]);
+    let facts = scan_bytes("empty.odt", &bytes, Family::Document);
+    assert!(
+        facts
+            .skipped
+            .contains(&(Check::Glyphs, SkipReason::MissingPart)),
         "{:?}",
         facts.skipped
     );

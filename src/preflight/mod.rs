@@ -134,7 +134,7 @@ fn scan_package(mut package: Package, family: Family, printed: Printed, facts: &
 }
 
 /// Moves the code points into `facts`, sorted; past the cap the glyph
-/// check runs on what was kept and records `cap_reached`. When a text part
+/// check is skipped with `cap_reached` and nothing is kept. When a text part
 /// could not be read, the scanner has recorded a glyphs skip and nothing
 /// is kept: the check does not run on a failed scan.
 fn finish(text: TextCollector, facts: &mut SourceFacts) {
@@ -146,11 +146,13 @@ fn finish(text: TextCollector, facts: &mut SourceFacts) {
         facts.text_code_points.clear();
         return;
     }
-    let full = text.full;
-    facts.text_code_points = text.into_sorted();
-    if full {
+    // Past the cap the check is skipped, not run on the code points that
+    // happened to come first.
+    if text.full {
         facts.skipped.push((Check::Glyphs, SkipReason::CapReached));
+        return;
     }
+    facts.text_code_points = text.into_sorted();
 }
 
 /// The distinct code points of the text read so far that need a glyph

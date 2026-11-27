@@ -152,14 +152,18 @@ fn printed_sheets(
         return Err(SkipReason::CapReached);
     }
     scope.complete()?;
-    // Each relationship once: many sheet entries may name one target.
+    // Each id once, before anything is resolved: many sheet entries may
+    // name one relationship, and its target can be long. The distinct ids'
+    // targets take at most PART_CAP bytes in all (rels_complete).
+    let mut distinct: HashSet<&str> = HashSet::new();
     let mut seen: HashSet<&str> = HashSet::new();
     let mut sheets = Vec::new();
     for id in &ids {
-        let (kind, target) = id
-            .as_ref()
-            .and_then(|id| rels.get(id))
-            .ok_or(SkipReason::MissingPart)?;
+        let id = id.as_deref().ok_or(SkipReason::MissingPart)?;
+        if !distinct.insert(id) {
+            continue;
+        }
+        let (kind, target) = rels.get(id).ok_or(SkipReason::MissingPart)?;
         // A chart sheet has no cells.
         if kind.ends_with("/worksheet") && seen.insert(target.as_str()) {
             sheets.push(target.clone());

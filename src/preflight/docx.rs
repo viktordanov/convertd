@@ -181,8 +181,14 @@ pub(super) fn scan(
                     facts.skipped.push((Check::Glyphs, reason));
                 }
             }
-            // Headers and notes are optional; the main part is not.
-            Err(SkipReason::MissingPart) if part != &main => {}
+            // Headers and notes are optional; the main part is not. A
+            // linked part that is present but cannot be opened leaves the
+            // text unknown.
+            Err(SkipReason::MissingPart) if part != &main => {
+                if package.has(part) {
+                    facts.skipped.push((Check::Glyphs, SkipReason::MissingPart));
+                }
+            }
             Err(reason) => {
                 facts.skipped.push((Check::Fonts, reason));
                 facts.skipped.push((Check::Glyphs, reason));

@@ -25,7 +25,8 @@
 //! hidden slides: `content.xml` is then read again for its text, since the
 //! list is known only after `styles.xml`; when that read does not find the
 //! same pages, or there is no list, every page counts. A sheet with
-//! `table:display="false"` on its element is not printed.
+//! `table:display="false"` on its element is printed only when the export
+//! puts each sheet on one page.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -463,8 +464,17 @@ pub(super) fn scan(
         match result {
             Ok(Ok(_)) => {}
             Ok(Err(reason)) => facts.skipped.push((Check::Glyphs, reason)),
-            Err(SkipReason::MissingPart) if !content => {}
-            Err(SkipReason::MissingPart) => read_all = false,
+            // A styles part that is truly absent has no text; one that is
+            // present but cannot be opened, or no content part, leaves the
+            // text unknown.
+            Err(SkipReason::MissingPart) if !content && !package.has(part) => {}
+            Err(SkipReason::MissingPart) if !content => {
+                facts.skipped.push((Check::Glyphs, SkipReason::MissingPart));
+            }
+            Err(SkipReason::MissingPart) => {
+                read_all = false;
+                facts.skipped.push((Check::Glyphs, SkipReason::MissingPart));
+            }
             Err(reason) => {
                 facts.skipped.push((Check::Fonts, reason));
                 facts.skipped.push((Check::Glyphs, reason));
@@ -538,7 +548,12 @@ fn read_text(
                             scope.skip_current();
                         }
                     }
-                    (_, b"table") if opens && attr(e, b"display").as_deref() == Some("false") => {
+                    // One page per sheet prints hidden sheets too.
+                    (_, b"table")
+                        if opens
+                            && !printed.hidden_sheets
+                            && attr(e, b"display").as_deref() == Some("false") =>
+                    {
                         scope.skip_current();
                     }
                     _ => {}
