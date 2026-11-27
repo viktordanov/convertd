@@ -7,13 +7,11 @@
 #      gated image (the same config digest), and pushes it by digest to
 #      ghcr.io/<owner>/rs-convert. No tag yet.
 #   4. publish: one multi-arch manifest, tagged X.Y.Z, and X.Y and latest when this is the
-#      newest published release of its line and overall. An existing X.Y.Z is never
-#      overwritten; a retry finds it with the same content and goes on.
-#   5. release: a GitHub release for the tag, with generated notes.
-# publish and release each run one at a time across all tags (their own concurrency groups),
-# and decide "newest" inside that lock, from what is published. GitHub keeps one pending job
-# per group: a third release that waits there cancels the second one's wait, which then needs
-# a re-run.
+#      newest X.Y.Z in the registry, of its line and overall. X.Y.Z is immutable: an existing
+#      one is accepted only with the same digest (a re-run). publish runs one at a time
+#      across all tags, so it decides "newest" under that lock.
+#   5. release: a GitHub release for the tag, with generated notes, marked latest when
+#      publish moved latest.
 # workflow_dispatch is a dry run: steps 1 and 2 only, on the chosen ref. It never logs in to
 # a registry, pushes or releases.
 # Actions are pinned by commit SHA (the tag is in the comment), as in image.yml.
@@ -261,6 +259,7 @@ jobs:
       MINOR: ${{ needs.version.outputs.minor }}
     outputs:
       digest: ${{ steps.manifest.outputs.digest }}
+      latest: ${{ steps.manifest.outputs.latest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -284,43 +283,42 @@ jobs:
         run: |
           amd64="$(cat "${RUNNER_TEMP}/digests/digest-amd64")"
           arm64="$(cat "${RUNNER_TEMP}/digests/digest-arm64")"
-          # The manifests that the release index must hold: both platform images and their
-          # attestations.
-          want="$(for d in "${amd64}" "${arm64}"; do
-                    docker buildx imagetools inspect --raw "${IMAGE}@${d}" \
-                      | jq -r --arg d "${d}" 'if .manifests then .manifests[].digest else $d end'
-                  done | sort -u)"
-          [[ -n "${want}" ]] || { echo "::error::the pushed digests hold no manifests"; exit 1; }
+          # The digest of the index this release writes: --dry-run prints its exact bytes.
+          index="$(docker buildx imagetools create --dry-run "${IMAGE}@${amd64}" "${IMAGE}@${arm64}")"
+          want="sha256:$(printf '%s' "${index}" | sha256sum | cut -d' ' -f1)"
           versions="$(.github/scripts/ghcr-versions.sh "${NAME}")"
           if grep -qxF "${VERSION}" <<<"${versions}"; then
-            # Out already: only a retry of this release may go on, with the same content.
-            have="$(docker buildx imagetools inspect --raw "${IMAGE}:${VERSION}" | jq -r '.manifests[]?.digest' | sort -u)"
+            # X.Y.Z is immutable: only a re-run of this release, with the same digest, goes on.
+            have="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)"
             if [[ "${have}" != "${want}" ]]; then
-              echo "::error::${IMAGE}:${VERSION} exists with other content; a release is never overwritten"
+              echo "::error::${IMAGE}:${VERSION} exists as ${have}, not ${want}; a release is never overwritten"
               exit 1
             fi
-            echo "${IMAGE}:${VERSION} exists with this content: going on (a retry)"
+            echo "${IMAGE}:${VERSION} exists as ${want}: a re-run, going on"
           else
             docker buildx imagetools create --tag "${IMAGE}:${VERSION}" "${IMAGE}@${amd64}" "${IMAGE}@${arm64}"
+            have="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)"
+            [[ "${have}" == "${want}" ]] || { echo "::error::${IMAGE}:${VERSION} is ${have}, not ${want}"; exit 1; }
           fi
-          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)"
-          [[ "${digest}" == sha256:* ]] || { echo "::error::no digest for ${IMAGE}:${VERSION}"; exit 1; }
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          # X.Y and latest move only to the newest published release: of its line, and
-          # overall. Each rule stands alone: 1.0.5 after 1.1.0 moves 1.0, not latest.
+          echo "digest=${want}" >> "$GITHUB_OUTPUT"
+          # X.Y and latest move only when this is the newest X.Y.Z in the registry: of its
+          # line, and overall. So 1.0.5 after 1.1.0 moves 1.0, not latest.
           published="$( { printf '%s\n' "${versions}"; echo "${VERSION}"; } | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -uV)"
           aliases=()
           if [[ "$(grep -E "^${MINOR//./\\.}\.[0-9]+$" <<<"${published}" | tail -n1)" == "${VERSION}" ]]; then
             aliases+=(--tag "${IMAGE}:${MINOR}")
           fi
+          latest=false
           if [[ "$(tail -n1 <<<"${published}")" == "${VERSION}" ]]; then
             aliases+=(--tag "${IMAGE}:latest")
+            latest=true
           fi
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
           if [[ "${#aliases[@]}" -gt 0 ]]; then
-            docker buildx imagetools create "${aliases[@]}" "${IMAGE}@${digest}"
+            docker buildx imagetools create "${aliases[@]}" "${IMAGE}@${want}"
           fi
           {
-            echo "Published ${IMAGE}@${digest} as ${VERSION} ${aliases[*]//--tag /}"
+            echo "Published ${IMAGE}@${want} as ${VERSION} ${aliases[*]//--tag /}"
             docker buildx imagetools inspect "${IMAGE}:${VERSION}"
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
@@ -328,10 +326,6 @@ jobs:
     needs: [version, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    # One release at a time across all tags: "latest" is decided inside it.
-    concurrency:
-      group: ${{ github.workflow }}-github-release
-      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -343,17 +337,12 @@ jobs:
           IMAGE: ${{ needs.version.outputs.image }}
           VERSION: ${{ needs.version.outputs.version }}
           DIGEST: ${{ needs.publish.outputs.digest }}
+          LATEST: ${{ needs.publish.outputs.latest }}
         run: |
           if gh release view "${TAG}" --repo "${REPO}" >/dev/null 2>&1; then
-            echo "the release ${TAG} exists already (a retry): nothing to do"
+            echo "the release ${TAG} exists already (a re-run): nothing to do"
             exit 0
           fi
-          # Latest only when no published release has a higher version.
-          releases="$(gh release list --repo "${REPO}" --limit 1000 --exclude-drafts --exclude-pre-releases \
-                        --json tagName --jq '.[].tagName')"
-          highest="$( { printf '%s\n' "${releases}"; echo "${TAG}"; } | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -uV | tail -n1)"
-          latest=false
-          [[ "${highest}" == "${TAG}" ]] && latest=true
           notes="Image: \`${IMAGE}:${VERSION}\` (linux/amd64, linux/arm64), \`${IMAGE}@${DIGEST}\`."
           gh release create "${TAG}" --repo "${REPO}" --verify-tag --title "${TAG}" \
-            --notes "${notes}" --generate-notes --latest="${latest}"
+            --notes "${notes}" --generate-notes --latest="${LATEST}"

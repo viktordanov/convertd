@@ -247,9 +247,9 @@ A tag `vX.Y.Z` runs `.github/workflows/release.yml`. The tag must be `v` plus th
 4. **publish** joins the two digests into one multi-arch manifest, `ghcr.io/<owner>/rs-convert:X.Y.Z`.
 5. **release** creates the GitHub release for the tag, with generated notes and the image digest.
 
-The manifest also gets `X.Y` when the release is the newest published one of its line, and `latest` when it is the newest of all. Each rule stands alone: `1.0.5` after `1.1.0` moves `1.0`, not `latest`. "Published" means an `X.Y.Z` tag in GHCR, so a tag whose run failed does not count. The GitHub release is marked latest by the same rule, over the published releases.
+The manifest also gets `X.Y` and `latest` only when the release is the newest `X.Y.Z` in the registry: of its line for `X.Y`, and overall for `latest`. So `1.0.5` after `1.1.0` moves `1.0`, not `latest`. A tag whose run failed published nothing, so it does not count. The GitHub release is marked latest when `latest` moved.
 
-The workflow never overwrites an existing `X.Y.Z`. It checks before the push and again before the manifest. A re-run of a failed publish or release job goes on only when the existing `X.Y.Z` holds the same images. The publish and the release jobs each run one at a time across all tags, so two releases cannot move `latest` in the wrong order. GitHub keeps one waiting job per group, so a third release that waits cancels the second one's wait, and that run needs a re-run.
+`X.Y.Z` is immutable. A re-run of a failed job may reuse an existing `X.Y.Z` only when its digest is the one this release writes. The publish job runs one at a time across all tags.
 
 Only the push and publish jobs may write packages, and only the release job may write the repository's contents.
 
