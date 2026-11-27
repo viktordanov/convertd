@@ -5,7 +5,7 @@ The corpus is the set of test files for rs-convert, and `expected.json` records 
 Know these facts before you change anything here:
 
 - The repository commits the generator, the expectations and three small fixtures, not the test files. `corpus/generate.py` writes the files into `corpus/out/`, which git ignores.
-- `expected.json` pins a SHA-256 for 44 of the 47 files that `generate.py` writes. Linux arm64, macOS arm64 and Linux amd64 (the `corpus` workflow on `ubuntu-24.04`) gave the same bytes for the first 39. The hashes of `pptx-hidden3`, `odp-hidden` and the three `docx-glyphs-*` files come from macOS arm64, and the `corpus` workflow checks them on its next run.
+- `expected.json` pins a SHA-256 for 45 of the 48 files that `generate.py` writes. Linux arm64, macOS arm64 and Linux amd64 (the `corpus` workflow on `ubuntu-24.04`) gave the same bytes for the first 39. The hashes of `pptx-hidden3`, `odp-hidden` and the three `docx-glyphs-*` files come from macOS arm64, and the `corpus` workflow checks them on its next run.
 - Private documents never enter the repository. Git ignores `corpus/private/`.
 
 ## Contents
@@ -20,7 +20,7 @@ Know these facts before you change anything here:
 <!-- memoria:section id="overview" files="generate.py expected.json" -->
 ## What the corpus proves
 
-Each file in the corpus exercises one path through the service. The public corpus has one file for each engine path and container, except the legacy `doc`, `xls` and `ppt` formats that step 7 adds. It also has a positive and a negative case for each warning, an encrypted DOCX, deck and sheet, three macro files with a VBA project, five hostile files and three network canaries. Two DOCX files carry a data descriptor on `word/document.xml`, as Go's `archive/zip` writes it. LibreOffice 26.8.3.1 cannot load the stored one, so `docx-stored-descriptor` expects `422 CONVERSION_FAILED` until a fix lands. `docx-deflated-descriptor` marks the boundary and expects 200. The image's engines confirmed both answers on 2026-11-26.
+Each file in the corpus exercises one path through the service. The public corpus has one file for each engine path and container, except the legacy `doc`, `xls` and `ppt` formats that step 7 adds. It also has a positive and a negative case for each warning, an encrypted DOCX, deck and sheet, three macro files with a VBA project, six hostile files and three network canaries. Two DOCX files carry a data descriptor on `word/document.xml`, as Go's `archive/zip` writes it. LibreOffice 26.8.3.1 cannot load the stored one, so `docx-stored-descriptor` expects `422 CONVERSION_FAILED` until a fix lands. `docx-deflated-descriptor` marks the boundary and expects 200. The image's engines confirmed both answers on 2026-11-26.
 
 `corpus-bench check` runs every case against the service. A pass of every case will prove these facts:
 
@@ -44,12 +44,14 @@ The `origin` field of each entry in `expected.json` names its kind:
 | `origin` | Made by | In git | Hash |
 | --- | --- | --- | --- |
 | `generated` | `generate.py`, from python-docx, python-pptx, openpyxl, msoffcrypto, Pillow and hand-written XML, RTF and PDF | No, written to `out/` | Pinned, except the three encrypted files |
-| `hostile` | `generate.py --hostile`: the zip bomb, the XML entity bomb, the PNG pixel bomb, a truncated DOCX and HTML named `.doc` | No, written to `out/hostile/` | Pinned |
+| `hostile` | `generate.py --hostile`: the zip bomb, the XML entity bomb, the PNG pixel bomb, a truncated DOCX, HTML named `.doc` and a DOCX with two links to local files | No, written to `out/hostile/` | Pinned |
 | `fixture` | Committed bytes that no tool here can make, under `fixtures/` | Yes | Required, with a `licence` record |
 | `derived` | LibreOffice, from a generated file (`doc`, `xls`, `ppt`) | No | A hash or an `unhashed` reason, as for generated files |
 | `private` | The owner, outside the repository | Never | Not required |
 
 The three network canaries are `generated` files that `--hostile` also writes, into `out/canary/`. Each one asks LibreOffice to connect to the canary listener at `127.0.0.1:47123`: a Basic macro on load, an external image link and a `WEBSERVICE` formula. The service must not bind that address.
+
+`file-links.docx` (`docx-file-links`) has an `INCLUDETEXT` field linked to `file:///etc/os-release` and a picture linked to `file:///opt/libreoffice/program/intro.png`. Both files exist in the service image. Its case expects the cached field text in the PDF, no text of `os-release` and no image. LibreOffice 26.8.3.1 follows neither link with its defaults, so the case guards the lock-down of `docker/libreoffice/rs-convert-security.xcd` against a change. It cannot fail against an image without that file, and docker/README.md gives the run that shows the lock-down itself.
 
 The hostile files stay small on disk. `zip-ratio.docx` is about 2 MB and declares a 2 GiB entry. `png-bomb.png` is about 1.2 MB and declares 100,000 x 100,000 pixels. The generator never decompresses or parses them.
 
@@ -67,7 +69,7 @@ The private corpus lives in `CORPUS_PRIVATE_DIR`, by default `corpus/private/`, 
 
 - **`preflight`** gives what the scanners must read from the bytes alone: format, encryption, the declared slide count, the requested Latin font families and the macro parts. It is for the unit tests of lane 001, which run with no engine. No test reads it yet. `null` means that a scan does not apply or cannot run. An empty list means that the scan ran and found nothing.
 - **`cases`** gives one request each: the `options` part, as the API takes it, and an `expect` block. Most cases set `output` to `bundle`, because only a bundle carries both the manifest and the PDF. `images` and `bundle` answers are a tar stream in one zstd frame (`.tar.zst`). The options go to the service as they are, so a case without `output` gets the API default, `pdf`.
-- **`expect`** gives the status, and the error `code` when the status is not 200. It can also give the format, family, PDF origin, page count, warnings, blank pages, hidden pages and the allowed canary connections (always 0). `hidden_pages` lists the pages whose manifest entry has `hidden: true`. `pptx-hidden`, `pptx-hidden3` and `odp-hidden` test it with `slides.include_hidden`, and `pptx-deck20` tests that a deck without hidden slides gets no mark.
+- **`expect`** gives the status, and the error `code` when the status is not 200. It can also give the format, family, PDF origin, page count, warnings, blank pages, hidden pages and the allowed canary connections (always 0). `text_present` and `text_absent` list strings that the text of the PDF must or must not hold, with white space ignored, and `pdf_images` gives the number of image XObjects in the PDF. These three need `output` `pdf` or `bundle`. `hidden_pages` lists the pages whose manifest entry has `hidden: true`. `pptx-hidden`, `pptx-hidden3` and `odp-hidden` test it with `slides.include_hidden`, and `pptx-deck20` tests that a deck without hidden slides gets no mark.
 - **`warnings`** match as a multiset on code and page. `detail` matches as a subset, and `"*"` matches any value. `unless_installed` drops a font warning when `/v1/capabilities` lists the family.
 - **`page_count`** is a number, a `{min, max}` range or `"unrecorded"`. An `"unrecorded"` count depends on layout: a person copies it from a reviewed `check` run. The nine counts of this kind (`docx-long`, `docx-one-page`, `potx`, the sheets) came from the image's engines on 2026-11-26.
 

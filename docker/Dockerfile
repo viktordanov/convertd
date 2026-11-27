@@ -246,6 +246,19 @@ RUN xcd="$(tr -d ' \t\n' </opt/libreoffice/share/registry/rs-convert-paper.xcd)"
       [[ "${got}" == "${height} ${width} " ]] \
         || { echo "LC_PAPER=${name} gives '${got}', expected '${height} ${width}'" >&2; exit 1; }; \
     done
+# Gate: the macro and link lock-down (rs-convert-security.xcd, ledger item 011 S2) is installed
+# after main.xcd, with every value as the repository has it. DisableMacrosExecution is the one
+# value that is not finalized: LibreOfficeKit commits it at each load, and a commit to a
+# finalized value fails every load. This gate checks only the installed XML. The check of the
+# effective policy is the corpus case docx-file-links: its picture linked to a local file must
+# give 0 images in the PDF (docker/README.md, What is verified).
+RUN xcd="$(tr -d ' \t\n' </opt/libreoffice/share/registry/rs-convert-security.xcd)"; \
+    for want in '<dependencyfile="main"/>' \
+      '<oor:component-dataoor:package="org.openoffice.Office"oor:name="Common"><nodeoor:name="Security"><nodeoor:name="Scripting"><propoor:name="MacroSecurityLevel"oor:finalized="true"><value>3</value></prop><propoor:name="DisableMacrosExecution"><value>true</value></prop><propoor:name="DisableActiveContent"oor:finalized="true"><value>true</value></prop><propoor:name="BlockUntrustedRefererLinks"oor:finalized="true"><value>true</value></prop><propoor:name="SecureURL"oor:finalized="true"><value/></prop></node></node></oor:component-data>' \
+      '<oor:component-dataoor:package="org.openoffice.Office"oor:name="Writer"><nodeoor:name="Content"><nodeoor:name="Update"><propoor:name="Link"oor:finalized="true"><value>0</value></prop></node></node></oor:component-data>' \
+      '<oor:component-dataoor:package="org.openoffice.Office"oor:name="Calc"><nodeoor:name="Content"><nodeoor:name="Update"><propoor:name="Link"oor:finalized="true"><value>1</value></prop></node></node></oor:component-data>'; do \
+      [[ "${xcd}" == *"${want}"* ]] || { echo "rs-convert-security.xcd lacks ${want}" >&2; exit 1; }; \
+    done
 # Writes /opt/convertd/build-info.json (versions from the pinned args, fonts from fc-list,
 # font_substitutes from fc-match per family in probe-families.txt, and the default substitute).
 # The script stays in the image so a derived font image can run it again.

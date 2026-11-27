@@ -204,6 +204,19 @@ fn check_semantics(expected: &Expected, outcome: &mut Outcome) {
                     }
                 }
             }
+            // `images` answers carry no PDF to read.
+            if case.expect.reads_pdf() && case.output() == "images" {
+                outcome.problems.push(format!(
+                    "{at}: text_present, text_absent and pdf_images need a PDF; output images has none"
+                ));
+            }
+            // An error answer has no PDF, so the assertion could never run.
+            if case.expect.reads_pdf() && !case.expect.status.allows(200) {
+                outcome.problems.push(format!(
+                    "{at}: text_present, text_absent and pdf_images need status 200; status {} has no PDF",
+                    case.expect.status
+                ));
+            }
             for warning in case.expect.warnings.iter().flatten() {
                 let allowed = detail_keys(&warning.code);
                 for key in warning.detail.keys() {

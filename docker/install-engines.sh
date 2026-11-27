@@ -88,6 +88,14 @@ apt-get clean
 rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/* /var/cache/ldconfig/aux-cache \
        /var/cache/debconf/*-old /var/lib/dpkg/*-old
 
+# No setuid or setgid file (ledger item 011, S6): the service never changes its user, so these
+# bits only help an attacker who runs code in the container. The base image ships them on
+# passwd, su, mount and their kin. -xdev keeps the bind mounts of this build out of the walk.
+# The build log lists what was stripped; docker/smoke.sh fails if any bit is back.
+find / -xdev -type f -perm /6000 -print -exec chmod a-s {} +
+left="$(find / -xdev -type f -perm /6000 -print)"
+[[ -z "${left}" ]] || { echo "setuid or setgid files remain: ${left}" >&2; exit 1; }
+
 groupadd --system --gid 10001 convertd
 if [[ "${mode}" == runtime ]]; then
   useradd --system --uid 10001 --gid 10001 --home-dir /tmp --no-create-home \

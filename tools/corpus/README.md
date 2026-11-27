@@ -85,7 +85,7 @@ Each answer must meet these invariants:
 - No page image has an edge longer than `max_edge_px` from `/v1/capabilities`.
 - A page of the manifest has no `hidden` key, or `hidden: true`. The service leaves the key out of a page that it does not mark, so `false` and `null` fail.
 
-Then `check` compares the fields that the expectation gives. For each `FONT_SUBSTITUTED` warning, it also reads the `/BaseFont` names of the PDF: the requested family must be absent, and the claimed substitute must be present. A disagreement points to the `font_substitutes` entry in `build-info.json`.
+Then `check` compares the fields that the expectation gives. For each `FONT_SUBSTITUTED` warning, it also reads the `/BaseFont` names of the PDF: the requested family must be absent, and the claimed substitute must be present. A disagreement points to the `font_substitutes` entry in `build-info.json`. For `text_present` and `text_absent`, it reads the text of every page with lopdf (`src/check/pdftext.rs`), including the text of each Form XObject that a page draws, nested forms too. The comparison ignores white space, because the extraction breaks lines and words at the PDF's own text runs. For `pdf_images`, it counts the image XObjects in the file, and a case with only this field reads no text. A case that has these fields and no PDF fails, and `validate` rejects them on `output` `images` and on a case whose status cannot be 200.
 
 `check` prints `PASS` or `FAIL` for each case, with each failure and the observed value. It prints the observed page count of an `"unrecorded"` case as a note. Then it prints the passed and run cases for each tag. It exits 0 only if every selected case passed.
 

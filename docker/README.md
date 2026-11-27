@@ -23,6 +23,8 @@ The image is `debian:trixie-slim` with only what convertd uses. Each part has a 
 - **PDFium `chromium/8179`** from `bblanchon/pdfium-binaries`, with its `LICENSE` and the third-party licenses in `/opt/pdfium`.
 - **Fonts** that replace the common Office families with metric-compatible free fonts. [Fonts and build-info.json](#fonts-and-build-infojson) gives the set.
 - **Paper locales.** The compiled `en_GB.UTF-8` and `en_US.UTF-8` locales, in `/usr/lib/locale`, without the `locales` package. The workers get `LC_PAPER` from `DEFAULT_PAPER`, and LibreOffice needs this data to read it. LibreOffice reads `LC_PAPER` only while `ooSetupSystemLocale` is empty, and LibreOfficeKit sets it to en-US at start. `libreoffice/rs-convert-paper.xcd` therefore finalizes it as empty at the install layer. The formatting locale stays the system one, en-US. A build gate checks the `.xcd`, and that `LC_PAPER` gives 210 × 297 mm and 216 × 279 mm.
+- **Macro and link lock-down.** `libreoffice/rs-convert-security.xcd` sets these values at the install layer: the highest macro security level (3), macro execution off, active content (OLE and DDE) off, links from untrusted documents blocked, no trusted location (`SecureURL` empty), and link updates "never" in Writer (0) and Calc (1). Every value except one is finalized, so a user profile cannot change it. `DisableMacrosExecution` is not finalized, because LibreOfficeKit commits it as `true` at each load, and a commit to a finalized value makes every load fail. Two checks cover it. The build gate checks only the installed XML. The corpus case `docx-file-links` checks the effective policy: its picture, linked to a local file of the image, must give 0 images in the PDF. LibreOffice 26.8.3.1 under LibreOfficeKit already follows no file link of the corpus with its defaults, so that case also passes without this file. A picture linked to a local file loads only when the configuration trusts its location and sets Writer links to "always", and this file blocks it even then. [What is verified](#what-is-verified) gives the runs.
+- **No setuid or setgid file.** `install-engines.sh` removes these bits from every file, in the product and the dev image, and fails if one remains. The service never changes its user. `smoke.sh` checks the image again.
 - **No network tools.** curl, ca-certificates and procps are not in the product image. All downloads happen in the `engines` build stage.
 - **No documentation.** The dpkg excludes in `dpkg/docs.cfg` drop docs, man pages and message catalogs before dpkg unpacks them. They keep the `copyright` file of each package.
 
@@ -215,19 +217,27 @@ On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a basel
 - **Engine tests:** in the trimmed `dev` image, `engines_office`, `engines_render` and `engines_poison` passed (20 tests, one ignored). Two tests skipped: one needs `CONVERTD_SMALL_DISK`, and one finds no `encrypted/deck20.pptx` in the corpus.
 - **Build and smoke:** `build-info.json` is the same, `lib-check` passes, and `smoke.sh` passes.
 
+On 2026-11-27 the lock-down and the setuid strip (ledger item 011, S2 and S6) passed these gates on arm64, against a baseline image built from `release/0.2` at `1eaf927` without them:
+
+- **Corpus:** `corpus-check.sh` passed 70 of 70 cases on the new image, `docx-file-links` included, with no `ERROR` line in the service log.
+- **Pages:** `ab-pages.sh` gave the same status, page count and page hash for all 48 files and 200 pages of both images.
+- **Smoke:** `smoke.sh` passed all six checks on the new image. On the baseline it failed only the setuid check, which listed the 11 files that the build now strips: `chage`, `chfn`, `chsh`, `expiry`, `gpasswd`, `mount`, `newgrp`, `passwd`, `su` and `umount` in `/usr/bin`, and `/usr/sbin/unix_chkpwd`.
+- **Policy:** with an extra `.xcd` that trusts `file:///` and sets Writer links to "always", `file-links.docx` gave 2 images in the PDF on the baseline and 0 on the new image. Without that file, both gave 0.
+
 The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs by hand, monthly, and on pushes to `main` and pull requests that touch `docker/`, `src/engines/`, `src/worker/`, `src/preflight/`, `corpus/` or `Cargo.lock`. A push compares with the commit before it, and a push with no such commit runs the job. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The run after the trims (45796989297) measured 578 MB on amd64 and 604 MB on arm64. The amd64 image was ready after 764 ms and converted the DOCX in 61 ms. The command:
 
 ```sh
 docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
 ```
 
-`smoke.sh` runs the image with the production limits and checks five things:
+`smoke.sh` runs the image with the production limits and checks six things:
 
 - The image size against the budget. The job uses 635 MB, the measured 605 MB of the arm64 `runtime` image plus 5 %, or the `IMAGE_MAX_MB` variable.
 - The time to ready, and a start with no `WARN` or `ERROR` line in the log.
 - One DOCX to PDF over HTTP. curl must exit 0, the body must have its `Content-Length` and end with `%%EOF`, and `Convert-Page-Count` must be 2. The script prints the conversion time and the `Server-Timing` header.
 - That no job directory is left after the response.
 - That no fontconfig user cache is written.
+- That no file has a setuid or setgid bit. `find` runs as root in a container of its own, so that it can read every folder, and any error of `find` fails the check.
 
 After the smoke test, the job runs `corpus-check.sh`: the `corpus-bench check` of lane 005, every case of `corpus/expected.json`, against the image. The harness runs in a pinned Debian container inside the network namespace of the service. Only there does the canary listener see a connection from LibreOffice. On 2026-11-26 this check passed 59 of 59 cases on the arm64 image by hand. The first automatic image run on `main` (45805165059) passed it on amd64.
 

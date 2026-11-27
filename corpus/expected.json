@@ -2159,6 +2159,46 @@
       ]
     },
     {
+      "id": "docx-file-links",
+      "path": "out/hostile/file-links.docx",
+      "origin": "hostile",
+      "sha256": "71484142cd896c7e480b9cb1346f0cbc77ff4489c9155047c5102f2a94b65c93",
+      "tags": [
+        "hostile",
+        "security"
+      ],
+      "notes": "An INCLUDETEXT field linked to file:///etc/os-release, whose cached result is CACHED FIELD RESULT, and a picture linked through an external relationship (r:link) to file:///opt/libreoffice/program/intro.png. Both files exist in the service image. LibreOffice 26.8.3.1 follows neither link with its defaults, so the case guards the lock-down of docker/libreoffice/rs-convert-security.xcd against a change; it does not prove the lock-down alone. With SecureURL file:/// and Writer Content/Update/Link 2 the picture loads (2 image XObjects).",
+      "preflight": {
+        "format": "docx",
+        "encrypted": false,
+        "declared_pages": null,
+        "requested_fonts": [
+          "Cambria"
+        ],
+        "macros": []
+      },
+      "cases": [
+        {
+          "name": "pdf",
+          "options": {},
+          "expect": {
+            "status": 200,
+            "format": "docx",
+            "page_count": 1,
+            "text_present": [
+              "The engine must read neither.",
+              "CACHED FIELD RESULT"
+            ],
+            "text_absent": [
+              "PRETTY_NAME",
+              "Debian GNU/Linux"
+            ],
+            "pdf_images": 0
+          }
+        }
+      ]
+    },
+    {
       "id": "zip-ratio",
       "path": "out/hostile/zip-ratio.docx",
       "origin": "hostile",
