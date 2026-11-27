@@ -105,12 +105,25 @@ impl AppState {
         let libreoffice = build_info.libreoffice.clone().unwrap_or_else(unknown);
         let pdfium = build_info.pdfium.clone().unwrap_or_else(unknown);
         let settings = output_settings(config);
+        let catalog = FontCatalog::new(
+            build_info.fonts.iter().cloned(),
+            build_info.font_substitutes.clone(),
+            build_info.default_substitute.clone(),
+            load_fonts_file(&config.server.fonts_path).0,
+        )
+        .with_coverage(
+            build_info
+                .coverage
+                .iter()
+                .map(|[start, end]| (*start, *end)),
+        );
         let fingerprint = fingerprint(&FingerprintParts {
             version: SERVICE_VERSION,
             commit: service.commit.as_deref().unwrap_or(""),
             libreoffice: &libreoffice,
             pdfium: &pdfium,
             fonts: &fonts,
+            coverage: catalog.coverage(),
             settings: &settings,
         });
         let engine_info = EngineInfo {
@@ -119,12 +132,6 @@ impl AppState {
             pdfium,
             fingerprint: fingerprint.clone(),
         };
-        let catalog = FontCatalog::new(
-            build_info.fonts.iter().cloned(),
-            build_info.font_substitutes.clone(),
-            build_info.default_substitute.clone(),
-            load_fonts_file(&config.server.fonts_path).0,
-        );
         let capabilities = Capabilities::new(service, engine_info.clone(), &config.limits, fonts);
         // Serialising plain structs of strings and integers cannot fail.
         let capabilities_json = serde_json::to_vec(&capabilities).unwrap_or_default();
@@ -215,6 +222,9 @@ pub struct FingerprintParts<'a> {
     pub libreoffice: &'a str,
     pub pdfium: &'a str,
     pub fonts: &'a [String],
+    /// The merged glyph coverage, which decides `GLYPHS_MISSING`: a face
+    /// can gain characters under the same family name.
+    pub coverage: &'a [(u32, u32)],
     pub settings: &'a [(&'static str, String)],
 }
 
@@ -243,7 +253,8 @@ pub fn output_settings(config: &Config) -> Vec<(&'static str, String)> {
 /// `sha256:` plus the first 12 hex characters of SHA-256 over the service
 /// version, commit, LibreOffice version, PDFium version, the sorted fonts
 /// and each [`output_settings`] entry as `NAME=value`, each followed by
-/// `\n`.
+/// `\n`. A known coverage adds `coverage=` and its ranges as `start-end`
+/// separated by `,`; without one the value is what it was before.
 pub fn fingerprint(parts: &FingerprintParts<'_>) -> String {
     let mut hasher = Sha256::new();
     for part in [parts.version, parts.commit, parts.libreoffice, parts.pdfium] {
@@ -252,6 +263,16 @@ pub fn fingerprint(parts: &FingerprintParts<'_>) -> String {
     }
     for font in parts.fonts {
         hasher.update(font.as_bytes());
+        hasher.update(b"\n");
+    }
+    if !parts.coverage.is_empty() {
+        hasher.update(b"coverage=");
+        for (n, (start, end)) in parts.coverage.iter().enumerate() {
+            if n > 0 {
+                hasher.update(b",");
+            }
+            hasher.update(format!("{start}-{end}").as_bytes());
+        }
         hasher.update(b"\n");
     }
     for (name, value) in parts.settings {
@@ -290,6 +311,7 @@ mod tests {
             libreoffice: "unknown",
             pdfium: "unknown",
             fonts,
+            coverage: &[],
             settings,
         }
     }
@@ -304,6 +326,17 @@ mod tests {
         let b = fingerprint(&parts(&["Carlito".into()], &defaults));
         assert_ne!(a, b);
         assert_eq!(a, fingerprint(&parts(&[], &defaults)));
+        // So does the glyph coverage.
+        let covered = FingerprintParts {
+            coverage: &[(32, 126)],
+            ..parts(&[], &defaults)
+        };
+        let wider = FingerprintParts {
+            coverage: &[(32, 591)],
+            ..parts(&[], &defaults)
+        };
+        assert_ne!(a, fingerprint(&covered));
+        assert_ne!(fingerprint(&covered), fingerprint(&wider));
         // Every setting that changes the output bytes changes it too.
         for (name, value) in [
             ("MAX_DPI", "200"),

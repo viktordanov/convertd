@@ -1123,13 +1123,14 @@
       },
       "WarningCode": {
         "type": "string",
-        "description": "- `FONT_SUBSTITUTED`: a font the document asks for is not installed.\n  `detail.substitute` is the font that the image's fontconfig picked\n  for it when the image was built, not one read from the PDF.\n  Text may reflow. `detail` has `requested` and `substitute`.\n- `PAGE_COUNT_MISMATCH`: the PDF has a different number of pages than\n  the source declares. `detail` has `expected` and `actual`.\n- `BLANK_PAGE`: a page that contains content rendered as a flat colour.\n- `MACROS_IGNORED`: the document contains macros. They were not run.\n- `RENDER_CLAMPED`: a server limit reduced the requested resolution.\n  `detail` has `requested_dpi` and `effective_dpi`.",
+        "description": "- `FONT_SUBSTITUTED`: a font the document asks for is not installed.\n  `detail.substitute` is the font that the image's fontconfig picked\n  for it when the image was built, not one read from the PDF.\n  Text may reflow. `detail` has `requested` and `substitute`.\n- `PAGE_COUNT_MISMATCH`: the PDF has a different number of pages than\n  the source declares. `detail` has `expected` and `actual`.\n- `BLANK_PAGE`: a page that contains content rendered as a flat colour.\n- `MACROS_IGNORED`: the document contains macros. They were not run.\n- `RENDER_CLAMPED`: a server limit reduced the requested resolution.\n  `detail` has `requested_dpi` and `effective_dpi`.\n- `GLYPHS_MISSING`: the text has characters that no installed font\n  covers; they render as boxes or not at all. `detail` has `missing`\n  (the count), `code_points` (the first 8, as `U+0E01`) and `scripts`\n  (a count per script, such as `{\"Thai\": 12}`).",
         "enum": [
           "FONT_SUBSTITUTED",
           "PAGE_COUNT_MISMATCH",
           "BLANK_PAGE",
           "MACROS_IGNORED",
-          "RENDER_CLAMPED"
+          "RENDER_CLAMPED",
+          "GLYPHS_MISSING"
         ]
       }
     },

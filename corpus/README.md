@@ -5,7 +5,7 @@ The corpus is the set of test files for rs-convert, and `expected.json` records 
 Know these facts before you change anything here:
 
 - The repository commits the generator, the expectations and three small fixtures, not the test files. `corpus/generate.py` writes the files into `corpus/out/`, which git ignores.
-- `expected.json` pins a SHA-256 for 41 of the 44 files that `generate.py` writes. Linux arm64, macOS arm64 and Linux amd64 (the `corpus` workflow on `ubuntu-24.04`) gave the same bytes for the first 39. The hashes of `pptx-hidden3` and `odp-hidden` come from macOS arm64, and the `corpus` workflow checks them on its next run.
+- `expected.json` pins a SHA-256 for 44 of the 47 files that `generate.py` writes. Linux arm64, macOS arm64 and Linux amd64 (the `corpus` workflow on `ubuntu-24.04`) gave the same bytes for the first 39. The hashes of `pptx-hidden3`, `odp-hidden` and the three `docx-glyphs-*` files come from macOS arm64, and the `corpus` workflow checks them on its next run.
 - Private documents never enter the repository. Git ignores `corpus/private/`.
 
 ## Contents

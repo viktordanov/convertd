@@ -447,6 +447,144 @@
       ]
     },
     {
+      "id": "docx-glyphs-missing",
+      "path": "out/docx/glyphs-missing.docx",
+      "origin": "generated",
+      "sha256": "20a10c801377b6c10f69610cc3ccb0ae1be2eb4961a79521f665e82dff5d15d1",
+      "tags": [
+        "fonts"
+      ],
+      "notes": "One paragraph with three Cuneiform signs (U+12000 to U+12002), which no font in the image covers. GLYPHS positive: the coverage in build-info.json lacks them.",
+      "preflight": {
+        "format": "docx",
+        "encrypted": false,
+        "declared_pages": null,
+        "requested_fonts": [
+          "Cambria"
+        ],
+        "macros": []
+      },
+      "cases": [
+        {
+          "name": "bundle",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "docx",
+            "family": "document",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": 1,
+            "warnings": [
+              {
+                "code": "GLYPHS_MISSING",
+                "detail": {
+                  "missing": 3,
+                  "code_points": [
+                    "U+12000",
+                    "U+12001",
+                    "U+12002"
+                  ],
+                  "scripts": {
+                    "Cuneiform": 3
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "docx-glyphs-thai",
+      "path": "out/docx/glyphs-thai.docx",
+      "origin": "generated",
+      "sha256": "8075e3124be84986724840263083fef144c1c8938b6ae32d5e68f577f3aaecbb",
+      "tags": [
+        "fonts"
+      ],
+      "notes": "One paragraph of Thai, which Noto Sans Thai covers. GLYPHS negative.",
+      "preflight": {
+        "format": "docx",
+        "encrypted": false,
+        "declared_pages": null,
+        "requested_fonts": [
+          "Cambria"
+        ],
+        "macros": []
+      },
+      "cases": [
+        {
+          "name": "bundle",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "docx",
+            "family": "document",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": 1,
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "docx-glyphs-cjk",
+      "path": "out/docx/glyphs-cjk.docx",
+      "origin": "generated",
+      "sha256": "58f1741eb0dabdd8ad39e90389abb05fe146570fe2cbeb3b8aa4cf99646703f1",
+      "tags": [
+        "fonts"
+      ],
+      "notes": "One paragraph of Chinese, Japanese kana and Korean Hangul, which WenQuanYi Micro Hei covers. GLYPHS negative for the CJK fallback.",
+      "preflight": {
+        "format": "docx",
+        "encrypted": false,
+        "declared_pages": null,
+        "requested_fonts": [
+          "Cambria"
+        ],
+        "macros": []
+      },
+      "cases": [
+        {
+          "name": "bundle",
+          "options": {
+            "output": "bundle",
+            "images": {
+              "format": "png",
+              "dpi": 50,
+              "max_edge": 1024
+            }
+          },
+          "expect": {
+            "status": 200,
+            "format": "docx",
+            "family": "document",
+            "encrypted": false,
+            "pdf_origin": "converted",
+            "page_count": 1,
+            "warnings": []
+          }
+        }
+      ]
+    },
+    {
       "id": "docx-encrypted",
       "path": "out/docx/encrypted.docx",
       "origin": "generated",

@@ -320,9 +320,17 @@ impl OfficeEngine for FakeOffice {
         // The real pre-flight, as the office worker runs it (INTERFACES §13),
         // timed the same way.
         let (input, family) = (job.input.clone(), job.family);
+        let printed = crate::preflight::Printed {
+            notes: job.export.notes != crate::domain::conversion::SlideNotes::None,
+            hidden_slides: job.export.include_hidden_slides,
+            hidden_sheets: job.export.one_page_per_sheet,
+        };
         let (facts, preflight) = tokio::task::spawn_blocking(move || {
             let scanned = Instant::now();
-            (crate::preflight::scan(&input, family), scanned.elapsed())
+            (
+                crate::preflight::scan(&input, family, printed),
+                scanned.elapsed(),
+            )
         })
         .await
         .map_err(|err| EngineError::Internal(format!("fake pre-flight: {err}")))?;

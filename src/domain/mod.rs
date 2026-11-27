@@ -9,4 +9,5 @@ pub mod limits;
 pub mod pages;
 pub mod readiness;
 pub mod secret;
+pub mod text;
 pub mod verification;

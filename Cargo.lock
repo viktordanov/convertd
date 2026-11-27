@@ -341,6 +341,7 @@ dependencies = [
  "futures-util",
  "http",
  "http-body",
+ "icu_properties",
  "image",
  "jpeg-encoder",
  "libc",

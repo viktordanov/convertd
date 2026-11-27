@@ -252,6 +252,7 @@ func (e SlideNotes) Valid() bool {
 const (
 	BLANKPAGE         WarningCode = "BLANK_PAGE"
 	FONTSUBSTITUTED   WarningCode = "FONT_SUBSTITUTED"
+	GLYPHSMISSING     WarningCode = "GLYPHS_MISSING"
 	MACROSIGNORED     WarningCode = "MACROS_IGNORED"
 	PAGECOUNTMISMATCH WarningCode = "PAGE_COUNT_MISMATCH"
 	RENDERCLAMPED     WarningCode = "RENDER_CLAMPED"
@@ -263,6 +264,8 @@ func (e WarningCode) Valid() bool {
 	case BLANKPAGE:
 		return true
 	case FONTSUBSTITUTED:
+		return true
+	case GLYPHSMISSING:
 		return true
 	case MACROSIGNORED:
 		return true
@@ -699,6 +702,10 @@ type Warning struct {
 	// - `MACROS_IGNORED`: the document contains macros. They were not run.
 	// - `RENDER_CLAMPED`: a server limit reduced the requested resolution.
 	//   `detail` has `requested_dpi` and `effective_dpi`.
+	// - `GLYPHS_MISSING`: the text has characters that no installed font
+	//   covers; they render as boxes or not at all. `detail` has `missing`
+	//   (the count), `code_points` (the first 8, as `U+0E01`) and `scripts`
+	//   (a count per script, such as `{"Thai": 12}`).
 	Code WarningCode `json:"code"`
 
 	// Detail Structured data for the warning. Its keys depend on `code`.
@@ -722,6 +729,10 @@ type Warning struct {
 //	  - `MACROS_IGNORED`: the document contains macros. They were not run.
 //	  - `RENDER_CLAMPED`: a server limit reduced the requested resolution.
 //	    `detail` has `requested_dpi` and `effective_dpi`.
+//	  - `GLYPHS_MISSING`: the text has characters that no installed font
+//	    covers; they render as boxes or not at all. `detail` has `missing`
+//	    (the count), `code_points` (the first 8, as `U+0E01`) and `scripts`
+//	    (a count per script, such as `{"Thai": 12}`).
 type WarningCode string
 
 // BadRequest defines model for BadRequest.

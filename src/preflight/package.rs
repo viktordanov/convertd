@@ -24,9 +24,19 @@ pub enum XmlEvent<'a, 'b> {
     Start(&'a BytesStart<'b>),
     Empty(&'a BytesStart<'b>),
     End,
-    /// Character data that is not only white space, a CDATA section or
-    /// an entity or character reference.
-    Text,
+    /// Character data: the decoded text of a text node or a CDATA
+    /// section, or what a character or predefined entity reference stands
+    /// for. `stray` is true unless it is only white space in a text node;
+    /// outside the root such data is not XML.
+    Text {
+        text: &'a str,
+        stray: bool,
+    },
+    /// Character data whose text is unknown: it cannot be decoded, or it
+    /// is a reference that XML does not define (a DTD entity, which is
+    /// never expanded). A scan that needs the text treats the part as
+    /// unreadable; outside the root it is stray data, as `Text` is.
+    Unresolved,
 }
 
 pub struct Package {
@@ -74,7 +84,7 @@ impl Package {
     ) -> Result<u64, SkipReason> {
         self.xml_events(name, cap, |event| match event {
             XmlEvent::Start(e) | XmlEvent::Empty(e) => on_start(e),
-            XmlEvent::End | XmlEvent::Text => true,
+            XmlEvent::End | XmlEvent::Text { .. } | XmlEvent::Unresolved => true,
         })
     }
 
@@ -105,11 +115,43 @@ impl Package {
                 Ok(Event::Start(e)) => on_event(XmlEvent::Start(&e)),
                 Ok(Event::Empty(e)) => on_event(XmlEvent::Empty(&e)),
                 Ok(Event::End(_)) => on_event(XmlEvent::End),
-                Ok(Event::Text(t)) if t.iter().any(|b| !b.is_ascii_whitespace()) => {
-                    on_event(XmlEvent::Text)
-                }
+                // Character data that cannot be decoded, or a reference that
+                // XML does not define, is `Unresolved`: a text scan must not
+                // take a part with dropped text for a whole one.
+                Ok(Event::Text(t)) => match t.decode() {
+                    Ok(text) => on_event(XmlEvent::Text {
+                        stray: text.chars().any(|c| !c.is_ascii_whitespace()),
+                        text: &text,
+                    }),
+                    Err(_) => on_event(XmlEvent::Unresolved),
+                },
+                Ok(Event::CData(c)) => match c.decode() {
+                    Ok(text) => on_event(XmlEvent::Text {
+                        text: &text,
+                        stray: true,
+                    }),
+                    Err(_) => on_event(XmlEvent::Unresolved),
+                },
                 // An entity or character reference is character data too.
-                Ok(Event::CData(_) | Event::GeneralRef(_)) => on_event(XmlEvent::Text),
+                Ok(Event::GeneralRef(r)) => {
+                    let mut utf8 = [0u8; 4];
+                    let text: Option<&str> = match r.resolve_char_ref() {
+                        Ok(Some(c)) => Some(c.encode_utf8(&mut utf8)),
+                        Ok(None) => match &*r {
+                            b"amp" => Some("&"),
+                            b"lt" => Some("<"),
+                            b"gt" => Some(">"),
+                            b"quot" => Some("\""),
+                            b"apos" => Some("'"),
+                            _ => None,
+                        },
+                        Err(_) => None,
+                    };
+                    match text {
+                        Some(text) => on_event(XmlEvent::Text { text, stray: true }),
+                        None => on_event(XmlEvent::Unresolved),
+                    }
+                }
                 Ok(Event::Eof) => break Ok(()),
                 Ok(_) => true,
                 Err(_) if count.get() > cap => break Err(SkipReason::CapReached),
@@ -234,8 +276,11 @@ impl Package {
                     return true;
                 }
                 // Text outside the root is not XML.
-                XmlEvent::Text => {
+                XmlEvent::Text { stray: true, .. } | XmlEvent::Unresolved => {
                     malformed |= open == 0;
+                    return !malformed;
+                }
+                XmlEvent::Text { .. } => {
                     return !malformed;
                 }
             };

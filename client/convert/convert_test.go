@@ -114,6 +114,9 @@ func testManifest(withPDF bool) map[string]any {
 			{"code": "FONT_SUBSTITUTED", "message": "Aptos was replaced by Carlito",
 				"detail": map[string]any{"requested": "Aptos", "substitute": "Carlito"}},
 			{"code": "BLANK_PAGE", "message": "page 2 is blank", "page": 2},
+			{"code": "GLYPHS_MISSING", "message": "2 characters have no font in this image: Thai 2",
+				"detail": map[string]any{"missing": 2, "code_points": []string{"U+0E01", "U+0E32"},
+					"scripts": map[string]any{"Thai": 2}}},
 		},
 		"engine": map[string]any{
 			"service_version": "1.0.0", "libreoffice": "26.8.3.2", "pdfium": "8125",
@@ -317,7 +320,7 @@ func TestConvertToBundle(t *testing.T) {
 
 	t.Run("reads the warnings", func(t *testing.T) {
 		w := bundle.Manifest.Warnings
-		if len(w) != 2 {
+		if len(w) != 3 {
 			t.Fatalf("warnings = %+v", w)
 		}
 		if w[0].Code != "FONT_SUBSTITUTED" || w[0].Page != 0 || w[0].Detail["requested"] != "Aptos" {
@@ -325,6 +328,12 @@ func TestConvertToBundle(t *testing.T) {
 		}
 		if w[1].Code != "BLANK_PAGE" || w[1].Page != 2 || w[1].Detail != nil {
 			t.Errorf("warning 1 = %+v", w[1])
+		}
+		// GLYPHS_MISSING carries an array and an object in its detail.
+		points, _ := w[2].Detail["code_points"].([]any)
+		scripts, _ := w[2].Detail["scripts"].(map[string]any)
+		if w[2].Code != "GLYPHS_MISSING" || len(points) != 2 || points[0] != "U+0E01" || scripts["Thai"] != float64(2) {
+			t.Errorf("warning 2 = %+v", w[2])
 		}
 	})
 

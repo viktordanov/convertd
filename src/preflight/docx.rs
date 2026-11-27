@@ -19,7 +19,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use quick_xml::events::BytesStart;
 
 use super::package::{Package, XmlEvent, attr, attr_prefixed, attributes_ok, rels_path, resolve};
-use super::{FONT_SCAN_CAP, PART_CAP, add_font};
+use super::{FONT_SCAN_CAP, PART_CAP, TextCollector, TextScope, add_font};
 use crate::domain::verification::{Check, SkipReason, SourceFacts};
 
 /// At most this many styles are kept.
@@ -87,7 +87,12 @@ struct Style {
     fonts: Vec<String>,
 }
 
-pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &mut SourceFacts) {
+pub(super) fn scan(
+    package: &mut Package,
+    fonts: &mut BTreeSet<String>,
+    text: &mut TextCollector,
+    facts: &mut SourceFacts,
+) {
     let main = main_part(package).unwrap_or_else(|| "word/document.xml".to_owned());
     // One complete read of the main part's relationships serves the theme,
     // the styles, the headers, the notes and the font table. When it
@@ -100,7 +105,11 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
                 let table = font_table(&rels);
                 (rels, Ok(table))
             }
-            Err(reason) => (Default::default(), Err(reason)),
+            Err(reason) => {
+                // Only the main part's text can be found.
+                facts.skipped.push((Check::Glyphs, reason));
+                (Default::default(), Err(reason))
+            }
         }
     } else {
         (Default::default(), Ok(None))
@@ -122,10 +131,16 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
     let theme = theme_fonts(package, &theme_part);
 
     // The parts with runs: the main part, then headers, footers, notes.
+    // The same pass reads their text: `w:t`, and `a:t` and `m:t` in
+    // shapes and equations; not `w:delText` or `w:instrText`.
     let mut parts = vec![main.clone()];
     let mut headers_footers: Vec<String> = target("/header");
     headers_footers.extend(target("/footer"));
     headers_footers.sort();
+    if headers_footers.len() > MAX_HEADERS_FOOTERS {
+        // The text of the parts past the cap is not read.
+        facts.skipped.push((Check::Glyphs, SkipReason::CapReached));
+    }
     headers_footers.truncate(MAX_HEADERS_FOOTERS);
     parts.extend(headers_footers);
     parts.extend(target("/footnotes"));
@@ -134,7 +149,14 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
     let mut found = BTreeSet::new();
     let mut referenced: HashSet<String> = HashSet::new();
     for part in &parts {
-        let result = package.xml(part, budget, |e| {
+        let mut scope = TextScope::new(&[b"t"], None, &[]);
+        let result = package.xml_events(part, budget, |event| {
+            if let Some(drawn) = scope.on(&event) {
+                text.add(drawn);
+            }
+            let (XmlEvent::Start(e) | XmlEvent::Empty(e)) = event else {
+                return true;
+            };
             match e.local_name().as_ref() {
                 b"rFonts" => {
                     for name in rfonts(e, &theme) {
@@ -153,11 +175,23 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
             true
         });
         match result {
-            Ok(read) => budget = budget.saturating_sub(read),
-            // Headers and notes are optional; the main part is not.
-            Err(SkipReason::MissingPart) if part != &main => {}
+            Ok(read) => {
+                budget = budget.saturating_sub(read);
+                if let Err(reason) = scope.complete() {
+                    facts.skipped.push((Check::Glyphs, reason));
+                }
+            }
+            // Headers and notes are optional; the main part is not. A
+            // linked part that is present but cannot be opened leaves the
+            // text unknown.
+            Err(SkipReason::MissingPart) if part != &main => {
+                if package.has(part) {
+                    facts.skipped.push((Check::Glyphs, SkipReason::MissingPart));
+                }
+            }
             Err(reason) => {
                 facts.skipped.push((Check::Fonts, reason));
+                facts.skipped.push((Check::Glyphs, reason));
                 return;
             }
         }
@@ -295,8 +329,9 @@ fn embedded_fonts(
                 return true;
             }
             // Text outside the root is not XML.
-            XmlEvent::Text => {
-                if open == 0 {
+            XmlEvent::Text { .. } | XmlEvent::Unresolved => {
+                let stray = !matches!(event, XmlEvent::Text { stray: false, .. });
+                if stray && open == 0 {
                     second_root = true;
                     return false;
                 }

@@ -15,6 +15,18 @@
 //! and a property applies only inside the open style that holds it. Past
 //! 256 open namespace declarations the list is unknown, so a name lookup
 //! stays bounded.
+//!
+//! The same pass reads the text: `office:body` in `content.xml` and
+//! `office:master-styles` (headers and footers) in `styles.xml`, without
+//! annotations, tracked changes and the alternative text of frames
+//! (`svg:title`, `svg:desc` by namespace), which are not printed.
+//! Presentation notes count when the request exports notes pages. A page
+//! that the slide list marks hidden counts only when the export includes
+//! hidden slides: `content.xml` is then read again for its text, since the
+//! list is known only after `styles.xml`; when that read does not find the
+//! same pages, or there is no list, every page counts. A sheet with
+//! `table:display="false"` on its element is printed only when the export
+//! puts each sheet on one page.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -22,7 +34,7 @@ use quick_xml::events::BytesStart;
 
 use super::package::{Package, XmlEvent, attr};
 use super::pptx::MAX_SLIDES;
-use super::{PART_CAP, add_font};
+use super::{PART_CAP, Printed, TextCollector, TextScope, add_font};
 use crate::domain::document::Family;
 use crate::domain::verification::{Check, MacroFact, MacroKind, SkipReason, Slides, SourceFacts};
 
@@ -225,7 +237,7 @@ impl Deck {
                     }
                 }
             }
-            XmlEvent::Text => {}
+            XmlEvent::Text { .. } | XmlEvent::Unresolved => {}
         }
     }
 
@@ -409,18 +421,36 @@ impl Deck {
     }
 }
 
-pub(super) fn scan(package: &mut Package, family: Family, facts: &mut SourceFacts) {
+/// Elements whose text is not printed, notes pages included.
+const NOT_PRINTED: &[&[u8]] = &[b"annotation", b"tracked-changes", b"notes"];
+/// The same when the request exports notes pages.
+const NOT_PRINTED_WITH_NOTES: &[&[u8]] = &[b"annotation", b"tracked-changes"];
+/// The alternative text of frames, by namespace.
+const SVG: &[u8] = b"urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0";
+const ALT_TEXT: &[(&[u8], &[u8])] = &[(SVG, b"title"), (SVG, b"desc")];
+
+pub(super) fn scan(
+    package: &mut Package,
+    family: Family,
+    text: &mut TextCollector,
+    printed: Printed,
+    facts: &mut SourceFacts,
+) {
     facts.macros = macros(package);
     let mut found = BTreeSet::new();
     let mut deck = (family == Family::Presentation).then(Deck::default);
     let mut read_all = true;
+    // The text of content.xml, apart: it may be read again without the
+    // hidden pages.
+    let mut body = TextCollector::new();
     for part in ["content.xml", "styles.xml"] {
         let content = part == "content.xml";
         if let Some(deck) = deck.as_mut() {
             deck.start_part();
         }
-        let result = package.xml_events(part, PART_CAP, |event| {
-            if let XmlEvent::Start(e) | XmlEvent::Empty(e) = &event
+        let collector = if content { &mut body } else { &mut *text };
+        let result = read_text(package, part, printed, &[], collector, |event| {
+            if let XmlEvent::Start(e) | XmlEvent::Empty(e) = event
                 && e.local_name().as_ref() == b"font-face"
                 && let Some(family) = attr(e, b"font-family")
             {
@@ -428,16 +458,26 @@ pub(super) fn scan(package: &mut Package, family: Family, facts: &mut SourceFact
                 add_font(&mut found, family.trim().trim_matches(['\'', '"']));
             }
             if let Some(deck) = deck.as_mut() {
-                deck.on_event(content, &event);
+                deck.on_event(content, event);
             }
-            true
         });
         match result {
-            Ok(_) => {}
-            Err(SkipReason::MissingPart) if !content => {}
-            Err(SkipReason::MissingPart) => read_all = false,
+            Ok(Ok(_)) => {}
+            Ok(Err(reason)) => facts.skipped.push((Check::Glyphs, reason)),
+            // A styles part that is truly absent has no text; one that is
+            // present but cannot be opened, or no content part, leaves the
+            // text unknown.
+            Err(SkipReason::MissingPart) if !content && !package.has(part) => {}
+            Err(SkipReason::MissingPart) if !content => {
+                facts.skipped.push((Check::Glyphs, SkipReason::MissingPart));
+            }
+            Err(SkipReason::MissingPart) => {
+                read_all = false;
+                facts.skipped.push((Check::Glyphs, SkipReason::MissingPart));
+            }
             Err(reason) => {
                 facts.skipped.push((Check::Fonts, reason));
+                facts.skipped.push((Check::Glyphs, reason));
                 return;
             }
         }
@@ -446,6 +486,95 @@ pub(super) fn scan(package: &mut Package, family: Family, facts: &mut SourceFact
     if read_all {
         facts.slides = deck.and_then(|deck| deck.slides());
     }
+    if !printed.hidden_slides
+        && let Some(slides) = facts.slides.as_ref()
+        && !slides.hidden.is_empty()
+    {
+        let mut visible = TextCollector::new();
+        match read_text(
+            package,
+            "content.xml",
+            printed,
+            &slides.hidden,
+            &mut visible,
+            |_| {},
+        ) {
+            Ok(Ok(pages)) if pages == slides.count => body = visible,
+            // Other pages than the list's: every page counts.
+            Ok(Ok(_)) => {}
+            Ok(Err(reason)) | Err(reason) => facts.skipped.push((Check::Glyphs, reason)),
+        }
+    }
+    text.absorb(body);
+}
+
+/// Reads the printed text of `part` into `text`, leaving out the pages at
+/// the 1-based positions `hidden` (sorted), and passes every event to
+/// `also`. The outer error is a part that cannot be read; the inner one a
+/// part that does not read as a whole for the text. Returns the number of
+/// `draw:page` children of `office:body/office:presentation`.
+fn read_text(
+    package: &mut Package,
+    part: &str,
+    printed: Printed,
+    hidden: &[u32],
+    text: &mut TextCollector,
+    mut also: impl FnMut(&XmlEvent<'_, '_>),
+) -> Result<Result<u32, SkipReason>, SkipReason> {
+    let content = part == "content.xml";
+    // The master pages' notes are a template, never printed as such.
+    let skip = if printed.notes && content {
+        NOT_PRINTED_WITH_NOTES
+    } else {
+        NOT_PRINTED
+    };
+    let within: &'static [u8] = if content { b"body" } else { b"master-styles" };
+    let mut scope = TextScope::new(&[], Some(within), skip).skipping_ns(ALT_TEXT);
+    let (mut depth, mut in_body, mut in_deck, mut pages) = (0usize, false, false, 0u32);
+    package.xml_events(part, PART_CAP, |event| {
+        if let Some(drawn) = scope.on(&event) {
+            text.add(drawn);
+        }
+        also(&event);
+        match event {
+            XmlEvent::Start(e) | XmlEvent::Empty(e) => {
+                let opens = matches!(event, XmlEvent::Start(_));
+                match (depth, e.local_name().as_ref()) {
+                    (1, b"body") => in_body = opens,
+                    (2, b"presentation") if in_body => in_deck = opens,
+                    (3, b"page") if in_deck => {
+                        pages = pages.saturating_add(1);
+                        if opens && hidden.binary_search(&pages).is_ok() {
+                            scope.skip_current();
+                        }
+                    }
+                    // One page per sheet prints hidden sheets too.
+                    (_, b"table")
+                        if opens
+                            && !printed.hidden_sheets
+                            && attr(e, b"display").as_deref() == Some("false") =>
+                    {
+                        scope.skip_current();
+                    }
+                    _ => {}
+                }
+                if opens {
+                    depth += 1;
+                }
+            }
+            XmlEvent::End => {
+                depth = depth.saturating_sub(1);
+                match depth {
+                    2 => in_deck = false,
+                    1 => in_body = false,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        true
+    })?;
+    Ok(scope.complete().map(|()| pages))
 }
 
 /// A `Basic/<lib>/<module>.xml` entry other than `script-lb.xml`,

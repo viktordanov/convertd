@@ -341,11 +341,42 @@ pub struct SourceFactsWire {
     /// Families the source embeds (DOCX font table).
     #[serde(default)]
     pub embedded_fonts: Vec<String>,
+    /// The distinct text code points that need a glyph, sorted, at most
+    /// `MAX_CODE_POINTS` (`GLYPHS_MISSING`). Decoding keeps only the first
+    /// `MAX_CODE_POINTS` values in the field, so the supervisor never sorts
+    /// or keeps more. Peak decode memory is bounded by the frame limit, as
+    /// for every other list in a reply: `Response` is internally tagged, so
+    /// serde buffers the fields before this visitor runs.
+    #[serde(default, deserialize_with = "bounded_code_points")]
+    pub text_code_points: Vec<u32>,
     pub macros: Option<MacroFactWire>,
     /// The slides in show order and the hidden ones (presentations).
     #[serde(default)]
     pub slides: Option<SlidesWire>,
     pub skipped: Vec<(CheckWire, SkipReasonWire)>,
+}
+
+/// Reads a sequence of `u32`, keeping the first `MAX_CODE_POINTS` and
+/// reading past the rest without storing it.
+fn bounded_code_points<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<u32>, D::Error> {
+    struct Bounded;
+    impl<'de> serde::de::Visitor<'de> for Bounded {
+        type Value = Vec<u32>;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a list of code points")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u32>, A::Error> {
+            let limit = crate::domain::verification::MAX_CODE_POINTS;
+            let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(limit));
+            while let Some(cp) = seq.next_element::<u32>()? {
+                if out.len() < limit {
+                    out.push(cp);
+                }
+            }
+            Ok(out)
+        }
+    }
+    de.deserialize_seq(Bounded)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -383,6 +414,7 @@ pub enum CheckWire {
     PageCount,
     Fonts,
     Macros,
+    Glyphs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

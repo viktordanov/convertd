@@ -18,6 +18,11 @@ pub struct BuildInfo {
     pub font_substitutes: BTreeMap<String, String>,
     #[serde(default)]
     pub default_substitute: Option<String>,
+    /// The code point ranges that the installed faces cover, as
+    /// `[[start, end], ...]` (inclusive), from `fc-list :charset` at build
+    /// time. Empty when absent, as outside the image.
+    #[serde(default)]
+    pub coverage: Vec<[u32; 2]>,
 }
 
 impl BuildInfo {

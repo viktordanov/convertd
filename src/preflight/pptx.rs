@@ -20,14 +20,20 @@
 //! V2 reads `a:latin@typeface` from the slides, and from only the layouts
 //! and masters that a slide reaches (slide to layout to master).
 //! `+mj-lt` and `+mn-lt` resolve through the theme of the reached master.
+//!
+//! The text is the `a:t` of the slides that the export prints: a slide
+//! that `SourceFacts::slides` marks hidden only when it includes hidden
+//! slides (with no slide list, every slide counts), and each printed
+//! slide's notes page only when it exports notes pages. Layout and master
+//! text is mostly placeholder prompts, which are not drawn.
 
 use std::collections::{BTreeSet, HashMap};
 
 use super::docx::{ThemeFonts, main_part, theme_fonts};
 use quick_xml::events::BytesStart;
 
-use super::package::{Package, XmlEvent, attr};
-use super::{FONT_SCAN_CAP, PART_CAP, add_font};
+use super::package::{Package, XmlEvent, attr, rels_path};
+use super::{FONT_SCAN_CAP, PART_CAP, Printed, TextCollector, TextScope, add_font};
 use crate::domain::verification::{Check, DeclaredPages, SkipReason, Slides, SourceFacts};
 
 /// At most this many slides are counted and scanned.
@@ -43,13 +49,20 @@ struct PartFonts {
     minor: bool,
 }
 
-pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &mut SourceFacts) {
+pub(super) fn scan(
+    package: &mut Package,
+    fonts: &mut BTreeSet<String>,
+    text: &mut TextCollector,
+    printed: Printed,
+    facts: &mut SourceFacts,
+) {
     let main = main_part(package).unwrap_or_else(|| SOURCE.to_owned());
     let rels = match package.rels(&main) {
         Ok(rels) => rels,
         Err(reason) => {
             facts.skipped.push((Check::PageCount, reason));
             facts.skipped.push((Check::Fonts, reason));
+            facts.skipped.push((Check::Glyphs, reason));
             return;
         }
     };
@@ -57,6 +70,7 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
     if let Err(reason) = package.xml_events(&main, PART_CAP, |event| list.on_event(&event)) {
         facts.skipped.push((Check::PageCount, reason));
         facts.skipped.push((Check::Fonts, reason));
+        facts.skipped.push((Check::Glyphs, reason));
         return;
     }
     if list.unknown {
@@ -65,6 +79,9 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
             .skipped
             .push((Check::PageCount, SkipReason::MalformedXml));
         facts.skipped.push((Check::Fonts, SkipReason::MalformedXml));
+        facts
+            .skipped
+            .push((Check::Glyphs, SkipReason::MalformedXml));
         return;
     }
     let SlideList { ids, too_many, .. } = list;
@@ -89,12 +106,16 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
                 } else {
                     visible += 1;
                 }
-                slides.push(target.clone());
+                slides.push((position, target.clone()));
             }
             Err(reason) => {
                 page_skip.get_or_insert(reason);
             }
         }
+    }
+    // A slide that was not read is not read for text either.
+    if let Some(reason) = page_skip {
+        facts.skipped.push((Check::Glyphs, reason));
     }
     match page_skip {
         Some(reason) => facts.skipped.push((Check::PageCount, reason)),
@@ -115,7 +136,17 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
     let mut themes: HashMap<String, ThemeFonts> = HashMap::new();
     let mut budget = FONT_SCAN_CAP;
     let mut found = BTreeSet::new();
-    for slide in &slides {
+    // E4's slide list decides which slides are hidden; without one, every
+    // slide's text counts (a spurious warning at worst, never a missed one).
+    let hidden: Vec<u32> = facts
+        .slides
+        .as_ref()
+        .map(|s| s.hidden.clone())
+        .unwrap_or_default();
+    let mut notes_budget = FONT_SCAN_CAP;
+    let mut notes_failed = false;
+    for (position, slide) in &slides {
+        let printed_slide = printed.hidden_slides || hidden.binary_search(position).is_err();
         let layout = related(package, slide, "/slideLayout");
         let master = layout
             .as_deref()
@@ -132,16 +163,21 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
         };
         for part in [Some(slide.clone()), layout, master].into_iter().flatten() {
             if !cache.contains_key(&part) {
-                match latin_fonts(package, &part, budget) {
-                    Ok((part_fonts, read)) => {
+                let slide_text = (part == *slide && printed_slide).then_some(&mut *text);
+                match latin_fonts(package, &part, budget, slide_text) {
+                    Ok((part_fonts, read, complete)) => {
                         budget = budget.saturating_sub(read);
                         cache.insert(part.clone(), part_fonts);
+                        if let Err(reason) = complete {
+                            facts.skipped.push((Check::Glyphs, reason));
+                        }
                     }
                     Err(SkipReason::MissingPart) => {
                         cache.insert(part.clone(), PartFonts::default());
                     }
                     Err(reason) => {
                         facts.skipped.push((Check::Fonts, reason));
+                        facts.skipped.push((Check::Glyphs, reason));
                         return;
                     }
                 }
@@ -161,6 +197,15 @@ pub(super) fn scan(package: &mut Package, fonts: &mut BTreeSet<String>, facts: &
                     add_font(&mut found, name);
                 }
             }
+        }
+        // After one failure the glyph check is skipped: no more notes.
+        if printed.notes
+            && printed_slide
+            && !notes_failed
+            && let Err(reason) = notes_text(package, slide, &mut notes_budget, text)
+        {
+            notes_failed = true;
+            facts.skipped.push((Check::Glyphs, reason));
         }
     }
     fonts.extend(found);
@@ -269,7 +314,7 @@ impl SlideList {
                     self.in_compat = false;
                 }
             }
-            XmlEvent::Text => {}
+            XmlEvent::Text { .. } | XmlEvent::Unresolved => {}
         }
         true
     }
@@ -348,6 +393,41 @@ impl SlideList {
     }
 }
 
+/// Adds the `a:t` of `slide`'s notes page, found through the slide's
+/// complete relationships, under its own budget so that notes never take
+/// the font scan's. A slide without a notes relationship has no notes; a
+/// notes part that is missing or does not read as a whole is an error.
+fn notes_text(
+    package: &mut Package,
+    slide: &str,
+    budget: &mut u64,
+    text: &mut TextCollector,
+) -> Result<(), SkipReason> {
+    if !package.has(&rels_path(slide)) {
+        return Ok(());
+    }
+    let rels = package.rels_complete(slide, None, budget)?;
+    let mut targets: Vec<&String> = rels
+        .values()
+        .filter(|(kind, _)| kind.ends_with("/notesSlide"))
+        .map(|(_, target)| target)
+        .collect();
+    targets.sort();
+    let Some(part) = targets.first().map(|t| (*t).clone()) else {
+        return Ok(());
+    };
+    let mut scope = TextScope::new(&[b"t"], None, &[]);
+    let read = package.xml_events(&part, *budget, |event| {
+        if let Some(drawn) = scope.on(&event) {
+            text.add(drawn);
+        }
+        true
+    })?;
+    scope.complete()?;
+    *budget = budget.saturating_sub(read);
+    Ok(())
+}
+
 /// The first target of `part`'s relationships whose type ends with `kind`.
 fn related(package: &mut Package, part: &str, kind: &str) -> Option<String> {
     let rels = package.rels(part).ok()?;
@@ -358,14 +438,27 @@ fn related(package: &mut Package, part: &str, kind: &str) -> Option<String> {
 }
 
 /// The literal `a:latin@typeface` values of one part, and whether it uses
-/// the theme's major (`+mj-lt`) or minor (`+mn-lt`) font.
+/// the theme's major (`+mj-lt`) or minor (`+mn-lt`) font. With `text`, the
+/// same pass collects the part's `a:t` text, and the third value says
+/// whether the part read as a whole for it.
 fn latin_fonts(
     package: &mut Package,
     part: &str,
     budget: u64,
-) -> Result<(PartFonts, u64), SkipReason> {
+    mut text: Option<&mut TextCollector>,
+) -> Result<(PartFonts, u64, Result<(), SkipReason>), SkipReason> {
+    let collect = text.is_some();
     let mut out = PartFonts::default();
-    let read = package.xml(part, budget, |e| {
+    let mut scope = TextScope::new(&[b"t"], None, &[]);
+    let read = package.xml_events(part, budget, |event| {
+        if let Some(drawn) = scope.on(&event)
+            && let Some(text) = text.as_deref_mut()
+        {
+            text.add(drawn);
+        }
+        let (XmlEvent::Start(e) | XmlEvent::Empty(e)) = event else {
+            return true;
+        };
         if e.local_name().as_ref() == b"latin"
             && let Some(face) = attr(e, b"typeface")
         {
@@ -378,5 +471,6 @@ fn latin_fonts(
         }
         true
     })?;
-    Ok((out, read))
+    let complete = if collect { scope.complete() } else { Ok(()) };
+    Ok((out, read, complete))
 }

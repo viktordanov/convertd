@@ -141,6 +141,7 @@ pub fn detail_keys(code: &str) -> &'static [&'static str] {
         "BLANK_PAGE" => &["colour"],
         "MACROS_IGNORED" => &["kind", "part"],
         "RENDER_CLAMPED" => &["requested_dpi", "effective_dpi"],
+        "GLYPHS_MISSING" => &["missing", "code_points", "scripts"],
         _ => &[],
     }
 }

@@ -851,3 +851,55 @@ async fn an_embedded_font_raises_no_font_warning() {
     let manifest: Value = serde_json::from_slice(&read_bundle(&body)[0].1).unwrap();
     assert_eq!(manifest["warnings"], serde_json::json!([]));
 }
+
+#[tokio::test]
+async fn uncovered_text_raises_glyphs_missing() {
+    // F2: the image's faces cover only ASCII; the DOCX has Thai text.
+    let files = Path::new(env!("CARGO_TARGET_TMPDIR")).join("convert_zip-glyphs-files");
+    std::fs::create_dir_all(&files).unwrap();
+    let build_info = files.join("build-info.json");
+    std::fs::write(
+        &build_info,
+        r#"{"libreoffice":"26.8.3.1","pdfium":"8179","fonts":["DejaVu Sans"],
+            "font_substitutes":{},"default_substitute":"DejaVu Sans","coverage":[[32,126]]}"#,
+    )
+    .unwrap();
+    let env = [("BUILD_INFO_PATH", build_info.to_str().unwrap())];
+    let app = App::new("glyphs", &env, FakeBehavior::Succeed);
+    let docx = package(&[
+        (
+            "[Content_Types].xml",
+            content_types(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+            ),
+        ),
+        ("_rels/.rels", rels(&[("rId1", "officeDocument", "word/document.xml")])),
+        (
+            "word/document.xml",
+            "<w:document xmlns:w=\"w\"><w:body><w:p><w:r><w:t>Hi \u{0E01}\u{0E32}</w:t></w:r></w:p></w:body></w:document>".to_owned(),
+        ),
+    ]);
+
+    // AGENT-RULES 13a: every await in a test has a deadline.
+    let (response, body) = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        app.send("thai.docx", &docx, r#"{"output":"bundle"}"#),
+    )
+    .await
+    .expect("the Thai conversion did not answer within 30 s");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert_eq!(header_str(&response, "convert-warning-count"), "1");
+    let manifest: Value = serde_json::from_slice(&read_bundle(&body)[0].1).unwrap();
+    let warning = &manifest["warnings"][0];
+    assert_eq!(warning["code"], "GLYPHS_MISSING", "{manifest}");
+    assert_eq!(
+        warning["detail"],
+        serde_json::json!({"missing": 2, "code_points": ["U+0E01", "U+0E32"], "scripts": {"Thai": 2}})
+    );
+    assert!(warning.get("page").is_none_or(Value::is_null), "{warning}");
+}

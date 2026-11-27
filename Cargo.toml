@@ -52,6 +52,9 @@ crc32fast = "1.5.6"
 flate2 = "1.1.11"
 memchr = "2.8.3"
 quick-xml = "0.41.0"
+# GLYPHS_MISSING (F2): Script, General_Category and Default_Ignorable_Code_Point,
+# compiled in; already in the lock through idna.
+icu_properties = "2.4.0"
 # tar.zst bundles (001 step 8, owner 2026-11-26): one zstd frame at level 1.
 zstd = "0.14.5"
 async-trait = "0.1.92"

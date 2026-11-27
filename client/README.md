@@ -172,7 +172,7 @@ for _, page := range bundle.Manifest.Pages {
 
 Both result types carry `Info` from the response headers. `Info` holds the request ID, the source format, the page count, the warning count and the engine fingerprint. The fingerprint changes when the output can change, so put it in cache keys.
 
-`Manifest.Warnings` holds the quality signals of a bundle, such as `FONT_SUBSTITUTED`. A warning never fails a conversion.
+`Manifest.Warnings` holds the quality signals of a bundle, such as `FONT_SUBSTITUTED`. A warning never fails a conversion. `GLYPHS_MISSING` means that some characters of the text have no font in the image. They render as boxes or not at all. Its `Detail` holds `missing` (a number), `code_points` (a `[]any` of strings such as `"U+0E01"`) and `scripts` (a `map[string]any` of counts). The `WarningCode` schema in the spec lists every code.
 
 With `Slides.IncludeHidden`, the PDF and the pages also hold the slides that are marked hidden, in slide order. `Page.Hidden` is true for each page of such a slide. The service sets it only when the slide list predicts the page count exactly. A legacy `.ppt` never sets it.
 
