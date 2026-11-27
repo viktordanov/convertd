@@ -109,7 +109,9 @@ struct Deck {
     /// The declarations in `open`.
     bound: usize,
     /// The slide style that is open, and its index in `open`.
-    current: Option<(Scope, String, usize)>,
+    /// The visibility its properties set so far goes to the style when it
+    /// closes, so no name is copied per properties element.
+    current: Option<(Scope, String, usize, Option<bool>)>,
     /// Too many slides or declarations: the list is unknown.
     unknown: bool,
 }
@@ -209,8 +211,17 @@ impl Deck {
                     self.deeper -= 1;
                 } else if let Some(open) = self.open.pop() {
                     self.bound -= open.bindings.len();
-                    if matches!(self.current, Some((_, _, at)) if at >= self.open.len()) {
-                        self.current = None;
+                    if matches!(self.current, Some((_, _, at, _)) if at >= self.open.len())
+                        && let Some((scope, name, _, hidden)) = self.current.take()
+                        && hidden.is_some()
+                    {
+                        let styles = match scope {
+                            Scope::Automatic => &mut self.automatic,
+                            Scope::Common => &mut self.common,
+                        };
+                        if let Some(style) = styles.get_mut(&name) {
+                            style.hidden = hidden;
+                        }
                     }
                 }
             }
@@ -284,22 +295,18 @@ impl Deck {
                 styles.entry(name.clone()).or_default().parent = parent;
                 // A self-closing style has no properties to read.
                 if opens {
-                    self.current = Some((scope, name, self.open.len()));
+                    self.current = Some((scope, name, self.open.len(), None));
                 }
                 Kind::Style
             }
             (Ns::Style, b"drawing-page-properties") => {
-                if let Some((scope, name, at)) = self.current.clone()
-                    && at + 1 == self.open.len()
+                let direct =
+                    matches!(&self.current, Some((_, _, at, _)) if *at + 1 == self.open.len());
+                if direct
                     && let Some(visibility) = self.attr_ns(e, own, Ns::Presentation, b"visibility")
+                    && let Some(current) = self.current.as_mut()
                 {
-                    let styles = match scope {
-                        Scope::Automatic => &mut self.automatic,
-                        Scope::Common => &mut self.common,
-                    };
-                    if let Some(style) = styles.get_mut(&name) {
-                        style.hidden = Some(visibility == "hidden");
-                    }
+                    current.3 = Some(visibility == "hidden");
                 }
                 Kind::Other
             }

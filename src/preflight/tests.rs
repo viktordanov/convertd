@@ -810,7 +810,7 @@ fn pptx_custom(slides: &[(&str, &str)], list_xml: Option<Option<&str>>, extra: &
     let presentation = if with_list {
         format!(r#"<p:presentation {P}><p:sldIdLst>{list}</p:sldIdLst>{extra}</p:presentation>"#)
     } else {
-        format!(r#"<p:presentation {P}/>"#)
+        format!(r#"<p:presentation {P}>{extra}</p:presentation>"#)
     };
     let pres_rels: Vec<(&str, &str, &str)> = pres_rels
         .iter()
@@ -1035,6 +1035,35 @@ fn pptx_with_an_unreadable_slide_list_entry_skips_the_list() {
         );
         assert_unknown_slides(&facts);
     }
+}
+
+#[test]
+fn pptx_with_a_wrapped_or_second_slide_list_skips_the_list() {
+    let slides = [("p:sld", ""), ("p:sld show=\"0\"", "")];
+    // A compatibility block around the whole list: the branch is unknown.
+    let wrapped = concat!(
+        r#"<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">"#,
+        r#"<mc:Choice Requires="p14"><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst></mc:Choice>"#,
+        r#"</mc:AlternateContent>"#,
+    );
+    let facts = scan_bytes(
+        "wrapped.pptx",
+        &pptx_custom(&slides, None, wrapped),
+        Family::Presentation,
+    );
+    assert_unknown_slides(&facts);
+    // Two lists: which order is the deck's is unknown.
+    let second = r#"<p:sldIdLst><p:sldId id="257" r:id="rId3"/></p:sldIdLst>"#;
+    let facts = scan_bytes(
+        "two-lists.pptx",
+        &pptx_custom(
+            &slides,
+            Some(Some(r#"<p:sldId id="256" r:id="rId2"/>"#)),
+            second,
+        ),
+        Family::Presentation,
+    );
+    assert_unknown_slides(&facts);
 }
 
 #[test]
@@ -1296,6 +1325,37 @@ fn odp_with_too_many_namespace_declarations_lists_no_slides() {
     );
     assert_eq!(facts.slides, None);
     assert!(facts.skipped.is_empty(), "{:?}", facts.skipped);
+}
+
+#[test]
+fn odp_takes_the_last_visibility_of_an_open_style() {
+    // Many properties elements in one style with a long name: the last
+    // visibility wins, and properties inside a child element do not count.
+    let name = "dp".repeat(2000);
+    let mut props = String::new();
+    for _ in 0..50 {
+        props.push_str(r#"<style:drawing-page-properties presentation:visibility="visible"/>"#);
+    }
+    props.push_str(r#"<style:drawing-page-properties presentation:visibility="hidden"/>"#);
+    props.push_str(
+        r#"<style:x><style:drawing-page-properties presentation:visibility="visible"/></style:x>"#,
+    );
+    let styles = format!(
+        r#"<style:style style:name="{name}" style:family="drawing-page">{props}</style:style>"#
+    );
+    let pages = format!(r#"<draw:page draw:style-name="{name}"/><draw:page/>"#);
+    let facts = scan_bytes(
+        "long.odp",
+        &odp_parts(&pages, &styles, "", ""),
+        Family::Presentation,
+    );
+    assert_eq!(
+        facts.slides,
+        Some(Slides {
+            count: 2,
+            hidden: vec![1]
+        })
+    );
 }
 
 #[test]

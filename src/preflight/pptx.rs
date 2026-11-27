@@ -213,6 +213,10 @@ struct SlideList {
     unknown: bool,
     depth: usize,
     in_list: bool,
+    /// A `p:sldIdLst` was read; a second one makes the list unknown.
+    seen_list: bool,
+    /// A root-level `mc:AlternateContent` is open.
+    in_compat: bool,
     /// The prefixes in scope at the root, and inside the list.
     root: HashMap<Vec<u8>, Ns>,
     list: HashMap<Vec<u8>, Ns>,
@@ -242,6 +246,15 @@ impl SlideList {
         match event {
             XmlEvent::Start(e) | XmlEvent::Empty(e) => {
                 let opens = matches!(event, XmlEvent::Start(_));
+                let local = e.local_name();
+                if self.depth == 1 && local.as_ref() == b"AlternateContent" {
+                    self.in_compat = opens;
+                } else if self.in_compat && local.as_ref() == b"sldIdLst" {
+                    // A list inside a compatibility block: the branch that
+                    // an exporter takes is unknown.
+                    self.unknown = true;
+                    return false;
+                }
                 if self.depth <= 2 && !self.on_element(e, opens) {
                     return false;
                 }
@@ -253,6 +266,7 @@ impl SlideList {
                 self.depth = self.depth.saturating_sub(1);
                 if self.depth == 1 {
                     self.in_list = false;
+                    self.in_compat = false;
                 }
             }
             XmlEvent::Text => {}
@@ -282,6 +296,11 @@ impl SlideList {
                 self.root = own.into_iter().collect();
             }
             1 if local.as_ref() == b"sldIdLst" && element_ns == Ns::PresentationMl => {
+                if self.seen_list {
+                    self.unknown = true;
+                    return false;
+                }
+                self.seen_list = true;
                 if !opens {
                     return true;
                 }
