@@ -253,8 +253,9 @@ mod measured {
         convertd::rest::healthcheck::check(port, Duration::from_secs(2)).is_ok()
     }
 
-    /// Both readings ≤ 30 MB, the second ≤ 1.5 × the first, and no engine
-    /// library in the supervisor. A few minutes with the real engines.
+    /// Every reading ≤ 30 MB, no growth after the first round beyond the
+    /// budget, and no engine library in the supervisor. A few minutes with
+    /// the real engines.
     #[test]
     #[ignore = "Linux container only; run with --ignored"]
     #[allow(
@@ -367,9 +368,9 @@ mod measured {
         let first = rss_bytes(pid);
 
         // Rounds of 1 000 mixed requests: pdf, images and bundle; PDFs of
-        // 15 KB to 20 MB and a small DOCX. Two checks: plan 001's target,
-        // the first round against the reading after start, and a growth
-        // budget after it, at most 1 MiB per later round of 1 000 requests
+        // 15 KB to 20 MB and a small DOCX. Two checks: plan 001's target of
+        // 30 MB for every reading, and a growth budget after the first
+        // round, at most 1 MiB per later round of 1 000 requests
         // on average (the soak's budget in plan 005 §9). Single rounds
         // swing by more than 1 MiB, so the budget is from the first round
         // to the last, not between neighbours. RSS_ROUNDS sets the count:
@@ -454,6 +455,14 @@ mod measured {
                 .map(|r| (*r as f64 / MB as f64 * 10.0).round() / 10.0)
                 .collect::<Vec<_>>()
         );
+        // Plan 001, Verification 2, asked for at most 1.5 x the reading
+        // after start. The owner accepted this as missed on 2026-11-27: the
+        // first requests fault in code pages and malloc arenas, and the
+        // readings stay flat after that. It is a note, not a check.
+        eprintln!(
+            "after the first round: {:.2} x the reading after start (plan 001 asked for 1.5 x)",
+            warm as f64 / first as f64
+        );
         assert!(first <= 30 * MB, "{first} bytes after start");
         for (round, reading) in readings.iter().enumerate() {
             assert!(*reading <= 30 * MB, "{reading} bytes after round {round}");
@@ -463,12 +472,6 @@ mod measured {
             second.saturating_sub(warm) <= budget,
             "{second} after the last round grew more than 1 MiB per round of 1 000 requests \
              from {warm} after the first"
-        );
-        // Plan 001, Verification 2: the reading after the requests is at
-        // most 1.5 x the reading after start.
-        assert!(
-            warm * 2 <= first * 3,
-            "{warm} after the first round is more than 1.5 x {first} after start"
         );
         for library in ["libmergedlo", "libpdfium"] {
             assert!(mapped(&maps, library).is_empty(), "{library} is mapped");
