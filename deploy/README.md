@@ -30,7 +30,7 @@ The base runs one container with 2 CPU and 4 GiB, `OFFICE_WORKERS=2`, `RENDER_WO
 | Termination grace | 230 s in total (5 s `preStop` sleep + 210 + 15) |
 | Temp volume on `/tmp` | `emptyDir` with `sizeLimit: 4Gi` on node disk |
 | `TMP_MAX_BYTES` | 3221225472 (3 GiB) |
-| `OFFICE_KILL_RSS_MB`, `OFFICE_MAX_RSS_MB` | 1024, 768 (MiB) |
+| `OFFICE_KILL_RSS_MB`, `OFFICE_MAX_RSS_MB` | 992, 736 (MiB) |
 | `RENDER_KILL_RSS_MB`, `RENDER_MAX_RSS_MB` | 320, 256 (MiB) |
 | `TIMEOUT_MAX_SECONDS`, `TIMEOUT_DEFAULT_SECONDS` | 210, 120 |
 | CPU limit | none, requests only |
@@ -57,12 +57,12 @@ Each worker can grow to its pool's kill limit before the watchdog kills it, and 
 
 ```text
 OFFICE_WORKERS × OFFICE_KILL_RSS_MB + 256 MiB + RENDER_WORKERS × RENDER_KILL_RSS_MB + 512 MiB ≤ limits.memory
-2 × 1024 MiB + 256 MiB + 2 × 320 MiB + 512 MiB = 3456 MiB ≤ 4096 MiB
+2 × 992 MiB + 256 MiB + 2 × 320 MiB + 512 MiB = 3392 MiB ≤ 4096 MiB
 ```
 
-The rule holds one replacement for each pool, not one for each worker. With 2 office and 2 render workers in 4 GiB, the rule leaves 640 MiB free. It lets `OFFICE_KILL_RSS_MB` rise to 1344 MiB: 2 × 1344 + 256 + 2 × 320 + 512 = 4096 MiB. The base manifest keeps 1024 MiB until a soak measures a higher limit. A render replacement is small, about 8 MiB when it is ready, and the 512 MiB covers it.
+The rule holds one replacement for each pool, not one for each worker. With 2 office and 2 render workers in 4 GiB, the rule leaves 704 MiB free. It lets `OFFICE_KILL_RSS_MB` rise to 1344 MiB: 2 × 1344 + 256 + 2 × 320 + 512 = 4096 MiB. The base manifest keeps 992 MiB until a soak measures a higher limit. A render replacement is small, about 8 MiB when it is ready, and the 512 MiB covers it.
 
-The rule counts private memory: the kill and recycle limits read a worker's `RssAnon` + `RssShmem`. The shared library pages that every worker maps are page cache, which the cgroup counts once, inside the 512 MiB: about 157 MiB for LibreOffice and 8 MiB for PDFium. The 512 MiB also holds the supervisor, the rest of the page cache and a margin. Until 2026-11-27 the limits counted `VmRSS`, shared pages included. The office values 1024 and 768 keep the old cut-off of 1152 and 896. So after a soak, a deployment can give each office worker about 156 MiB more. On cgroup v2 with Kubernetes 1.28 or later, a container that passes its memory limit loses every process. Then every job on the pod fails. This is not verified on the cluster of the owner. Change the worker counts, the RSS values and the memory limit together. `OFFICE_MAX_RSS_MB` and `RENDER_MAX_RSS_MB` recycle a worker after a job that leaves it above that size.
+The rule counts private memory: the kill and recycle limits read a worker's `RssAnon` + `RssShmem`. The shared library pages that every worker maps are page cache, which the cgroup counts once, inside the 512 MiB: about 157 MiB for LibreOffice and 8 MiB for PDFium. The 512 MiB also holds the supervisor, the rest of the page cache and a margin. Until 2026-11-27 the limits counted `VmRSS`, shared pages included. The office values 992 and 736 keep the old cut-off of 1152 and 896, less the 160 MiB of shared pages. So after a soak, a deployment can give each office worker about 156 MiB more. On cgroup v2 with Kubernetes 1.28 or later, a container that passes its memory limit loses every process. Then every job on the pod fails. This is not verified on the cluster of the owner. Change the worker counts, the RSS values and the memory limit together. `OFFICE_MAX_RSS_MB` and `RENDER_MAX_RSS_MB` recycle a worker after a job that leaves it above that size.
 
 `/tmp` here is an `emptyDir` on node disk. An `emptyDir` with `medium: Memory`, or a tmpfs, adds its use to the memory limit. Then add `TMP_MAX_BYTES` to the left side.
 
@@ -80,8 +80,8 @@ Pick by the documents:
 
 | Profile | Settings | Trade-off |
 | --- | --- | --- |
-| Throughput (the base) | `OFFICE_WORKERS=2`, `OFFICE_KILL_RSS_MB=1024`, `OFFICE_MAX_RSS_MB=768`, `RENDER_WORKERS=2`, `RENDER_KILL_RSS_MB=320`, `RENDER_MAX_RSS_MB=256` | About 57 to 74 documents a minute on a mixed set. Documents that need more than 1024 MiB of private memory, about 1180 MiB of `VmRSS`, get 422. In the test set that was between 4 % (at 1536 MiB) and 13 % (at 768 MiB) of the files. |
-| Coverage | `OFFICE_WORKERS=1`, `OFFICE_KILL_RSS_MB=2560`, `OFFICE_MAX_RSS_MB=896`, `RENDER_WORKERS=2`, `RENDER_KILL_RSS_MB=320`, `RENDER_MAX_RSS_MB=256` | About 30 documents a minute. Only the decks over 2560 MiB of private memory, about 2716 MiB of `VmRSS`, get 422: 3 of the 276 test files. 1 × 2560 + 256 + 2 × 320 + 512 = 3968 MiB. |
+| Throughput (the base) | `OFFICE_WORKERS=2`, `OFFICE_KILL_RSS_MB=992`, `OFFICE_MAX_RSS_MB=736`, `RENDER_WORKERS=2`, `RENDER_KILL_RSS_MB=320`, `RENDER_MAX_RSS_MB=256` | About 57 to 74 documents a minute on a mixed set. Documents that need more than 992 MiB of private memory, about 1152 MiB of `VmRSS`, get 422. In the test set that was between 4 % (at 1536 MiB) and 13 % (at 768 MiB) of the files. |
+| Coverage | `OFFICE_WORKERS=1`, `OFFICE_KILL_RSS_MB=2528`, `OFFICE_MAX_RSS_MB=864`, `RENDER_WORKERS=2`, `RENDER_KILL_RSS_MB=320`, `RENDER_MAX_RSS_MB=256` | About 30 documents a minute. Only the decks over 2528 MiB of private memory, about 2688 MiB of `VmRSS`, get 422: 3 of the 276 test files. 1 × 2528 + 256 + 2 × 320 + 512 = 3936 MiB. |
 
 Both profiles are projections from the measured peaks. The throughput figures come from cells with one shared kill limit, and no cell ran with these per-pool values. With one office worker, a heavy deck holds it for 20 to 55 s, so the next request waits `QUEUE_WAIT_SECONDS` (10 s) and gets 429. Clients must retry 429.
 
