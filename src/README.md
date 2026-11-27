@@ -168,7 +168,7 @@ The crate has three targets of its own. They are 1 ms p50 of overhead, 30 MB of 
 - `tests/peak_heap.rs` counts the live heap with its own allocator while it uploads PDFs of 1, 16 and 100 MiB.
 - `tests/rss_linux.rs` reads `VmRSS` of `convertd serve` after start and after each round of 1 000 requests. It runs only on Linux, with `--ignored`, against the real pools when the engines are installed, as in the dev image; `RSS_ENGINE=fake` with `--features test-hooks` runs the fakes. [The tests README](../tests/README.md) gives the command and the checks.
 
-The numbers that follow come from macOS on arm64 with the level-A fakes, measured on 2026-11-26 and recorded in commits `1eaf4e4` and `1eafd21`. The example used a release build, and the heap and allocation tests a debug build. On Linux with the real pools, the idle RSS stays under 30 MB but fails the 1.5 × check against the reading after start. [The tests README](../tests/README.md) gives the readings.
+The numbers that follow come from macOS on arm64 with the level-A fakes, measured on 2026-11-26 and recorded in commits `1eaf4e4` and `1eafd21`. The example used a release build, and the heap and allocation tests a debug build. On Linux with the real pools, the idle RSS stays under 30 MB and is flat after the first round. [The tests README](../tests/README.md) gives the readings.
 
 | Measurement | Result |
 | --- | --- |
