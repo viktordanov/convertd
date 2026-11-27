@@ -183,7 +183,15 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
     // The supervisor creates pages/; the render engine writes into it.
     if received.request.output != Output::Pdf {
         let pages_dir = paths.pages_dir.clone();
-        let made = off_runtime((permit, job), move |_| std::fs::create_dir(pages_dir));
+        #[cfg(feature = "test-hooks")]
+        let gate_name = received.upload.file_name.clone();
+        let made = off_runtime((permit, job), move |_| {
+            #[cfg(feature = "test-hooks")]
+            while test_hooks::pages_gated(gate_name.as_deref()) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::fs::create_dir(pages_dir)
+        });
         // The deadline runs from the end of the upload: a wait for a
         // blocking thread counts too.
         let until = tokio::time::Instant::from_std(deadline);
@@ -200,13 +208,7 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
                 let timeout = ConversionError::Timeout {
                     seconds: received.request.timeout.as_secs(),
                 };
-                let api = ApiError::from_conversion(&timeout, state.queue_wait_seconds);
-                timings.total = Some(received.upload_done.elapsed());
-                let mut response = api.into_response();
-                response
-                    .headers_mut()
-                    .insert(SERVER_TIMING, timings.header());
-                return response;
+                return conversion_failed(&state, &received, &request_id, &mut timings, &timeout);
             }
         }
     }
@@ -246,23 +248,27 @@ pub async fn convert(State(state): State<AppState>, request: Request) -> Respons
             )
             .await
         }
-        Err(err) => {
-            let api = ApiError::from_conversion(&err, state.queue_wait_seconds);
-            timings.total = Some(received.upload_done.elapsed());
-            log_finished(
-                &request_id,
-                &received,
-                None,
-                &timings,
-                Some(api.code.as_str()),
-            );
-            let mut response = api.into_response();
-            response
-                .headers_mut()
-                .insert(SERVER_TIMING, timings.header());
-            response
-        }
+        Err(err) => conversion_failed(&state, &received, &request_id, &mut timings, &err),
     }
+}
+
+/// The answer to a conversion that failed after detection: logged as
+/// `conversion finished`, counted in the metrics, with Server-Timing.
+fn conversion_failed(
+    state: &AppState,
+    received: &Received,
+    request_id: &str,
+    timings: &mut RequestTimings,
+    err: &ConversionError,
+) -> Response {
+    let api = ApiError::from_conversion(err, state.queue_wait_seconds);
+    timings.total = Some(received.upload_done.elapsed());
+    log_finished(request_id, received, None, timings, Some(api.code.as_str()));
+    let mut response = api.into_response();
+    response
+        .headers_mut()
+        .insert(SERVER_TIMING, timings.header());
+    response
 }
 
 /// How long after the deadline the backstop fires, so that the engine's
@@ -733,14 +739,25 @@ pub mod test_hooks {
     pub static PLAN_GATE: Mutex<Option<String>> = Mutex::new(None);
     /// Set when the gated plan starts.
     pub static PLAN_ENTERED: AtomicBool = AtomicBool::new(false);
+    /// The upload file name whose mkdir of `pages/` waits while the name
+    /// stays. `None`: no gate.
+    pub static PAGES_GATE: Mutex<Option<String>> = Mutex::new(None);
 
     /// Whether the plan of the upload named `name` is held.
     pub fn gated(name: Option<&str>) -> bool {
+        holds(&PLAN_GATE, name)
+    }
+
+    /// Whether the mkdir of `pages/` for the upload named `name` is held.
+    pub fn pages_gated(name: Option<&str>) -> bool {
+        holds(&PAGES_GATE, name)
+    }
+
+    fn holds(gate: &Mutex<Option<String>>, name: Option<&str>) -> bool {
         let Some(name) = name else {
             return false;
         };
-        PLAN_GATE
-            .lock()
+        gate.lock()
             .map(|gate| gate.as_deref() == Some(name))
             .unwrap_or(false)
     }

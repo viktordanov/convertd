@@ -1103,6 +1103,76 @@ async fn slow_a_held_plan_answers_504_at_the_deadline() {
     app.assert_no_jobs().await;
 }
 
+/// Holds the mkdir of `pages/` for the upload named `name` until dropped.
+#[cfg(feature = "test-hooks")]
+struct PagesGate;
+
+#[cfg(feature = "test-hooks")]
+impl PagesGate {
+    fn hold(name: &str) -> Self {
+        use convertd::rest::convert_handlers::test_hooks::PAGES_GATE;
+        *PAGES_GATE.lock().unwrap() = Some(name.to_owned());
+        Self
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl Drop for PagesGate {
+    fn drop(&mut self) {
+        use convertd::rest::convert_handlers::test_hooks::PAGES_GATE;
+        *PAGES_GATE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// The `convert_requests_total` count of `output=images` 504s, over all
+/// families.
+#[cfg(feature = "test-hooks")]
+async fn images_timeouts(app: &App) -> f64 {
+    let request = Request::get("/metrics").body(Body::empty()).unwrap();
+    let response = app.router().oneshot(request).await.unwrap();
+    let text = to_bytes(response.into_body(), 1 << 22).await.unwrap();
+    String::from_utf8_lossy(&text)
+        .lines()
+        .filter(|line| {
+            line.starts_with("convert_requests_total{")
+                && line.contains(r#"output="images""#)
+                && line.contains(r#"code="CONVERSION_TIMEOUT""#)
+        })
+        .filter_map(|line| line.rsplit(' ').next()?.parse::<f64>().ok())
+        .sum()
+}
+
+/// A request whose mkdir of `pages/` waits past its deadline answers 504
+/// through the same path as every other conversion timeout: logged as
+/// `conversion finished` and counted in `convert_requests_total` (review
+/// round 7 on ledger/001-perf3). About 5 s: the shortest timeout.
+#[cfg(feature = "test-hooks")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_a_pages_dir_past_the_deadline_is_logged_and_counted() {
+    let app = App::new("pages-deadline", &[]);
+    let before = images_timeouts(&app).await;
+    let gate = PagesGate::hold("pages-deadline.pdf");
+    let images = with_options(
+        "pages-deadline.pdf",
+        &pdf("x"),
+        r#"{"output":"images","timeout_seconds":5}"#,
+    );
+    let answered = tokio::time::timeout(Duration::from_secs(8), send(&app, images)).await;
+    drop(gate);
+    let (response, body) = answered.expect("no answer while pages/ was held");
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(error_code(&body), "CONVERSION_TIMEOUT");
+    assert!(response.headers().contains_key("server-timing"));
+    let lines = log_lines(header_str(&response, "x-request-id"));
+    let finished = lines
+        .iter()
+        .find(|l| l["message"] == "conversion finished")
+        .unwrap_or_else(|| panic!("no conversion finished line: {lines:?}"));
+    assert_eq!(finished["error_code"], "CONVERSION_TIMEOUT", "{finished}");
+    assert!(images_timeouts(&app).await >= before + 1.0);
+    app.assert_no_jobs().await;
+}
+
 /// `timeout_seconds` covers everything up to the headers. A render that
 /// returns only at the deadline lands after the service's last check but
 /// inside the backstop's grace, so the handler's check before packaging is
