@@ -1,0 +1,17 @@
+# cargo-deny: only the RustSec advisory check (`cargo deny check advisories`), item 011 S3.
+# Licenses, bans and sources are not checked here.
+
+[graph]
+# Every feature, so test-hooks dependencies are covered too.
+all-features = true
+
+[advisories]
+# A vulnerability fails the check. An unmaintained or unsound notice fails it too, for any
+# crate in the graph. An ignored advisory needs its ID and a reason here.
+unmaintained = "all"
+yanked = "deny"
+ignore = [
+    # chrono is unmaintained, with no safe upgrade. Only pdfium-render 0.9.6 pulls it in,
+    # and no vulnerability is reported. Remove this entry when pdfium-render drops chrono.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained only; via pdfium-render, no upgrade" },
+]
