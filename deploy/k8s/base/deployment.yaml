@@ -59,18 +59,21 @@ spec:
             # TMP_MAX_BYTES <= 4Gi - 1Gi. Change them together, or a full volume evicts the pod.
             - {name: TMP_MAX_BYTES, value: "3221225472"}     # 3 GiB
             # The memory budget of the workers. Each worker may grow to its pool's KILL_RSS_MB (MiB)
-            # before the watchdog kills it, and the pool replaces one worker at a time, so one
-            # replacement waits beside the office workers (about 256 MiB after its warm-up). All of
-            # them MUST fit in the memory limit: OFFICE_WORKERS x OFFICE_KILL_RSS_MB + 256
-            # + RENDER_WORKERS x RENDER_KILL_RSS_MB + 512 MiB <= limits.memory:
-            # 2 x 1152 + 256 + 2 x 320 + 512 = 3712 MiB <= 4096 MiB. OFFICE_KILL_RSS_MB can rise to
-            # 1344 (4096 MiB); 1152 stays until a soak measures the higher limit.
+            # of private memory (RssAnon + RssShmem) before the watchdog kills it, and the pool
+            # replaces one worker at a time, so one replacement waits beside the office workers
+            # (about 256 MiB after its warm-up). The shared library pages (about 157 MiB for
+            # LibreOffice, 8 MiB for PDFium) are page cache that the cgroup counts once, inside the
+            # 512 MiB. All of it MUST fit in the memory limit: OFFICE_WORKERS x OFFICE_KILL_RSS_MB
+            # + 256 + RENDER_WORKERS x RENDER_KILL_RSS_MB + 512 MiB <= limits.memory:
+            # 2 x 1024 + 256 + 2 x 320 + 512 = 3456 MiB <= 4096 MiB. 1024 and 768 keep the cut-off
+            # of the old count (1152 and 896, shared pages included); after a soak, each office
+            # worker can get about 156 MiB more.
             # Change the worker counts, these values and the memory limit together: a container
             # OOM can kill every job in the pod. Measured on 276 real documents (2026-11-26,
             # 2 CPUs): LibreOffice needed up to 3281 MiB for heavy decks (p99 1546 MiB), PDFium at
             # most 279 MiB. MAX_RSS_MB recycles a worker after a job above it.
-            - {name: OFFICE_KILL_RSS_MB, value: "1152"}
-            - {name: OFFICE_MAX_RSS_MB, value: "896"}
+            - {name: OFFICE_KILL_RSS_MB, value: "1024"}
+            - {name: OFFICE_MAX_RSS_MB, value: "768"}
             - {name: RENDER_KILL_RSS_MB, value: "320"}
             - {name: RENDER_MAX_RSS_MB, value: "256"}
           resources:
