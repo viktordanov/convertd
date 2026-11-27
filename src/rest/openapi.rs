@@ -11,13 +11,13 @@ use super::serialization::errors::ErrorBody;
 use super::serialization::manifest::Manifest;
 
 /// The API version, set in code (never `CARGO_PKG_VERSION`).
-pub const API_VERSION: &str = "1.0.0-draft.1";
+pub const API_VERSION: &str = "1.0.0";
 
 #[derive(OpenApi)]
 #[openapi(
     info(
         title = "Convert API",
-        version = "1.0.0-draft.1",
+        version = "1.0.0",
         description = include_str!("openapi_description.md"),
         license(name = "Apache-2.0", url = "https://www.apache.org/licenses/LICENSE-2.0"),
     ),

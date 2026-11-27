@@ -54,7 +54,7 @@ fn walk<'a>(path: String, value: &'a Value, out: &mut Vec<(String, &'a Value)>) 
 fn version_and_title() {
     let spec = spec();
     assert_eq!(spec["openapi"], "3.1.0");
-    assert_eq!(spec["info"]["version"], "1.0.0-draft.1");
+    assert_eq!(spec["info"]["version"], "1.0.0");
     assert_eq!(spec["info"]["title"], "Convert API");
     assert_eq!(
         spec["components"]["securitySchemes"]["ApiKeyBearer"]["scheme"],

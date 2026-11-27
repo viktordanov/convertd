@@ -2,7 +2,7 @@
 
 rs-convert is an HTTP service that converts office documents and PDFs into a PDF and per-page images.
 
-**Status: the service converts office documents and PDFs. No container image is published yet.** `convertd serve` runs LibreOffice and PDFium in pools of worker processes. To run the real engines, build the `runtime` image from `docker/Dockerfile`. The quick start shows this image, and a build from source with the level-A fake engine. The API is a draft (`1.0.0-draft.1`) and can change.
+**Status: the service converts office documents and PDFs. No container image is published yet.** `convertd serve` runs LibreOffice and PDFium in pools of worker processes. To run the real engines, build the `runtime` image from `docker/Dockerfile`. The quick start shows this image, and a build from source with the level-A fake engine. The API is version `1.0.0`.
 
 ## Contents
 
