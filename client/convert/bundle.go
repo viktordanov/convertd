@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"regexp"
 	"sort"
@@ -30,6 +31,8 @@ const (
 	// tar writer pads an archive to whole records, so at most one record of
 	// zeros follows the end-of-archive marker.
 	tarRecordSize = 20 * 512
+	// maxWindow is the largest zstd window the decoder accepts.
+	maxWindow = 8 << 20
 )
 
 var pagePath = regexp.MustCompile(`^pages/[0-9]{4,}\.(jpg|png)$`)
@@ -191,7 +194,7 @@ func (b *Bundle) open(path string) (io.ReadCloser, bool, error) {
 // readBundle unpacks the tar.zst response into a temp directory and reads its
 // manifest. The archive is a stream, so it is read once, front to back; the
 // directory gives PDF and Page random access afterwards.
-func readBundle(body io.Reader, tempDir string) (*Bundle, error) {
+func readBundle(body io.Reader, tempDir string, maxBytes int64) (*Bundle, error) {
 	dir, err := os.MkdirTemp(tempDir, "convert-bundle-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp directory: %w", err)
@@ -203,7 +206,7 @@ func readBundle(body io.Reader, tempDir string) (*Bundle, error) {
 	}
 	bundle := &Bundle{dir: dir, root: root}
 
-	if err := bundle.load(body); err != nil {
+	if err := bundle.load(body, maxBytes); err != nil {
 		_ = bundle.Close()
 		return nil, err
 	}
@@ -213,11 +216,15 @@ func readBundle(body io.Reader, tempDir string) (*Bundle, error) {
 // load reads the archive. It accepts only what the service writes: a
 // regular manifest.json first, then exactly the regular files the manifest
 // names, each under an expected name, each once and each with the size the
-// manifest gives. After the tar end it allows only zero padding, then
+// manifest gives, which its tar header must declare before anything is
+// written. With maxBytes above 0, the manifest's sizes may add up to at most
+// that. After the tar end it allows only zero padding, then
 // requires the end of the zstd stream, so that a frame cut after the tar
 // entries, a bad checksum or trailing data fails too.
-func (b *Bundle) load(body io.Reader) error {
-	zr, err := zstd.NewReader(body, zstd.WithDecoderConcurrency(1))
+func (b *Bundle) load(body io.Reader, maxBytes int64) error {
+	// The service writes zstd level 1, whose window is far below 8 MiB; a
+	// larger window would only let a hostile frame claim more memory.
+	zr, err := zstd.NewReader(body, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxWindow(maxWindow))
 	if err != nil {
 		return fmt.Errorf("failed to start zstd decoder: %w", err)
 	}
@@ -251,6 +258,15 @@ func (b *Bundle) load(body io.Reader) error {
 	if err != nil {
 		return err
 	}
+	if maxBytes > 0 {
+		if total, ok := sumSizes(expected); !ok || total > maxBytes {
+			size := fmt.Sprintf("%d bytes", total)
+			if !ok {
+				size = "more bytes than an int64 holds"
+			}
+			return fmt.Errorf("failed to read archive: the manifest's files take %s, more than the %d that WithMaxBundleBytes allows", size, maxBytes)
+		}
+	}
 	seen := map[string]bool{}
 	for {
 		hdr, err := tr.Next()
@@ -273,7 +289,12 @@ func (b *Bundle) load(body io.Reader) error {
 			return fmt.Errorf("failed to read archive: entry %q appears twice", name)
 		}
 		seen[name] = true
-		n, err := b.write(name, tr)
+		// The header gives the size before any byte is written: a file
+		// larger than the manifest says never reaches the disk.
+		if want := expected[name]; hdr.Size != want {
+			return fmt.Errorf("failed to read archive: entry %q has %d bytes, the manifest says %d", name, hdr.Size, want)
+		}
+		n, err := b.write(name, io.LimitReader(tr, expected[name]))
 		if err != nil {
 			return err
 		}
@@ -383,4 +404,17 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// sumSizes adds the sizes; false when a size is negative or the sum would
+// not fit in an int64.
+func sumSizes(sizes map[string]int64) (int64, bool) {
+	var total int64
+	for _, size := range sizes {
+		if size < 0 || total > math.MaxInt64-size {
+			return 0, false
+		}
+		total += size
+	}
+	return total, true
 }

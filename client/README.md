@@ -95,7 +95,7 @@ Next: read [Errors and retries](#errors-and-retries) before you call the client 
 | `Capabilities` | The accepted formats, the limits, the engine versions and the fonts. The answer is fixed for a deployment |
 | `Ready` | `true` when `/readyz` answers 200, `false` when it answers 503. Any other status is an error |
 
-`New` takes two options. `WithHTTPClient` sets the HTTP client. `WithTempDir` sets the parent directory for unpacked bundles, and the default is the system temp directory.
+`New` takes three options. `WithHTTPClient` sets the HTTP client. `WithTempDir` sets the parent directory for unpacked bundles, and the default is the system temp directory. `WithMaxBundleBytes` caps the disk space that one bundle may take: the sum of the file sizes in its manifest. A bundle over the cap fails before any file is written. The default, 0, sets no cap.
 
 Each conversion takes a `convert.Options`. The zero value asks for the server defaults, because the client leaves every zero field out of the request:
 
@@ -146,7 +146,7 @@ The upload is streamed. The client writes the multipart body through a pipe, so 
 
 A bundle needs a temp directory. The service sends `images` and `bundle` as a tar archive in one zstd stream (`application/zstd`, named `<stem>.tar.zst`). The archive can only be read front to back, so `ConvertToBundle` and `ConvertToImages` unpack the whole response into a temp directory before they return. `Bundle.Close` deletes that directory. `Bundle.PDF()` and `Bundle.Page(n)` return `(reader, found, err)`. `found` is false when the bundle has no PDF or the page was not rendered, and that is not an error. Close each reader that you open.
 
-The client accepts only the layout that the service writes. `manifest.json` comes first, then `document.pdf` for a bundle, then `pages/NNNN.<ext>`. Each entry is a regular file that the manifest names, each comes once, and each has the size that the manifest gives. A path with `..`, a link, an extra or a missing file, a wrong size, or a manifest that is not first fails the call. After the tar end, the client accepts only zero padding, at most one 10240-byte tar record, and then requires the end of the zstd stream. Thus a cut stream, a bad checksum or other data after the archive fails the call. A failed call leaves no temp directory.
+The client accepts only the layout that the service writes. `manifest.json` comes first, then `document.pdf` for a bundle, then `pages/NNNN.<ext>`. Each entry is a regular file that the manifest names, each comes once, and each has the size that the manifest gives. A path with `..`, a link, an extra or a missing file, a wrong size, or a manifest that is not first fails the call. The client compares the size in each entry's tar header with the manifest before it writes the entry, so an entry larger than the manifest says never reaches the disk. The zstd decoder accepts a window of at most 8 MiB, and the client reads at most 1 MiB of a capabilities answer. After the tar end, the client accepts only zero padding, at most one 10240-byte tar record, and then requires the end of the zstd stream. Thus a cut stream, a bad checksum or other data after the archive fails the call. A failed call leaves no temp directory.
 
 ```go
 bundle, err := c.ConvertToImages(ctx, name, file, convert.Options{

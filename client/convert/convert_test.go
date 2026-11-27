@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -681,5 +682,112 @@ func TestNew(t *testing.T) {
 	}
 	if _, err := convert.New("http://localhost:8080", ""); err == nil {
 		t.Error("an empty API key should be rejected")
+	}
+}
+
+// countingReader counts the bytes read through it, for a server handler
+// that the test goroutine checks.
+type countingReader struct {
+	r io.Reader
+	n atomic.Int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// TestBundleEntryOverItsManifestSize serves a PDF entry of 256 MiB that the
+// manifest says has 8 bytes. The archive is streamed as it is compressed, so
+// the test sees how much of the entry the client pulled: it must fail on the
+// tar header, before it writes, and leave no file behind.
+func TestBundleEntryOverItsManifestSize(t *testing.T) {
+	const huge = 256 << 20
+	content := &countingReader{r: io.LimitReader(zeroReader{}, huge)}
+	respond := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/zstd")
+		zw, err := zstd.NewWriter(w, zstd.WithEncoderLevel(zstd.SpeedFastest))
+		if err != nil {
+			t.Errorf("zstd writer: %v", err)
+			return
+		}
+		defer zw.Close()
+		tw := tar.NewWriter(zw)
+		raw, _ := json.Marshal(testManifest(true))
+		_ = tw.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o644, Size: int64(len(raw)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR})
+		_, _ = tw.Write(raw)
+		_ = tw.WriteHeader(&tar.Header{Name: "document.pdf", Mode: 0o644, Size: huge, Typeflag: tar.TypeReg, Format: tar.FormatUSTAR})
+		_, _ = io.Copy(tw, content)
+	}
+	c, _, tempDir := newFakeService(t, respond)
+	_, err := c.ConvertToBundle(context.Background(), "a.docx", strings.NewReader("x"), convert.Options{})
+	if err == nil || !strings.Contains(err.Error(), `entry "document.pdf" has 268435456 bytes, the manifest says 8`) {
+		t.Fatalf("error = %v, want the size mismatch", err)
+	}
+	if files, _ := os.ReadDir(tempDir); len(files) != 0 {
+		t.Errorf("temp files left behind: %v", files)
+	}
+	// The server stops once the client hangs up; far less than the entry
+	// was produced, so nothing of that size was written.
+	if n := content.n.Load(); n > 64<<20 {
+		t.Errorf("the client pulled %d bytes of the entry", n)
+	}
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+// TestBundleTotalCap refuses a bundle whose manifest sizes add up to more
+// than WithMaxBundleBytes, before anything is written.
+func TestBundleTotalCap(t *testing.T) {
+	tempDir := t.TempDir()
+	server := httptest.NewServer(respondWithBundle(t, true))
+	defer server.Close()
+	c, err := convert.New(server.URL, apiKey, convert.WithTempDir(tempDir), convert.WithMaxBundleBytes(10))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = c.ConvertToBundle(context.Background(), "a.docx", strings.NewReader("x"), convert.Options{})
+	if err == nil || !strings.Contains(err.Error(), "14 bytes, more than the 10 that WithMaxBundleBytes allows") {
+		t.Fatalf("error = %v, want the total cap", err)
+	}
+	if files, _ := os.ReadDir(tempDir); len(files) != 0 {
+		t.Errorf("temp files left behind: %v", files)
+	}
+	// Exactly at the cap, the bundle opens.
+	c, _ = convert.New(server.URL, apiKey, convert.WithTempDir(tempDir), convert.WithMaxBundleBytes(14))
+	bundle, err := c.ConvertToBundle(context.Background(), "a.docx", strings.NewReader("x"), convert.Options{})
+	if err != nil {
+		t.Fatalf("at the cap: %v", err)
+	}
+	_ = bundle.Close()
+}
+
+// TestCapabilitiesBodyIsBounded serves an endless capabilities body: the
+// client reads at most its limit and fails.
+func TestCapabilitiesBodyIsBounded(t *testing.T) {
+	served := &countingReader{r: io.MultiReader(strings.NewReader(`{"fonts":["`), zeroReader{})}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/capabilities", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.Copy(w, served)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	c, err := convert.New(server.URL, apiKey)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := c.Capabilities(ctx); err == nil {
+		t.Fatal("expected an error")
+	}
+	if n := served.n.Load(); n > 64<<20 {
+		t.Errorf("the client read %d bytes of capabilities", n)
 	}
 }
