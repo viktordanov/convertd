@@ -53,12 +53,14 @@ convertd reserves space for each upload and job output under `TMP_DIR` (`/tmp/co
 <!-- memoria:section id="memory-budget" files="k8s/base/deployment.yaml" -->
 ## Memory budget
 
-Each worker can grow to its pool's kill limit before the watchdog kills it, and convertd has no limit for all workers together. `OFFICE_KILL_RSS_MB` and `RENDER_KILL_RSS_MB` set the kill limit of each pool. A pool without its own value takes `WORKER_KILL_RSS_MB`. A replacement also waits beside each office worker that it replaces, with about 256 MiB after its warm-up. The memory limit of the container must hold all of this:
+Each worker can grow to its pool's kill limit before the watchdog kills it, and convertd has no limit for all workers together. `OFFICE_KILL_RSS_MB` and `RENDER_KILL_RSS_MB` set the kill limit of each pool. A pool without its own value takes `WORKER_KILL_RSS_MB`. When workers are due for a job count or an age, the manager replaces them one at a time per pool. So at most one replacement, with about 256 MiB after its warm-up, waits beside the office workers. A worker that died is replaced at once, which needs no extra memory. The memory limit of the container must hold all of this:
 
 ```text
-OFFICE_WORKERS × (OFFICE_KILL_RSS_MB + 256 MiB) + RENDER_WORKERS × RENDER_KILL_RSS_MB + 512 MiB ≤ limits.memory
-2 × (1152 + 256) MiB + 2 × 320 MiB + 512 MiB = 3968 MiB ≤ 4096 MiB
+OFFICE_WORKERS × OFFICE_KILL_RSS_MB + 256 MiB + RENDER_WORKERS × RENDER_KILL_RSS_MB + 512 MiB ≤ limits.memory
+2 × 1152 MiB + 256 MiB + 2 × 320 MiB + 512 MiB = 3712 MiB ≤ 4096 MiB
 ```
+
+The rule holds one replacement for each pool, not one for each worker. With 2 office and 2 render workers in 4 GiB, the 384 MiB that this frees lets `OFFICE_KILL_RSS_MB` rise to 1344 MiB: 2 × 1344 + 256 + 2 × 320 + 512 = 4096 MiB. The base manifest keeps 1152 MiB until a soak measures the higher limit. A render replacement is small, about 8 MiB when it is ready, and the 512 MiB covers it.
 
 The 512 MiB holds the supervisor, the page cache and a margin. On cgroup v2 with Kubernetes 1.28 or later, a container that passes its memory limit loses every process. Then every job on the pod fails. This is not verified on the cluster of the owner. Change the worker counts, the RSS values and the memory limit together. `OFFICE_MAX_RSS_MB` and `RENDER_MAX_RSS_MB` recycle a worker after a job that leaves it above that size.
 
@@ -79,7 +81,7 @@ Pick by the documents:
 | Profile | Settings | Trade-off |
 | --- | --- | --- |
 | Throughput (the base) | `OFFICE_WORKERS=2`, `OFFICE_KILL_RSS_MB=1152`, `OFFICE_MAX_RSS_MB=896`, `RENDER_WORKERS=2`, `RENDER_KILL_RSS_MB=320`, `RENDER_MAX_RSS_MB=256` | About 57 to 74 documents a minute on a mixed set. Documents that need more than 1152 MiB get 422. In the test set that was between 4 % (at 1536 MiB) and 13 % (at 768 MiB) of the files. |
-| Coverage | `OFFICE_WORKERS=1`, `OFFICE_KILL_RSS_MB=2688`, `OFFICE_MAX_RSS_MB=1024`, `RENDER_WORKERS=2`, `RENDER_KILL_RSS_MB=320`, `RENDER_MAX_RSS_MB=256` | About 30 documents a minute. Only the decks over 2688 MiB get 422: 3 of the 276 test files. 1 × (2688 + 256) + 2 × 320 + 512 = 4096 MiB. |
+| Coverage | `OFFICE_WORKERS=1`, `OFFICE_KILL_RSS_MB=2688`, `OFFICE_MAX_RSS_MB=1024`, `RENDER_WORKERS=2`, `RENDER_KILL_RSS_MB=320`, `RENDER_MAX_RSS_MB=256` | About 30 documents a minute. Only the decks over 2688 MiB get 422: 3 of the 276 test files. 1 × 2688 + 256 + 2 × 320 + 512 = 4096 MiB. |
 
 Both profiles are projections from the measured peaks. The throughput figures come from cells with one shared kill limit, and no cell ran with these per-pool values. With one office worker, a heavy deck holds it for 20 to 55 s, so the next request waits `QUEUE_WAIT_SECONDS` (10 s) and gets 429. Clients must retry 429.
 

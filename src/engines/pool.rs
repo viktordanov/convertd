@@ -1363,7 +1363,13 @@ impl Manager {
         if pool.draining.load(Ordering::Acquire) || self.backoff_until.is_some() {
             return;
         }
-        while self.standing() < usize::from(self.spec.size) {
+        // At most one member above the size: a worker being replaced and
+        // its replacement, one pair at a time. Workers due together are thus
+        // replaced in turn, and the memory budget holds one overlap per pool.
+        // A hole (a worker that died or was killed) is filled at once, since
+        // it leaves the members below the size.
+        let size = usize::from(self.spec.size);
+        while self.standing() < size && self.members.len() <= size {
             let slot = (0..=u16::MAX)
                 .find(|s| !self.members.contains_key(s))
                 .unwrap_or(u16::MAX);

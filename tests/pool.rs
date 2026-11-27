@@ -455,6 +455,68 @@ async fn recycle_after_replaces_the_worker() {
     .await;
 }
 
+/// Two workers that start together age together. Their replacements start
+/// one at a time, so the memory budget holds one overlap per pool, and the
+/// pool keeps at least `size - 1` live workers throughout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workers_due_together_are_replaced_one_at_a_time() {
+    within(
+        TEST,
+        "workers_due_together_are_replaced_one_at_a_time",
+        async {
+            let mut spec = spec("age-two", 2);
+            spec.max_age = Duration::from_millis(600);
+            spec.age_check = Duration::from_millis(50);
+            // A slow start keeps each replacement visible as `starting`.
+            spec.init.test.ready_delay_ms = 300;
+            let pool = ready(spec).await;
+            let first: Vec<u32> = {
+                let a = pool.lease(after(5000), Admission::Queue).await.unwrap();
+                let b = pool.lease(after(5000), Admission::Queue).await.unwrap();
+                vec![a.pid().unwrap(), b.pid().unwrap()]
+            };
+            let stop = Arc::new(AtomicBool::new(false));
+            let most_starting = Arc::new(AtomicUsize::new(0));
+            let fewest_live = Arc::new(AtomicUsize::new(usize::MAX));
+            let sampler = {
+                let pool = pool.clone();
+                let (stop, most, fewest) = (
+                    Arc::clone(&stop),
+                    Arc::clone(&most_starting),
+                    Arc::clone(&fewest_live),
+                );
+                tokio::spawn(async move {
+                    while !stop.load(Ordering::Relaxed) {
+                        let s = pool.status();
+                        most.fetch_max(s.starting, Ordering::Relaxed);
+                        fewest.fetch_min(s.idle + s.busy, Ordering::Relaxed);
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                    }
+                })
+            };
+            for pid in &first {
+                assert!(
+                    wait_gone(*pid, Duration::from_secs(10)).await,
+                    "the aged worker {pid} stayed"
+                );
+            }
+            stop.store(true, Ordering::Relaxed);
+            sampler.await.unwrap();
+            assert_eq!(
+                most_starting.load(Ordering::Relaxed),
+                1,
+                "the two replacements started together"
+            );
+            assert!(
+                fewest_live.load(Ordering::Relaxed) >= 1,
+                "the pool fell below size - 1"
+            );
+            finish(pool, "age-two").await;
+        },
+    )
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idle_workers_are_replaced_when_they_age() {
     within(TEST, "idle_workers_are_replaced_when_they_age", async {
