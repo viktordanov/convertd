@@ -89,7 +89,12 @@ impl PdfPdfium {
             left,
             "render chunks went over their share; rendering them on one worker"
         );
-        render_chunk(&self.pool, lease, args, deadline, guard).await
+        // The chunk's crash retry can still be refused: its refusal keeps
+        // this lease's wait too.
+        let waited = lease.queued();
+        render_chunk(&self.pool, lease, args, deadline, guard)
+            .await
+            .map_err(|failure| after_wait(failure, waited))
     }
 }
 
@@ -225,6 +230,15 @@ impl ChunkFailure {
             cpu: Duration::ZERO,
         }
     }
+}
+
+/// `failure` after a lease wait of `waited`: a `Poisoned` carries that wait
+/// too, and every other error is unchanged.
+fn after_wait(mut failure: ChunkFailure, waited: Duration) -> ChunkFailure {
+    if let EngineError::Poisoned { queued } = &mut failure.error {
+        *queued += waited;
+    }
+    failure
 }
 
 /// A chunk's reply: the pages, or the engine-reported error (no strike).
@@ -677,6 +691,24 @@ mod tests {
     }
 
     use super::*;
+
+    /// A rerun waited for its lease, then its chunk's crash retry was
+    /// refused: the refusal keeps both waits. Other errors are unchanged.
+    #[test]
+    fn a_refusal_after_a_lease_wait_keeps_that_wait() {
+        let ms = Duration::from_millis;
+        let refused = ChunkFailure {
+            error: EngineError::Poisoned { queued: ms(40) },
+            strike: Some(Strike::Crash(1)),
+            ran: ms(900),
+            cpu: Duration::ZERO,
+        };
+        let kept = after_wait(refused, ms(250));
+        assert_eq!(kept.error, EngineError::Poisoned { queued: ms(290) });
+        assert_eq!(kept.strike, Some(Strike::Crash(1)), "the strike stays");
+        let crashed = after_wait(ChunkFailure::engine(EngineError::Crashed), ms(250));
+        assert_eq!(crashed.error, EngineError::Crashed);
+    }
 
     #[test]
     fn chunks_are_contiguous_near_equal_and_bounded() {
