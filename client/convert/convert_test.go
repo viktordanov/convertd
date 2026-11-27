@@ -18,7 +18,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/viktordanov/rs-convert/client/convert"
+	"github.com/viktordanov/convertd/client/convert"
 )
 
 const apiKey = "test-key"

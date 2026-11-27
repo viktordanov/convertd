@@ -5,7 +5,7 @@
 # Results stay outside the repository: OUT_ROOT must be a scratch folder, and
 # no run output, report or document is committed.
 #
-#   OUT_ROOT=DIR [IMAGE=rs-convert:local] [CPUS=2] [MEMORY=3584m] [TMPFS=1] \
+#   OUT_ROOT=DIR [IMAGE=convertd:local] [CPUS=2] [MEMORY=3584m] [TMPFS=1] \
 #     tools/ingest/cell.sh NAME OFFICE_WORKERS RENDER_WORKERS KILL_MB -- ingest.py args...
 #
 # /tmp is a Docker volume (disk) unless TMPFS=1, which mounts a 1536 MiB
@@ -19,8 +19,8 @@ NAME=$1 OFFICE=$2 RENDER=$3 KILL=$4
 shift 5
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=${OUT_ROOT:?set OUT_ROOT}/$NAME
-IMAGE=${IMAGE:-rs-convert:local}
-C=${CONTAINER:-rs-convert-ingest}
+IMAGE=${IMAGE:-convertd:local}
+C=${CONTAINER:-convertd-ingest}
 PORT=${PORT:-18083}
 mkdir -p "$OUT"
 MAXRSS=$(( KILL * 3 / 4 ))

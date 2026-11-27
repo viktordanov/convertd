@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Builds the rs-convert image with docker buildx and pushes it as <repo>:v<x.y.z>.
+# Builds the convertd image with docker buildx and pushes it as <repo>:v<x.y.z>.
 #
 # Usage:
 #   ./build_docker.sh <repo> [options]
-#     <repo>                 image repository, e.g. registry.example.com/rs-convert
+#     <repo>                 image repository, e.g. registry.example.com/convertd
 #   Options:
 #     --platform <list>      default linux/amd64,linux/arm64
 #     --cjk                  add Noto CJK fonts; the tag gets a -cjk suffix
@@ -63,7 +63,7 @@ else
   output="type=image,name=${ref},push=true"
 fi
 
-builder="rs-convert-builder"
+builder="convertd-builder"
 docker buildx inspect "${builder}" >/dev/null 2>&1 \
   || docker buildx create --name "${builder}" --driver docker-container --bootstrap >/dev/null
 

@@ -918,7 +918,7 @@ const LETTER_PT: (u32, u32) = (612, 792);
 /// `LC_PAPER` through `newlocale(LC_PAPER_MASK, "")`, but only while
 /// `ooSetupSystemLocale` is empty. LibreOfficeKit's start-up commits it as
 /// en-US (`desktop/source/lib/init.cxx`, `setLanguageAndLocale`), which gives
-/// Letter. The image keeps it empty with `docker/libreoffice/rs-convert-paper.xcd`
+/// Letter. The image keeps it empty with `docker/libreoffice/convertd-paper.xcd`
 /// and ships the en_GB.UTF-8 and en_US.UTF-8 locale data that `LC_PAPER` needs.
 ///
 /// An RTF is no probe: RTF defines Letter as its own default page size.

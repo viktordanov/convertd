@@ -1,4 +1,4 @@
-# Writing rs-convert documentation
+# Writing convertd documentation
 
 This guidance applies to every document in the repository. [Boundaries](boundaries.md) adds notes for each README, and [section IDs](sections.md) lists the review markers. Memoria gives this guidance to every review, so a reviewer reads the prose against it.
 
@@ -24,7 +24,7 @@ Apply `simple-english` in its pragmatic mode. Keep its structural rules: short s
 
 ## Readers and kinds of page
 
-rs-convert has two groups of readers, and each kind of page serves one group first.
+convertd has two groups of readers, and each kind of page serves one group first.
 
 - **Users of the service** call the API, run the image or use the Go client. They want to know what the service does, how to start it and what each response means.
 - **Contributors** change the code. They want a mental model of one boundary: what it owns, the ideas it uses, where to start reading and what the rest of the project expects from it.
@@ -58,7 +58,7 @@ Use a table when the reader chooses between alternatives or looks up values: con
 
 Use one name for each concept, and use it on every page. The project's names are:
 
-- **convertd**: the binary. **The service**: the running deployment.
+- **convertd**: the project, its binary and its image. **The service**: a running deployment.
 - **Supervisor**: the `convertd serve` process. It owns the HTTP API, the queue and the workers, and it never opens a document in an engine.
 - **Worker**: a `convertd worker` process. An **office worker** runs LibreOffice through LibreOfficeKit. A **render worker** runs PDFium.
 - **Engine**: LibreOffice or PDFium. **Engine time**: the time a worker reports from just before it opens a document to just after the last engine call.

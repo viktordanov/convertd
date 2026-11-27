@@ -1,14 +1,14 @@
-# rs-convert
+# convertd
 
-[![Go client](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fproxy.golang.org%2Fgithub.com%2Fviktordanov%2Frs-convert%2Fclient%2F%40latest&query=%24.Version&label=go%20client)](https://pkg.go.dev/github.com/viktordanov/rs-convert/client)
-[![GHCR image](https://img.shields.io/github/v/release/viktordanov/rs-convert?label=ghcr%20image)](https://github.com/viktordanov/rs-convert/pkgs/container/rs-convert)
-[![API](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fviktordanov%2Frs-convert%2Fmain%2Fapi%2Fopenapi.json&query=%24.info.version&label=api&prefix=v)](api/openapi.json)
-[![Memoria](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fviktordanov%2Frs-convert%2Fmain%2F.github%2Fworkflows%2Fmemoria.yml&query=%24.jobs.memoria.steps%5B1%5D.with.version&label=memoria&prefix=v)](https://github.com/viktordanov/rs-memoria)
-[![Memoria check](https://img.shields.io/github/actions/workflow/status/viktordanov/rs-convert/memoria.yml?branch=main&label=memoria%20check)](https://github.com/viktordanov/rs-convert/actions/workflows/memoria.yml)
+[![Go client](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fproxy.golang.org%2Fgithub.com%2Fviktordanov%2Fconvertd%2Fclient%2F%40latest&query=%24.Version&label=go%20client)](https://pkg.go.dev/github.com/viktordanov/convertd/client)
+[![GHCR image](https://img.shields.io/github/v/release/viktordanov/convertd?label=ghcr%20image)](https://github.com/viktordanov/convertd/pkgs/container/convertd)
+[![API](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fviktordanov%2Fconvertd%2Fmain%2Fapi%2Fopenapi.json&query=%24.info.version&label=api&prefix=v)](api/openapi.json)
+[![Memoria](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fviktordanov%2Fconvertd%2Fmain%2F.github%2Fworkflows%2Fmemoria.yml&query=%24.jobs.memoria.steps%5B1%5D.with.version&label=memoria&prefix=v)](https://github.com/viktordanov/rs-memoria)
+[![Memoria check](https://img.shields.io/github/actions/workflow/status/viktordanov/convertd/memoria.yml?branch=main&label=memoria%20check)](https://github.com/viktordanov/convertd/actions/workflows/memoria.yml)
 
-rs-convert is an HTTP service that converts office documents and PDFs into a PDF and per-page images.
+convertd is an HTTP service that converts office documents and PDFs into a PDF and per-page images.
 
-**Status: the service converts office documents and PDFs. Version 0.2.0 is published as the container image `ghcr.io/viktordanov/rs-convert`, for linux/amd64 and linux/arm64.** `convertd serve` runs LibreOffice and PDFium in pools of worker processes. The quick start runs this image, and a build from source with a fake engine. The API is version `1.0.0`.
+**Status: the service converts office documents and PDFs. Version 0.3.0 is published as the container image `ghcr.io/viktordanov/convertd`, for linux/amd64 and linux/arm64.** `convertd serve` runs LibreOffice and PDFium in pools of worker processes. The quick start runs this image, and a build from source with a fake engine. The API is version `1.0.0`.
 
 ## Contents
 
@@ -28,7 +28,7 @@ A service that converts office files with `soffice --convert-to` starts a new Li
 
 LibreOffice and PDFium also parse files from callers that the service does not control. A file that hangs or crashes a parser must not stop the service.
 
-rs-convert keeps LibreOffice loaded in long-lived worker processes through LibreOfficeKit, and it renders pages with PDFium. Each engine runs in a worker process that the supervisor can kill at a deadline and replace. The service is one Rust binary, `convertd`, in one image. It has no database and no job store.
+convertd keeps LibreOffice loaded in long-lived worker processes through LibreOfficeKit, and it renders pages with PDFium. Each engine runs in a worker process that the supervisor can kill at a deadline and replace. It is one Rust binary in one image. It has no database and no job store.
 
 ## What it does not do
 
@@ -53,16 +53,16 @@ The image is on GHCR for linux/amd64 and linux/arm64. These commands ran on an A
 1. Pull the image:
 
    ```bash
-   docker pull ghcr.io/viktordanov/rs-convert:0.2.0
+   docker pull ghcr.io/viktordanov/convertd:0.3.0
    ```
 
-   To build it yourself instead, run `docker buildx build -f docker/Dockerfile --target runtime --build-arg CARGO_JOBS=4 --load -t rs-convert:local .` from the repository root, and use `rs-convert:local` in the next step. [docker/README.md](docker/README.md) gives the other targets and the build arguments.
+   To build it yourself instead, run `docker buildx build -f docker/Dockerfile --target runtime --build-arg CARGO_JOBS=4 --load -t convertd:local .` from the repository root, and use `convertd:local` in the next step. [docker/README.md](docker/README.md) gives the other targets and the build arguments.
 
 2. Start the image with a read-only root and a writable `/tmp`. One office worker and two render workers keep the run small. The defaults are half of the CPUs and all of the CPUs:
 
    ```bash
-   docker run -d --name rs-convert --read-only --tmpfs /tmp:size=2g --cap-drop ALL --security-opt no-new-privileges \
-     -e API_KEY=dev-key -e OFFICE_WORKERS=1 -e RENDER_WORKERS=2 -p 127.0.0.1:8080:8080 ghcr.io/viktordanov/rs-convert:0.2.0
+   docker run -d --name convertd --read-only --tmpfs /tmp:size=2g --cap-drop ALL --security-opt no-new-privileges \
+     -e API_KEY=dev-key -e OFFICE_WORKERS=1 -e RENDER_WORKERS=2 -p 127.0.0.1:8080:8080 ghcr.io/viktordanov/convertd:0.3.0
    ```
 
    This container is on Docker's default network, so it can open outbound connections. The service needs none. For anything beyond a local test, block its egress, as [deploy/README.md](deploy/README.md#worker-isolation) explains.
@@ -78,7 +78,7 @@ The image is on GHCR for linux/amd64 and linux/arm64. These commands ran on an A
 5. Stop and remove the container:
 
    ```bash
-   docker stop rs-convert && docker rm rs-convert
+   docker stop convertd && docker rm convertd
    ```
 
 Next: read [The API](#the-api) for the page images and the bundle.
@@ -156,7 +156,7 @@ Every `/v1` route needs the API key as a bearer token. The probes (`/healthz`, `
 
 The image runs on any container platform with a read-only root, a writable `/tmp`, the probes on `/readyz` and `/healthz`, and a termination grace longer than `SHUTDOWN_GRACE_SECONDS`. The service opens no outbound connections, so block its egress. [deploy/README.md](deploy/README.md) gives the reasons for each setting.
 
-- **Kubernetes:** `deploy/k8s/base` is a kustomize base with a Deployment, a Service and a NetworkPolicy that blocks egress. `deploy/k8s/overlays/gvisor` runs the pods under gVisor. Point an overlay of your own at `ghcr.io/viktordanov/rs-convert:0.2.0`.
+- **Kubernetes:** `deploy/k8s/base` is a kustomize base with a Deployment, a Service and a NetworkPolicy that blocks egress. `deploy/k8s/overlays/gvisor` runs the pods under gVisor. Point an overlay of your own at `ghcr.io/viktordanov/convertd:0.3.0`.
 - **Docker or another platform:** start from the quick start's `docker run` line, and block the container's egress.
 - **Sizing:** LibreOffice needs the memory. An office worker used 462 MiB at p50 and 1546 MiB at p99 on a set of 276 office files and PDFs. The [memory budget](deploy/README.md#memory-budget) gives the rule for the per-pool limits, and the values for 2 CPUs and 4 GiB.
 
@@ -181,7 +181,7 @@ Each folder in this list has a README for its own readers.
 - [docker/README.md](docker/README.md) covers the image: the pinned LibreOffice, PDFium and fonts, and the build targets.
 - [deploy/README.md](deploy/README.md) covers the Kubernetes manifests, the settings that any container platform needs, and the example Grafana dashboard and Prometheus alerts. `tools/observability/gen_dashboard.py` generates the dashboard.
 - `build_docker.sh` builds the image for linux/amd64 and linux/arm64 and pushes it to a repository that you name.
-- A tag `vX.Y.Z` runs `.github/workflows/release.yml`. It builds and tests the image on both architectures, publishes it to GHCR as `ghcr.io/<owner>/rs-convert`, and creates a GitHub release. [docker/README.md](docker/README.md#releases) describes it.
+- A tag `vX.Y.Z` runs `.github/workflows/release.yml`. It builds and tests the image on both architectures, publishes it to GHCR as `ghcr.io/<owner>/convertd`, and creates a GitHub release. [docker/README.md](docker/README.md#releases) describes it.
 
 <!-- memoria:section id="contributing" files="generate.sh scripts/contract_test.sh .github/workflows/image.yml .github/workflows/corpus.yml .config/nextest.toml" -->
 ### Contributing to it
@@ -204,4 +204,4 @@ Each folder in this list has a README for its own readers.
 
 ## License
 
-rs-convert uses the Apache-2.0 license (`LICENSE`). The image also bundles LibreOffice (MPL-2.0), PDFium (BSD-style) and fonts under their own licenses.
+convertd uses the Apache-2.0 license (`LICENSE`). The image also bundles LibreOffice (MPL-2.0), PDFium (BSD-style) and fonts under their own licenses.

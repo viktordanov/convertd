@@ -31,11 +31,11 @@ apt-get install -y --no-install-recommends \
 lo_dir="libreoffice${LO_VERSION%.*}"
 test -f "/opt/${lo_dir}/program/libmergedlo.so"
 ln -s "${lo_dir}" /opt/libreoffice
-# 10-rs-convert-libreoffice-fonts.conf points fontconfig at LibreOffice's font directories, so
+# 10-convertd-libreoffice-fonts.conf points fontconfig at LibreOffice's font directories, so
 # ooofonts and OpenSymbol are in the system cache and in build-info.json. LibreOffice registers
 # them by their real path, and fontconfig keys the cache on the path as written, so the conf
 # must name the real directory: otherwise every worker writes a user cache at start.
-fc_conf=/etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
+fc_conf=/etc/fonts/conf.d/10-convertd-libreoffice-fonts.conf
 sed -i "s|<dir>/opt/libreoffice/|<dir>/opt/${lo_dir}/|" "${fc_conf}"
 for d in share/fonts/truetype program/resource/common/fonts; do
   test -d "/opt/${lo_dir}/${d}"

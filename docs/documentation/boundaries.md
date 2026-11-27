@@ -27,7 +27,7 @@ Add a nested README only for a folder with its own contract. Link it from its pa
 
 ## Root README
 
-Introduce rs-convert to a user who has never seen it. Lead with what the service does in one sentence, the problem it solves, and what it does not do (no OCR, no HTML, no fidelity guarantee against Microsoft Office). Then give a quick start that works today: convert one file with `curl` and read the headers. Run the published image, and give a second path that builds `convertd` from source and runs it with the fake engine, for a reader without Docker. Then the catalog of boundaries, grouped by reader: using the service, deploying it, contributing to it. End with the documentation map and the license.
+Introduce convertd to a user who has never seen it. Lead with what the service does in one sentence, the problem it solves, and what it does not do (no OCR, no HTML, no fidelity guarantee against Microsoft Office). Then give a quick start that works today: convert one file with `curl` and read the headers. Run the published image, and give a second path that builds `convertd` from source and runs it with the fake engine, for a reader without Docker. Then the catalog of boundaries, grouped by reader: using the service, deploying it, contributing to it. End with the documentation map and the license.
 
 Keep the API description short and link to the spec. Keep design history in the spike results, not in the root README. Do not claim performance that the benchmarks have not measured.
 

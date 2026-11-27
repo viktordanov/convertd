@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.99.0"
 license = "Apache-2.0"
-description = "Checks the rs-convert corpus and measures the service"
+description = "Checks the convertd corpus and measures the service"
 publish = false
 
 # A workspace of its own: this crate stays out of convertd's lock file

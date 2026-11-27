@@ -1,6 +1,6 @@
 # docker
 
-`docker/` builds the one rs-convert image: convertd, a pinned LibreOffice, a pinned PDFium, a fixed font set and `build-info.json`, for `linux/amd64` and `linux/arm64`.
+`docker/` builds the one convertd image: the `convertd` binary, a pinned LibreOffice, a pinned PDFium, a fixed font set and `build-info.json`, for `linux/amd64` and `linux/arm64`.
 
 The product image converts documents on arm64 and amd64. On 2026-11-26 the `runtime` image converted a DOCX, a PDF and a PPTX under Docker on arm64, and the CI image job converted a DOCX with it natively on both architectures ([What is verified](#what-is-verified)). It is not run yet on Kubernetes or gVisor. The engines, the fonts and the library check are proved on both architectures.
 
@@ -15,7 +15,7 @@ The product image converts documents on arm64 and amd64. On 2026-11-26 the `runt
 7. [What is verified](#what-is-verified)
 8. [Releases](#releases)
 
-<!-- memoria:section id="overview" files="Dockerfile install-engines.sh dpkg/docs.cfg dpkg/fonts.cfg dpkg/libreoffice.cfg libreoffice/rs-convert-paper.xcd libreoffice/rs-convert-security.xcd" -->
+<!-- memoria:section id="overview" files="Dockerfile install-engines.sh dpkg/docs.cfg dpkg/fonts.cfg dpkg/libreoffice.cfg libreoffice/convertd-paper.xcd libreoffice/convertd-security.xcd" -->
 ## What the image holds
 
 The image is `debian:trixie-slim` with only what convertd uses. Each part has a reason:
@@ -23,8 +23,8 @@ The image is `debian:trixie-slim` with only what convertd uses. Each part has a 
 - **LibreOffice 26.8.3** from the `.deb` tarball of The Document Foundation (TDF). The image installs 13 of its packages, which the `engines` stage names. The full set does not install, because `postgresql-sdbc` needs Base. Java, Base, Python, help and other UI languages are not installed. The build fails if `java` or `python3` is present. `dpkg/libreoffice.cfg` also drops the parts that a headless conversion never reads: the icon themes except colibre, the offline help, the gallery, the templates, the Basic wizards and the credits document.
 - **PDFium `chromium/8179`** from `bblanchon/pdfium-binaries`, with its `LICENSE` and the third-party licenses in `/opt/pdfium`.
 - **Fonts** that replace the common Office families with metric-compatible free fonts. [Fonts and build-info.json](#fonts-and-build-infojson) gives the set.
-- **Paper locales.** The compiled `en_GB.UTF-8` and `en_US.UTF-8` locales, in `/usr/lib/locale`, without the `locales` package. The workers get `LC_PAPER` from `DEFAULT_PAPER`, and LibreOffice needs this data to read it. LibreOffice reads `LC_PAPER` only while `ooSetupSystemLocale` is empty, and LibreOfficeKit sets it to en-US at start. `libreoffice/rs-convert-paper.xcd` therefore finalizes it as empty at the install layer. The formatting locale stays the system one, en-US. A build gate checks the `.xcd`, and that `LC_PAPER` gives 210 × 297 mm and 216 × 279 mm.
-- **Macro and link lock-down.** `libreoffice/rs-convert-security.xcd` sets these values at the install layer: the highest macro security level (3), macro execution off, active content (OLE and DDE) off, links from untrusted documents blocked, no trusted location (`SecureURL` empty), and link updates "never" in Writer (0) and Calc (1). Every value except one is finalized, so a user profile cannot change it. `DisableMacrosExecution` is not finalized, because LibreOfficeKit commits it as `true` at each load, and a commit to a finalized value makes every load fail. Two checks cover it. The build gate checks only the installed XML. The corpus case `docx-file-links` checks the effective policy: its picture, linked to a local file of the image, must give 0 images in the PDF. LibreOffice 26.8.3.1 under LibreOfficeKit already follows no file link of the corpus with its defaults, so that case also passes without this file. A picture linked to a local file loads only when the configuration trusts its location and sets Writer links to "always", and this file blocks it even then. [What is verified](#what-is-verified) gives the runs.
+- **Paper locales.** The compiled `en_GB.UTF-8` and `en_US.UTF-8` locales, in `/usr/lib/locale`, without the `locales` package. The workers get `LC_PAPER` from `DEFAULT_PAPER`, and LibreOffice needs this data to read it. LibreOffice reads `LC_PAPER` only while `ooSetupSystemLocale` is empty, and LibreOfficeKit sets it to en-US at start. `libreoffice/convertd-paper.xcd` therefore finalizes it as empty at the install layer. The formatting locale stays the system one, en-US. A build gate checks the `.xcd`, and that `LC_PAPER` gives 210 × 297 mm and 216 × 279 mm.
+- **Macro and link lock-down.** `libreoffice/convertd-security.xcd` sets these values at the install layer: the highest macro security level (3), macro execution off, active content (OLE and DDE) off, links from untrusted documents blocked, no trusted location (`SecureURL` empty), and link updates "never" in Writer (0) and Calc (1). Every value except one is finalized, so a user profile cannot change it. `DisableMacrosExecution` is not finalized, because LibreOfficeKit commits it as `true` at each load, and a commit to a finalized value makes every load fail. Two checks cover it. The build gate checks only the installed XML. The corpus case `docx-file-links` checks the effective policy: its picture, linked to a local file of the image, must give 0 images in the PDF. LibreOffice 26.8.3.1 under LibreOfficeKit already follows no file link of the corpus with its defaults, so that case also passes without this file. A picture linked to a local file loads only when the configuration trusts its location and sets Writer links to "always", and this file blocks it even then. [What is verified](#what-is-verified) gives the runs.
 - **No setuid or setgid file.** `install-engines.sh` removes these bits from every file, in the product and the dev image, and fails if one remains. The service never changes its user. `smoke.sh` checks the image again.
 - **No network tools.** curl, ca-certificates and procps are not in the product image. All downloads happen in the `engines` build stage.
 - **No documentation.** The dpkg excludes in `dpkg/docs.cfg` drop docs, man pages and message catalogs before dpkg unpacks them. They keep the `copyright` file of each package.
@@ -64,15 +64,15 @@ If the Docker VM has about 4 GB, build one image at a time. Keep `CARGO_JOBS` at
 
 ```sh
 docker buildx build -f docker/Dockerfile --target runtime-base \
-  --platform linux/arm64 --load -t rs-convert-base:arm64 .
-docker buildx build -f docker/Dockerfile --target dev --load -t rs-convert-dev .
+  --platform linux/arm64 --load -t convertd-base:arm64 .
+docker buildx build -f docker/Dockerfile --target dev --load -t convertd-dev .
 ```
 
 Run the tests in `dev` with the source mounted and a job-local target folder:
 
 ```sh
 docker run --rm -v "$PWD":/src -v "$scratch/target":/target \
-  -e CARGO_TARGET_DIR=/target rs-convert-dev cargo test
+  -e CARGO_TARGET_DIR=/target convertd-dev cargo test
 ```
 
 `build_docker.sh` in the repository root builds and pushes the `runtime` image as `<repo>:v<x.y.z>`, with the version from `Cargo.toml`. A release build needs a clean tree that carries the tag `v<x.y.z>`. The script is not proved yet.
@@ -90,7 +90,7 @@ The build arguments:
 | `CONVERTD_VERSION`, `CONVERTD_COMMIT`, `CONVERTD_BUILD_DATE` | the OCI version, revision and created labels. convertd also compiles in `CONVERTD_COMMIT` for `/v1/capabilities` and the engine fingerprint. `convertd --version` prints the version from `Cargo.toml` |
 <!-- /memoria:section -->
 
-<!-- memoria:section id="contract" files="fonts/fonts.json fonts/10-libreoffice-fonts.conf fonts/35-rs-convert-aliases.conf fonts/probe-families.txt dpkg/fonts.cfg dpkg/libreoffice.cfg write-build-info.sh install-engines.sh cache-fonts.sh" -->
+<!-- memoria:section id="contract" files="fonts/fonts.json fonts/10-libreoffice-fonts.conf fonts/35-convertd-aliases.conf fonts/probe-families.txt dpkg/fonts.cfg dpkg/libreoffice.cfg write-build-info.sh install-engines.sh cache-fonts.sh" -->
 ## Fonts and build-info.json
 
 The font set covers Latin, Greek, Cyrillic, symbols, math and emoji, and the scripts in the list that follows. These families are installed, and the build fails if `fc-list` does not find one of them:
@@ -105,7 +105,7 @@ A script with no font renders blank, or as wrong glyphs. The PDF text layer stil
 
 LibreOffice bundles its own copies of Liberation, Carlito, Caladea, DejaVu, Noto Sans and Noto Serif, and Debian packages install them too. The image keeps one copy of each family: the copy that fontconfig picked when both were present. That is Debian's Carlito and LibreOffice's copy of the others, the same version or a newer one. `dpkg/fonts.cfg` and `dpkg/libreoffice.cfg` drop the other copy, and `build-info.json` stays the same. A new LibreOffice release can change these versions, so the pin procedure checks them again.
 
-`fonts/35-rs-convert-aliases.conf` maps Aptos, Aptos Display and Calibri Light to Carlito. These Office families have no metric-compatible free font, so `fonts.json` marks them `false`. Debian already maps the other Office families.
+`fonts/35-convertd-aliases.conf` maps Aptos, Aptos Display and Calibri Light to Carlito. These Office families have no metric-compatible free font, so `fonts.json` marks them `false`. Debian already maps the other Office families.
 
 `write-build-info.sh` writes `/opt/convertd/build-info.json` at build time in the final image. The versions come from the pinned build arguments. `fonts` is the sorted `fc-list` output. `font_substitutes` maps each family in `fonts/probe-families.txt` to the family that `fc-match` picks, aliases included. `default_substitute` is the `fc-match` answer for `sans-serif`, the fallback for any other name. `coverage` is the union of the charsets of every face that `fc-list` lists, as sorted, merged and inclusive ranges of code points in decimal (`[[32, 126], [160, 591], …]`). `GLYPHS_MISSING` compares the text of a document with it. The image has no Python, so the script merges the ranges with POSIX `awk`, and it fails the build when `fc-list` reports no charset. convertd never runs fontconfig itself. On 26.8.3.1 the file is the same on both architectures. These are some of its values:
 
@@ -228,7 +228,7 @@ On 2026-11-27 the lock-down and the setuid strip passed these gates on arm64, ag
 The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs by hand, monthly, and on pushes to `main` and pull requests that touch `docker/`, `src/engines/`, `src/worker/`, `src/preflight/`, `corpus/`, `.github/actions/image-gates/` or `Cargo.lock`. A push compares with the commit before it, and a push with no such commit runs the job. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The run after the trims measured 578 MB on amd64 and 604 MB on arm64. The amd64 image was ready after 764 ms and converted the DOCX in 61 ms. The command:
 
 ```sh
-docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
+docker/smoke.sh convertd:ci docker/smoke/small.docx 635
 ```
 
 `smoke.sh` runs the image with the production limits and checks six things:
@@ -254,7 +254,7 @@ A tag `vX.Y.Z` runs `.github/workflows/release.yml`. The tag must be `v` plus th
 1. **version** reads the version and decides the tags.
 2. **build** builds the `runtime` image natively on amd64 and arm64. It runs the gates of the image job: the umask guard, `smoke.sh` with the size budget and the clean start, and the corpus check. It holds no registry credential.
 3. **push** builds each image again from the cache of the build job. It checks that the config digest is the gated one, and pushes the image by digest, with provenance and an SBOM.
-4. **publish** joins the two digests into one multi-arch manifest, `ghcr.io/<owner>/rs-convert:X.Y.Z`.
+4. **publish** joins the two digests into one multi-arch manifest, `ghcr.io/<owner>/convertd:X.Y.Z`.
 5. **release** creates the GitHub release for the tag, with generated notes and the image digest.
 
 The manifest also gets `X.Y` and `latest` only when the release is the newest `X.Y.Z` in the registry: of its line for `X.Y`, and overall for `latest`. So `1.0.5` after `1.1.0` moves `1.0`, not `latest`. The registry tag is what counts, not the run's result. A run that failed after the publish job wrote `X.Y.Z` has published that version, and later runs count it. Re-run its failed jobs, so that its aliases and its GitHub release follow.

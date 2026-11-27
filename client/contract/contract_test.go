@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/viktordanov/rs-convert/client/convert"
-	"github.com/viktordanov/rs-convert/client/internal/api"
+	"github.com/viktordanov/convertd/client/convert"
+	"github.com/viktordanov/convertd/client/internal/api"
 )
 
 // The live contract cases. Every response passes through the validating

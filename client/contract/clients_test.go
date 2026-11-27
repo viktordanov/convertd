@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/viktordanov/rs-convert/client/convert"
-	"github.com/viktordanov/rs-convert/client/internal/api"
+	"github.com/viktordanov/convertd/client/convert"
+	"github.com/viktordanov/convertd/client/internal/api"
 )
 
 // facadeFor returns the public client, sending through rt.

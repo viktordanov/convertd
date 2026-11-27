@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "generator": {
-    "python": "3.13.5",
-    "zlib": "1.3.1",
-    "platform": "Linux-aarch64"
+    "python": "3.13.18",
+    "zlib": "1.2.12",
+    "platform": "Darwin-arm64"
   },
   "listener": "127.0.0.1:47123",
   "files": [
@@ -889,7 +889,7 @@
       "id": "odt",
       "path": "out/odf/two-pages.odt",
       "origin": "generated",
-      "sha256": "370ec60c740ae6a366bbf6335b781060ccd8bc8391b498e5a4e0a3447094678e",
+      "sha256": "4ab13d90dcf2e6a09d80ccfbff9c850bf13dbfe318c16ef7491ca23231da139a",
       "tags": [
         "formats"
       ],
@@ -1481,7 +1481,7 @@
       "id": "odp",
       "path": "out/odf/three-slides.odp",
       "origin": "generated",
-      "sha256": "2b2c1a6116c224d918685860647bfc944b29d887dcde2eb3f201f37e40127f5e",
+      "sha256": "15bb15ec10f25454a0fe3fab688352c8ebec1e5d821104c34e88d5fdf9a9876b",
       "tags": [
         "formats"
       ],
@@ -1522,7 +1522,7 @@
       "id": "odp-hidden",
       "path": "out/odf/hidden.odp",
       "origin": "generated",
-      "sha256": "8e4e72da255aba44c27eede1713af1f94902b007f8aa8b162bb616d72bcc36ef",
+      "sha256": "a41005c419e7c996979c9005c586369172c556b07025b3bfda557d949c46b0ef",
       "tags": [
         "formats",
         "pages"
@@ -1780,7 +1780,7 @@
       "id": "ods",
       "path": "out/odf/one-sheet.ods",
       "origin": "generated",
-      "sha256": "b50f8f7a68fc81252468c3a355d97816e3c6e46b9b4dfe72825289b3cef31387",
+      "sha256": "96989364af7c71c883a27601ca3f9b81d22ddd72b44259c0daf1566cea0a31c3",
       "tags": [
         "formats"
       ],
@@ -2022,7 +2022,7 @@
       "id": "odt-basic-canary",
       "path": "out/canary/odt-basic.odt",
       "origin": "generated",
-      "sha256": "d548ea011389521498ab8ddfa1039b14fef3e948ac2471a16ea16ed6dae48329",
+      "sha256": "0ade2b827623952f7d32774008d06ff948f96912500207edd7a29c0e46a1ff59",
       "tags": [
         "security",
         "macros"
@@ -2167,7 +2167,7 @@
         "hostile",
         "security"
       ],
-      "notes": "An INCLUDETEXT field linked to file:///etc/os-release, whose cached result is CACHED FIELD RESULT, and a picture linked through an external relationship (r:link) to file:///opt/libreoffice/program/intro.png. Both files exist in the service image. LibreOffice 26.8.3.1 follows neither link with its defaults, so the case guards the lock-down of docker/libreoffice/rs-convert-security.xcd against a change; it does not prove the lock-down alone. With SecureURL file:/// and Writer Content/Update/Link 2 the picture loads (2 image XObjects).",
+      "notes": "An INCLUDETEXT field linked to file:///etc/os-release, whose cached result is CACHED FIELD RESULT, and a picture linked through an external relationship (r:link) to file:///opt/libreoffice/program/intro.png. Both files exist in the service image. LibreOffice 26.8.3.1 follows neither link with its defaults, so the case guards the lock-down of docker/libreoffice/convertd-security.xcd against a change; it does not prove the lock-down alone. With SecureURL file:/// and Writer Content/Update/Link 2 the picture loads (2 image XObjects).",
       "preflight": {
         "format": "docx",
         "encrypted": false,

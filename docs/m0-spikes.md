@@ -22,7 +22,7 @@ performance targets.
   all 42 tests under `-race`.
 - The generated code now lives in `client/internal/api/`, so other modules
   cannot import it. No exported identifier in `convert/` uses a generated type.
-- The module path is `github.com/viktordanov/rs-convert/client`.
+- The module path is `github.com/viktordanov/convertd/client`.
 
 ## 2. Code-first spec: axum + utoipa → oapi-codegen
 

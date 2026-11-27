@@ -21,7 +21,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/viktordanov/rs-convert/client/convert"
+	"github.com/viktordanov/convertd/client/convert"
 )
 
 // The self-tests prove that the validating transport and the harness catch

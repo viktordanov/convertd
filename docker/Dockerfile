@@ -208,14 +208,14 @@ ARG FONTS_CJK=0
 # /etc/convertd and /etc/fonts/conf.d untraversable (fontconfig is not installed yet here). The
 # folders are created first, with 0755; COPY leaves an existing folder alone.
 RUN mkdir -p -m 0755 /etc/convertd /etc/fonts/conf.d /opt/convertd
-COPY --chmod=0644 docker/dpkg/docs.cfg /etc/dpkg/dpkg.cfg.d/90-rs-convert-docs
-COPY --chmod=0644 docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
-COPY --chmod=0644 docker/dpkg/libreoffice.cfg /etc/dpkg/dpkg.cfg.d/92-rs-convert-libreoffice
+COPY --chmod=0644 docker/dpkg/docs.cfg /etc/dpkg/dpkg.cfg.d/90-convertd-docs
+COPY --chmod=0644 docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-convertd-fonts
+COPY --chmod=0644 docker/dpkg/libreoffice.cfg /etc/dpkg/dpkg.cfg.d/92-convertd-libreoffice
 # fonts.json: {family -> metric_compatible} for FONT_SUBSTITUTED. The aliases add the
 # Office families Debian does not map; build-info.json records what fc-match then picks.
 COPY --chmod=0644 docker/fonts/fonts.json /etc/convertd/fonts.json
-COPY --chmod=0644 docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
-COPY --chmod=0644 docker/fonts/35-rs-convert-aliases.conf /etc/fonts/conf.d/35-rs-convert-aliases.conf
+COPY --chmod=0644 docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-convertd-libreoffice-fonts.conf
+COPY --chmod=0644 docker/fonts/35-convertd-aliases.conf /etc/fonts/conf.d/35-convertd-aliases.conf
 # Builds the font cache so it stays valid after a tar export; kept for derived font images.
 COPY --chmod=0755 docker/cache-fonts.sh /opt/convertd/cache-fonts.sh
 # docker/install-engines.sh is shared with the dev target, so the two cannot drift. The script
@@ -229,13 +229,13 @@ COPY --from=paper-locales /out/ /usr/lib/locale/
 # Gate: LC_PAPER must load without a diagnostic and give the paper that DEFAULT_PAPER promises
 # (glibc stores mm). The C locale is A4 too, so a missing en_GB would still print 297 210.
 # The install layer must also keep ooSetupSystemLocale finalized and empty, after main.xcd
-# (rs-convert-paper.xcd). This part is a packaging check: it compares the installed file
+# (convertd-paper.xcd). This part is a packaging check: it compares the installed file
 # without white space with the form in the repository. The effect on the engine is proven by
 # tests/engines_office.rs, default_paper_sets_the_page_size_of_a_sheet_without_one.
-RUN xcd="$(tr -d ' \t\n' </opt/libreoffice/share/registry/rs-convert-paper.xcd)"; \
+RUN xcd="$(tr -d ' \t\n' </opt/libreoffice/share/registry/convertd-paper.xcd)"; \
     for want in '<dependencyfile="main"/>' \
       '<oor:component-dataoor:package="org.openoffice"oor:name="Setup"><nodeoor:name="L10N"><propoor:name="ooSetupSystemLocale"oor:finalized="true"><value></value></prop></node></oor:component-data>'; do \
-      [[ "${xcd}" == *"${want}"* ]] || { echo "rs-convert-paper.xcd lacks ${want}" >&2; exit 1; }; \
+      [[ "${xcd}" == *"${want}"* ]] || { echo "convertd-paper.xcd lacks ${want}" >&2; exit 1; }; \
     done; \
     for spec in "en_GB.UTF-8 en_GB.utf8 297 210" "en_US.UTF-8 en_US.utf8 279 216"; do \
       read -r name dir height width <<<"${spec}"; \
@@ -246,18 +246,18 @@ RUN xcd="$(tr -d ' \t\n' </opt/libreoffice/share/registry/rs-convert-paper.xcd)"
       [[ "${got}" == "${height} ${width} " ]] \
         || { echo "LC_PAPER=${name} gives '${got}', expected '${height} ${width}'" >&2; exit 1; }; \
     done
-# Gate: the macro and link lock-down (rs-convert-security.xcd) is installed
+# Gate: the macro and link lock-down (convertd-security.xcd) is installed
 # after main.xcd, with every value as the repository has it. DisableMacrosExecution is the one
 # value that is not finalized: LibreOfficeKit commits it at each load, and a commit to a
 # finalized value fails every load. This gate checks only the installed XML. The check of the
 # effective policy is the corpus case docx-file-links: its picture linked to a local file must
 # give 0 images in the PDF (docker/README.md, What is verified).
-RUN xcd="$(tr -d ' \t\n' </opt/libreoffice/share/registry/rs-convert-security.xcd)"; \
+RUN xcd="$(tr -d ' \t\n' </opt/libreoffice/share/registry/convertd-security.xcd)"; \
     for want in '<dependencyfile="main"/>' \
       '<oor:component-dataoor:package="org.openoffice.Office"oor:name="Common"><nodeoor:name="Security"><nodeoor:name="Scripting"><propoor:name="MacroSecurityLevel"oor:finalized="true"><value>3</value></prop><propoor:name="DisableMacrosExecution"><value>true</value></prop><propoor:name="DisableActiveContent"oor:finalized="true"><value>true</value></prop><propoor:name="BlockUntrustedRefererLinks"oor:finalized="true"><value>true</value></prop><propoor:name="SecureURL"oor:finalized="true"><value/></prop></node></node></oor:component-data>' \
       '<oor:component-dataoor:package="org.openoffice.Office"oor:name="Writer"><nodeoor:name="Content"><nodeoor:name="Update"><propoor:name="Link"oor:finalized="true"><value>0</value></prop></node></node></oor:component-data>' \
       '<oor:component-dataoor:package="org.openoffice.Office"oor:name="Calc"><nodeoor:name="Content"><nodeoor:name="Update"><propoor:name="Link"oor:finalized="true"><value>1</value></prop></node></node></oor:component-data>'; do \
-      [[ "${xcd}" == *"${want}"* ]] || { echo "rs-convert-security.xcd lacks ${want}" >&2; exit 1; }; \
+      [[ "${xcd}" == *"${want}"* ]] || { echo "convertd-security.xcd lacks ${want}" >&2; exit 1; }; \
     done
 # Writes /opt/convertd/build-info.json (versions from the pinned args, fonts from fc-list,
 # font_substitutes from fc-match per family in probe-families.txt, and the default substitute).
@@ -268,8 +268,8 @@ RUN LO_VERSION="${LO_BUILD:-${LO_VERSION}}" PDFIUM_BUILD="${PDFIUM_BUILD}" \
     bash /opt/convertd/write-build-info.sh
 # Gate: an unprivileged user must read every file that convertd, fontconfig and LibreOffice read
 # at run time. A 0600 file here builds fine and fails only at run time (uid 10001).
-RUN for f in /etc/convertd/fonts.json /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf \
-             /etc/fonts/conf.d/35-rs-convert-aliases.conf /opt/convertd/build-info.json \
+RUN for f in /etc/convertd/fonts.json /etc/fonts/conf.d/10-convertd-libreoffice-fonts.conf \
+             /etc/fonts/conf.d/35-convertd-aliases.conf /opt/convertd/build-info.json \
              /opt/convertd/probe-families.txt /opt/libreoffice/program/soffice.bin \
              /opt/pdfium/lib/libpdfium.so; do \
       setpriv --reuid=65534 --regid=65534 --clear-groups test -r "${f}" \
@@ -325,10 +325,10 @@ RUN case "${TARGETARCH}" in amd64) tri=x86_64-linux-gnu ;; arm64) tri=aarch64-li
 
 # ---- Dev/test image for the engine tests -------------------------------------------------
 # Toolchain + the same engines, installed by the same script. Build for the host only:
-#   docker buildx build -f docker/Dockerfile --target dev --load -t rs-convert-dev .
+#   docker buildx build -f docker/Dockerfile --target dev --load -t convertd-dev .
 # Run with the source mounted and a job-local target dir:
 #   docker run --rm -v "$PWD":/src -v <scratch>/target:/target \
-#     -e CARGO_TARGET_DIR=/target rs-convert-dev cargo test -- --include-ignored
+#     -e CARGO_TARGET_DIR=/target convertd-dev cargo test -- --include-ignored
 FROM ${RUST_IMAGE} AS dev
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 ARG LO_VERSION
@@ -341,11 +341,11 @@ ARG FONTS_CJK=0
 # folders are created first, with 0755; COPY leaves an existing folder alone.
 RUN mkdir -p -m 0755 /etc/convertd /etc/fonts/conf.d /opt/convertd
 # The font and LibreOffice excludes only: the docs/locale excludes would fight locale-gen here.
-COPY --chmod=0644 docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
-COPY --chmod=0644 docker/dpkg/libreoffice.cfg /etc/dpkg/dpkg.cfg.d/92-rs-convert-libreoffice
+COPY --chmod=0644 docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-convertd-fonts
+COPY --chmod=0644 docker/dpkg/libreoffice.cfg /etc/dpkg/dpkg.cfg.d/92-convertd-libreoffice
 COPY --chmod=0644 docker/fonts/fonts.json /etc/convertd/fonts.json
-COPY --chmod=0644 docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
-COPY --chmod=0644 docker/fonts/35-rs-convert-aliases.conf /etc/fonts/conf.d/35-rs-convert-aliases.conf
+COPY --chmod=0644 docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-convertd-libreoffice-fonts.conf
+COPY --chmod=0644 docker/fonts/35-convertd-aliases.conf /etc/fonts/conf.d/35-convertd-aliases.conf
 # Builds the font cache so it stays valid after a tar export; kept for derived font images.
 COPY --chmod=0755 docker/cache-fonts.sh /opt/convertd/cache-fonts.sh
 RUN --mount=type=bind,from=engines,source=/out/debs,target=/debs \
@@ -360,8 +360,8 @@ RUN LO_VERSION="${LO_BUILD:-${LO_VERSION}}" PDFIUM_BUILD="${PDFIUM_BUILD}" \
     bash /opt/convertd/write-build-info.sh
 # Gate: an unprivileged user must read every file that convertd, fontconfig and LibreOffice read
 # at run time. A 0600 file here builds fine and fails only at run time (uid 10001).
-RUN for f in /etc/convertd/fonts.json /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf \
-             /etc/fonts/conf.d/35-rs-convert-aliases.conf /opt/convertd/build-info.json \
+RUN for f in /etc/convertd/fonts.json /etc/fonts/conf.d/10-convertd-libreoffice-fonts.conf \
+             /etc/fonts/conf.d/35-convertd-aliases.conf /opt/convertd/build-info.json \
              /opt/convertd/probe-families.txt /opt/libreoffice/program/soffice.bin \
              /opt/pdfium/lib/libpdfium.so; do \
       setpriv --reuid=65534 --regid=65534 --clear-groups test -r "${f}" \
@@ -384,14 +384,14 @@ ARG PDFIUM_BUILD
 ARG CONVERTD_VERSION=0.0.0-dev
 ARG CONVERTD_COMMIT=unknown
 ARG CONVERTD_BUILD_DATE=unknown
-LABEL org.opencontainers.image.title="rs-convert" \
+LABEL org.opencontainers.image.title="convertd" \
       org.opencontainers.image.description="convertd: office files, PDFs and images to PDF and page images" \
-      org.opencontainers.image.source="https://github.com/viktordanov/rs-convert" \
+      org.opencontainers.image.source="https://github.com/viktordanov/convertd" \
       org.opencontainers.image.version="${CONVERTD_VERSION}" \
       org.opencontainers.image.revision="${CONVERTD_COMMIT}" \
       org.opencontainers.image.created="${CONVERTD_BUILD_DATE}" \
-      rs-convert.libreoffice.version="${LO_BUILD}" \
-      rs-convert.pdfium.version="chromium/${PDFIUM_BUILD}"
+      convertd.libreoffice.version="${LO_BUILD}" \
+      convertd.pdfium.version="chromium/${PDFIUM_BUILD}"
 # No licence label yet; the licence is Apache-2.0 (LICENSE).
 # No init process: convertd is PID 1 and also sets itself as child subreaper.
 COPY --from=lib-check /lib-check.ok /opt/convertd/lib-check.ok

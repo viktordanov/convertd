@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/viktordanov/rs-convert/client/internal/api"
+	"github.com/viktordanov/convertd/client/internal/api"
 )
 
 // The three values of the API's output option.

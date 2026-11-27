@@ -1,6 +1,6 @@
 # Documentation
 
-This folder holds the documents of rs-convert that are not READMEs: measured results, the writing guidance and a diagram.
+This folder holds the documents of convertd that are not READMEs: measured results, the writing guidance and a diagram.
 
 Some of these documents are records of past decisions. When one of them disagrees with a README, the README describes the current service. `api/openapi.json` is the contract of the API.
 

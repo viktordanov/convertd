@@ -32,7 +32,7 @@ spec:
           type: RuntimeDefault       # container runtime default filter, not a kernel sandbox
       containers:
         - name: convertd
-          image: rs-convert
+          image: convertd
           args: ["serve"]
           ports:
             - name: http

@@ -1,6 +1,6 @@
 # Corpus
 
-The corpus is the set of test files for rs-convert, and `expected.json` records what the service must answer for each file.
+The corpus is the set of test files for convertd, and `expected.json` records what the service must answer for each file.
 
 Know these facts before you change anything here:
 
@@ -51,7 +51,7 @@ The `origin` field of each entry in `expected.json` names its kind:
 
 The three network canaries are `generated` files that `--hostile` also writes, into `out/canary/`. Each one asks LibreOffice to connect to the canary listener at `127.0.0.1:47123`: a Basic macro on load, an external image link and a `WEBSERVICE` formula. The service must not bind that address.
 
-`file-links.docx` (`docx-file-links`) has an `INCLUDETEXT` field linked to `file:///etc/os-release` and a picture linked to `file:///opt/libreoffice/program/intro.png`. Both files exist in the service image. Its case expects the cached field text in the PDF, no text of `os-release` and no image. LibreOffice 26.8.3.1 follows neither link with its defaults, so the case guards the lock-down of `docker/libreoffice/rs-convert-security.xcd` against a change. It cannot fail against an image without that file, and docker/README.md gives the run that shows the lock-down itself.
+`file-links.docx` (`docx-file-links`) has an `INCLUDETEXT` field linked to `file:///etc/os-release` and a picture linked to `file:///opt/libreoffice/program/intro.png`. Both files exist in the service image. Its case expects the cached field text in the PDF, no text of `os-release` and no image. LibreOffice 26.8.3.1 follows neither link with its defaults, so the case guards the lock-down of `docker/libreoffice/convertd-security.xcd` against a change. It cannot fail against an image without that file, and docker/README.md gives the run that shows the lock-down itself.
 
 The hostile files stay small on disk. `zip-ratio.docx` is about 2 MB and declares a 2 GiB entry. `png-bomb.png` is about 1.2 MB and declares 100,000 x 100,000 pixels. The generator never decompresses or parses them.
 
@@ -95,9 +95,9 @@ The generator keeps the `docProps/app.xml` that the python-docx template writes:
 
 The generator needs Python 3.13. Run Python with `-I`, so that environment variables and user packages cannot change the output. Run these commands from the repository root:
 
-1. Make a virtual environment outside the repository: `python3.13 -m venv "$HOME/.venvs/rs-convert-corpus"`.
-2. Install the pins: `"$HOME/.venvs/rs-convert-corpus/bin/python" -I -m pip install --require-hashes -r corpus/requirements.txt`.
-3. Write the corpus: `"$HOME/.venvs/rs-convert-corpus/bin/python" -I corpus/generate.py corpus/out --hostile`.
+1. Make a virtual environment outside the repository: `python3.13 -m venv "$HOME/.venvs/convertd-corpus"`.
+2. Install the pins: `"$HOME/.venvs/convertd-corpus/bin/python" -I -m pip install --require-hashes -r corpus/requirements.txt`.
+3. Write the corpus: `"$HOME/.venvs/convertd-corpus/bin/python" -I corpus/generate.py corpus/out --hostile`.
 4. Run `cargo run --manifest-path tools/corpus/Cargo.toml -- validate`.
 
 On an Apple-silicon Mac, step 3 took about 12 s and wrote 47 MB (measured once with the pins in `requirements.txt`). Without `--hostile`, the generator leaves out the hostile files and the canaries, and `validate` then reports them as missing.

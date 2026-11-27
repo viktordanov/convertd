@@ -187,18 +187,18 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
           load: true
           push: false
-          tags: rs-convert:ci
+          tags: convertd:ci
       # The smoke test and the corpus check, shared with release.yml.
       - uses: ./.github/actions/image-gates
         with:
-          image: rs-convert:ci
+          image: convertd:ci
           arch: ${{ matrix.arch }}
           max-mb: ${{ vars.IMAGE_MAX_MB || 635 }}
       - name: Scan (monthly, report only)
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         continue-on-error: true
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with: {image-ref: "rs-convert:ci", severity: "CRITICAL,HIGH", ignore-unfixed: true, exit-code: "1"}
+        with: {image-ref: "convertd:ci", severity: "CRITICAL,HIGH", ignore-unfixed: true, exit-code: "1"}
 
   manifests:
     runs-on: ubuntu-24.04

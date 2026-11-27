@@ -1,4 +1,4 @@
-"""Generates the rs-convert test corpus.
+"""Generates the convertd test corpus.
 
 Usage (Python 3.13, in a virtualenv made from requirements.txt, run with -I):
 
@@ -596,7 +596,7 @@ def odf_bytes(mimetype, content, styles=None, extra=None):
     parts = {"content.xml": content,
              "styles.xml": styles or f'{XML_DECL}<office:document-styles {odf_ns()} office:version="1.3"/>',
              "meta.xml": (f'{XML_DECL}<office:document-meta {odf_ns()} office:version="1.3"><office:meta>'
-                          "<meta:generator>rs-convert corpus/generate.py</meta:generator>"
+                          "<meta:generator>convertd corpus/generate.py</meta:generator>"
                           "</office:meta></office:document-meta>")}
     parts.update(extra or {})
     entries = [f'<manifest:file-entry manifest:full-path="/" manifest:version="1.3" '
@@ -1258,7 +1258,7 @@ def write_hashes(built, doc):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Generates the rs-convert test corpus.")
+    parser = argparse.ArgumentParser(description="Generates the convertd test corpus.")
     parser.add_argument("out", nargs="?", type=Path, help="output directory, normally corpus/out")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="compare a fresh run with expected.json")

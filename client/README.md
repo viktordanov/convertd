@@ -1,6 +1,6 @@
 # Go client
 
-`github.com/viktordanov/rs-convert/client` is the Go module for calling the convert service, and `client/convert` is its only public package.
+`github.com/viktordanov/convertd/client` is the Go module for calling the convert service, and `client/convert` is its only public package.
 
 Do these four things in every caller:
 
@@ -24,7 +24,7 @@ Do these four things in every caller:
 The module needs Go 1.26 or later.
 
 ```bash
-go get github.com/viktordanov/rs-convert/client
+go get github.com/viktordanov/convertd/client
 ```
 
 No version is tagged yet, so `go get` records a pseudo-version of the default branch. Releases get tags of the form `client/vX.Y.Z`. The module stays on v0 while the API can still change.
@@ -46,7 +46,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/viktordanov/rs-convert/client/convert"
+	"github.com/viktordanov/convertd/client/convert"
 )
 
 func main() {

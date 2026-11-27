@@ -10,7 +10,7 @@ import (
 	"net/textproto"
 	"time"
 
-	"github.com/viktordanov/rs-convert/client/internal/api"
+	"github.com/viktordanov/convertd/client/internal/api"
 )
 
 // ImageFormat is the encoding of rendered pages.

@@ -3,7 +3,7 @@ package contract
 import (
 	"testing"
 
-	"github.com/viktordanov/rs-convert/client/internal/api"
+	"github.com/viktordanov/convertd/client/internal/api"
 )
 
 // TestInternalImport proves that this nested module may import the client's

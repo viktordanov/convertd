@@ -13,7 +13,7 @@
 # Linux only (GNU date for the timer).
 #
 # Usage: docker/smoke.sh <image> <docx-file> [max-image-mb] [expected-pages]
-#   for example: docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
+#   for example: docker/smoke.sh convertd:ci docker/smoke/small.docx 635
 #   expected-pages defaults to 2, the page count of docker/smoke/small.docx (corpus entry
 #   docx-small in corpus/expected.json).
 # Sizes are in MB of 10^6 bytes, as docker/README.md gives them.
@@ -22,7 +22,7 @@ set -euo pipefail
 image="${1:?image}"; docx="${2:?docx file}"; max_mb="${3:-0}"; want_pages="${4:-2}"
 curl_image="${CURL_IMAGE:?set CURL_IMAGE to a pinned curl image, tag@sha256:...}"
 file="$(basename "${docx}")"
-name="rs-convert-smoke-$$"
+name="convertd-smoke-$$"
 out="$(mktemp -d)"
 # The curl container runs as its own user. A checkout made under umask 077 has a 0600 DOCX that
 # it cannot read (curl exit 26), so it gets a copy with fixed modes instead.

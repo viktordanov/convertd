@@ -1,4 +1,4 @@
-module github.com/viktordanov/rs-convert/client
+module github.com/viktordanov/convertd/client
 
 go 1.26.0
 

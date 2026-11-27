@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/viktordanov/rs-convert/client/convert"
+	"github.com/viktordanov/convertd/client/convert"
 )
 
 // The fake-worker cases: each runs a server of its own

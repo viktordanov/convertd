@@ -97,7 +97,7 @@ pub struct WorkerEnv {
 
 /// The locale of every worker. LibreOffice formats numbers and dates with
 /// the system locale, because the image keeps `ooSetupSystemLocale` empty
-/// (docker/libreoffice/rs-convert-paper.xcd) so that `LC_PAPER` decides the
+/// (docker/libreoffice/convertd-paper.xcd) so that `LC_PAPER` decides the
 /// default paper. A fixed `LANG` keeps that formatting en-US, as it was when
 /// LibreOfficeKit forced en-US, whatever the deployment sets.
 const WORKER_LANG: &str = "C.UTF-8";

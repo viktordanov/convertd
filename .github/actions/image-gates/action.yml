@@ -7,7 +7,7 @@ name: image-gates
 description: Smoke test (size budget, time to ready, clean start, one DOCX) and corpus check
 inputs:
   image:
-    description: The loaded image to test, such as rs-convert:ci
+    description: The loaded image to test, such as convertd:ci
     required: true
   arch:
     description: amd64 or arm64; keys the corpus-bench build cache

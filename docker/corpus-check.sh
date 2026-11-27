@@ -17,7 +17,7 @@ harness="${HARNESS_IMAGE:?set HARNESS_IMAGE to a pinned glibc image, tag@sha256:
 [[ -f corpus/expected.json && -d corpus/out ]] \
   || { echo "corpus-check: run from the repository root, after generate.py --hostile" >&2; exit 1; }
 bench="$(cd "$(dirname "${bench}")" && pwd)/$(basename "${bench}")"
-name="rs-convert-corpus-$$"
+name="convertd-corpus-$$"
 key="corpus-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 
 # shellcheck disable=SC2317,SC2329  # called through the EXIT trap (SC2329 is ShellCheck 0.11)

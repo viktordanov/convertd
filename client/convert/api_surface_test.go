@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-const generatedImportPath = "github.com/viktordanov/rs-convert/client/internal/api"
+const generatedImportPath = "github.com/viktordanov/convertd/client/internal/api"
 
 // TestAPISurfaceHasNoGeneratedTypes keeps the generated package out of the
 // public API: no exported function, method, type, field, variable or constant
@@ -46,7 +46,7 @@ func TestAPISurfaceHasNoGeneratedTypes(t *testing.T) {
 func TestAPISurfaceCheckerFindsLeaks(t *testing.T) {
 	const src = `package convert
 
-import gen "github.com/viktordanov/rs-convert/client/internal/api"
+import gen "github.com/viktordanov/convertd/client/internal/api"
 
 type Client struct{ api *gen.Client }        // unexported field: fine
 type wrapper struct{ M gen.Manifest }          // unexported type: fine

@@ -5,7 +5,7 @@
 #      (.github/actions/image-gates, as image.yml does). Nothing is pushed yet.
 #   3. push: builds the same image again from the gate build's cache, checks that it is the
 #      gated image (the same config digest), and pushes it by digest to
-#      ghcr.io/<owner>/rs-convert. No tag yet.
+#      ghcr.io/<owner>/convertd. No tag yet.
 #   4. publish: one multi-arch manifest, tagged X.Y.Z, and X.Y and latest when this is the
 #      newest X.Y.Z in the registry, of its line and overall. X.Y.Z is immutable: an existing
 #      one is accepted only with the same digest (a re-run). publish runs one at a time
@@ -76,8 +76,8 @@ jobs:
             echo "epoch=$(git log -1 --format=%ct)"
             echo "build_date=$(TZ=UTC git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd)"
             # GHCR names are lowercase; the owner name may not be.
-            echo "image=ghcr.io/${OWNER,,}/rs-convert"
-            echo "name=${OWNER,,}/rs-convert"
+            echo "image=ghcr.io/${OWNER,,}/convertd"
+            echo "name=${OWNER,,}/convertd"
           } | tee -a "$GITHUB_OUTPUT"
 
   build:
@@ -120,10 +120,10 @@ jobs:
           provenance: false
           load: true
           push: false
-          tags: rs-convert:release
+          tags: convertd:release
       - uses: ./.github/actions/image-gates
         with:
-          image: rs-convert:release
+          image: convertd:release
           arch: ${{ matrix.arch }}
           max-mb: ${{ vars.IMAGE_MAX_MB || 635 }}
       # The push job checks that it pushes this image: its config digest.

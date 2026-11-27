@@ -1,6 +1,6 @@
 # deploy
 
-`deploy/` holds the Kubernetes files that run the rs-convert image as an internal service: a kustomize base and a gVisor overlay.
+`deploy/` holds the Kubernetes files that run the convertd image as an internal service: a kustomize base and a gVisor overlay.
 
 The image runs on any container platform with the settings that these files give: a read-only root, a writable `/tmp`, the probes on `/readyz` and `/healthz`, and a termination grace longer than `SHUTDOWN_GRACE_SECONDS`. The repository keeps only the Kubernetes manifests.
 
@@ -91,10 +91,10 @@ The watchdog samples each worker's RSS every 200 ms, so a fast burst of memory c
 <!-- memoria:section id="kubernetes" files="k8s/base/kustomization.yaml k8s/base/deployment.yaml k8s/overlays/gvisor/kustomization.yaml k8s/overlays/gvisor/runtimeclass.yaml" -->
 ## Deployment
 
-The base names its image `rs-convert`. Your own overlay, outside this repository, sets the real image. Deploy into a namespace that you choose:
+The base names its image `convertd`. Your own overlay, outside this repository, sets the real image. Deploy into a namespace that you choose:
 
 1. Create the key once: `kubectl create secret generic convertd-api-key --from-literal=API_KEY='<key>'`.
-2. Write an overlay with `resources: [<path>/deploy/k8s/base]` and `images: [{name: rs-convert, newName: ghcr.io/viktordanov/rs-convert, newTag: <x.y.z>}]`. The published tags have no `v`: `0.2.0`, `0.2` and `latest`. For an image of your own, use your registry and tag.
+2. Write an overlay with `resources: [<path>/deploy/k8s/base]` and `images: [{name: convertd, newName: ghcr.io/viktordanov/convertd, newTag: <x.y.z>}]`. The published tags have no `v`, such as `0.3.0`, `0.3` and `latest`. For an image of your own, use your registry and tag.
 3. Make sure that the overlay renders: `kubectl kustomize <overlay>`.
 4. Apply it: `kubectl apply -k <overlay>`.
 5. Wait for the pod: `kubectl rollout status deployment/convertd`.

@@ -292,7 +292,7 @@ dashboard = {
     "uid": "convertd-overview",
     "title": "convertd",
     "description": "convertd load per request, per stage and per pool, from the /metrics families in src/observability/metrics.rs.",
-    "tags": ["convertd", "rs-convert"],
+    "tags": ["convertd"],
     "editable": True,
     "graphTooltip": 1,
     "refresh": "30s",

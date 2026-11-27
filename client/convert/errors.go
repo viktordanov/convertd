@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/viktordanov/rs-convert/client/internal/api"
+	"github.com/viktordanov/convertd/client/internal/api"
 )
 
 // Every error returned for a non-200 response wraps exactly one of these, so

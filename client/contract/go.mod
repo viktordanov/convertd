@@ -1,14 +1,14 @@
 // Contract tests and spec tools for the Convert API. This module is never
 // published or tagged; it exists so that kin-openapi stays out of the client
 // module's go.mod.
-module github.com/viktordanov/rs-convert/client/contract
+module github.com/viktordanov/convertd/client/contract
 
 go 1.26.0
 
 require (
 	github.com/getkin/kin-openapi v0.153.0
 	github.com/klauspost/compress v1.20.5
-	github.com/viktordanov/rs-convert/client v0.0.0
+	github.com/viktordanov/convertd/client v0.0.0
 	go.yaml.in/yaml/v4 v4.0.0
 )
 
@@ -22,4 +22,4 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 )
 
-replace github.com/viktordanov/rs-convert/client => ../
+replace github.com/viktordanov/convertd/client => ../

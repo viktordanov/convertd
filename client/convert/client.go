@@ -16,7 +16,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/viktordanov/rs-convert/client/internal/api"
+	"github.com/viktordanov/convertd/client/internal/api"
 )
 
 // Client talks to one Convert service. It is safe for concurrent use.

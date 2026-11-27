@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rs-convert.invalid/corpus/expected.schema.json",
-  "title": "rs-convert corpus expectations, schema version 1",
+  "$id": "https://convertd.invalid/corpus/expected.schema.json",
+  "title": "convertd corpus expectations, schema version 1",
   "description": "What the service must answer for each corpus file and option set. Paths are relative to the directory that holds expected.json: corpus/ for the public corpus, CORPUS_PRIVATE_DIR for the private one.",
   "type": "object",
   "additionalProperties": false,
