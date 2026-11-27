@@ -204,6 +204,12 @@ fn check_semantics(expected: &Expected, outcome: &mut Outcome) {
                     }
                 }
             }
+            // `images` answers carry no PDF to read.
+            if case.expect.reads_pdf() && case.output() == "images" {
+                outcome.problems.push(format!(
+                    "{at}: text_present, text_absent and pdf_images need a PDF; output images has none"
+                ));
+            }
             for warning in case.expect.warnings.iter().flatten() {
                 let allowed = detail_keys(&warning.code);
                 for key in warning.detail.keys() {

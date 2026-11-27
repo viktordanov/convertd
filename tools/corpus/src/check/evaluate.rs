@@ -8,7 +8,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::check::fonts::font_key;
-use crate::expected::{Case, ExpectedWarning, PageCount, WarningsMode};
+use crate::check::pdftext::{PdfFacts, squeeze};
+use crate::expected::{Case, Expect, ExpectedWarning, PageCount, WarningsMode};
 
 /// What the harness saw for one request.
 #[derive(Debug, Default)]
@@ -35,6 +36,9 @@ pub struct Observed {
     pub body_error: Option<String>,
     /// Canary listener connections during the case.
     pub connections: u64,
+    /// The text and the images of the PDF, read only for a case that
+    /// checks them.
+    pub pdf_facts: Option<PdfFacts>,
     /// `GET /healthz` gave 200 after the case.
     pub healthy_after: bool,
     /// No answer within the case's timeout.
@@ -237,11 +241,40 @@ pub fn evaluate(case: &Case, obs: &Observed, ctx: &Context) -> Verdict {
                 .push(format!("hidden pages {got:?}, expected {want:?}"));
         }
     }
+    if expect.reads_pdf() {
+        pdf_facts(&mut v, expect, obs.pdf_facts.as_ref());
+    }
     // Only a bundle carries the PDF; `images` has no /BaseFont to read.
     if let (Some(m), "bundle") = (manifest, case.output()) {
         font_arbiter(&mut v, &m.warnings, obs.base_fonts.as_ref());
     }
     v
+}
+
+/// `text_present`, `text_absent` and `pdf_images` against what the PDF holds.
+fn pdf_facts(v: &mut Verdict, expect: &Expect, facts: Option<&PdfFacts>) {
+    let Some(facts) = facts else {
+        v.failures.push("no PDF text or images to read".into());
+        return;
+    };
+    for want in expect.text_present.iter().flatten() {
+        if !facts.text.contains(&squeeze(want)) {
+            v.failures.push(format!("the PDF text lacks {want:?}"));
+        }
+    }
+    for unwanted in expect.text_absent.iter().flatten() {
+        if facts.text.contains(&squeeze(unwanted)) {
+            v.failures.push(format!("the PDF text holds {unwanted:?}"));
+        }
+    }
+    if let Some(want) = expect.pdf_images
+        && facts.images != want
+    {
+        v.failures.push(format!(
+            "{} image XObjects in the PDF, expected {want}",
+            facts.images
+        ));
+    }
 }
 
 /// The checks of plan 005 section 3 that hold for every case.
@@ -575,6 +608,50 @@ mod tests {
                    "pdf_origin": "converted", "page_count": 2, "warnings": [], "blank_pages": []}),
         );
         assert_eq!(failures(&c, &bundle(2, vec![])), Vec::<String>::new());
+    }
+
+    /// A healthy PDF answer whose text and images were read.
+    fn pdf_answer(text: &str, images: usize) -> Observed {
+        Observed {
+            status: 200,
+            content_type: Some("application/pdf".into()),
+            source_format: Some("docx".into()),
+            page_count: Some(1),
+            warning_count: Some(0),
+            pdf_valid: Some(true),
+            pdf_facts: Some(PdfFacts {
+                text: squeeze(text),
+                images,
+            }),
+            healthy_after: true,
+            ..Observed::default()
+        }
+    }
+
+    #[test]
+    fn the_pdf_text_and_images_are_checked() {
+        let c = case(
+            json!({}),
+            json!({"status": 200, "text_present": ["CACHED FIELD RESULT"],
+                   "text_absent": ["Debian GNU/Linux"], "pdf_images": 0}),
+        );
+        assert!(failures(&c, &pdf_answer("Before. CACHED FIELD\nRESULT After.", 0)).is_empty());
+        assert_eq!(
+            failures(
+                &c,
+                &pdf_answer("Before. PRETTY_NAME=\"Debian GNU/Linux 13\" After.", 2)
+            ),
+            [
+                "the PDF text lacks \"CACHED FIELD RESULT\"",
+                "the PDF text holds \"Debian GNU/Linux\"",
+                "2 image XObjects in the PDF, expected 0",
+            ]
+        );
+        let unread = Observed {
+            pdf_facts: None,
+            ..pdf_answer("", 0)
+        };
+        assert_eq!(failures(&c, &unread), ["no PDF text or images to read"]);
     }
 
     #[test]

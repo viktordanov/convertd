@@ -70,6 +70,20 @@ pub struct Expect {
     /// The pages whose manifest entry has `hidden: true`.
     pub hidden_pages: Option<Vec<u32>>,
     pub connections: Option<u64>,
+    /// Strings that the text of the PDF must hold. White space does not
+    /// count on either side.
+    pub text_present: Option<Vec<String>>,
+    /// Strings that the text of the PDF must not hold.
+    pub text_absent: Option<Vec<String>>,
+    /// The number of image XObjects in the PDF, soft masks included.
+    pub pdf_images: Option<usize>,
+}
+
+impl Expect {
+    /// Whether the case reads the text or the images of the PDF.
+    pub fn reads_pdf(&self) -> bool {
+        self.text_present.is_some() || self.text_absent.is_some() || self.pdf_images.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
