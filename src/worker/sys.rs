@@ -89,11 +89,12 @@ pub fn install_panic_hook() {
     }));
 }
 
-/// Reads this process's resident set size after each call; 0 where it
-/// cannot be read.
+/// Reads this process's private resident memory after each call; 0 where it
+/// cannot be read. On Linux that is [`private_rss`]: what the worker holds
+/// alone, without the shared library pages that every worker maps.
 pub struct RssReader {
     #[cfg(target_os = "linux")]
-    statm: Option<File>,
+    status: Option<File>,
 }
 
 impl Default for RssReader {
@@ -106,7 +107,7 @@ impl RssReader {
     #[cfg(target_os = "linux")]
     pub fn new() -> Self {
         Self {
-            statm: File::open("/proc/self/statm").ok(),
+            status: File::open("/proc/self/status").ok(),
         }
     }
 
@@ -115,25 +116,23 @@ impl RssReader {
         Self {}
     }
 
-    /// Linux: `/proc/self/statm`, kept open and read from offset 0.
+    /// Linux: `/proc/self/status`, kept open and read from offset 0.
     #[cfg(target_os = "linux")]
     pub fn read(&mut self) -> u64 {
         use std::os::unix::fs::FileExt;
 
-        let Some(statm) = &self.statm else {
+        let Some(status) = &self.status else {
             return 0;
         };
-        let mut buf = [0u8; 128];
-        let Ok(n) = statm.read_at(&mut buf, 0) else {
+        // The file is about 1.5 KiB; the Rss* lines come in its first half.
+        let mut buf = [0u8; 8192];
+        let Ok(n) = status.read_at(&mut buf, 0) else {
             return 0;
         };
-        // size resident shared text lib data dt, in pages.
-        let pages: u64 = std::str::from_utf8(&buf[..n])
+        std::str::from_utf8(&buf[..n])
             .ok()
-            .and_then(|s| s.split_ascii_whitespace().nth(1))
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
-        pages * page_size()
+            .and_then(private_rss)
+            .unwrap_or(0)
     }
 
     /// macOS, for host tests: the task's resident size.
@@ -186,13 +185,6 @@ fn timeval(tv: libc::timeval) -> std::time::Duration {
     let secs = u64::try_from(tv.tv_sec).unwrap_or(0);
     let micros = u64::try_from(tv.tv_usec).unwrap_or(0);
     std::time::Duration::from_secs(secs).saturating_add(std::time::Duration::from_micros(micros))
-}
-
-#[cfg(target_os = "linux")]
-fn page_size() -> u64 {
-    // SAFETY: sysconf has no preconditions.
-    let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    u64::try_from(size).unwrap_or(4096)
 }
 
 /// Free bytes for unprivileged users on the file system that holds `path`,
@@ -269,14 +261,44 @@ pub fn take_file_size_hit() -> bool {
     FILE_SIZE_HIT.swap(false, std::sync::atomic::Ordering::SeqCst)
 }
 
-/// The resident set size of process `pid`, for the supervisor's watchdog;
-/// `None` where it cannot be read (the process is gone, or the platform has
-/// no reader).
+/// The private resident memory of process `pid` ([`private_rss`]), for the
+/// supervisor's watchdog; `None` where it cannot be read (the process is gone,
+/// or the platform has no reader).
 #[cfg(target_os = "linux")]
 pub fn rss_of(pid: u32) -> Option<u64> {
-    let statm = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
-    let pages: u64 = statm.split_ascii_whitespace().nth(1)?.parse().ok()?;
-    Some(pages * page_size())
+    private_rss(&std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?)
+}
+
+/// The private resident memory in a `/proc/<pid>/status` text, in bytes:
+/// `RssAnon` + `RssShmem`. `RssFile`, the file pages such as LibreOffice's
+/// shared libraries, is left out: every worker maps the same pages, the
+/// kernel can drop them, and they are about 156 MiB of a warm office
+/// worker's 248 MiB `VmRSS` (2026-11-27). `RssShmem` stays in, because the
+/// kernel cannot drop it. A kernel without `RssAnon` (before 4.5, or a
+/// sandbox that leaves it out) gives `VmRSS`, as before. `None` when neither
+/// is there.
+pub fn private_rss(status: &str) -> Option<u64> {
+    let (mut anon, mut shmem, mut vm) = (None, None, None);
+    for line in status.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let kib = value
+            .trim()
+            .strip_suffix("kB")
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        match key {
+            "RssAnon" => anon = kib,
+            "RssShmem" => shmem = kib,
+            "VmRSS" => vm = kib,
+            _ => {}
+        }
+    }
+    let kib = match anon {
+        Some(anon) => anon.saturating_add(shmem.unwrap_or(0)),
+        None => vm?,
+    };
+    Some(kib.saturating_mul(1024))
 }
 
 /// macOS, for host tests: the task's resident size.
@@ -312,7 +334,51 @@ pub fn rss_of(_pid: u32) -> Option<u64> {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::cpu_time;
+    use super::{cpu_time, private_rss};
+
+    /// The status of a warm office worker in the runtime image (2026-11-27),
+    /// cut to the memory lines.
+    const OFFICE_STATUS: &str = "Name:\tconvertd\nUmask:\t0022\nState:\tS (sleeping)\n\
+        VmPeak:\t 1402916 kB\nVmHWM:\t  253616 kB\nVmRSS:\t  253616 kB\n\
+        RssAnon:\t   93488 kB\nRssFile:\t  160128 kB\nRssShmem:\t       0 kB\n\
+        VmData:\t  210940 kB\nThreads:\t9\n";
+
+    #[test]
+    fn private_rss_counts_anon_and_shmem_but_not_file_pages() {
+        assert_eq!(private_rss(OFFICE_STATUS), Some(93488 * 1024));
+        let shmem = OFFICE_STATUS.replace("RssShmem:\t       0 kB", "RssShmem:\t    2048 kB");
+        assert_eq!(private_rss(&shmem), Some((93488 + 2048) * 1024));
+    }
+
+    #[test]
+    fn private_rss_falls_back_to_vm_rss_without_rss_anon() {
+        let old = "Name:\tconvertd\nVmRSS:\t  253616 kB\n";
+        assert_eq!(private_rss(old), Some(253616 * 1024));
+        assert_eq!(private_rss("Name:\tconvertd\n"), None);
+        assert_eq!(
+            private_rss("RssAnon:\t lots kB\nVmRSS:\t 5 kB\n"),
+            Some(5 * 1024)
+        );
+        assert_eq!(private_rss(""), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn this_process_has_private_memory_and_less_than_its_vm_rss() {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let private = private_rss(&status).unwrap();
+        let vm = status
+            .lines()
+            .find_map(|l| l.strip_prefix("VmRSS:"))
+            .and_then(|v| v.trim().strip_suffix("kB")?.trim().parse::<u64>().ok())
+            .unwrap()
+            * 1024;
+        assert!(
+            private > 0 && private <= vm,
+            "private {private}, VmRSS {vm}"
+        );
+        assert!(super::rss_of(std::process::id()).is_some_and(|rss| rss > 0));
+    }
 
     /// `cargo test` runs tests as threads of one process, and
     /// `RUSAGE_SELF` counts them all. So the test checks only that the
