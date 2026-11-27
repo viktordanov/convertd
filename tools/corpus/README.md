@@ -93,7 +93,7 @@ The canary listener must share the network namespace of the service, because Lib
 
 On 2026-11-26, `check` ran that way against the first arm64 `runtime` image of 2026-11-26, with LibreOffice 26.8.3.1 and PDFium 8179, in arm64 Docker on an Apple-silicon Mac. 47 of the 55 cases of that time passed. The listener saw no connection, and the `/BaseFont` arbiter agreed with each `FONT_SUBSTITUTED` warning. No positive control has run yet, so zero connections does not yet prove that the canaries can connect. Of the eight failures, five changed their expectations to what LibreOffice does, and the three image cases now expect the 415 that the service gives for image inputs, which are out of v1. `expected.json` also gained `docx-one-page` with two cases, so it now holds 57 cases. Its 1-page count comes from the same image, by a direct request.
 
-On 2026-11-26, `check` ran the same way against the arm64 `runtime` image `sha256:3ccbb545d9fb`, and all 57 cases passed, with exit status 0. The listener saw no connection, and the service log had no error and no worker restart. The full run took about 31 s of request time. The slowest cases were `xlsx-100k` at about 7 to 8 s each and `pptx-photos60` at about 4 to 5 s each. Still no positive control had run, so the canaries proved only that no connection was made.
+On 2026-11-26, `check` ran the same way against the arm64 `runtime` image of the overhead benchmark ([`bench/results/2026-11-26.md`](../../bench/results/2026-11-26.md)), and all 57 cases passed, with exit status 0. The listener saw no connection, and the service log had no error and no worker restart. The full run took about 31 s of request time. The slowest cases were `xlsx-100k` at about 7 to 8 s each and `pptx-photos60` at about 4 to 5 s each. Still no positive control had run, so the canaries proved only that no connection was made.
 
 Later on 2026-11-26, with two data-descriptor cases added, `check` ran again against the same image, and all 59 cases passed. The listener control passed inside the namespace of the service. `docx-stored-descriptor` gave `422 CONVERSION_FAILED` and `docx-deflated-descriptor` gave 200 with 2 pages, as expected.
 
@@ -138,6 +138,6 @@ In CI, `docker/corpus-check.sh` runs `check` against the image, with the harness
 
 ## Results over time
 
-The overhead measurement is in [`bench/results/2026-11-26.md`](../../bench/results/2026-11-26.md). `examples/overhead.rs` made it against the arm64 `runtime` image `sha256:3ccbb545d9fb`, and it gives `overhead` 0.883 ms at p50 for the one-page DOCX, against the 5 ms gate. That file records its conditions. A later run is compared with it by hand, because no `compare` subcommand and no `bench/thresholds.json` exist.
+The overhead measurement is in [`bench/results/2026-11-26.md`](../../bench/results/2026-11-26.md). `examples/overhead.rs` made it against the arm64 `runtime` image with LibreOffice 26.8.3.1 and PDFium 8179, and it gives `overhead` 0.883 ms at p50 for the one-page DOCX, against the 5 ms gate. That file records its conditions. A later run is compared with it by hand, because no `compare` subcommand and no `bench/thresholds.json` exist.
 
 Next: run `cargo test --locked` in `tools/corpus` before you change `validate` or `check`.
