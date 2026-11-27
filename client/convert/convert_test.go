@@ -735,7 +735,9 @@ func TestBundleEntryOverItsManifestSize(t *testing.T) {
 		_, _ = io.Copy(tw, io.LimitReader(&noiseReader{state: 0x9E3779B97F4A7C15}, huge))
 	}
 	c, _, tempDir := newFakeService(t, respond)
-	_, err := c.ConvertToBundle(context.Background(), "a.docx", strings.NewReader("x"), convert.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := c.ConvertToBundle(ctx, "a.docx", strings.NewReader("x"), convert.Options{})
 	if err == nil || !strings.Contains(err.Error(), `entry "document.pdf" has 268435456 bytes, the manifest says 8`) {
 		t.Fatalf("error = %v, want the size mismatch", err)
 	}
@@ -766,6 +768,24 @@ func TestBundleTotalCap(t *testing.T) {
 	if files, _ := os.ReadDir(tempDir); len(files) != 0 {
 		t.Errorf("temp files left behind: %v", files)
 	}
+	// A page path given twice, with two sizes, is refused before the
+	// sizes are added up.
+	dup := testManifest(true)
+	dup["pages"] = []map[string]any{
+		{"number": 1, "path": "pages/0001.jpg", "width_px": 1, "height_px": 1, "width_pt": 1, "height_pt": 1, "size_bytes": 6, "blank": false},
+		{"number": 2, "path": "pages/0001.jpg", "width_px": 1, "height_px": 1, "width_pt": 1, "height_pt": 1, "size_bytes": 1 << 30, "blank": false},
+	}
+	dupServer := httptest.NewServer(respondWith(tarZst(t, manifestEntry(t, dup), entry{name: "document.pdf", data: []byte("%PDF-1.7")}, entry{name: "pages/0001.jpg", data: []byte("page-1")})))
+	defer dupServer.Close()
+	c, _ = convert.New(dupServer.URL, apiKey, convert.WithTempDir(tempDir), convert.WithMaxBundleBytes(1<<20))
+	_, err = c.ConvertToBundle(context.Background(), "a.docx", strings.NewReader("x"), convert.Options{})
+	if err == nil || !strings.Contains(err.Error(), `page 2 repeats the path "pages/0001.jpg"`) {
+		t.Fatalf("error = %v, want the repeated path", err)
+	}
+	if files, _ := os.ReadDir(tempDir); len(files) != 0 {
+		t.Errorf("temp files left behind: %v", files)
+	}
+
 	// Exactly at the cap, the bundle opens.
 	c, _ = convert.New(server.URL, apiKey, convert.WithTempDir(tempDir), convert.WithMaxBundleBytes(14))
 	bundle, err := c.ConvertToBundle(context.Background(), "a.docx", strings.NewReader("x"), convert.Options{})

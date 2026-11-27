@@ -387,6 +387,11 @@ func expectedEntries(m Manifest) (map[string]int64, error) {
 		if err := checkEntryName(p.Path); err != nil || p.Path == pdfPath {
 			return nil, fmt.Errorf("failed to read manifest: page %d has the path %q", p.Number, p.Path)
 		}
+		// Each path once: a second size for the same file would be lost
+		// from the total that WithMaxBundleBytes checks.
+		if _, dup := expected[p.Path]; dup {
+			return nil, fmt.Errorf("failed to read manifest: page %d repeats the path %q", p.Number, p.Path)
+		}
 		expected[p.Path] = p.SizeBytes
 	}
 	return expected, nil
