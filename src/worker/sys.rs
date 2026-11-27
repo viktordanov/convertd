@@ -95,6 +95,9 @@ pub fn install_panic_hook() {
 pub struct RssReader {
     #[cfg(target_os = "linux")]
     status: Option<File>,
+    /// The last read of `status`, reused so a read allocates nothing.
+    #[cfg(target_os = "linux")]
+    buf: Vec<u8>,
 }
 
 impl Default for RssReader {
@@ -108,6 +111,7 @@ impl RssReader {
     pub fn new() -> Self {
         Self {
             status: File::open("/proc/self/status").ok(),
+            buf: Vec::with_capacity(4096),
         }
     }
 
@@ -116,23 +120,18 @@ impl RssReader {
         Self {}
     }
 
-    /// Linux: `/proc/self/status`, kept open and read from offset 0.
+    /// Linux: `/proc/self/status`, kept open and read whole from offset 0. It
+    /// is about 1.5 KiB, but a long `Groups:` line can push the memory lines
+    /// past any fixed size.
     #[cfg(target_os = "linux")]
     pub fn read(&mut self) -> u64 {
-        use std::os::unix::fs::FileExt;
-
         let Some(status) = &self.status else {
             return 0;
         };
-        // The file is about 1.5 KiB; the Rss* lines come in its first half.
-        let mut buf = [0u8; 8192];
-        let Ok(n) = status.read_at(&mut buf, 0) else {
+        if read_whole_at(status, &mut self.buf).is_err() {
             return 0;
-        };
-        std::str::from_utf8(&buf[..n])
-            .ok()
-            .and_then(private_rss)
-            .unwrap_or(0)
+        }
+        private_rss(&self.buf).unwrap_or(0)
     }
 
     /// macOS, for host tests: the task's resident size.
@@ -266,7 +265,29 @@ pub fn take_file_size_hit() -> bool {
 /// or the platform has no reader).
 #[cfg(target_os = "linux")]
 pub fn rss_of(pid: u32) -> Option<u64> {
-    private_rss(&std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?)
+    private_rss(&std::fs::read(format!("/proc/{pid}/status")).ok()?)
+}
+
+/// Reads `file` from offset 0 to its end into `buf`, at most 1 MiB. For a
+/// procfs file, which has no size to ask for and must be read from the start.
+#[cfg(any(target_os = "linux", all(unix, test)))]
+fn read_whole_at(file: &File, buf: &mut Vec<u8>) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+
+    const MAX: usize = 1 << 20;
+    buf.clear();
+    loop {
+        let start = buf.len();
+        if start >= MAX {
+            return Err(std::io::ErrorKind::FileTooLarge.into());
+        }
+        buf.resize(start + 4096, 0);
+        let n = file.read_at(&mut buf[start..], start as u64)?;
+        buf.truncate(start + n);
+        if n == 0 {
+            return Ok(());
+        }
+    }
 }
 
 /// The private resident memory in a `/proc/<pid>/status` text, in bytes:
@@ -276,21 +297,24 @@ pub fn rss_of(pid: u32) -> Option<u64> {
 /// worker's 248 MiB `VmRSS` (2026-11-27). `RssShmem` stays in, because the
 /// kernel cannot drop it. A kernel without `RssAnon` (before 4.5, or a
 /// sandbox that leaves it out) gives `VmRSS`, as before. `None` when neither
-/// is there.
-pub fn private_rss(status: &str) -> Option<u64> {
+/// is there. The text is bytes: the `Name:` line need not be UTF-8, and the
+/// memory lines are ASCII.
+pub fn private_rss(status: &[u8]) -> Option<u64> {
     let (mut anon, mut shmem, mut vm) = (None, None, None);
-    for line in status.lines() {
-        let Some((key, value)) = line.split_once(':') else {
+    for line in status.split(|&b| b == b'\n') {
+        let Some(colon) = line.iter().position(|&b| b == b':') else {
             continue;
         };
+        let (key, value) = (&line[..colon], &line[colon + 1..]);
         let kib = value
-            .trim()
-            .strip_suffix("kB")
-            .and_then(|v| v.trim().parse::<u64>().ok());
+            .trim_ascii()
+            .strip_suffix(b"kB")
+            .and_then(|v| std::str::from_utf8(v.trim_ascii()).ok())
+            .and_then(|v| v.parse::<u64>().ok());
         match key {
-            "RssAnon" => anon = kib,
-            "RssShmem" => shmem = kib,
-            "VmRSS" => vm = kib,
+            b"RssAnon" => anon = kib,
+            b"RssShmem" => shmem = kib,
+            b"VmRSS" => vm = kib,
             _ => {}
         }
     }
@@ -334,7 +358,7 @@ pub fn rss_of(_pid: u32) -> Option<u64> {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{cpu_time, private_rss};
+    use super::{cpu_time, private_rss, read_whole_at};
 
     /// The status of a warm office worker in the runtime image (2026-11-27),
     /// cut to the memory lines.
@@ -345,28 +369,56 @@ mod tests {
 
     #[test]
     fn private_rss_counts_anon_and_shmem_but_not_file_pages() {
-        assert_eq!(private_rss(OFFICE_STATUS), Some(93488 * 1024));
+        assert_eq!(private_rss(OFFICE_STATUS.as_bytes()), Some(93488 * 1024));
         let shmem = OFFICE_STATUS.replace("RssShmem:\t       0 kB", "RssShmem:\t    2048 kB");
-        assert_eq!(private_rss(&shmem), Some((93488 + 2048) * 1024));
+        assert_eq!(private_rss(shmem.as_bytes()), Some((93488 + 2048) * 1024));
     }
 
     #[test]
     fn private_rss_falls_back_to_vm_rss_without_rss_anon() {
-        let old = "Name:\tconvertd\nVmRSS:\t  253616 kB\n";
+        let old = b"Name:\tconvertd\nVmRSS:\t  253616 kB\n";
         assert_eq!(private_rss(old), Some(253616 * 1024));
-        assert_eq!(private_rss("Name:\tconvertd\n"), None);
+        assert_eq!(private_rss(b"Name:\tconvertd\n"), None);
         assert_eq!(
-            private_rss("RssAnon:\t lots kB\nVmRSS:\t 5 kB\n"),
+            private_rss(b"RssAnon:\t lots kB\nVmRSS:\t 5 kB\n"),
             Some(5 * 1024)
         );
-        assert_eq!(private_rss(""), None);
+        assert_eq!(private_rss(b""), None);
+    }
+
+    #[test]
+    fn private_rss_reads_a_name_that_is_not_utf8_and_a_long_groups_line() {
+        let mut status = b"Name:\tconv\xe2\x82\nUmask:\t0022\nGroups:\t".to_vec();
+        for g in 0..3000 {
+            status.extend_from_slice(format!("{} ", 100000 + g).as_bytes());
+        }
+        status.extend_from_slice(
+            b"\nVmRSS:\t  253616 kB\nRssAnon:\t   93488 kB\nRssShmem:\t  0 kB\n",
+        );
+        assert!(status.len() > 16 * 1024);
+        assert!(std::str::from_utf8(&status).is_err());
+        assert_eq!(private_rss(&status), Some(93488 * 1024));
+    }
+
+    #[test]
+    fn read_whole_at_reads_past_any_buffer_size_and_again_from_the_start() {
+        let path = std::env::temp_dir().join(format!("convertd-status-{}", std::process::id()));
+        let data: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let mut buf = Vec::new();
+        read_whole_at(&file, &mut buf).unwrap();
+        assert_eq!(buf, data);
+        read_whole_at(&file, &mut buf).unwrap();
+        assert_eq!(buf, data);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn this_process_has_private_memory_and_less_than_its_vm_rss() {
         let status = std::fs::read_to_string("/proc/self/status").unwrap();
-        let private = private_rss(&status).unwrap();
+        let private = private_rss(status.as_bytes()).unwrap();
         let vm = status
             .lines()
             .find_map(|l| l.strip_prefix("VmRSS:"))
