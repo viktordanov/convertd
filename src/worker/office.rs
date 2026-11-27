@@ -552,13 +552,22 @@ pub fn export_family(doc_type: &str, requested: Family) -> Family {
     }
 }
 
-/// The PDF export options, always explicit, so no setting comes from the
-/// profile. The keys are those of LibreOffice's `writer_pdf_Export` family.
+/// The PDF export options. The keys are those of LibreOffice's
+/// `writer_pdf_Export` family. Explicit for every family: the image keys
+/// `ReduceImageResolution` false, `Quality` 100 and `UseLosslessCompression`
+/// true, so images keep their resolution and a JPEG goes into the PDF as it
+/// is, without a new JPEG pass. Explicit per family: the keys below. Every
+/// other key keeps LibreOffice's default.
 pub fn filter_options(family: Family, export: &ExportOptions) -> String {
     let flag = |v: bool| if v { "true" } else { "false" };
     let entry =
         |name: &str, v: bool| format!(r#""{name}":{{"type":"boolean","value":"{}"}}"#, flag(v));
-    let entries = match family {
+    let mut entries = vec![
+        entry("ReduceImageResolution", false),
+        r#""Quality":{"type":"long","value":"100"}"#.to_string(),
+        entry("UseLosslessCompression", true),
+    ];
+    entries.extend(match family {
         Family::Presentation => vec![
             entry("ExportNotesPages", export.notes != SlideNotes::None),
             entry("ExportOnlyNotesPages", export.notes == SlideNotes::Only),
@@ -566,7 +575,7 @@ pub fn filter_options(family: Family, export: &ExportOptions) -> String {
         ],
         Family::Spreadsheet => vec![entry("SinglePageSheets", export.one_page_per_sheet)],
         Family::Document => vec![entry("ExportNotes", false)],
-    };
+    });
     format!("{{{}}}", entries.join(","))
 }
 
@@ -728,5 +737,30 @@ mod tests {
             serde_json::from_str(&filter_options(Family::Document, &ExportOptions::default()))
                 .unwrap();
         assert_eq!(doc["ExportNotes"]["value"], "false");
+    }
+
+    /// Every family exports images at their own resolution, at full quality
+    /// and without a new lossy pass.
+    #[test]
+    fn filter_options_keep_images_as_they_are() {
+        for family in [Family::Document, Family::Spreadsheet, Family::Presentation] {
+            let value: serde_json::Value =
+                serde_json::from_str(&filter_options(family, &ExportOptions::default())).unwrap();
+            assert_eq!(
+                value["ReduceImageResolution"],
+                serde_json::json!({"type": "boolean", "value": "false"}),
+                "{family:?}"
+            );
+            assert_eq!(
+                value["Quality"],
+                serde_json::json!({"type": "long", "value": "100"}),
+                "{family:?}"
+            );
+            assert_eq!(
+                value["UseLosslessCompression"],
+                serde_json::json!({"type": "boolean", "value": "true"}),
+                "{family:?}"
+            );
+        }
     }
 }
