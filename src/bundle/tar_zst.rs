@@ -1,8 +1,7 @@
-//! The `images` and `bundle` body: a ustar stream in one zstd frame
-//! (INTERFACES.md §9, owner 2026-11-26).
+//! The `images` and `bundle` body: a ustar stream in one zstd frame.
 //!
 //! - Entries in order: `manifest.json`, `document.pdf` (bundle only), then
-//!   `pages/NNNN.<ext>` in page order. 004's contract transport and 005's
+//!   `pages/NNNN.<ext>` in page order. the Go client's contract transport and corpus-bench's
 //!   check both enforce that order.
 //! - Regular files only, mode 0644, mtime 0, uid and gid 0, empty user and
 //!   group names, so the bytes are a pure function of the content.

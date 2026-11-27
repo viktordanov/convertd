@@ -1,5 +1,5 @@
 //! Poison memory through the engine adapters, with `convertd worker test`
-//! behind the real pool (level B; plan 002 step 12).
+//! behind the real pool (level B).
 #![cfg(feature = "test-hooks")]
 
 use std::path::{Path, PathBuf};

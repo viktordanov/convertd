@@ -1,4 +1,4 @@
-# The image gates (ledger items 003 and 007): the smoke test and the corpus check against an
+# The image gates: the smoke test and the corpus check against an
 # image that is already loaded into the runner's Docker. image.yml runs them on every image
 # build; release.yml runs them before anything is pushed. The caller does the umask guard and
 # the build, because the two workflows build with different arguments and caches.
@@ -28,7 +28,7 @@ runs:
         IMAGE: ${{ inputs.image }}
         MAX_MB: ${{ inputs.max-mb }}
       run: docker/smoke.sh "${IMAGE}" docker/smoke/small.docx "${MAX_MB}" | tee -a "$GITHUB_STEP_SUMMARY"
-    # The corpus check: lane 005's corpus-bench against the image, every case of
+    # The corpus check: tools/corpus's corpus-bench against the image, every case of
     # corpus/expected.json. The generator needs Python 3.13 and the hashed pins.
     - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
@@ -41,7 +41,7 @@ runs:
         "${RUNNER_TEMP}/corpus-venv/bin/python" -I corpus/generate.py corpus/out --hostile
     # corpus-bench needs only rustc and cargo. rust-toolchain.toml also asks for clippy and
     # rustfmt, and an implicit install of those failed once on the arm64 runner ("detected
-    # conflict: 'bin/cargo-clippy'", run 45805165059). So the pinned toolchain is installed
+    # conflict: 'bin/cargo-clippy'", in an earlier run). So the pinned toolchain is installed
     # here, before rust-cache calls rustc, with the minimal profile. RUSTUP_TOOLCHAIN then
     # overrides the toolchain file, so no later step installs a component.
     - name: Install Rust 1.99.0 (minimal profile)

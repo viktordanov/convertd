@@ -1,4 +1,4 @@
-//! The streamed upload (plan 001 step 5): digests, part rules, caps, the
+//! The streamed upload: digests, part rules, caps, the
 //! disk budget, a stalled and a vanished client. After each case no job
 //! directory is left.
 
@@ -537,7 +537,7 @@ async fn a_stalled_upload_is_400_and_releases_its_permit_and_directory() {
 
 /// A trickle that sends a little just inside every idle period never trips
 /// the idle timer. The minimum-throughput floor ends it after one window,
-/// with 400, and frees the permit (review, lane 001 item 3).
+/// with 400, and frees the permit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_trickled_upload_is_400_and_releases_its_permit() {
     let app = App::new(
@@ -757,7 +757,7 @@ fn unterminated(addr: SocketAddr, prefix: &[u8]) -> (u16, String, Duration) {
 /// the bytes before the first boundary until it finds that. Without a bound
 /// a request that never sends either grows the buffer toward the upload cap
 /// and rescans it on every read. The framing is bounded at 16 KiB: past
-/// it, 400 at once (performance review, lane 001 item 1).
+/// it, 400 at once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unterminated_multipart_framing_is_400_at_once() {
     let app = App::new("framing", &[]);

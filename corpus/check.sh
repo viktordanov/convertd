@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs `corpus/generate.py --check` with the pinned packages of
-# corpus/requirements.txt (ledger item 005). CI calls it after
+# corpus/requirements.txt. CI calls it after
 # actions/setup-python with Python 3.13.
 #
 # Usage: corpus/check.sh [python]   (default: python3.13)

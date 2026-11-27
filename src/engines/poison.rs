@@ -1,4 +1,4 @@
-//! Poison memory (plan 002 step 12): documents that recently timed out or
+//! Poison memory: documents that recently timed out or
 //! crashed a worker are refused before they take a worker again.
 //!
 //! Keyed by the upload's SHA-256, which the domain passes in `OfficeJob`,

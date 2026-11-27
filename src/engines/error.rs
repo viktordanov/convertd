@@ -1,7 +1,7 @@
-//! The engine failures of INTERFACES.md §5, and the mapping from pool and
+//! The engine failures of `domain::engine`, and the mapping from pool and
 //! worker errors onto them.
 //!
-//! The variants mirror the domain's `EngineError`; step 9 converts one
+//! The variants mirror the domain's `EngineError`; `From` converts one
 //! into the other. Messages are fixed texts: engine messages can hold
 //! paths, so they go to the log only.
 

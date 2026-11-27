@@ -22,8 +22,8 @@ import (
 	"github.com/viktordanov/rs-convert/client/internal/api"
 )
 
-// The live contract cases (ledger 004 plan, Design section 5). Every response
-// passes through the validating transport. Numbers match the plan's table.
+// The live contract cases. Every response passes through the validating
+// transport.
 
 func testContext(t *testing.T) context.Context {
 	t.Helper()
@@ -248,7 +248,7 @@ func openAll(t *testing.T, b *convert.Bundle) {
 	}
 }
 
-// Case 7. The input is a PDF: the owner removed image uploads (lane 001
+// Case 7. The input is a PDF: image uploads are out of v1 (the service
 // answers them with 415), so a PNG cannot reach output=images.
 func TestConvertPDFToImages(t *testing.T) {
 	ctx := testContext(t)
@@ -347,7 +347,7 @@ func TestUnsupportedFormat(t *testing.T) {
 	wantErr(t, err, convert.ErrUnsupportedFormat)
 }
 
-// Image uploads left v1 (owner decision): a PNG gets 415, and capabilities
+// Image uploads are out of v1: a PNG gets 415, and capabilities
 // lists no image input.
 func TestImageUploadUnsupported(t *testing.T) {
 	ctx := testContext(t)
@@ -505,8 +505,7 @@ func TestFakeTransientCodes(t *testing.T) {
 // Case 19: the server answers while the client is still uploading. The body
 // is far past socket buffer sizes, so the answer comes before the upload
 // ends; the client must surface the answer, not a write error. The server
-// drains the rest of an unread body after it answers (lane 001's lingering
-// close); before that, about half the runs ended in "write: broken pipe".
+// drains the rest of an unread body after it answers (a lingering close); before that, about half the runs ended in "write: broken pipe".
 func TestEarlyAnswerDuringUpload(t *testing.T) {
 	t.Parallel()
 	const size = 64 << 20

@@ -1,4 +1,4 @@
-//! Idle RSS of the supervisor ≤ 30 MB (plan 001, Verification 2). Linux
+//! Idle RSS of the supervisor ≤ 30 MB. Linux
 //! only: it reads `/proc/<pid>/status` and `/proc/<pid>/maps`.
 //!
 //! The measurement is `#[ignore]`, so it runs only when asked for, in the
@@ -338,7 +338,7 @@ mod measured {
                     .env("RENDER_WORKERS", "1");
             }
         }
-        // The allocator setting of plan 001's glibc comparison, when given.
+        // The allocator setting of a glibc comparison, when given.
         if let Some(arenas) = std::env::var_os("MALLOC_ARENA_MAX") {
             command.env("MALLOC_ARENA_MAX", arenas);
         }
@@ -368,10 +368,10 @@ mod measured {
         let first = rss_bytes(pid);
 
         // Rounds of 1 000 mixed requests: pdf, images and bundle; PDFs of
-        // 15 KB to 20 MB and a small DOCX. Two checks: plan 001's target of
+        // 15 KB to 20 MB and a small DOCX. Two checks: the target of
         // 30 MB for every reading, and a growth budget after the first
         // round, at most 1 MiB per later round of 1 000 requests
-        // on average (the soak's budget in plan 005 §9). Single rounds
+        // on average (the soak's budget). Single rounds
         // swing by more than 1 MiB, so the budget is from the first round
         // to the last, not between neighbours. RSS_ROUNDS sets the count:
         // 3 by default, so the budget averages two intervals; at least 2.
@@ -455,12 +455,12 @@ mod measured {
                 .map(|r| (*r as f64 / MB as f64 * 10.0).round() / 10.0)
                 .collect::<Vec<_>>()
         );
-        // Plan 001, Verification 2, asked for at most 1.5 x the reading
-        // after start. The owner accepted this as missed on 2026-11-27: the
-        // first requests fault in code pages and malloc arenas, and the
-        // readings stay flat after that. It is a note, not a check.
+        // The first target was at most 1.5 x the reading after start. It
+        // is missed and accepted: the first requests fault in code pages
+        // and malloc arenas, and the readings stay flat after that. It is a
+        // note, not a check.
         eprintln!(
-            "after the first round: {:.2} x the reading after start (plan 001 asked for 1.5 x)",
+            "after the first round: {:.2} x the reading after start (the first target was 1.5 x)",
             warm as f64 / first as f64
         );
         assert!(first <= 30 * MB, "{first} bytes after start");

@@ -1,4 +1,4 @@
-# cargo-deny: only the RustSec advisory check (`cargo deny check advisories`), item 011 S3.
+# cargo-deny: only the RustSec advisory check (`cargo deny check advisories`).
 # Licenses, bans and sources are not checked here.
 
 [graph]

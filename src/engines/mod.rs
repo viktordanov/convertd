@@ -1,6 +1,6 @@
-//! Supervisor side of the engines: pools, queue and process control (lane 002).
+//! Supervisor side of the engines: pools, queue and process control.
 //!
-//! `fake.rs` and `fake_markers.rs` belong to lane 001.
+//! `fake.rs` and `fake_markers.rs` hold the level-A fakes.
 
 pub mod call;
 pub mod config;
@@ -16,6 +16,6 @@ pub mod slot;
 
 pub use config::EngineConfig;
 
-// Lane 001's level-A fakes and the shared marker parser.
+// The level-A fakes and the shared marker parser.
 pub mod fake;
 pub mod fake_markers;

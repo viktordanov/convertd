@@ -1,7 +1,7 @@
 # Installed as /opt/convertd/probe-families.txt.
 # Families that write-build-info.sh resolves with fc-match at build time, into the
-# "font_substitutes" map of build-info.json. Lane 005 owns the list (its plan, section 5);
-# this is the starting set. One family per line; blank lines and # comments are ignored.
+# "font_substitutes" map of build-info.json: the Office families that documents
+# commonly request. One family per line; blank lines and # comments are ignored.
 Calibri
 Calibri Light
 Cambria
@@ -22,7 +22,7 @@ Segoe UI
 Verdana
 Tahoma
 Trebuchet MS
-# From 005's section 5 list, beyond the lead's starting set:
+# More families that documents request:
 Candara
 Constantia
 Corbel

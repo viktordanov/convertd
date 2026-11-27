@@ -1,5 +1,5 @@
 //! Whether the engines can take work, for `/readyz`. Kept off the engine
-//! traits: lane 002 reports it per pool (`Engines::readiness()`).
+//! traits: the engines report it per pool (`Engines::readiness()`).
 
 /// The spec's `Readiness.status`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

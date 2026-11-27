@@ -1,4 +1,4 @@
-//! Detection from the bytes (plan 001 step 6), with archives built here.
+//! Detection from the bytes, with archives built here.
 
 use std::io::{Cursor, Write};
 

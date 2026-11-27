@@ -2,7 +2,7 @@
 """Load driver for a running convertd container: soak and ingestion runs.
 
 Results stay outside the repository: OUT must be a scratch folder, and no
-run output, report or document is committed (the owner's decision). The
+run output, report or document is committed. The
 documents of an ingestion are often confidential.
 
 Standard library only. It sends documents to POST /v1/convert from client

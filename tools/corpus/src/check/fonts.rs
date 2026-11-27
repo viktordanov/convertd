@@ -1,4 +1,4 @@
-//! The `/BaseFont` names of a PDF, for the font arbiter of plan 005 §5 (V2).
+//! The `/BaseFont` names of a PDF, for the font check (V2).
 
 use std::collections::BTreeSet;
 

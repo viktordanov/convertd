@@ -1,6 +1,6 @@
-//! Request overhead from `Server-Timing`: 001's lane check with the
-//! level-A fakes in-process (plan 001, Verification 1), and the benchmark
-//! of record against a running server or image (INTERFACES.md §11).
+//! Request overhead from `Server-Timing`: the check with the
+//! level-A fakes in-process, and the benchmark of record against a
+//! running server or image (`src/README.md`, Measurement).
 //!
 //! ```text
 //! # In-process, level-A fakes
@@ -22,9 +22,9 @@
 //! - `overhead` = `total − queue − Σ *_engine` (convert, inspect, probe,
 //!   render): the 5 ms gate;
 //! - `overhead_strict` = `overhead` + `inspect_engine` + `probe_engine`;
-//! - `share_001` = `total − Σ engine-stage walls` (convert, inspect,
+//! - `share_supervisor` = `total − Σ engine-stage walls` (convert, inspect,
 //!   render);
-//! - `share_002` = `Σ (stage wall − stage engine time) − queue` over the
+//! - `share_workers` = `Σ (stage wall − stage engine time) − queue` over the
 //!   same stages (probe runs inside inspect);
 //! - `client`: the wall time the client saw, upload and download included.
 //!
@@ -356,7 +356,7 @@ impl Sample {
         self.overhead() + self.stage("inspect_engine") + self.stage("probe_engine")
     }
 
-    fn share_001(&self) -> f64 {
+    fn share_supervisor(&self) -> f64 {
         let walls: f64 = ["convert", "inspect", "render"]
             .iter()
             .map(|s| self.stage(s))
@@ -364,7 +364,7 @@ impl Sample {
         self.stage("total") - walls
     }
 
-    fn share_002(&self) -> f64 {
+    fn share_workers(&self) -> f64 {
         let convert = self.stage("convert") - self.stage("convert_engine");
         let inspect =
             self.stage("inspect") - self.stage("inspect_engine") - self.stage("probe_engine");
@@ -514,8 +514,14 @@ fn table(samples: &[Sample], client_note: Option<&str>) -> String {
         "overhead_strict",
         samples.iter().map(Sample::overhead_strict).collect(),
     );
-    row("share_001", samples.iter().map(Sample::share_001).collect());
-    row("share_002", samples.iter().map(Sample::share_002).collect());
+    row(
+        "share_supervisor",
+        samples.iter().map(Sample::share_supervisor).collect(),
+    );
+    row(
+        "share_workers",
+        samples.iter().map(Sample::share_workers).collect(),
+    );
     let client = match client_note {
         Some(note) => format!("client ({note})"),
         None => "client".to_owned(),

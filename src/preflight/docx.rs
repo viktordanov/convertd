@@ -1,5 +1,5 @@
 //! DOCX family (docx, docm, dotx): the requested Latin families (V2).
-//! V1 is off for DOCX (005 §5: `docProps/app.xml` is not a reliable gate).
+//! V1 is off for DOCX: `docProps/app.xml` is not a reliable gate.
 //!
 //! Families come from `w:rFonts@w:ascii|w:hAnsi` in the main part and its
 //! headers, footers, footnotes and endnotes; from `styles.xml`, only the

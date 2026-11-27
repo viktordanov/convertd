@@ -1,9 +1,9 @@
-//! Configuration from environment variables, parsed by hand (lane 001).
+//! Configuration from environment variables, parsed by hand.
 //!
-//! Every variable of `INTERFACES.md` §4 and plan 001's configuration table
-//! is parsed here, used or not, so a bad value stops start-up instead of
+//! Every variable in the configuration table of `src/README.md` is parsed
+//! here, used or not, so a bad value stops start-up instead of
 //! running half-configured. The engine variables are parsed by
-//! [`EngineConfig`], which lane 002 owns. A variable set to the empty
+//! [`EngineConfig`]. A variable set to the empty
 //! string counts as unset.
 
 use std::collections::HashMap;
@@ -195,7 +195,7 @@ impl FromStr for LogMode {
 /// `TEST_ENGINE`, accepted only in builds with cargo feature `test-hooks`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TestEngine {
-    /// Level A: lane 001's fake engines, no real queue.
+    /// Level A: the in-process fake engines, no real queue.
     Fake,
     /// Level B: both pools run `convertd worker test`.
     Worker,

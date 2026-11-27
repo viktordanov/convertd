@@ -1,5 +1,5 @@
 //! `corpus-bench`: checks the rs-convert corpus and runs it against the
-//! service (ledger item 005). It has `validate` and `check`; the bench,
+//! service. It has `validate` and `check`; the bench,
 //! soak and compare subcommands come in later steps.
 
 mod check;
@@ -52,7 +52,7 @@ enum Command {
         corpus: CorpusArgs,
     },
     /// Wait for connections on the canary listener address: the positive
-    /// control for the canaries (plan 005 step 13). Exits 0 once it has
+    /// control for the canaries. Exits 0 once it has
     /// counted --expect connections, 1 at the timeout.
     Listen {
         #[arg(long, default_value = "127.0.0.1:47123")]

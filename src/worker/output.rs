@@ -1,5 +1,5 @@
 //! Output files a worker writes itself, under the job's byte cap, and the
-//! mapping of I/O errors onto `WorkerErrorKind` (INTERFACES.md §5, §15).
+//! mapping of I/O errors onto `WorkerErrorKind`.
 
 use std::fs::{self, File};
 use std::io::{self, Write};

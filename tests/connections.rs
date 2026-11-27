@@ -1,4 +1,4 @@
-//! The connection bounds before any request is read (011 S4): the header
+//! The connection bounds before any request is read: the header
 //! read timeout, the connection cap with its probe reserve, and the
 //! graceful stop of `server::serve`.
 

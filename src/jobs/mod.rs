@@ -1,4 +1,4 @@
-//! Job directories and the disk budget under `TMP_DIR` (lane 001).
+//! Job directories and the disk budget under `TMP_DIR`.
 
 pub mod disk_budget;
 pub mod job_dir;

@@ -41,7 +41,7 @@ Describe the project directly in the third person: "convertd starts one supervis
 
 State what a component does. Do not call it "simple", "robust", "lightweight" or "blazing fast": give the measured number instead. Do not add disclaimers about what a component is not. The one exception is the root README's scope statement, which tells a user what the service does not do. Do not describe a dependency in dismissive words. Describe a confirmed defect as current behavior, next to the usage that it affects, and do not fix code in a documentation change.
 
-Write each paragraph on one line in the Markdown source **(from Claude; the owner has not confirmed it)**. One line per paragraph keeps diffs and Memoria hunks small, and a reviewer reflows an older document when it next changes. Use a list for parallel items, such as concepts, steps or limits. Use prose for explanation that connects ideas. Do not turn connected explanation into a list, and do not pack a list into a paragraph.
+Write each paragraph on one line in the Markdown source. One line per paragraph keeps diffs and Memoria hunks small, and a reviewer reflows an older document when it next changes. Use a list for parallel items, such as concepts, steps or limits. Use prose for explanation that connects ideas. Do not turn connected explanation into a list, and do not pack a list into a paragraph.
 
 ## Structure
 

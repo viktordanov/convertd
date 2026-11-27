@@ -1,4 +1,4 @@
-//! `OfficeEngine` over the office pool (plan 002 step 8).
+//! `OfficeEngine` over the office pool.
 
 use std::sync::Arc;
 use std::time::Instant;

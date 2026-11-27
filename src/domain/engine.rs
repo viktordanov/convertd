@@ -1,8 +1,7 @@
-//! The engine seam between the request path (lane 001) and the engine
-//! workers (lane 002), as fixed in `docs/ledger/INTERFACES.md` §5. Changed
-//! only through the lead.
+//! The engine seam between the request path (`rest/`, `domain/`) and the
+//! engine workers (`engines/`, `worker/`).
 //!
-//! # Contract for every async method (002 guarantees it)
+//! # Contract for every async method (the engines guarantee it)
 //!
 //! 1. **Deadline.** `deadline` is absolute. The engine enforces it itself
 //!    (the domain has no timer): at the deadline it kills the worker's
@@ -123,8 +122,8 @@ pub struct EngineTiming {
     pub wall: Duration,
     /// Inside the worker (rule 4); the longest chunk for split calls.
     pub engine: Duration,
-    /// The office worker's pre-flight scan before the load (INTERFACES
-    /// §13). Worker time but not engine time, so it counts as overhead;
+    /// The office worker's pre-flight scan before the load. Worker time
+    /// but not engine time, so it counts as overhead;
     /// zero for calls without pre-flight.
     pub preflight: Duration,
     /// The worker CPU time, user plus system, of the calls that answered:
@@ -164,7 +163,7 @@ pub struct Converted {
     pub pdf_bytes: u64,
     /// Gives the family and `Convert-Source-Format` for encrypted OOXML.
     pub doc_type: DocType,
-    /// The office worker's pre-flight scan of the source (INTERFACES §13);
+    /// The office worker's pre-flight scan of the source;
     /// `None` when it did not run.
     pub facts: Option<SourceFacts>,
     pub timing: EngineTiming,
@@ -362,7 +361,7 @@ mod tests {
 
     use super::*;
 
-    /// Proves the traits are object safe and complete without lane 002.
+    /// Proves the traits are object safe and complete without the real engines.
     struct Null;
 
     const WORKER: WorkerRef = WorkerRef {
@@ -449,7 +448,7 @@ mod tests {
     }
 
     /// The domain must not depend on the HTTP, async runtime, serde, IPC or
-    /// FFI crates (AGENT-RULES rule 13).
+    /// FFI crates.
     #[test]
     fn domain_has_no_forbidden_imports() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/domain");

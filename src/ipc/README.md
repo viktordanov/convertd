@@ -1,7 +1,7 @@
 <!-- memoria:section id="overview" files="mod.rs" -->
 # Supervisor-worker protocol
 
-`src/ipc/` defines the frames that the supervisor and a worker send over the worker's stdin and stdout pipes. It is internal: no other lane depends on these types.
+`src/ipc/` defines the frames that the supervisor and a worker send over the worker's stdin and stdout pipes. It is internal to the service: only the supervisor's end (`engines/conn.rs`) and the worker use these types, so a change to a frame must change both ends.
 
 Only paths and options cross the pipe. The upload, the PDF and the page images stay in the job directory, where the worker reads and writes them. The types are serde types for the wire, not domain types. The engine adapters in `src/engines/` convert between the two.
 <!-- /memoria:section -->

@@ -1,4 +1,4 @@
-//! Which engines `convertd serve` runs, and the handle that stops them (lane 002).
+//! Which engines `convertd serve` runs, and the handle that stops them.
 //!
 //! `main.rs` calls [`start`] once and [`EngineHandle::shutdown`] after the
 //! server stops.
@@ -8,7 +8,7 @@
 //!   (PDFium).
 //! - `TEST_ENGINE=worker` (level B, feature `test-hooks`): both pools run
 //!   `convertd worker test` behind the same pools, queue and kills.
-//! - `TEST_ENGINE=fake` (level A): lane 001's in-process fakes, no pools.
+//! - `TEST_ENGINE=fake` (level A): the in-process fakes, no pools.
 
 use std::path::PathBuf;
 use std::sync::Arc;

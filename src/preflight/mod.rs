@@ -1,8 +1,8 @@
-//! Pure pre-flight scanners over an office source (lane 001).
+//! Pure pre-flight scanners over an office source.
 //!
-//! The office worker (lane 002) calls [`scan`] on the source file before
-//! LibreOffice loads it and returns the facts in `Converted.facts`
-//! (INTERFACES.md §13). The algorithms are 005 §5: the declared slide count
+//! The office worker calls [`scan`] on the source file before LibreOffice
+//! loads it and returns the facts in `Converted.facts`. It reads the
+//! declared slide count
 //! (V1, PPTX), the requested font families (V2), the macro storage (V4)
 //! and the distinct code points of the text (`GLYPHS_MISSING`). No tokio,
 //! no network, no engine calls.

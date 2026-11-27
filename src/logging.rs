@@ -1,4 +1,4 @@
-//! Process-wide logging (lane 001): `LOG_MODE=prod` writes JSON lines,
+//! Process-wide logging: `LOG_MODE=prod` writes JSON lines,
 //! `debug` writes pretty text, both to stdout.
 
 use tracing::level_filters::LevelFilter;

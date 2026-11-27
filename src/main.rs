@@ -1,5 +1,4 @@
-//! `convertd`: the command line and the wiring (lane 001; lane 002's
-//! dispatch goes through the lead).
+//! `convertd`: the command line and the wiring.
 
 use std::io::Write;
 use std::process::ExitCode;

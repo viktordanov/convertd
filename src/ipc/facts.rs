@@ -3,8 +3,7 @@
 //! `DeclaredPages::source` is a `&'static str` in the frozen domain type, so
 //! the supervisor maps the wire string back to a static one: the two
 //! sources that the scanners name map to themselves, and any other source
-//! reads as `"other"` (the lead's ruling for Round A; the domain type
-//! becomes a `String` in Round B).
+//! reads as `"other"`.
 
 use crate::domain::text::needs_glyph;
 use crate::domain::verification::{
@@ -15,7 +14,7 @@ use crate::ipc::protocol::{
     SourceFactsWire,
 };
 
-/// The page-count sources the pre-flight scanners name (005 §5).
+/// The page-count sources the pre-flight scanners name.
 pub const KNOWN_SOURCES: [&str; 2] = ["ppt/presentation.xml", "docProps/app.xml"];
 
 /// The static form of `source`: a known source, or `"other"`.

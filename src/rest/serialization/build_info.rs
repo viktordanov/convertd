@@ -1,4 +1,4 @@
-//! `build-info.json`, written by the image build (INTERFACES.md §8).
+//! `build-info.json`, written by the image build (`docker/README.md`).
 
 use std::collections::BTreeMap;
 
@@ -31,7 +31,7 @@ impl BuildInfo {
     }
 }
 
-/// `fonts.json` (lane 003): `{family: metric_compatible}`.
+/// `fonts.json`: `{family: metric_compatible}`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(transparent)]
 pub struct FontsFile(pub BTreeMap<String, bool>);
@@ -47,7 +47,7 @@ mod tests {
     use super::BuildInfo;
 
     #[test]
-    fn parses_the_interfaces_example() {
+    fn parses_a_build_info_file() {
         let info = BuildInfo::parse(
             br#"{ "libreoffice": "26.8.3.1", "pdfium": "8179",
                   "fonts": ["Caladea", "Carlito"],

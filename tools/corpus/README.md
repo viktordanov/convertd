@@ -91,13 +91,13 @@ Then `check` compares the fields that the expectation gives. For each `FONT_SUBS
 
 The canary listener must share the network namespace of the service, because LibreOffice connects to the loopback address of its own container. The run of record used a harness container started with `--network container:<service>`. A harness on the host behind `-p` does not see such a connection.
 
-On 2026-11-26, `check` ran that way against the image `rs-convert-lead-runtime:wave2a`, with LibreOffice 26.8.3.1 and PDFium 8179, in arm64 Docker on an Apple-silicon Mac. 47 of the 55 cases of that time passed. The listener saw no connection, and the `/BaseFont` arbiter agreed with each `FONT_SUBSTITUTED` warning. No positive control has run yet, so zero connections does not yet prove that the canaries can connect. The lead then ruled on the eight failures: five expectations changed to what LibreOffice does, and the three image cases now expect the 415 that lane 001 gives for image inputs, which are out of v1. `expected.json` also gained `docx-one-page` with two cases, so it now holds 57 cases. Its 1-page count comes from the same image, by a direct request.
+On 2026-11-26, `check` ran that way against the first arm64 `runtime` image of 2026-11-26, with LibreOffice 26.8.3.1 and PDFium 8179, in arm64 Docker on an Apple-silicon Mac. 47 of the 55 cases of that time passed. The listener saw no connection, and the `/BaseFont` arbiter agreed with each `FONT_SUBSTITUTED` warning. No positive control has run yet, so zero connections does not yet prove that the canaries can connect. Of the eight failures, five changed their expectations to what LibreOffice does, and the three image cases now expect the 415 that the service gives for image inputs, which are out of v1. `expected.json` also gained `docx-one-page` with two cases, so it now holds 57 cases. Its 1-page count comes from the same image, by a direct request.
 
-On 2026-11-26, `check` ran the same way against `rs-convert-lead-runtime:wave2b`, built from `main` at `1eafd5ee`, and all 57 cases passed, with exit status 0. The listener saw no connection, and the service log had no error and no worker restart. The full run took about 31 s of request time. The slowest cases were `xlsx-100k` at about 7 to 8 s each and `pptx-photos60` at about 4 to 5 s each. Still no positive control had run, so the canaries proved only that no connection was made.
+On 2026-11-26, `check` ran the same way against the arm64 `runtime` image `sha256:3ccbb545d9fb`, and all 57 cases passed, with exit status 0. The listener saw no connection, and the service log had no error and no worker restart. The full run took about 31 s of request time. The slowest cases were `xlsx-100k` at about 7 to 8 s each and `pptx-photos60` at about 4 to 5 s each. Still no positive control had run, so the canaries proved only that no connection was made.
 
-Later on 2026-11-26, with two data-descriptor cases added, `check` ran again against `rs-convert-lead-runtime:wave2b`, and all 59 cases passed. The listener control passed inside the namespace of the service. `docx-stored-descriptor` gave `422 CONVERSION_FAILED` and `docx-deflated-descriptor` gave 200 with 2 pages, as expected.
+Later on 2026-11-26, with two data-descriptor cases added, `check` ran again against the same image, and all 59 cases passed. The listener control passed inside the namespace of the service. `docx-stored-descriptor` gave `422 CONVERSION_FAILED` and `docx-deflated-descriptor` gave 200 with 2 pages, as expected.
 
-`expected.json` then gained a 60th case, `pdf-text3/webp-refused`, when WebP output left the service. It expects `422 VALIDATION_ERROR`, as lane 001 answers an unknown image format. No `check` run with that case is recorded yet.
+`expected.json` then gained a 60th case, `pdf-text3/webp-refused`, when WebP output left the service. It expects `422 VALIDATION_ERROR`, as the service answers an unknown image format. No `check` run with that case is recorded yet.
 
 The hidden-slide work added `hidden_pages` to the expectations and six cases: `pptx-hidden3` (three), `odp-hidden` (two) and `pptx-deck20/include-hidden`. `check` compares `hidden_pages` with the pages that carry `hidden: true` in the manifest, as it does for `blank_pages`. No `check` run with these cases is recorded yet.
 <!-- /memoria:section -->
@@ -110,9 +110,9 @@ The hidden-slide work added `hidden_pages` to the expectations and six cases: `p
 It is the listener for two controls that `check` cannot run by itself. In both, the harness container shares the network namespace of the service:
 
 - **Shared namespace:** a process in the service container connects, for example `docker exec <service> env PORT=47123 /usr/local/bin/convertd healthcheck`. One connection proves that the harness sees the loopback of the service.
-- **Canary positive control (plan step 13):** plain `soffice` runs the three canaries with a permissive profile, and each must connect. Until this control passes, zero connections in `check` proves that the listener works, not that the canaries can connect.
+- **Canary positive control:** plain `soffice` runs the three canaries with a permissive profile, and each must connect. Until this control passes, zero connections in `check` proves that the listener works, not that the canaries can connect.
 
-On 2026-11-26 the shared-namespace control passed. `listen` counted one connection (`GET /readyz`) from `convertd healthcheck` run inside the `rs-convert-lead-runtime:wave2b` container with `PORT=47123`.
+On 2026-11-26 the shared-namespace control passed. `listen` counted one connection (`GET /readyz`) from `convertd healthcheck` run inside a container of that image with `PORT=47123`.
 
 The canary positive control failed in every condition tried. No canary connected:
 
@@ -125,19 +125,19 @@ In the throwaway image even a direct call of the Basic macro through the script 
 
 ## Later subcommands
 
-`validate`, `check` and `listen` exist at this time. The 005 plan listed four more subcommands. None of them is planned now, because other tools do the work:
+`validate`, `check` and `listen` exist at this time. Four more subcommands were once considered. None of them is planned now, because other tools do the work:
 
-| Subcommand | What the plan wanted | Status |
+| Subcommand | What it would do | Status |
 | --- | --- | --- |
 | `bench` | The `overhead`, `spawn`, `formats` and `memory` suites, with `summary.json` | Not planned. `examples/overhead.rs` made the benchmark of record |
 | `exec` | Times an external command for each file, such as a cold `soffice` start | Not planned |
-| `soak` | 10,000 conversions with samples of memory, processes and job directories | Not planned. Lane 002 runs the soak |
+| `soak` | 10,000 conversions with samples of memory, processes and job directories | Not planned. The soak runs over HTTP (`src/engines/README.md`, Soak) |
 | `compare` | Compares two `summary.json` files against absolute thresholds | Not planned while no `summary.json` exists |
 
 In CI, `docker/corpus-check.sh` runs `check` against the image, with the harness in a container that shares the network namespace of the service.
 
 ## Results over time
 
-The benchmark of record is [`bench/results/2026-11-26-wave2b.md`](../../bench/results/2026-11-26-wave2b.md). `examples/overhead.rs` made it against `rs-convert-lead-runtime:wave2b`, and it gives `overhead` 0.883 ms at p50 for the one-page DOCX, against the 5 ms gate. That file records its conditions. A later run is compared with it by hand, because no `compare` subcommand and no `bench/thresholds.json` exist.
+The benchmark of record is [`bench/results/2026-11-26.md`](../../bench/results/2026-11-26.md). `examples/overhead.rs` made it against the arm64 `runtime` image `sha256:3ccbb545d9fb`, and it gives `overhead` 0.883 ms at p50 for the one-page DOCX, against the 5 ms gate. That file records its conditions. A later run is compared with it by hand, because no `compare` subcommand and no `bench/thresholds.json` exist.
 
 Next: run `cargo test --locked` in `tools/corpus` before you change `validate` or `check`.

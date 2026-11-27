@@ -6,7 +6,7 @@ kind: RuntimeClass
 metadata:
   name: gvisor
 handler: runsc
-# overhead:                 # set from the step 10 measurement of the sandbox's own memory
+# overhead:                 # set from a measurement of the sandbox's own memory
 #   podFixed:
 #     memory: 128Mi
 #     cpu: 100m

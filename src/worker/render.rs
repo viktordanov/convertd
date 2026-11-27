@@ -1,6 +1,6 @@
-//! The render worker: PDFium (plan 002 step 7).
+//! The render worker: PDFium.
 //!
-//! PDFium is not thread safe (AGENT-RULES.md rule 10). The worker is one
+//! PDFium is not thread safe. The worker is one
 //! thread and holds one document at a time. Every operation opens its
 //! document, works, and closes it before it answers.
 
@@ -86,7 +86,7 @@ impl RenderWorker {
         let password = secret(args.password.as_ref())?;
         let started = Instant::now();
         // Whether the file opens without the password, checked before the
-        // main open, so only one document is open at a time (rule 10).
+        // main open, so only one document is open at a time.
         let needs_password = password.is_some()
             && matches!(
                 self.pdfium.load_pdf_from_file(&args.pdf, None),

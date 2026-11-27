@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Installed into /opt/libreoffice/share/registry by docker/install-engines.sh.
      The macro and link lock-down for documents from callers that the service does not
-     control (ledger item 011, S2). LibreOffice 26.8.3.1 under LibreOfficeKit already runs no
+     control. LibreOffice 26.8.3.1 under LibreOfficeKit already runs no
      macro and follows no file link of the corpus with its defaults; this layer keeps it so
      if a default changes. oor:finalized at the install layer makes a value stick: a user
      profile cannot change it.

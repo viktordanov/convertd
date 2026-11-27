@@ -1,4 +1,4 @@
-//! Engine and pool configuration (lane 002), parsed through `crate::config::Env`.
+//! Engine and pool configuration, parsed through `crate::config::Env`.
 //!
 //! Workers read no configuration: the supervisor passes them what they need.
 //! `TMP_DIR` is parsed once, in `config::ServerConfig`.
@@ -72,7 +72,7 @@ pub struct PoolLimits {
     pub kill_rss_mb: u64,
 }
 
-/// The engine variables of `INTERFACES.md` §4.
+/// The engine variables of the configuration table in `src/README.md`.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Default: half of the CPUs, at least 1.

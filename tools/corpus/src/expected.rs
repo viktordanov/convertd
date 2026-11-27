@@ -152,7 +152,7 @@ pub struct ExpectedWarning {
     pub unless_installed: Vec<String>,
 }
 
-/// The detail keys each warning code may carry (`INTERFACES.md` §13, plan 005 §5,
+/// The detail keys each warning code may carry (`src/README.md`, Warnings,
 /// the `WarningCode` schema of `api/openapi.json`).
 pub fn detail_keys(code: &str) -> &'static [&'static str] {
     match code {

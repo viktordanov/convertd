@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # docker/corpus-check.sh <image> <corpus-bench-binary>
-# Runs lane 005's `corpus-bench check` (every case of corpus/expected.json) against <image>.
+# Runs `corpus-bench check` (tools/corpus/, every case of corpus/expected.json) against <image>.
 # The image job of .github/workflows/image.yml runs it on both architectures.
 #
 # The service runs as the manifests run it: no network, read-only root, /tmp only, uid 10001,
@@ -17,7 +17,7 @@ harness="${HARNESS_IMAGE:?set HARNESS_IMAGE to a pinned glibc image, tag@sha256:
 [[ -f corpus/expected.json && -d corpus/out ]] \
   || { echo "corpus-check: run from the repository root, after generate.py --hostile" >&2; exit 1; }
 bench="$(cd "$(dirname "${bench}")" && pwd)/$(basename "${bench}")"
-name="rs-convert-003-corpus-$$"
+name="rs-convert-corpus-$$"
 key="corpus-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 
 # shellcheck disable=SC2317,SC2329  # called through the EXIT trap (SC2329 is ShellCheck 0.11)

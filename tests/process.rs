@@ -1,4 +1,4 @@
-//! Process control: spawning, scoped reaping, group kills (plan 002 step 3).
+//! Process control: spawning, scoped reaping, group kills.
 #![cfg(feature = "test-hooks")]
 
 use std::collections::HashSet;

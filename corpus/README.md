@@ -29,7 +29,7 @@ Each file in the corpus exercises one path through the service. The public corpu
 - The service rejects each hostile file within its limits.
 - LibreOffice makes no network connection.
 
-On 2026-11-26, `check` ran against the real engines (LibreOffice 26.8.3.1 and PDFium 8179 in the image `rs-convert-lead-runtime:wave2a`), and 47 of 55 cases passed. The expectations come from the rules in the 005 plan. Only the page counts that depend on layout were copied from that run. The lead then ruled on the eight failures. Five expectations changed to what LibreOffice does. Image inputs are out of v1, so the three image cases (`png`, `jpeg` and `png-bomb`) now expect `415 UNSUPPORTED_FORMAT`, which lane 001 gives since `674091b`. `png-bomb` stays as a detection case. Against `rs-convert-lead-runtime:wave2b`, built from `main` at `1eafd5ee`, all 57 cases passed on 2026-11-26.
+On 2026-11-26, `check` ran against the real engines (LibreOffice 26.8.3.1 and PDFium 8179 in the first arm64 `runtime` image of 2026-11-26), and 47 of 55 cases passed. The expectations come from the warning rules. Only the page counts that depend on layout were copied from that run. Five of the eight failures changed their expectations to what LibreOffice does. Image inputs are out of v1, so the three image cases (`png`, `jpeg` and `png-bomb`) now expect `415 UNSUPPORTED_FORMAT`, which the service gives for every image input. `png-bomb` stays as a detection case. Against the arm64 `runtime` image `sha256:3ccbb545d9fb`, all 57 cases passed on 2026-11-26.
 
 A pass does not prove that LibreOffice output matches Microsoft Office. The files are synthetic: Python libraries and hand-written XML make them, not Office. The private corpus carries the evidence from real documents.
 
@@ -57,9 +57,9 @@ The hostile files stay small on disk. `zip-ratio.docx` is about 2 MB and declare
 
 The corpus has three fixtures: `fixtures/vbaProject-word.bin`, `vbaProject-xl.bin` and `vbaProject-ppt.bin`. They are the VBA projects of the Apache POI macro test files, under Apache-2.0. [`fixtures/SOURCES.md`](fixtures/SOURCES.md) records their upstream commits, both SHA-256 values, the NOTICE text and what each macro does. `generate.py` puts each project into its host file: `docm-vba`, `xlsm-vba` and `pptm-vba`. It refuses a fixture whose SHA-256 differs from `expected.json`.
 
-The corpus has no derived file at this time. Step 7 of item 005 adds `doc`, `xls` and `ppt`, and their entries enter `expected.json` with their files.
+The corpus has no derived file at this time. `doc`, `xls` and `ppt` files are planned, and their entries will enter `expected.json` with their files.
 
-The private corpus lives in `CORPUS_PRIVATE_DIR`, by default `corpus/private/`, with its own `expected.json` in the same schema. No private URL, file name, render or result goes into the repository. The tooling that fills it and checks it is step 12 of item 005, and it is not built yet.
+The private corpus lives in `CORPUS_PRIVATE_DIR`, by default `corpus/private/`, with its own `expected.json` in the same schema. No private URL, file name, render or result goes into the repository. The tooling that fills it and checks it is not built yet.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="contract" files="expected.json expected.schema.json" -->
@@ -67,13 +67,13 @@ The private corpus lives in `CORPUS_PRIVATE_DIR`, by default `corpus/private/`, 
 
 `expected.json` lists every file with its path, origin, hash, tags, pre-flight facts and cases. `expected.schema.json` is its JSON Schema (draft 2020-12, schema version 1), and `corpus-bench validate` applies it.
 
-- **`preflight`** gives what the scanners must read from the bytes alone: format, encryption, the declared slide count, the requested Latin font families and the macro parts. It is for the unit tests of lane 001, which run with no engine. No test reads it yet. `null` means that a scan does not apply or cannot run. An empty list means that the scan ran and found nothing.
+- **`preflight`** gives what the scanners must read from the bytes alone: format, encryption, the declared slide count, the requested Latin font families and the macro parts. It is for the unit tests of the scanners, which run with no engine. No test reads it yet. `null` means that a scan does not apply or cannot run. An empty list means that the scan ran and found nothing.
 - **`cases`** gives one request each: the `options` part, as the API takes it, and an `expect` block. Most cases set `output` to `bundle`, because only a bundle carries both the manifest and the PDF. `images` and `bundle` answers are a tar stream in one zstd frame (`.tar.zst`). The options go to the service as they are, so a case without `output` gets the API default, `pdf`.
 - **`expect`** gives the status, and the error `code` when the status is not 200. It can also give the format, family, PDF origin, page count, warnings, blank pages, hidden pages and the allowed canary connections (always 0). `text_present` and `text_absent` list strings that the text of the PDF must or must not hold, with white space ignored, and `pdf_images` gives the number of image XObjects in the PDF. These three need `output` `pdf` or `bundle`. `hidden_pages` lists the pages whose manifest entry has `hidden: true`. `pptx-hidden`, `pptx-hidden3` and `odp-hidden` test it with `slides.include_hidden`, and `pptx-deck20` tests that a deck without hidden slides gets no mark.
 - **`warnings`** match as a multiset on code and page. `detail` matches as a subset, and `"*"` matches any value. `unless_installed` drops a font warning when `/v1/capabilities` lists the family.
 - **`page_count`** is a number, a `{min, max}` range or `"unrecorded"`. An `"unrecorded"` count depends on layout: a person copies it from a reviewed `check` run. The nine counts of this kind (`docx-long`, `docx-one-page`, `potx`, the sheets) came from the image's engines on 2026-11-26.
 
-The requested fonts follow the real template parts. The python-docx template has Calibri as its major font and Cambria as its minor font. Its default text uses the minor font, so a generated DOCX requests Cambria unless its theme changes the minor font, as in `docx-aptos-theme`. The warning rules are in [the 005 plan, section 5](../docs/ledger/005-corpus-bench/plan.md).
+The requested fonts follow the real template parts. The python-docx template has Calibri as its major font and Cambria as its minor font. Its default text uses the minor font, so a generated DOCX requests Cambria unless its theme changes the minor font, as in `docx-aptos-theme`. The warning rules are in [src/README.md](../src/README.md#warnings).
 <!-- /memoria:section -->
 
 <!-- memoria:section id="hashes" files="generate.py expected.json requirements.txt" -->
@@ -83,7 +83,7 @@ Two generator runs on one machine give the same bytes for every file except `doc
 
 The generator gets repeatable bytes in three ways. It rewrites every zip with a fixed time stamp, fixed attributes and deflate level 6, and it keeps the entry order and the part bytes. It replaces the save time that openpyxl writes into `docProps/core.xml`. It makes image noise from a seeded `random.Random`, not from Pillow's `effect_noise`, which uses C `rand()`.
 
-Deflate output can depend on the zlib build. The `generator` block of `expected.json` records the environment of the last `--write-hashes`: Python 3.13.5, zlib 1.3.1, Linux-aarch64, in the dev image `rs-convert-003-dev:arm64`. macOS arm64 with Python 3.13.18 and zlib 1.2.12 gives the same bytes for every file. `--check` prints a difference in environment first, then compares. The `corpus` workflow runs `corpus/check.sh` on `ubuntu-24.04` (x86_64). It passed on `main` with the 37 hashes of that time, and it checks the two data-descriptor files on its next run.
+Deflate output can depend on the zlib build. The `generator` block of `expected.json` records the environment of the last `--write-hashes`: Python 3.13.5, zlib 1.3.1, Linux-aarch64, in the arm64 `dev` image. macOS arm64 with Python 3.13.18 and zlib 1.2.12 gives the same bytes for every file. `--check` prints a difference in environment first, then compares. The `corpus` workflow runs `corpus/check.sh` on `ubuntu-24.04` (x86_64). It passed on `main` with the 37 hashes of that time, and it checks the two data-descriptor files on its next run.
 
 `requirements.txt` pins every package, with a SHA-256 for every wheel. A change to a pin can change the bytes, so record the hashes again after it.
 

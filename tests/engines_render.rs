@@ -1,5 +1,5 @@
 //! The render worker with the real PDFium, through the pool and the
-//! `PdfEngine` adapter (plan 002 step 7).
+//! `PdfEngine` adapter.
 //!
 //! These tests run where `PDFIUM_LIB_DIR` holds `libpdfium.so`, as in the
 //! dev image. Elsewhere they print `skipped` and pass without checking

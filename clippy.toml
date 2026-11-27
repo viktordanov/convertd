@@ -1,5 +1,4 @@
-# Blocking waits on child processes are forbidden (plan 002, "Needs from
-# 001"). A child is reaped only by the supervisor's reaper; one-off children
+# Blocking waits on child processes are forbidden. A child is reaped only by the supervisor's reaper; one-off children
 # go through `engines::process::run_to_completion`.
 disallowed-methods = [
     { path = "std::process::Command::output", reason = "use engines::process::run_to_completion; the reaper owns every wait" },

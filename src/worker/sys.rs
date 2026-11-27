@@ -1,6 +1,6 @@
 //! Process set-up for a worker: descriptor moves, signals, `_exit`, RSS.
 //!
-//! The `unsafe` FFI calls of the worker live here (AGENT-RULES.md rule 13).
+//! The `unsafe` FFI calls of the worker live here.
 
 use std::fs::File;
 use std::io;
@@ -73,8 +73,8 @@ pub fn ignore_sigxfsz() {
     }
 }
 
-/// Leaves without unwinding, flushing or running destructors (rule 9: an
-/// `Office` must never be dropped).
+/// Leaves without unwinding, flushing or running destructors: an `Office`
+/// must never be dropped.
 pub fn exit(code: i32) -> ! {
     // SAFETY: `_exit` takes any status and does not return.
     unsafe { libc::_exit(code) }

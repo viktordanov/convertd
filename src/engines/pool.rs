@@ -1,5 +1,4 @@
-//! One generic worker pool, used for both office and render workers (plan
-//! 002 steps 4 and 5).
+//! One generic worker pool, used for both office and render workers.
 //!
 //! - **Leasing.** Idle workers sit in a list guarded by one mutex, next to
 //!   a FIFO-fair semaphore whose permits equal the idle count. `lease`
@@ -484,7 +483,7 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        // Rule 9: no teardown, only SIGKILL of the group.
+        // A LibreOffice worker gets no teardown, only SIGKILL of the group.
         self.child.kill_group();
         lock(&self.handles).remove(&(self.slot, self.generation));
         match self.reason {

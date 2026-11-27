@@ -909,11 +909,11 @@ mod tests {
     /// Without a page selection the probe covers at most
     /// VERIFY_PROBE_MAX_PAGES pages, and the rest are counted as skipped.
     /// With a selection and page images, the rendered pages decide
-    /// BLANK_PAGE, so nothing is probed (review, lane 001 item 9).
+    /// BLANK_PAGE, so nothing is probed.
     /// Every decrypt asks the worker to keep owner restrictions. When it
     /// answers `Restricted` (only the user password was given), the
     /// original encrypted PDF goes on: it is the PDF output, and the render
-    /// opens it with the password (review, lane 001 item 9).
+    /// opens it with the password.
     #[test]
     fn a_restricted_pdf_passes_through_and_renders_with_the_password() {
         let script = Arc::new(Script {
@@ -977,7 +977,7 @@ mod tests {
     /// Page images decide BLANK_PAGE for every page they show, so with
     /// output images or bundle the probe never runs, with or without a
     /// selection. A request over MAX_RENDER_PAGES is then refused without
-    /// a probe of any of its pages (performance review, lane 001 item 2).
+    /// a probe of any of its pages.
     #[test]
     fn page_images_need_no_probe_and_are_capped_first() {
         for output in [Output::Images, Output::Bundle] {

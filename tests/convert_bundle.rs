@@ -1,4 +1,4 @@
-//! `output=images` and `output=bundle` (plan 001 step 8): the tar.zst
+//! `output=images` and `output=bundle`: the tar.zst
 //! bundle over HTTP through the level-A fakes, read back with the `zstd`
 //! crate and a small ustar reader. The `zip` crate only builds inputs.
 
@@ -304,7 +304,7 @@ async fn bundle_from_a_docx_and_from_a_pdf() {
     let entries = read_bundle(&body);
     assert_eq!(entries[1], ("document.pdf".to_owned(), upload.clone()));
     assert_eq!(entries[2].0, "pages/0001.png");
-    // WebP output is gone (owner): it is an unknown format like any other,
+    // WebP output is gone: it is an unknown format like any other,
     // 422 VALIDATION_ERROR naming the formats that exist.
     for format in ["webp", "gif"] {
         let options = format!(r#"{{"output":"bundle","images":{{"format":"{format}"}}}}"#);
@@ -463,8 +463,7 @@ async fn open_downloads_hold_only_their_files() {
 
 /// The render reserves what its pages can write, from their size, not
 /// the whole per-job cap (768 MiB of the default 3 GiB). So four images
-/// requests whose renders overlap all fit the default budget (review, lane
-/// 001 item 6).
+/// requests whose renders overlap all fit the default budget.
 #[tokio::test]
 async fn four_concurrent_images_requests_fit_the_default_budget() {
     let app = App::with_pdf(
@@ -834,7 +833,7 @@ async fn an_embedded_font_raises_no_font_warning() {
     ];
     let app = App::new("embedded", &env, FakeBehavior::Succeed);
 
-    // AGENT-RULES 13a: every await in a test has a deadline.
+    // Every await in a test has a deadline.
     let (response, body) = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         app.send("e.docx", &aptos_embedded_docx(), r#"{"output":"bundle"}"#),
@@ -880,7 +879,7 @@ async fn uncovered_text_raises_glyphs_missing() {
         ),
     ]);
 
-    // AGENT-RULES 13a: every await in a test has a deadline.
+    // Every await in a test has a deadline.
     let (response, body) = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         app.send("thai.docx", &docx, r#"{"output":"bundle"}"#),

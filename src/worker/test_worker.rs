@@ -1,7 +1,7 @@
 //! The `test` role (feature `test-hooks`): no engine, fake results.
 //!
 //! It answers `Convert`, `Inspect`, `Render` and `Decrypt` with
-//! small valid files, driven by the `FAKE:` markers of INTERFACES.md §10
+//! small valid files, driven by the `FAKE:` markers of `engines::fake_markers`
 //! in the input file, so level B (`TEST_ENGINE=worker`) runs the real pool,
 //! queue, deadline and kill. `TestOp`s act out the faults the pool tests
 //! need.
@@ -61,7 +61,7 @@ impl Behavior {
 }
 
 /// The behavior that the first `FAKE:` marker in `bytes` asks for, read
-/// with lane 001's parser, which level A uses too (INTERFACES.md §10).
+/// with the parser that level A uses too.
 pub fn markers(bytes: &[u8]) -> Behavior {
     use crate::engines::fake_markers::{Marker, MarkerCode, parse};
 

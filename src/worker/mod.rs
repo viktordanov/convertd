@@ -1,4 +1,4 @@
-//! Engine worker processes (lane 002): the only place with `unsafe` and engine calls.
+//! Engine worker processes: the only place with `unsafe` and engine calls.
 //!
 //! `main.rs` dispatches `convertd worker <role>` here before any runtime,
 //! logging or configuration exists. A worker is one thread: it reads
@@ -32,7 +32,7 @@ pub enum Role {
     Office,
     /// PDFium: inspect, render and decrypt PDFs.
     Render,
-    /// Fake answers driven by `FAKE:` markers (INTERFACES.md §10).
+    /// Fake answers driven by `FAKE:` markers (`engines::fake_markers`).
     #[cfg(feature = "test-hooks")]
     Test,
 }

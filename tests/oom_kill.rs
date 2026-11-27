@@ -1,4 +1,4 @@
-//! A real kernel OOM kill of a worker (review of the ingestion, F).
+//! A real kernel OOM kill of a worker.
 //!
 //! Runs where the container has a memory limit and cgroup v2: set
 //! `CONVERTD_MEMORY_LIMIT_MB` to the limit, as in the dev image with

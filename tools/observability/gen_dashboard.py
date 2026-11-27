@@ -1,4 +1,4 @@
-"""Generates deploy/observability/grafana-dashboard.json (ledger item 010).
+"""Generates deploy/observability/grafana-dashboard.json.
 
 Usage: python3 -I tools/observability/gen_dashboard.py deploy/observability/grafana-dashboard.json
 
@@ -242,7 +242,7 @@ ts("Pages rendered by format", "Image pages rendered per second.",
    [(f'sum by (format) (rate(convert_pages_rendered_total{{{S}}}[{RI}]))', "{{format}}")], "short", 18, 6, stack=True)
 y[0] += 8
 
-# ---- CPU per job (effort O2: convert_worker_cpu_seconds{pool,op}, user plus system time per worker call)
+# ---- CPU per job (convert_worker_cpu_seconds{pool,op}, user plus system time per worker call)
 CPU = "convert_worker_cpu_seconds"
 CPU_NOTE = ("A call adds all of its CPU time when its reply arrives, so a call longer than the rate window shows as idle while it runs "
             "and above its real cores when it ends. A call that times out, crashes or passes its kill RSS sends no reply and records nothing.")

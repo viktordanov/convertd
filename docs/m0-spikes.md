@@ -11,7 +11,7 @@ performance targets.
 | 1 | Does the Go facade build against the real generated client? | **Go** |
 | 2 | Can the Rust server emit the spec that oapi-codegen consumes? | **Go, with three rules** |
 | 3 | Does LibreOfficeKit from Rust work on LibreOffice 26.8? | **Go** |
-| 4 | PDFium throughput per image format | **Go**; the plan's encoding assumptions change |
+| 4 | PDFium throughput per image format | **Go**; the design's encoding assumptions change |
 | 5 | Cold `soffice` against warm LibreOfficeKit | Warm is 3 to 6 times faster on small files |
 | - | Kernel sandbox on the target platform | **Still unknown.** Cannot be tested here |
 
@@ -92,7 +92,7 @@ Timings, warm worker (ms, third round):
 | sheet.xlsx (3 sheets) | 18 | 25 | 43 | 169 |
 | deck.pptx (20 slides) | 94 | 490 | 584 | 728 |
 
-**Correction (2026-11-26, wave two, round B):** small.docx renders 2 pages, not 1, in LibreOffice 26.8.3.1. The run of `corpus-bench check` against `rs-convert-lead-runtime:wave2a` and lane 002's decrypt test both show it. The page count in the first column was a label, not a measurement. The timings are unchanged. The one-page file of the overhead gate is now `docx-one-page` in `corpus/expected.json`.
+**Correction (2026-11-26):** small.docx renders 2 pages, not 1, in LibreOffice 26.8.3.1. The run of `corpus-bench check` against the first arm64 `runtime` image of 2026-11-26 and the engine test of decrypt both show it. The page count in the first column was a label, not a measurement. The timings are unchanged. The one-page file of the overhead gate is now `docx-one-page` in `corpus/expected.json`.
 
 Init itself takes about 60 ms. The first document then costs about 90 ms
 more than later ones (filter and font loading). So a worker is warm after
@@ -138,7 +138,7 @@ What this changes:
   and lossless WebP are 5 to 7 times larger than JPEG. On text pages they
   are fast and compact.
 - **PNG with fast compression is not 20 times slower than JPEG** on these
-  inputs. It is about as fast or faster. The plan's figure came from default
+  inputs. It is about as fast or faster. The design's figure came from default
   PNG compression.
 - **Lossy WebP is the slow format**, 10 to 16 times slower than
   `jpeg-encoder`. Keep it but document the cost, or cap its DPI.

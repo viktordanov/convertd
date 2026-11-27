@@ -56,8 +56,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The image job's pin, with clippy and rustfmt in the same install, so no
-      # later step installs a component implicitly (the arm64 conflict of run
-      # 45805165059). RUSTUP_TOOLCHAIN overrides rust-toolchain.toml.
+      # later step installs a component implicitly (an arm64 run once failed with
+      # a conflict on bin/cargo-clippy). RUSTUP_TOOLCHAIN overrides rust-toolchain.toml.
       - name: Install Rust 1.99.0 (minimal profile, clippy, rustfmt)
         run: |
           rustup --version

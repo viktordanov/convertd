@@ -1,5 +1,5 @@
 //! The office worker with the real LibreOffice, through the pool and the
-//! `OfficeEngine` adapter (plan 002 step 8).
+//! `OfficeEngine` adapter.
 //!
 //! These tests run where `LO_PROGRAM_DIR` holds LibreOffice, as in the dev
 //! image. Elsewhere they print `skipped` and pass without checking
@@ -1091,7 +1091,7 @@ async fn encrypted_decks_and_sheets_named_docx_keep_their_export_keys() {
     .await;
 }
 
-/// The RSS watchdog against a real office worker (plan 002 step 10). An
+/// The RSS watchdog against a real office worker. An
 /// office worker holds about 250 MB at Ready, so a 64 MiB kill limit trips
 /// on the first sample of the call. The watchdog samples every 200 ms, so
 /// the job must run longer than that: 4000 pages take about a second.

@@ -90,7 +90,7 @@ For `DiskFull` and `LimitExceeded`, `io_error` writes a fixed message with no pa
 
 The DOCX and the XLSX are shaped like real documents. Both have a theme with Cambria headings and Calibri body text. The DOCX also has styles, a heading, a bullet list, Arial and Times New Roman runs and a table. The XLSX has Calibri styles, a bold header, a formula and two sheets. The PPTX has one text box and a theme with Calibri Light and Calibri. The aim is that the first real job finds the import paths, the substitute fonts and the PDF font embedding already loaded.
 
-On 2026-11-26 a bench measured the warm-up in the dev image `rs-convert-003-dev:arm64`. It ran on Linux arm64 in the Docker VM of an Apple-silicon Mac, with a release build with `test-hooks`, `OFFICE_WORKERS=1` and `RENDER_WORKERS=2`. Over six fresh pools, the median first job took 1.04 times the third for `docx/small.docx`, 1.03 for `pptx/deck20.pptx` and 1.02 for `xlsx/sheet3.xlsx`. That meets the plan's target of 10 % on the median. The worst single pool gave 1.72, so one run is not a stable measure of the target. The PPTX stays simple, because its median of 1.03 already meets the target.
+On 2026-11-26 a bench measured the warm-up in the arm64 `dev` image. It ran on Linux arm64 in the Docker VM of an Apple-silicon Mac, with a release build with `test-hooks`, `OFFICE_WORKERS=1` and `RENDER_WORKERS=2`. Over six fresh pools, the median first job took 1.04 times the third for `docx/small.docx`, 1.03 for `pptx/deck20.pptx` and 1.02 for `xlsx/sheet3.xlsx`. That meets the target: the median first job takes at most 10 % longer than the third. The worst single pool gave 1.72, so one run is not a stable measure of the target. The PPTX stays simple, because its median of 1.03 already meets the target.
 
 Compared with the earlier simple warm-up files, the richer warm-up adds about 10 to 45 ms to spawn-to-`Ready`, which is off the request path. Each figure is the median over the same six pools of the p50 of each pool, and the range covers the three bench runs.
 
@@ -160,7 +160,7 @@ It answers `Convert`, `Inspect`, `Render` and `Decrypt` with small valid files. 
 - `FAKE:PASSWORD_REQUIRED`, `FAKE:INVALID_PASSWORD`, `FAKE:LIMIT_EXCEEDED` and `FAKE:INTERNAL_ERROR` give those errors. `FAKE:CONVERSION_FAILED` gives `LoadFailed`.
 - `FAKE:TOO_MANY_REQUESTS` and `FAKE:SERVICE_UNAVAILABLE` give `FakeQueueFull` and `FakeUnavailable`. Only the test role sends these two kinds.
 
-The test role parses the markers with lane 001's `engines::fake_markers::parse`, which level A uses too.
+The test role parses the markers with `engines::fake_markers::parse`, which level A uses too.
 
 A fake PDF has `n` empty A4 pages. When `n` is not 1, it carries a `FAKE:PAGES=<n>` comment, so an `Inspect` of a converted file sees the page count of the upload. `Render` writes a white 8 × 8 image per page as `out_dir/NNNN.<ext>` and reports those pixel sizes. A page number outside the document gives `LoadFailed`. `Decrypt` writes a fake PDF and does not copy the input, so the error markers of the input do not reach the copy.
 
@@ -181,7 +181,7 @@ A fake PDF has `n` empty A4 pages. When `n` is not 1, it carries a `FAKE:PAGES=<
 
 ## Not built yet
 
-These parts of plan 002 do not exist yet:
+These parts do not exist yet:
 
 - The font list of `Inspect` with `collect_fonts`. It is always empty.
 

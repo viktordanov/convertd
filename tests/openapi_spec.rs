@@ -1,4 +1,4 @@
-//! The cheap invariants of the emitted spec (plan 001 step 3). The spec
+//! The cheap invariants of the emitted spec. The spec
 //! itself is the contract: `api/openapi.json` is committed, and
 //! `generate.sh --check` fails when the emitted spec drifts from it.
 

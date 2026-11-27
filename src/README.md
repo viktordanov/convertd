@@ -30,7 +30,7 @@ The supervisor reads only enough of a file to route it. `detect/` reads the sign
 
 `main.rs` dispatches `convertd worker` first, before it builds a runtime, starts logging or reads the configuration. For `convertd serve`, `runtime.rs` builds a Tokio runtime with 2 worker threads, unless `TOKIO_WORKER_THREADS` sets another count. The blocking pool has at most 32 threads, and an idle blocking thread exits after 10 s. The handlers in `rest/` make their file calls on the blocking pool, not on a runtime thread: the job directory, `upload.part`, `pages/`, the settle walk and the open of the PDF. Work that still waits for a blocking thread when its request ends is skipped when a thread takes it up. Until then it keeps the permit, the job directory and its disk reservation: a delay bounded by the full pool, not a leak, and the admission count stays honest meanwhile.
 
-Lane 002 documents the worker side:
+Three READMEs document the worker side:
 
 - [engines/README.md](engines/README.md): the pools, from the supervisor's side.
 - [worker/README.md](worker/README.md): a worker process, from the inside.
@@ -48,7 +48,7 @@ The supervisor's request path uses five layers:
 - **`jobs/`**: the job directory under `TMP_DIR` and the disk budget (`TMP_MAX_BYTES`).
 - **`bundle/`**: the tar.zst writer for `images` and `bundle` output.
 
-Lane 002 owns the worker side:
+The worker side:
 
 - **`engines/`**: the pools, process control, the engine adapters, the engine selection and the supervisor's end of each worker connection.
 - **`worker/`**: the worker processes and the engines in them.
@@ -65,7 +65,40 @@ The dependency rule keeps the domain at the center. `domain/` uses no other modu
 
 `detect/` and `jobs/` depend on `domain/` only. `preflight/` depends on `domain/`, on the ZIP reader in `detect/zip_scan.rs` and on the OLE2 reader in `detect/ole2.rs`. `rest/` depends on `domain/`, `detect/`, `jobs/`, `bundle/`, `observability/` and `config.rs`, and it imports `engines/` only in its tests. `rest/response.rs` is the only place that maps an error to an HTTP status. `rest/serialization/` holds the only serde types of the supervisor's request path.
 
-`domain/engine.rs` is the seam between the two sides. The conversion service calls the `OfficeEngine` and `PdfEngine` traits. Lane 002's adapters `OfficeLok` and `PdfPdfium` in `engines/` implement them over the pools. `worker/` is the only place with engine calls, and it holds the `unsafe` code, with one exception. The reaper in `engines/process.rs` peeks at an exited child with `libc::waitid(P_ALL, WNOWAIT)` in two `unsafe` blocks. rustix 1.1.6 has `waitid`, but its result exposes no `si_pid`, so it cannot name the child (checked on 2026-11-26). Changes to `domain/engine.rs` go through the lead.
+`domain/engine.rs` is the seam between the two sides. The conversion service calls the `OfficeEngine` and `PdfEngine` traits. The adapters `OfficeLok` and `PdfPdfium` in `engines/` implement them over the pools. `worker/` is the only place with engine calls, and it holds the `unsafe` code, with one exception. The reaper in `engines/process.rs` peeks at an exited child with `libc::waitid(P_ALL, WNOWAIT)` in two `unsafe` blocks. rustix 1.1.6 has `waitid`, but its result exposes no `si_pid`, so it cannot name the child (checked on 2026-11-26).
+
+### Errors
+
+`rest/response.rs` is the only place that maps an error to a status. Every API error (`ApiError`) has the body `{"error": "<message>", "code": "<CODE>"}`. The probes are not API errors: `/readyz` answers 503 with its readiness body when the service is not ready, and with no `Retry-After`. The spec, [api/openapi.json](../api/openapi.json), lists every code and when a client may retry. Requests that fail before an engine runs map this way:
+
+| Failure | Status and code |
+| --- | --- |
+| A malformed request, multipart body or options syntax, or a stalled or too slow upload | 400 `BAD_REQUEST` |
+| No key, or a wrong key | 401 `UNAUTHORIZED` |
+| An unknown path, or a wrong method | 404 `NOT_FOUND`, or 405 `BAD_REQUEST` |
+| An upload over `MAX_UPLOAD_BYTES` | 413 `FILE_TOO_LARGE` |
+| A format that detection refuses | 415 `UNSUPPORTED_FORMAT` |
+| A file that passes a bound of detection, such as a huge OLE2 table | 422 `LIMIT_EXCEEDED` |
+| Options that break a rule or a limit | 422 `VALIDATION_ERROR` |
+| `MAX_CONCURRENT_REQUESTS` reached | 429 `TOO_MANY_REQUESTS`, `Retry-After: 1` |
+| Draining, or a spent disk budget | 503 `SERVICE_UNAVAILABLE`, `Retry-After: 5` |
+| An I/O error, or a panic | 500 `INTERNAL_ERROR` |
+
+An engine failure is an `EngineError` of `domain/engine.rs`. [engines/README.md](engines/README.md#errors) shows how a pool or worker error becomes one. It maps to a status this way:
+
+| `EngineError` | Status and code |
+| --- | --- |
+| `QueueFull` | 429 `TOO_MANY_REQUESTS`, `Retry-After: 1` |
+| `QueueTimeout` | 429 `TOO_MANY_REQUESTS`, `Retry-After` of `QUEUE_WAIT_SECONDS`, at least 1 |
+| `Unavailable`, `DiskFull` | 503 `SERVICE_UNAVAILABLE`, `Retry-After: 5` |
+| `Timeout` | 504 `CONVERSION_TIMEOUT` |
+| `PasswordRequired`, `InvalidPassword` | 422 with the same code |
+| `LimitExceeded` | 422 `LIMIT_EXCEEDED` |
+| `Failed`, `Crashed`, `Poisoned` | 422 `CONVERSION_FAILED` |
+| `Internal` | 500 `INTERNAL_ERROR` |
+
+`Restricted` never becomes an answer: the service passes the original PDF through. A deadline that passes in the handler, before or after an engine call, also answers 504 `CONVERSION_TIMEOUT`.
+
 <!-- /memoria:section -->
 
 <!-- memoria:section id="usage" files="detect/ole2.rs rest/server.rs rest/convert_handlers.rs rest/upload.rs rest/body.rs rest/timing.rs rest/throughput.rs rest/framing.rs rest/middleware/linger.rs domain/conversion_service.rs detect/mod.rs jobs/job_dir.rs jobs/disk_budget.rs bundle/tar_zst.rs rest/serialization/manifest.rs" -->
@@ -122,7 +155,7 @@ Every 200 carries `Content-Disposition`, `X-Request-ID`, the `Convert-*` headers
 <!-- memoria:section id="warnings" files="domain/verification.rs domain/text.rs preflight/mod.rs preflight/package.rs preflight/docx.rs preflight/pptx.rs preflight/xlsx.rs preflight/odf.rs" -->
 ## Warnings
 
-Warnings compare what an office source declares with what the engines produced. The algorithms are 005 §5. `preflight::scan` reads the source in the office worker, before LibreOffice loads it. It returns `SourceFacts`: the visible slide count of a deck, the slide list with the hidden slides, the requested Latin font families (at most 256, each at most 256 bytes), the requested families that a DOCX embeds, where macros are stored and the distinct code points of the text (at most 4096). `domain/verification.rs` holds the rules:
+Warnings compare what an office source declares with what the engines produced. `preflight::scan` reads the source in the office worker, before LibreOffice loads it. It returns `SourceFacts`: the visible slide count of a deck, the slide list with the hidden slides, the requested Latin font families (at most 256, each at most 256 bytes), the requested families that a DOCX embeds, where macros are stored and the distinct code points of the text (at most 4096). `domain/verification.rs` holds the rules:
 
 - **`PAGE_COUNT_MISMATCH`**: PPTX family only, when the declared count differs from the PDF. The declared count is the visible slides. With `slides.include_hidden` it is every slide, and the check is skipped when the slide list is unknown. It is skipped when notes pages are included, and for a template with no slides.
 - **`FONT_SUBSTITUTED`**: a requested family that `build-info.json` does not list, unless the source embeds it, or `fonts.json` marks it metric-compatible and its substitute is installed. At most 32 per request. A DOCX embeds a family when the font table that its main part links (`word/fontTable.xml`) has a `w:embedRegular`, `w:embedBold`, `w:embedItalic` or `w:embedBoldItalic` element for it. That element's relationship must point at a font part in the package whose first bytes, after deobfuscation with the element's `w:fontKey` when it has one, are the directory of a single font: an sfnt offset table with 1 to 1024 records, each pointing inside the part, that lists `cmap`, `head`, `hhea`, `hmtx`, `maxp` and outlines (`glyf` and `loca`, or CFF), each at least as long as the fixed part of its format. Only the transitional and strict OOXML font-table and font relationship types count. LibreOffice then uses that font, so nothing is substituted. The font check is skipped when the main part's relationships, the linked font table, its relationships or a font part is present but cut short, malformed or unreadable. It is also skipped when these reads exceed the font scan's 32 MiB. Without `build-info.json`, as outside the image, the check is skipped. The substitute that the warning names is the one fontconfig predicted when the image was built (`font_substitutes` and `default_substitute` in `build-info.json`). It is not read from the PDF, so it is right only while the fonts are those of that build. For a run on a host, `build-info.json` must come from that host's fontconfig, or the names can be wrong.
@@ -151,7 +184,7 @@ The deadline is set once, at the signal: `SHUTDOWN_GRACE_SECONDS` from then. Ste
 
 `rest/server.rs` serves each connection with hyper's HTTP/1 builder and a Tokio timer, not with `axum::serve`, which sets no timer, so hyper's header read timeout would be off. A connection must send a request's headers within `HEADER_READ_TIMEOUT_SECONDS`, on a new connection and on an idle keep-alive one alike, or it is closed. At most `MAX_CONNECTIONS` connections serve every route. 16 more serve only `/healthz`, `/readyz` and `/metrics`, one request each, without keep-alive and under a 2 s header timeout, so the probes answer while the cap is full; any other path gets 503 `SERVICE_UNAVAILABLE`, and the access log records the detail `connections`. Past those, a new connection is closed as it is accepted. `serve` takes a `Served` router, which only `Served::new` and `Served::with` build from the state, so the gate that keeps reserve connections to the probes is in every served router, inside the common layers. When the soft `RLIMIT_NOFILE` cannot hold `MAX_CONNECTIONS`, the 16 reserve connections and 256 other descriptors, `serve` lowers the cap to fit and logs a WARN, because past the descriptor limit `accept` fails before the reserve is reached. An accept error for one connection (aborted, reset, refused) is skipped at once; a resource error such as `EMFILE` or `ENFILE` pauses accepting for 100 ms. Every accepted socket gets `TCP_NODELAY`.
 
-`/metrics` renders one process-wide Prometheus recorder in the text format. 001 records `convert_requests_total`, `convert_stage_duration_seconds`, `convert_input_bytes`, `convert_warnings_total`, `convert_verify_skipped_total`, `convert_pages_rendered_total`, `convert_responses_cut_total` and `convert_disk_budget_bytes`. On Linux it adds the supervisor's RSS, peak RSS, open descriptors and threads from `/proc/self` at each scrape. A 200 whose body stalls or aborts counts once in `convert_requests_total` with code `OK` and once in `convert_responses_cut_total`. The pools and the adapters in `engines/` record their own metrics, which [engines/README.md](engines/README.md) lists. `METRICS_ENABLED=false` makes `/metrics` answer 404.
+`/metrics` renders one process-wide Prometheus recorder in the text format. The supervisor records `convert_requests_total`, `convert_stage_duration_seconds`, `convert_input_bytes`, `convert_warnings_total`, `convert_verify_skipped_total`, `convert_pages_rendered_total`, `convert_responses_cut_total` and `convert_disk_budget_bytes`. On Linux it adds the supervisor's RSS, peak RSS, open descriptors and threads from `/proc/self` at each scrape. A 200 whose body stalls or aborts counts once in `convert_requests_total` with code `OK` and once in `convert_responses_cut_total`. The pools and the adapters in `engines/` record their own metrics, which [engines/README.md](engines/README.md) lists. `METRICS_ENABLED=false` makes `/metrics` answer 404.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="contract" files="main.rs" -->
@@ -159,7 +192,7 @@ The deadline is set once, at the signal: `SHUTDOWN_GRACE_SECONDS` from then. Ste
 
 `main.rs` calls `engines::select::start` once, after it binds the listener and before it builds the application state. `TEST_ENGINE` picks the real pools, the level-B test worker or the level-A fakes. `config.rs` accepts `TEST_ENGINE` only in a build with the `test-hooks` feature. [Selection](engines/README.md#selection) gives the three modes and the readiness states.
 
-Image inputs are out of v1 (owner, 2026-11-26). Detection still names a PNG, JPEG, TIFF, GIF, BMP or WebP file by its signature. So an image is never taken for a PDF inside it. Then it answers 415 `UNSUPPORTED_FORMAT`, and `/v1/capabilities` does not list image inputs. [Not built yet](engines/README.md#not-built-yet) lists the parts of the engines that are missing.
+Image inputs are out of v1. Detection still names a PNG, JPEG, TIFF, GIF, BMP or WebP file by its signature. So an image is never taken for a PDF inside it. Then it answers 415 `UNSUPPORTED_FORMAT`, and `/v1/capabilities` does not list image inputs. [Not built yet](engines/README.md#not-built-yet) lists the parts of the engines that are missing.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="measurement" files="rest/timing.rs" -->
@@ -167,17 +200,17 @@ Image inputs are out of v1 (owner, 2026-11-26). Detection still names a PNG, JPE
 
 The crate has three targets of its own. They are 1 ms p50 of overhead, 30 MB of idle RSS, and memory per request that does not grow with the file. Three tools measure them, the first two with the level-A fakes:
 
-- `examples/overhead.rs` sends keep-alive requests from a raw client, one at a time. It serves in-process with the fakes, or drives a running server or image with `--url`. It prints p50, p95 and p99 of every `Server-Timing` stage and of five figures: `overhead` (`total` − `queue` − Σ `*_engine`), `overhead_strict`, 001's share (`total` − Σ engine-stage walls), 002's share and the client time. Run it with `cargo run --release --example overhead -- --help`.
+- `examples/overhead.rs` sends keep-alive requests from a raw client, one at a time. It serves in-process with the fakes, or drives a running server or image with `--url`. It prints p50, p95 and p99 of every `Server-Timing` stage and of five figures: `overhead` (`total` − `queue` − Σ `*_engine`), `overhead_strict`, `share_supervisor` (`total` − Σ engine-stage walls), `share_workers` and the client time. Run it with `cargo run --release --example overhead -- --help`.
 - `examples/encode_bench.rs` times the deflate work on the host: the streamed PNG encoder on 20 A4 pages at 150 dpi (1240 x 1754, `worker::encode::sample_page`), and `preflight::scan` on DOCX files, the median of 5 runs each. Run it with `cargo run --release --example encode_bench -- corpus/out/docx/*.docx`.
 - `tests/peak_heap.rs` counts the live heap with its own allocator while it uploads PDFs of 1, 16 and 100 MiB.
 - `tests/rss_linux.rs` reads `VmRSS` of `convertd serve` after start and after each round of 1 000 requests. It runs only on Linux, with `--ignored`, against the real pools when the engines are installed, as in the dev image; `RSS_ENGINE=fake` with `--features test-hooks` runs the fakes. [The tests README](../tests/README.md) gives the command and the checks.
 
-The numbers that follow come from macOS on arm64 with the level-A fakes, measured on 2026-11-26 and recorded in commits `1eaf4e4` and `1eafd21`. The example used a release build, and the heap and allocation tests a debug build. On Linux with the real pools, the idle RSS stays under 30 MB and is flat after the first round. [The tests README](../tests/README.md) gives the readings.
+The numbers that follow come from macOS on arm64 with the level-A fakes, measured on 2026-11-26. The example used a release build, and the heap and allocation tests a debug build. On Linux with the real pools, the idle RSS stays under 30 MB and is flat after the first round. [The tests README](../tests/README.md) gives the readings.
 
 | Measurement | Result |
 | --- | --- |
-| 001's share, 15 KB DOCX, engine time 30 ms | 0.15 ms p50, 0.51 ms p99 |
-| 001's share, 15 KB PDF, engine time 30 ms | 0.26 ms p50, 0.61 ms p99 |
+| The supervisor's share, 15 KB DOCX, engine time 30 ms | 0.15 ms p50, 0.51 ms p99 |
+| The supervisor's share, 15 KB PDF, engine time 30 ms | 0.26 ms p50, 0.61 ms p99 |
 | `overhead`, 15 KB DOCX, engine time 0 | 0.27 ms p50, 0.45 ms p99 |
 | `overhead`, 15 KB PDF, engine time 0 | 0.15 ms p50, 0.28 ms p99 |
 | Peak heap per upload, 1 MiB / 16 MiB / 100 MiB | 3.06 to 3.15 MB at every size |
@@ -185,9 +218,9 @@ The numbers that follow come from macOS on arm64 with the level-A fakes, measure
 
 The peak does not depend on the size of the upload. multer hands out slices of its own buffer, about 496 KiB each. A queued slice kept that whole buffer alive. So the peak depended on how many slices waited at that moment, and on hyper's read sizes: 3.6 to 4.1 MB on macOS, and on Linux 638 540 bytes more at 100 MiB than at 16 MiB. The handler now copies the file part into pieces of at most 128 KiB, and drops multer's slice before multer reads again. The copy costs about 3 to 6 ms per 100 MiB in a release build.
 
-The benchmark of record ran the same example against the real image (`rs-convert-lead-runtime:wave2b`, linux/arm64) on 2026-11-26. The container had 4 of the host's 14 CPUs and 2 office and 2 render workers. It measured 6 000 warm requests per case, one at a time. The Mac ran on battery, at a load average of about 4.1 from other apps. [bench/results/2026-11-26-wave2b.md](../bench/results/2026-11-26-wave2b.md) has every stage and the conditions.
+The benchmark of record ran the same example against the real image (`sha256:3ccbb545d9fb`, linux/arm64) on 2026-11-26. The container had 4 of the host's 14 CPUs and 2 office and 2 render workers. It measured 6 000 warm requests per case, one at a time. The Mac ran on battery, at a load average of about 4.1 from other apps. [bench/results/2026-11-26.md](../bench/results/2026-11-26.md) has every stage and the conditions.
 
-| Case | `overhead` p50 / p99 | `overhead_strict` p50 / p99 | 001's share p50 |
+| Case | `overhead` p50 / p99 | `overhead_strict` p50 / p99 | Supervisor's share p50 |
 | --- | --- | --- | --- |
 | One-page DOCX to PDF (the 5 ms gate) | 0.883 / 1.267 ms | 1.736 / 2.372 ms | 0.020 ms |
 | PDF to PDF | 0.047 / 0.070 ms | 0.279 / 0.386 ms | 0.006 ms |
@@ -199,7 +232,7 @@ For a DOCX, most of `overhead` is the office worker's pre-flight scan, 0.73 ms a
 <!-- memoria:section id="setup" files="config.rs" -->
 ## Configuration
 
-`config.rs` parses every environment variable by hand when `convertd serve` starts. A bad value stops `convertd serve` before it listens, and the error names the variable. Lane 002's engine and pool variables are parsed in [engines/config.rs](engines/config.rs). The two parsers hold the names, the defaults and the checks. `convertd openapi` and `convertd worker` do not parse this configuration.
+`config.rs` parses every environment variable by hand when `convertd serve` starts. A bad value stops `convertd serve` before it listens, and the error names the variable. The engine and pool variables are parsed in [engines/config.rs](engines/config.rs). The two parsers hold the names, the defaults and the checks. `convertd openapi` and `convertd worker` do not parse this configuration.
 
 This is every variable that an operator can set. An empty value counts as unset.
 

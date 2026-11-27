@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# build_docker.sh (ledger item 003). First proved in plan step 6.
 # Builds the rs-convert image with docker buildx and pushes it as <repo>:v<x.y.z>.
 #
 # Usage:

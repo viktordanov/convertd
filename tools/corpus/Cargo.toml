@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.99.0"
 license = "Apache-2.0"
-description = "Checks the rs-convert corpus and measures the service (ledger item 005)"
+description = "Checks the rs-convert corpus and measures the service"
 publish = false
 
 # A workspace of its own: this crate stays out of convertd's lock file
-# (plan 005 section 1), and the root manifest never builds it.
+#, and the root manifest never builds it.
 [workspace]
 
 [[bin]]
@@ -25,7 +25,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10.9"
 tokio = { version = "1.54.1", features = ["rt", "time", "fs"] }
-# Bundles are ustar in one zstd frame (INTERFACES.md §9).
+# Bundles are ustar in one zstd frame.
 tar = { version = "0.4.46", default-features = false }
 zstd = { version = "0.14.5", default-features = false }
 

@@ -1,4 +1,4 @@
-//! The worker pool with the `test` role (plan 002 steps 4 and 5).
+//! The worker pool with the `test` role.
 #![cfg(feature = "test-hooks")]
 
 use std::collections::HashSet;
@@ -97,8 +97,6 @@ async fn wait_gone(pid: u32, within: Duration) -> bool {
     }
     gone(pid)
 }
-
-// Step 4.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hang_times_out_and_the_slot_is_replaced() {
@@ -256,8 +254,6 @@ async fn waiters_are_released_when_the_pool_becomes_unavailable() {
     )
     .await;
 }
-
-// Step 5.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn capacity_one_lets_one_wait_and_refuses_the_next() {
@@ -1591,7 +1587,7 @@ async fn a_discarded_incumbent_does_not_strand_its_replacement() {
     .await;
 }
 
-/// Item 010: the reply carries the worker's CPU time for the call. The
+/// The reply carries the worker's CPU time for the call. The
 /// worker spins for 200 ms of CPU; the reply must show at least 150 ms,
 /// and no more than the call's wall time, since the test worker has one
 /// thread (this catches a unit slip). A 200 ms sleep on the same worker

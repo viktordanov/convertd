@@ -1,5 +1,5 @@
-//! The `Server-Timing` header (INTERFACES.md §9, 005 §6) and the overhead
-//! figures of §11.
+//! The `Server-Timing` header and the overhead figures (`src/README.md`,
+//! Measurement).
 
 use std::fmt::Write;
 use std::time::Duration;
@@ -35,7 +35,7 @@ impl RequestTimings {
         self.overhead() + self.stages.checks_engine()
     }
 
-    /// `name;dur=<ms>` entries with 3 decimals, in 005 §6's order. Stages
+    /// `name;dur=<ms>` entries with 3 decimals, in the order below. Stages
     /// that did not run are left out; `spawn` and `bind` are always sent.
     /// `preflight` is the office worker's scan (`EngineTiming.preflight`),
     /// sent only for office inputs. `probe` has no wall figure of its own:

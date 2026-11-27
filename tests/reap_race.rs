@@ -1,5 +1,5 @@
 //! The reaper's stray pass and a worker that exits after its own peek
-//! (plan 002 step 2, review item 7). A file of its own, because the stray
+//!. A file of its own, because the stray
 //! pass waits on every child of the test process.
 #![cfg(all(target_os = "linux", feature = "test-hooks"))]
 

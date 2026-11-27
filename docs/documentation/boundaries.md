@@ -5,23 +5,23 @@ This page lists the tracked READMEs, what each one covers, and what each one mus
 ## The map
 
 ```text
-README.md                  the service, the quick start, the catalog       lead
-├── src/README.md          the convertd crate: process model, layers       001
-│   ├── src/engines/README.md   pool, leases, recycling, engine adapters   002
-│   ├── src/worker/README.md    worker processes and the engines in them   002
-│   └── src/ipc/README.md       the supervisor-worker protocol             002
-├── tests/README.md        test levels, fakes, nextest profiles            lead
-├── client/README.md       the Go client and its contract tests            004
-├── docker/README.md       the image: engines, fonts, pins, targets        003
-├── deploy/README.md       Kubernetes, and any container platform          003
-├── corpus/README.md       the test corpus and its expectations            005
-├── tools/corpus/README.md corpus-bench                                     005
-└── docs/README.md         the documentation map                           lead
+README.md                  the service, the quick start, the catalog
+├── src/README.md          the convertd crate: process model, layers
+│   ├── src/engines/README.md   pool, leases, recycling, engine adapters
+│   ├── src/worker/README.md    worker processes and the engines in them
+│   └── src/ipc/README.md       the supervisor-worker protocol
+├── tests/README.md        test levels, fakes, nextest profiles
+├── client/README.md       the Go client and its contract tests
+├── docker/README.md       the image: engines, fonts, pins, targets
+├── deploy/README.md       Kubernetes, and any container platform
+├── corpus/README.md       the test corpus and its expectations
+├── tools/corpus/README.md corpus-bench
+└── docs/README.md         the documentation map
 ```
 
-The last column names the owner. Only the owner's lane edits a README; a lane that needs a change in another README asks the lead. The root README links each top-level README, and `src/README.md` links the three folders that lane 002 owns, so each link hands its folder to that README.
+The root README links each top-level README, and `src/README.md` links the three worker-side folders, so each link hands its folder to that README.
 
-Memoria does not read `docs/ledger/` or `research/`. The ledger is a working record, and the research study is a source. Generated files and lockfiles are not inputs either. `memoria.toml` lists the exact ignores.
+Generated files and lockfiles are not inputs. `memoria.toml` lists the exact ignores.
 
 Add a nested README only for a folder with its own contract. Link it from its parent, so that the parent hands the folder over.
 
@@ -29,7 +29,7 @@ Add a nested README only for a folder with its own contract. Link it from its pa
 
 Introduce rs-convert to a user who has never seen it. Lead with what the service does in one sentence, the problem it solves, and what it does not do (no OCR, no HTML, no fidelity guarantee against Microsoft Office). Then give a quick start that works today: convert one file with `curl` and read the headers. Run the published image once it converts documents; until then, build and run `convertd` from source with the level-A fake, and say so in the status paragraph. Then the catalog of boundaries, grouped by reader: using the service, deploying it, contributing to it. End with the documentation map and the license.
 
-Keep the API description short and link to the spec. Keep design history in `PLAN.md` and the spikes, not in the root README. Do not claim performance that the benchmarks have not measured.
+Keep the API description short and link to the spec. Keep design history in the spike results, not in the root README. Do not claim performance that the benchmarks have not measured.
 
 ## src/README.md
 
@@ -61,4 +61,4 @@ Explain what the corpus proves and how its expectations work: generated files, c
 
 ## docs/README.md
 
-A short map of the documentation that is not a README: the spike results, the design plan, the documentation guidance and the ledger. Say which documents are current and which are records of a past decision.
+A short map of the documentation that is not a README: the spike results, the documentation guidance and the architecture diagram. Say which documents are current and which are records of a past decision.

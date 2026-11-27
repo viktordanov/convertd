@@ -17,7 +17,7 @@
         "bench",
         "fonts"
       ],
-      "notes": "The spike's small.docx. Normal is Calibri, docDefaults resolve to the template's minor font Cambria: both are metric-compatible, so FONT negative. LibreOffice 26.8.3.1 renders it as 2 pages (wave two, round B), not the 1 page that docs/m0-spikes.md first said. docx-one-page is the one-page file of the overhead gate.",
+      "notes": "The spike's small.docx. Normal is Calibri, docDefaults resolve to the template's minor font Cambria: both are metric-compatible, so FONT negative. LibreOffice 26.8.3.1 renders it as 2 pages, not the 1 page that docs/m0-spikes.md first said. docx-one-page is the one-page file of the overhead gate.",
       "preflight": {
         "format": "docx",
         "encrypted": false,
@@ -71,7 +71,7 @@
       "tags": [
         "bench"
       ],
-      "notes": "The spike's document with two paragraphs instead of four, built to fit one page: the warm one-page DOCX of the overhead gate (INTERFACES.md section 11). Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26: 1 page, no warning.",
+      "notes": "The spike's document with two paragraphs instead of four, built to fit one page: the warm one-page DOCX of the overhead gate. Page count recorded from LibreOffice 26.8.3.1 in the first arm64 runtime image of 2026-11-26: 1 page, no warning.",
       "preflight": {
         "format": "docx",
         "encrypted": false,
@@ -125,7 +125,7 @@
       "tags": [
         "formats"
       ],
-      "notes": "docx-small rewritten so that word/document.xml is stored (method 0) with a data descriptor (flag bit 3), as Go's archive/zip writes it: the local header has zero CRC and sizes. LibreOffice 26.8.3.1 cannot load it (lane 004, image mode: LoadFailed, loadComponentFromURL returned an empty reference), so the service answers 422 CONVERSION_FAILED. The case expects that answer, so a fix such as repacking in the worker turns it into a visible failure to update.",
+      "notes": "docx-small rewritten so that word/document.xml is stored (method 0) with a data descriptor (flag bit 3), as Go's archive/zip writes it: the local header has zero CRC and sizes. LibreOffice 26.8.3.1 cannot load it (the contract tests in image mode: LoadFailed, loadComponentFromURL returned an empty reference), so the service answers 422 CONVERSION_FAILED. The case expects that answer, so a fix such as repacking in the worker turns it into a visible failure to update.",
       "preflight": {
         "format": "docx",
         "encrypted": false,
@@ -197,7 +197,7 @@
       "tags": [
         "bench"
       ],
-      "notes": "The spike's long.docx, undoctored: app.xml says 1 page and the spike rendered about 35. DOCX V1 is off, so no PAGE_COUNT_MISMATCH. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
+      "notes": "The spike's long.docx, undoctored: app.xml says 1 page and the spike rendered about 35. DOCX V1 is off, so no PAGE_COUNT_MISMATCH. Page count recorded from LibreOffice 26.8.3.1 in the first arm64 runtime image of 2026-11-26.",
       "preflight": {
         "format": "docx",
         "encrypted": false,
@@ -1226,7 +1226,7 @@
       "tags": [
         "pages"
       ],
-      "notes": "sldIdLst lists 4 slides. The 4th part's root is p:notASlide. LibreOffice 26.8.3.1 does not drop that slide: it renders a blank 4th page, so there is no page-count mismatch, and the V1 positive is a lane 001 unit test (lead ruling, wave two round B). LibreOffice paints a white background on every slide, so the empty page has objects, renders flat and raises BLANK_PAGE.",
+      "notes": "sldIdLst lists 4 slides. The 4th part's root is p:notASlide. LibreOffice 26.8.3.1 does not drop that slide: it renders a blank 4th page, so there is no page-count mismatch, and the V1 positive is a unit test of the scanner. LibreOffice paints a white background on every slide, so the empty page has objects, renders flat and raises BLANK_PAGE.",
       "preflight": {
         "format": "pptx",
         "encrypted": false,
@@ -1437,7 +1437,7 @@
       "tags": [
         "pages"
       ],
-      "notes": "A template with no sldIdLst: V1 skips a declared count of 0. No slide reaches a layout, so no font is requested. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26. LibreOffice paints a white background on the one page, so it has objects, renders flat and raises BLANK_PAGE (lead ruling: keep V3).",
+      "notes": "A template with no sldIdLst: V1 skips a declared count of 0. No slide reaches a layout, so no font is requested. Page count recorded from LibreOffice 26.8.3.1 in the first arm64 runtime image of 2026-11-26. LibreOffice paints a white background on the one page, so it has objects, renders flat and raises BLANK_PAGE, as V3 intends.",
       "preflight": {
         "format": "potx",
         "encrypted": false,
@@ -1596,7 +1596,7 @@
       "tags": [
         "bench"
       ],
-      "notes": "The spike's sheet.xlsx: 3 sheets of 200 x 10 numbers. The styles font is Calibri with scheme=minor, and the theme minor font is Calibri. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
+      "notes": "The spike's sheet.xlsx: 3 sheets of 200 x 10 numbers. The styles font is Calibri with scheme=minor, and the theme minor font is Calibri. Page count recorded from LibreOffice 26.8.3.1 in the first arm64 runtime image of 2026-11-26.",
       "preflight": {
         "format": "xlsx",
         "encrypted": false,
@@ -1672,7 +1672,7 @@
       "tags": [
         "passwords"
       ],
-      "notes": "xlsx-sheet3 encrypted with OOXML agile encryption, password secret. Detection reports docx until the office engine reports the type, so only the password case can show xlsx. Page count recorded from LibreOffice 26.8.3.1 in rs-convert-lead-runtime:wave2a on 2026-11-26.",
+      "notes": "xlsx-sheet3 encrypted with OOXML agile encryption, password secret. Detection reports docx until the office engine reports the type, so only the password case can show xlsx. Page count recorded from LibreOffice 26.8.3.1 in the first arm64 runtime image of 2026-11-26.",
       "preflight": {
         "format": "xlsx",
         "encrypted": true,
@@ -1730,7 +1730,7 @@
       "tags": [
         "bench"
       ],
-      "notes": "100,000 x 10 numbers in one sheet. The PDF likely exceeds MAX_RENDER_PAGES, so the bundle renders pages 1-5 only. Page count recorded from LibreOffice 26.8.3.1 with DEFAULT_PAPER=A4, the default, in rs-convert-003-paper:arm64 on 2026-11-26. The sheet has no page setup, so the paper decides the count: it was 2326 on Letter, before the image honoured DEFAULT_PAPER.",
+      "notes": "100,000 x 10 numbers in one sheet. The PDF likely exceeds MAX_RENDER_PAGES, so the bundle renders pages 1-5 only. Page count recorded from LibreOffice 26.8.3.1 with DEFAULT_PAPER=A4, the default, in an arm64 runtime image on 2026-11-26. The sheet has no page setup, so the paper decides the count: it was 2326 on Letter, before the image honoured DEFAULT_PAPER.",
       "preflight": {
         "format": "xlsx",
         "encrypted": false,
@@ -1826,7 +1826,7 @@
         "smoke",
         "render"
       ],
-      "notes": "Hand-written 3-page A4 PDF. The dpi-600 case assumes the default MAX_DPI of 300. PDFs have no pre-flight. The webp-refused case keeps the removal of WebP output tested (owner decision): lane 001 answers an unknown image format with 422 VALIDATION_ERROR.",
+      "notes": "Hand-written 3-page A4 PDF. The dpi-600 case assumes the default MAX_DPI of 300. PDFs have no pre-flight. The webp-refused case keeps the removal of WebP output tested: the service answers an unknown image format with 422 VALIDATION_ERROR.",
       "cases": [
         {
           "name": "bundle",
@@ -1972,7 +1972,7 @@
       "tags": [
         "images"
       ],
-      "notes": "640 x 480 RGB gradient. Image inputs are out of v1 (owner decision, 2026-11-26), so detection answers 415 UNSUPPORTED_FORMAT before any engine runs.",
+      "notes": "640 x 480 RGB gradient. Image inputs are out of v1, so detection answers 415 UNSUPPORTED_FORMAT before any engine runs.",
       "cases": [
         {
           "name": "bundle",
@@ -1999,7 +1999,7 @@
       "tags": [
         "images"
       ],
-      "notes": "The same gradient as JPEG, quality 85. Image inputs are out of v1 (owner decision, 2026-11-26), so detection answers 415 UNSUPPORTED_FORMAT before any engine runs.",
+      "notes": "The same gradient as JPEG, quality 85. Image inputs are out of v1, so detection answers 415 UNSUPPORTED_FORMAT before any engine runs.",
       "cases": [
         {
           "name": "bundle",
@@ -2250,7 +2250,7 @@
       "tags": [
         "hostile"
       ],
-      "notes": "A complete 1-bit grayscale PNG of 100,000 x 100,000 pixels, about 1.2 MB. Image inputs are out of v1 (owner decision, 2026-11-26), so detection answers 415 UNSUPPORTED_FORMAT before any engine runs. It stays as a detection case: the bomb must never reach a decoder.",
+      "notes": "A complete 1-bit grayscale PNG of 100,000 x 100,000 pixels, about 1.2 MB. Image inputs are out of v1, so detection answers 415 UNSUPPORTED_FORMAT before any engine runs. It stays as a detection case: the bomb must never reach a decoder.",
       "cases": [
         {
           "name": "pdf",
@@ -2270,7 +2270,7 @@
       "tags": [
         "hostile"
       ],
-      "notes": "The first half of docx-long's bytes. The cut removes the zip's central directory, so detection cannot identify the archive and answers 415 UNSUPPORTED_FORMAT before any engine runs (lead ruling, 2026-11-26; it replaces the plan's 422 CONVERSION_FAILED from Decision 13).",
+      "notes": "The first half of docx-long's bytes. The cut removes the zip's central directory, so detection cannot identify the archive and answers 415 UNSUPPORTED_FORMAT before any engine runs.",
       "cases": [
         {
           "name": "pdf",

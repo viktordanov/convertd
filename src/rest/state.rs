@@ -28,7 +28,7 @@ use crate::jobs::DiskBudget;
 /// The service version in capabilities, manifests and the fingerprint.
 pub const SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The engines `main.rs` picked: lane 002's, or the fakes.
+/// The engines `main.rs` picked: the real ones, or the fakes.
 pub struct Engines {
     pub office: Arc<dyn OfficeEngine>,
     pub pdf: Arc<dyn PdfEngine>,

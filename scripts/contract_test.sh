@@ -5,7 +5,7 @@
 #       Binary mode: builds convertd with --features test-hooks and lets the
 #       tests start it with the fake engine (TEST_ENGINE=fake).
 #   scripts/contract_test.sh --image REF [-- GO_TEST_ARGS...]
-#       Image mode: starts the image REF as container rs-convert-004-contract
+#       Image mode: starts the image REF as container rs-convert-contract
 #       on a loopback port, runs the tests against it and removes it.
 #
 # Arguments after -- go to `go test`, for example `-- -run TestConvert -v`.
@@ -64,7 +64,7 @@ if [[ -z "$IMAGE" ]]; then
   exit 0
 fi
 
-CONTAINER="rs-convert-004-contract"
+CONTAINER="rs-convert-contract"
 API_KEY="contract-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
 cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT

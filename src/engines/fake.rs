@@ -1,4 +1,4 @@
-//! Level-A fake engines (lane 001): [`FakeOffice`] and [`FakePdf`] behind
+//! Level-A fake engines: [`FakeOffice`] and [`FakePdf`] behind
 //! the domain traits, selected with `TEST_ENGINE=fake` in `test-hooks`
 //! builds. Also [`Unwired`], an engine that answers every call with
 //! `Unavailable`, for in-process tests that need no engine.
@@ -7,11 +7,11 @@
 //! `FAKE:TOO_MANY_REQUESTS` or from the service's own permit, a 504 from
 //! the fake's own deadline check or from the handler's backstop
 //! (`FAKE:HANG`). Tests that mean to prove queue or kill behaviour belong
-//! at level B (lane 002's `convertd worker test`).
+//! at level B (`convertd worker test`).
 //!
 //! In-process tests set a [`FakeBehavior`] directly. With `test-hooks`,
 //! `FakeOffice::from_markers` and `FakePdf::from_markers` read the `FAKE:`
-//! markers of INTERFACES.md §10 from the first 1 MiB of each input
+//! markers of `engines::fake_markers` from the first 1 MiB of each input
 //! instead. Markers are never read without the feature.
 
 use std::io::Cursor;
@@ -317,7 +317,7 @@ impl OfficeEngine for FakeOffice {
         let started = Instant::now();
         let behavior = self.settings.behavior_for(&job.input).await?;
         let played = self.settings.play(behavior, deadline).await?;
-        // The real pre-flight, as the office worker runs it (INTERFACES §13),
+        // The real pre-flight, as the office worker runs it,
         // timed the same way.
         let (input, family) = (job.input.clone(), job.family);
         let printed = crate::preflight::Printed {

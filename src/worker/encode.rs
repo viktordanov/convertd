@@ -1,5 +1,5 @@
 //! Page image encoders, from PDFium's BGRA bitmap straight to the file
-//! bytes, and the flat-page check (005 §5).
+//! bytes, and the flat-page check.
 //!
 //! An [`Encoder`] keeps its buffers across the pages of a job: the encoded
 //! output and, for PNG, the RGB rows. JPEG reads the BGRA bitmap as it is.

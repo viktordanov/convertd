@@ -1,5 +1,5 @@
 //! `${TMP_DIR}/job-<32 hex>/`, mode 0700. The supervisor creates and
-//! deletes it; workers never delete it (INTERFACES.md §6).
+//! deletes it; workers never delete it.
 //!
 //! Shared as `Arc<JobDir>`: the handler, every blocking task (the upload
 //! sink, the response pump) and the response body each hold a clone, so

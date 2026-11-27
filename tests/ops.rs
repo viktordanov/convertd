@@ -1,4 +1,4 @@
-//! Probes, capabilities, metrics and the drain (plan 001 step 9).
+//! Probes, capabilities, metrics and the drain.
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -624,7 +624,7 @@ fn slow_sigterm_at_level_b_finishes_office_then_render() {
 
 /// Two `convertd serve` on one `TMP_DIR` would sweep each other's job
 /// directories and worker slots. The second refuses to start, and a job
-/// directory of the first survives (review, lane 001 item 2).
+/// directory of the first survives.
 #[cfg(feature = "test-hooks")]
 #[test]
 #[allow(
@@ -686,7 +686,7 @@ fn slow_a_second_server_on_the_same_tmp_dir_refuses_to_start() {
 /// One shutdown deadline, taken at SIGTERM: the drain, the connections and
 /// the pools share SHUTDOWN_GRACE_SECONDS, and the pools get only what is
 /// left. A request that hangs in a worker must not stretch the exit to two
-/// graces (review, lane 001 item 7).
+/// graces.
 #[cfg(feature = "test-hooks")]
 #[test]
 fn slow_sigterm_with_a_hung_worker_exits_within_one_grace() {
@@ -716,7 +716,7 @@ fn slow_sigterm_with_a_hung_worker_exits_within_one_grace() {
 /// Level B: a request that times out in the office queue answers 429, and
 /// its Server-Timing shows the wait as `queue`. Before, the error carried
 /// no timing and the header said queue 0.0 beside a total of the whole
-/// wait (lane 002's ingestion finding).
+/// wait.
 #[cfg(feature = "test-hooks")]
 #[test]
 fn slow_a_queue_timeout_reports_its_wait_as_queue() {
@@ -755,7 +755,7 @@ fn slow_a_queue_timeout_reports_its_wait_as_queue() {
     assert_eq!(status_line(&busy.join().unwrap()), 200);
 }
 
-/// Item 010: at level B the pools record each worker call's CPU time,
+/// At level B the pools record each worker call's CPU time,
 /// with its own buckets from 1 ms to 60 s, by pool and operation.
 #[cfg(feature = "test-hooks")]
 #[test]

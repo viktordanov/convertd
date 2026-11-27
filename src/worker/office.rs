@@ -1,6 +1,6 @@
-//! The office worker: LibreOffice through LibreOfficeKit (plan 002 step 8).
+//! The office worker: LibreOffice through LibreOfficeKit.
 //!
-//! Duties (AGENT-RULES.md rule 9):
+//! Duties:
 //!
 //! - One `Office` per process, for life. It sits in a `ManuallyDrop` from
 //!   the line after `Office::new`, so no error path drops it, and the
@@ -374,7 +374,7 @@ impl OfficeWorker {
         let capped = sys::take_file_size_hit();
         // Lift the cap again, so the profile and the next load are not capped.
         let _ = sys::set_file_size_limit(None);
-        // The document is closed here; the instance stays (rule 9).
+        // The document is closed here; the instance stays.
         drop(document);
         match saved {
             Ok(true) if !capped => Ok(doc_type),

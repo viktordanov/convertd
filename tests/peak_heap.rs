@@ -1,5 +1,5 @@
-//! Memory per request does not grow with the file size (plan 001,
-//! Verification 3). Its own test binary, so the counting allocator below
+//! Memory per request does not grow with the file size. Its own test
+//! binary, so the counting allocator below
 //! sees only this process: the in-process server with the level-A fakes
 //! and a raw TCP client that allocates nothing per byte.
 //!
@@ -209,8 +209,7 @@ fn peak_for(server: &Server, size: usize, chunk: &mut [u8; 64 * 1024]) -> usize 
     peak
 }
 
-/// Plan 001, Verification 3: every peak ≤ 4 MiB, and the peak does not
-/// grow with the size.
+/// Every peak ≤ 4 MiB, and the peak does not grow with the size.
 ///
 /// The growth is checked between 16 and 100 MiB, not from 1 MiB as the
 /// plan states. Every size peaks at 3.06 to 3.15 MB (macOS arm64, debug,
@@ -284,7 +283,7 @@ const ALLOCATION_CEILING: usize = 408;
 /// (sectors 2, 3, ... 2046) and whose every DIFAT entry names sector 1 as
 /// a FAT sector. A reader that builds the FAT from the whole DIFAT before
 /// any cap reads sector 1 once per entry: about 260 000 entries, a FAT of
-/// about 133 MB (review, lane 001 item 1).
+/// about 133 MB.
 fn hostile_ole2() -> Vec<u8> {
     const SECTOR: usize = 512;
     const END_OF_CHAIN: u32 = 0xFFFF_FFFE;
@@ -350,7 +349,7 @@ fn hostile_ole2_detection_stays_bounded() {
 /// A part header that never ends: multer would buffer it toward the
 /// upload cap. With the framing bound the server answers 400 after 16 KiB,
 /// and the request's peak heap stays far below the bytes sent
-/// (performance review, lane 001 item 1).
+///.
 #[test]
 fn unterminated_part_headers_stay_bounded() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());

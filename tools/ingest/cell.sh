@@ -3,7 +3,7 @@
 # ingest.py against it, keep the logs and the state, remove the container.
 #
 # Results stay outside the repository: OUT_ROOT must be a scratch folder, and
-# no run output, report or document is committed (the owner's decision).
+# no run output, report or document is committed.
 #
 #   OUT_ROOT=DIR [IMAGE=rs-convert:local] [CPUS=2] [MEMORY=3584m] [TMPFS=1] \
 #     tools/ingest/cell.sh NAME OFFICE_WORKERS RENDER_WORKERS KILL_MB -- ingest.py args...

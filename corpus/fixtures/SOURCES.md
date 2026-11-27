@@ -4,7 +4,7 @@ This folder holds the committed bytes that no tool in the repository can make. E
 
 ## VBA projects
 
-The three `vbaProject-*.bin` files are the VBA projects of the Apache POI macro test files. `corpus/generate.py` puts each one into a macro-enabled file of its host: `docm-vba`, `xlsm-vba` and `pptm-vba`. No tool here can write a VBA project, and the owner did not supply one. Thus these files are the fallback of plan 005, Decision 11.
+The three `vbaProject-*.bin` files are the VBA projects of the Apache POI macro test files. `corpus/generate.py` puts each one into a macro-enabled file of its host: `docm-vba`, `xlsm-vba` and `pptm-vba`. No tool here can write a VBA project, so these committed files are the source of the VBA parts.
 
 | File | Upstream file | Commit | SHA-256 of the upstream file | SHA-256 of the part |
 | --- | --- | --- | --- | --- |

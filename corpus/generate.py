@@ -1,4 +1,4 @@
-"""Generates the rs-convert test corpus (ledger item 005, plan sections 2 and 3).
+"""Generates the rs-convert test corpus.
 
 Usage (Python 3.13, in a virtualenv made from requirements.txt, run with -I):
 
@@ -27,7 +27,7 @@ Pillow's bundled libjpeg-turbo. Only the three encrypted files have no hash
 hold for the environment recorded under "generator" in expected.json;
 --check prints any difference in that environment before it compares.
 
-What the templates write (recorded for plan step 1, on python-docx 1.2.0,
+What the templates write (recorded on python-docx 1.2.0,
 python-pptx 1.0.2 and openpyxl 3.1.5). The generator keeps all of it:
 
 - python-docx `docProps/app.xml`: `<Pages>1</Pages>`,
@@ -102,7 +102,7 @@ UNHASHED = {"docx-encrypted": _RANDOM_SALT, "pptx-encrypted": _RANDOM_SALT,
 # Encrypted entries: the entry whose bytes are encrypted, and the library that opens the result.
 ENCRYPTED = {"docx-encrypted": "docx-small", "pptx-encrypted": "pptx-deck20",
              "xlsx-encrypted": "xlsx-sheet3"}
-# Size bounds that keep the corpus close to the plan (the spike's small.docx is 36 KB).
+# Size bounds that keep the corpus small (the spike's small.docx is 36 KB).
 SIZE_BOUNDS = {"docx-small": (20_000, 100_000), "docx-one-page": (20_000, 100_000),
                "pptx-photos60": (25 << 20, 45 << 20)}
 
@@ -282,7 +282,7 @@ def docx_empty_page(_ctx):
     d.add_paragraph(LOREM)
     d.add_page_break()
     # LibreOffice 26.8 drops a page break that nothing follows, so an empty
-    # paragraph holds page 2 (measured in wave two, round B).
+    # paragraph holds page 2 (measured on 2026-11-26).
     d.add_paragraph()
     return docx_bytes(d)
 

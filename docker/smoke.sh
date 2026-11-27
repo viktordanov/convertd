@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# docker/smoke.sh (ledger item 003). The image job runs it with docker/smoke/small.docx.
-# Proves the image, not the conversions (those belong to lane 005's corpus runs):
+# docker/smoke.sh. The image job runs it with docker/smoke/small.docx.
+# Proves the image, not the conversions (the corpus runs check those):
 #   1. image size against a budget
 #   2. time from `docker run` to /readyz 200, with no WARN or ERROR line in the log at start
 #   3. one DOCX to PDF over HTTP: curl exits 0, the body has its Content-Length, ends with
 #      %%EOF and has the expected Convert-Page-Count; no job-<hex> directory is left after
 #   4. the baked fontconfig cache is used (no user cache written)
-#   5. no file in the image has a setuid or setgid bit (ledger item 011, S6)
+#   5. no file in the image has a setuid or setgid bit
 # The container runs as the manifests run it: no network, read-only root, writable /tmp only,
 # UID 10001, no capabilities. The curl client joins the container's network namespace, so it
 # reaches the service on loopback and nothing reaches the outside.
@@ -22,7 +22,7 @@ set -euo pipefail
 image="${1:?image}"; docx="${2:?docx file}"; max_mb="${3:-0}"; want_pages="${4:-2}"
 curl_image="${CURL_IMAGE:?set CURL_IMAGE to a pinned curl image, tag@sha256:...}"
 file="$(basename "${docx}")"
-name="rs-convert-003-smoke-$$"
+name="rs-convert-smoke-$$"
 out="$(mktemp -d)"
 # The curl container runs as its own user. A checkout made under umask 077 has a 0600 DOCX that
 # it cannot read (curl exit 26), so it gets a copy with fixed modes instead.
@@ -101,7 +101,7 @@ else
   cat "${out}/status"
   docker logs "${name}" 2>&1 | tail -n 50
 fi
-# 001's layout: one job-<32hex> directory per job under TMP_DIR. The supervisor deletes it when
+# convertd's layout: one job-<32hex> directory per job under TMP_DIR. The supervisor deletes it when
 # the response ends, so the check waits up to 5 s.
 left=""
 for _ in $(seq 1 10); do
@@ -112,7 +112,7 @@ done
 if [[ "${left}" == 0 ]]; then note "job dirs cleaned" "ok"; else bad "job dirs cleaned" "${left} left"; fi
 
 # 4. The system font cache from the build is valid: no worker wrote a user cache.
-# 002 puts each worker's XDG_CACHE_HOME in its slot under TMP_DIR.
+# The pool puts each worker's XDG_CACHE_HOME in its slot under TMP_DIR.
 fcu="$(docker exec "${name}" sh -c 'find /tmp -path "*fontconfig*" -name "*.cache-*" 2>/dev/null | wc -l')"
 if [[ "${fcu}" == 0 ]]; then note "baked font cache used" "ok"
 else bad "baked font cache used" "${fcu} user cache files"; fi

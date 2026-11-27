@@ -1,7 +1,6 @@
-//! The first end-to-end slice (plan 001 step 7): `/v1/convert` with
+//! The first end-to-end slice: `/v1/convert` with
 //! `output=pdf` through the level-A fakes, real detection, the response
-//! pump, the backstop, the permit and the response-stall rule of
-//! INTERFACES.md §10.
+//! pump, the backstop, the permit and the response-stall rule.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -371,7 +370,7 @@ async fn pdf_comes_back_byte_identical() {
     app.assert_no_jobs().await;
 }
 
-/// Image inputs are out of v1 (owner, 2026-11-26): 415 before any engine.
+/// Image inputs are out of v1: 415 before any engine.
 #[tokio::test]
 async fn an_image_is_unsupported() {
     let app = App::new("image", &[]);
@@ -552,8 +551,8 @@ async fn encrypted_pdf_needs_the_password_and_is_decrypted() {
 
 /// An owner-password PDF opens without a password, so with none it passes
 /// through. A password given for it is checked as the owner password: the
-/// right one decrypts, a wrong one is 422 INVALID_PASSWORD (review, lane
-/// 001 item 9). The fake marks such a PDF with `/OwnerOnly`.
+/// right one decrypts, a wrong one is 422 INVALID_PASSWORD. The fake marks
+/// such a PDF with `/OwnerOnly`.
 #[tokio::test]
 async fn an_owner_password_is_verified_when_given() {
     let app = App::with_pdf(
@@ -606,7 +605,7 @@ async fn an_owner_password_is_verified_when_given() {
 /// A user-password PDF with owner restrictions, opened with the user
 /// password only: decrypt keeps the restrictions, so the original
 /// encrypted PDF is the answer, unchanged. The owner password gives the
-/// decrypted copy (review, lane 001 item 9). The fake marks such a PDF
+/// decrypted copy. The fake marks such a PDF
 /// with `/Restricted`.
 #[tokio::test]
 async fn a_restricted_pdf_with_the_user_password_passes_through() {
@@ -977,7 +976,7 @@ async fn a_client_that_stops_reading_releases_the_permit_after_the_idle_timeout(
 /// Planning a bundle reads every page's size and can take long. A render
 /// that ends 1 s before the deadline passes the check before planning;
 /// planning then takes 1.5 s, and the check after it answers 504 instead
-/// of a 200 past the deadline (performance review, lane 001 item 3).
+/// of a 200 past the deadline.
 #[cfg(feature = "test-hooks")]
 #[tokio::test]
 async fn slow_a_bundle_whose_planning_passes_the_deadline_is_504() {
@@ -1045,8 +1044,8 @@ impl Drop for PlanGate {
 }
 
 /// A client that leaves while its bundle is planned does not free its
-/// slot: the planning task holds the permit until it ends (review round 2
-/// on ledger/001-perf3). The plan of this test's upload holds until the
+/// slot: the planning task holds the permit until it ends. The plan of
+/// this test's upload holds until the
 /// test has dropped the request and seen the 429.
 #[cfg(feature = "test-hooks")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1087,7 +1086,7 @@ async fn a_client_that_leaves_during_planning_keeps_its_slot_until_it_ends() {
 
 /// The preparation of a response ends at the deadline: a plan that is
 /// still held (or a task still waiting for a blocking thread) answers 504
-/// at the deadline, not when it ends (review round 5 on ledger/001-perf3).
+/// at the deadline, not when it ends.
 /// About 5 s: the shortest timeout.
 #[cfg(feature = "test-hooks")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1151,8 +1150,8 @@ async fn images_timeouts(app: &App) -> f64 {
 
 /// A request whose mkdir of `pages/` waits past its deadline answers 504
 /// through the same path as every other conversion timeout: logged as
-/// `conversion finished` and counted in `convert_requests_total` (review
-/// round 7 on ledger/001-perf3). About 5 s: the shortest timeout.
+/// `conversion finished` and counted in `convert_requests_total`. About
+/// 5 s: the shortest timeout.
 #[cfg(feature = "test-hooks")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slow_a_pages_dir_past_the_deadline_is_logged_and_counted() {
@@ -1212,8 +1211,7 @@ async fn slow_a_bundle_past_its_deadline_is_504_not_a_stream() {
 
 /// A bundle whose client stops reading is cut by the pump. Over a real
 /// socket the cut must show: no chunked terminator after the last bytes
-/// the client gets, and `complete=false` in the access log (review, lane
-/// 001 item 5).
+/// the client gets, and `complete=false` in the access log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slow_a_cut_bundle_has_no_chunked_terminator() {
     let app = App::new(
@@ -1289,7 +1287,7 @@ async fn slow_a_cut_bundle_has_no_chunked_terminator() {
 
 /// A client that keeps reading, but slowly, never trips the pump's idle
 /// timeout. The minimum-throughput floor ends the response after a window
-/// below it and frees the permit (review, lane 001 item 3). The floor is set
+/// below it and frees the permit. The floor is set
 /// high so that the reader can stay fast enough for the idle timer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slow_a_reader_below_the_floor_releases_the_permit() {
@@ -1397,7 +1395,7 @@ fn stream_body(
 /// The client sends a first 4 MiB (past the 1 MiB cap, for the 413), then
 /// waits for the answer before it sends the rest. So "the answer came while
 /// the upload was still running" holds on any machine, not only on one
-/// slower than the server (CI run 45811942939 sent all 64 MiB first).
+/// slower than the server (a CI run sent all 64 MiB first).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn early_401_and_413_arrive_while_the_client_still_uploads() {
     use std::sync::atomic::{AtomicUsize, Ordering};

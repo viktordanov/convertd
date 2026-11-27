@@ -615,7 +615,7 @@ fn plan_tar(
     Ok(Prepared::Tar { plan, size })
 }
 
-/// The `conversion finished` line: PLAN's fields plus the §11 overheads,
+/// The `conversion finished` line: the request's fields plus the overheads,
 /// in microseconds, and the workers' CPU time of the calls that succeeded,
 /// in milliseconds with microsecond resolution.
 fn log_finished(

@@ -1,8 +1,7 @@
 //! Warnings: quality signals that never fail a request.
 //!
 //! The rules compare what the source declares (`SourceFacts`, from the
-//! office worker's pre-flight, INTERFACES §13) with what the engines
-//! produced. The algorithms are 005 §5.
+//! office worker's pre-flight) with what the engines produced.
 
 use std::collections::{HashMap, HashSet};
 
@@ -53,7 +52,7 @@ pub struct Warning {
     pub message: String,
     /// The page it is about, when it concerns one page.
     pub page: Option<u32>,
-    /// Keys depend on `code` (005 §5); in this order in the manifest.
+    /// Keys depend on `code`; in this order in the manifest.
     pub detail: Vec<(&'static str, DetailValue)>,
 }
 
@@ -110,7 +109,7 @@ pub enum SkipReason {
     MalformedXml,
 }
 
-/// What pre-flight read from an office source (INTERFACES §13): the
+/// What pre-flight read from an office source: the
 /// office worker scans the file before LibreOffice loads it and returns
 /// this in `Converted`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1067,7 +1066,7 @@ mod tests {
 
     /// With a page selection and page images the service sends no probe:
     /// a rendered page carries its own object count and flatness, so V3
-    /// still fires for it with an empty probe (review, lane 001 item 9).
+    /// still fires for it with an empty probe.
     #[test]
     fn v3_needs_no_probe_for_rendered_pages() {
         let fonts = FontCatalog::default();

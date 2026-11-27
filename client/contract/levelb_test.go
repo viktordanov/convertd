@@ -14,7 +14,7 @@ import (
 	"github.com/viktordanov/rs-convert/client/convert"
 )
 
-// The level-B cases (ledger 004 plan, step 10): each runs a server of its own
+// The level-B cases: each runs a server of its own
 // with TEST_ENGINE=worker, so both pools run `convertd worker test` behind the
 // real supervisor pool. The 504 then comes from the real deadline and kill,
 // and the 429 from the real office queue. The log is JSON (LOG_MODE=prod), so

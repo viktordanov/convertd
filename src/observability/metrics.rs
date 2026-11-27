@@ -1,9 +1,9 @@
-//! Metric names and recording helpers (lane 001), rendered by the
+//! Metric names and recording helpers, rendered by the
 //! `/metrics` handler. One Prometheus recorder per process: the `metrics`
 //! macros record into a single global recorder, installed on first use.
 //!
-//! Names follow `PLAN.md` and INTERFACES §11-12. Lane 002 records its own
-//! pool metrics (`convert_workers`, `convert_worker_*`, `convert_queue_depth`)
+//! `src/README.md`, Lifecycle and metrics, lists the names. The engine pools record
+//! their own pool metrics (`convert_workers`, `convert_worker_*`, `convert_queue_depth`)
 //! through the same recorder; the pool records a worker call's CPU time
 //! through [`worker_cpu`].
 
@@ -144,7 +144,7 @@ pub fn worker_cpu(pool: &'static str, op: &'static str, cpu: Duration) {
     histogram!("convert_worker_cpu_seconds", "pool" => pool, "op" => op).record(cpu.as_secs_f64());
 }
 
-/// The four supervisor gauges of INTERFACES §11, from `/proc/self`
+/// The four supervisor gauges, from `/proc/self`
 /// (Linux only; elsewhere they are not published).
 fn supervisor_gauges() {
     // cfg! rather than #[cfg]: the code compiles and is linted everywhere.

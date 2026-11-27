@@ -1,4 +1,4 @@
-//! Domain types and the conversion service (lane 001). No tokio, axum, serde, IPC or FFI.
+//! Domain types and the conversion service. No tokio, axum, serde, IPC or FFI.
 
 pub mod conversion;
 pub mod conversion_service;

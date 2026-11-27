@@ -1,4 +1,4 @@
-# Release (ledger item 007, INTERFACES.md §14). A tag vX.Y.Z on a commit whose Cargo.toml says
+# Release. A tag vX.Y.Z on a commit whose Cargo.toml says
 # X.Y.Z does this, in order:
 #   1. version: checks the tag against Cargo.toml.
 #   2. build: builds the runtime image natively on amd64 and arm64 and runs the image gates

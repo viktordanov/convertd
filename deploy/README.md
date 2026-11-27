@@ -62,7 +62,7 @@ OFFICE_WORKERS × OFFICE_KILL_RSS_MB + 256 MiB + RENDER_WORKERS × RENDER_KILL_R
 
 The rule holds one replacement for each pool, not one for each worker. With 2 office and 2 render workers in 4 GiB, the rule leaves 704 MiB free. It lets `OFFICE_KILL_RSS_MB` rise to 1344 MiB: 2 × 1344 + 256 + 2 × 320 + 512 = 4096 MiB. The base manifest keeps 992 MiB until a soak measures a higher limit. A render replacement is small, about 8 MiB when it is ready, and the 512 MiB covers it.
 
-The rule counts private memory: the kill and recycle limits read a worker's `RssAnon` + `RssShmem`. The shared library pages that every worker maps are page cache, which the cgroup counts once, inside the 512 MiB: about 157 MiB for LibreOffice and 8 MiB for PDFium. The 512 MiB also holds the supervisor, the rest of the page cache and a margin. Until 2026-11-27 the limits counted `VmRSS`, shared pages included. The office values 992 and 736 keep the old cut-off of 1152 and 896, less the 160 MiB of shared pages. So after a soak, a deployment can give each office worker about 156 MiB more. On cgroup v2 with Kubernetes 1.28 or later, a container that passes its memory limit loses every process. Then every job on the pod fails. This is not verified on the cluster of the owner. Change the worker counts, the RSS values and the memory limit together. `OFFICE_MAX_RSS_MB` and `RENDER_MAX_RSS_MB` recycle a worker after a job that leaves it above that size.
+The rule counts private memory: the kill and recycle limits read a worker's `RssAnon` + `RssShmem`. The shared library pages that every worker maps are page cache, which the cgroup counts once, inside the 512 MiB: about 157 MiB for LibreOffice and 8 MiB for PDFium. The 512 MiB also holds the supervisor, the rest of the page cache and a margin. Until 2026-11-27 the limits counted `VmRSS`, shared pages included. The office values 992 and 736 keep the old cut-off of 1152 and 896, less the 160 MiB of shared pages. So after a soak, a deployment can give each office worker about 156 MiB more. On cgroup v2 with Kubernetes 1.28 or later, a container that passes its memory limit loses every process. Then every job on the pod fails. This is not verified on a live cluster. Change the worker counts, the RSS values and the memory limit together. `OFFICE_MAX_RSS_MB` and `RENDER_MAX_RSS_MB` recycle a worker after a job that leaves it above that size.
 
 `/tmp` here is an `emptyDir` on node disk. An `emptyDir` with `medium: Memory`, or a tmpfs, adds its use to the memory limit. Then add `TMP_MAX_BYTES` to the left side.
 
@@ -103,7 +103,7 @@ To rotate the key, add the old key to the same Secret as `API_KEY_PREVIOUS`. Set
 
 The NetworkPolicy allows ingress on port 8080 from every source and denies all egress. An overlay can narrow the ingress with `from:` selectors. Its `podSelector` names the convertd pods explicitly, because an empty selector cuts egress for the whole namespace. The policy has an effect only if the CNI of the cluster enforces NetworkPolicy. The base has no Ingress object, and a proxy in front of the Service must allow requests longer than 240 s.
 
-The `gvisor` overlay adds `runtimeClassName: gvisor` to the pod. To use it, point your overlay at `k8s/overlays/gvisor` instead of the base. The cluster needs a RuntimeClass named `gvisor`. If it has none, apply `k8s/overlays/gvisor/runtimeclass.yaml` once, with a `handler` that matches the runsc runtime of your nodes. The overlay does not include that file, because the class is cluster-wide. Its `overhead` is empty until the sandbox memory is measured (plan 003 step 10).
+The `gvisor` overlay adds `runtimeClassName: gvisor` to the pod. To use it, point your overlay at `k8s/overlays/gvisor` instead of the base. The cluster needs a RuntimeClass named `gvisor`. If it has none, apply `k8s/overlays/gvisor/runtimeclass.yaml` once, with a `handler` that matches the runsc runtime of your nodes. The overlay does not include that file, because the class is cluster-wide. Its `overhead` is empty until the sandbox memory is measured.
 
 The base leaves out a HorizontalPodAutoscaler, because the useful scale signal is concurrency, not CPU. It leaves out a PodDisruptionBudget, because with one replica it blocks node drains.
 <!-- /memoria:section -->
@@ -119,7 +119,7 @@ The `preStop` sleep of 5 s comes first, so the Service removes the endpoint befo
 <!-- memoria:section id="isolation" files="k8s/base/networkpolicy.yaml k8s/base/deployment.yaml k8s/overlays/gvisor/kustomization.yaml" -->
 ## Worker isolation
 
-The supervisor and all office and render workers run in one container, as one user, UID 10001. They share the file system, `/tmp` included, and the network namespace. Thus a worker that a hostile document controls can read the job directories of other requests. It can also connect to everything that the pod can reach. Isolation between the workers, and between a worker and the supervisor, is item 006, the kernel sandbox. The owner deferred it, so the image runs with `SANDBOX=off`.
+The supervisor and all office and render workers run in one container, as one user, UID 10001. They share the file system, `/tmp` included, and the network namespace. Thus a worker that a hostile document controls can read the job directories of other requests. It can also connect to everything that the pod can reach. Isolation between the workers, and between a worker and the supervisor, needs a kernel sandbox, which is not built yet. So the image runs with `SANDBOX=off`.
 
 The service needs no outbound connection, not even DNS. The deployment must block egress, because the image does not:
 
@@ -204,12 +204,12 @@ The test checks metric names only. It does not check label values, a Grafana imp
 <!-- memoria:section id="verification" files="k8s/base/deployment.yaml k8s/overlays/gvisor/kustomization.yaml k8s/overlays/gvisor/runtimeclass.yaml" -->
 ## What is verified
 
-Plan 003 step 8 (Kubernetes) and step 10 (gVisor) do the live checks, on the cluster of the owner. Until then, these checks have run:
+A live cluster has not run these manifests yet, with or without gVisor. These checks have run:
 
 - **Render:** `kubectl kustomize` (v1.33.9) renders the base and the `gvisor` overlay.
 - **Schema:** `kubeconform -strict` (v0.8.0) passed for all 7 resources on 2026-11-26, after the base got `TIMEOUT_DEFAULT_SECONDS`.
 - **Observability examples:** on 2026-11-26, by hand, the dashboard JSON and the rules YAML parsed, and all 50 queries parsed with the PromQL parser of Prometheus v0.54.1. The 6 CPU queries that came later did not run through that parser. No Grafana import, `promtool` check or Prometheus Operator load has run. Two Grafana behaviors are not checked live: a query Min step replaces the scrape interval of the data source in `$__rate_interval`, and Min step accepts the `$scrape_interval` variable.
-- **Not done:** a live deployment and a gVisor run. Also not checked are the native `preStop` sleep on the Kubernetes version of the owner and egress denial by the CNI of the cluster. Time to ready and worker memory under gVisor are not measured.
+- **Not done:** a live deployment and a gVisor run. Also not checked are the native `preStop` sleep on a given Kubernetes version and egress denial by the CNI of the cluster. Time to ready and worker memory under gVisor are not measured.
 
 A passing render and schema check proves that the files are valid Kubernetes objects. It does not prove that the probes, limits or network policy behave as intended on a real cluster.
 <!-- /memoria:section -->

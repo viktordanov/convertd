@@ -1,3 +1,3 @@
-//! Metric names and recording helpers (lane 001).
+//! Metric names and recording helpers.
 
 pub mod metrics;

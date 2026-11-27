@@ -131,7 +131,7 @@ macro_rules! row {
     };
 }
 
-/// The v1 input formats (`PLAN.md`, accepted inputs), in capabilities order.
+/// The v1 input formats, in capabilities order.
 pub static FORMATS: &[FormatSpec] = &[
     row!(
         Docx,
@@ -298,8 +298,8 @@ impl Format {
         self.spec().extensions[0]
     }
 
-    /// Whether v1 converts this format. Image inputs are out of v1 (owner,
-    /// 2026-11-26): detection still names them, so that a PNG is never
+    /// Whether v1 converts this format. Image inputs are out of v1:
+    /// detection still names them, so that a PNG is never
     /// taken for the PDF it may contain, and then refuses them with 415.
     /// Their rows stay so that detection can name them.
     pub fn accepted(self) -> bool {

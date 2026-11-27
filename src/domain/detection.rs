@@ -7,8 +7,8 @@ use super::document::Format;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Detection {
     pub format: Format,
-    /// OOXML inside OLE2 (`EncryptionInfo` + `EncryptedPackage`), found in
-    /// step 10. Other encryption (legacy `.doc`/`.xls`, ODF, PDF) is found
+    /// OOXML inside OLE2 (`EncryptionInfo` + `EncryptedPackage`), found by
+    /// detection. Other encryption (legacy `.doc`/`.xls`, ODF, PDF) is found
     /// by the engines.
     pub encrypted: bool,
 }

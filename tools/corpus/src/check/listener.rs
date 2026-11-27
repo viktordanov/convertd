@@ -1,5 +1,5 @@
 //! The canary listener: a TCP socket on the loopback address that the
-//! canary files point to (plan 005 §11). It counts every connection and
+//! canary files point to. It counts every connection and
 //! keeps the first request line, then answers 404 and closes. Any
 //! connection fails the case that was running.
 

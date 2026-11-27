@@ -5,7 +5,7 @@
 # Targets:
 #   runtime        (default) the service image
 #   runtime-base   engines, fonts, build-info and user, no convertd
-#   dev            Rust toolchain + the same engines, for lane 002's engine tests (host arch only)
+#   dev            Rust toolchain + the same engines, for the engine tests (host arch only)
 #
 # The Rust stages run on $BUILDPLATFORM and cross-compile to $TARGETARCH, so no rustc runs
 # under QEMU. The library check (lib-check) also runs natively, with readelf, because ldd is
@@ -211,7 +211,7 @@ RUN mkdir -p -m 0755 /etc/convertd /etc/fonts/conf.d /opt/convertd
 COPY --chmod=0644 docker/dpkg/docs.cfg /etc/dpkg/dpkg.cfg.d/90-rs-convert-docs
 COPY --chmod=0644 docker/dpkg/fonts.cfg /etc/dpkg/dpkg.cfg.d/91-rs-convert-fonts
 COPY --chmod=0644 docker/dpkg/libreoffice.cfg /etc/dpkg/dpkg.cfg.d/92-rs-convert-libreoffice
-# fonts.json: {family -> metric_compatible} for FONT_SUBSTITUTED (005 §5). The aliases add the
+# fonts.json: {family -> metric_compatible} for FONT_SUBSTITUTED. The aliases add the
 # Office families Debian does not map; build-info.json records what fc-match then picks.
 COPY --chmod=0644 docker/fonts/fonts.json /etc/convertd/fonts.json
 COPY --chmod=0644 docker/fonts/10-libreoffice-fonts.conf /etc/fonts/conf.d/10-rs-convert-libreoffice-fonts.conf
@@ -246,7 +246,7 @@ RUN xcd="$(tr -d ' \t\n' </opt/libreoffice/share/registry/rs-convert-paper.xcd)"
       [[ "${got}" == "${height} ${width} " ]] \
         || { echo "LC_PAPER=${name} gives '${got}', expected '${height} ${width}'" >&2; exit 1; }; \
     done
-# Gate: the macro and link lock-down (rs-convert-security.xcd, ledger item 011 S2) is installed
+# Gate: the macro and link lock-down (rs-convert-security.xcd) is installed
 # after main.xcd, with every value as the repository has it. DisableMacrosExecution is the one
 # value that is not finalized: LibreOfficeKit commits it at each load, and a commit to a
 # finalized value fails every load. This gate checks only the installed XML. The check of the
@@ -275,7 +275,7 @@ RUN for f in /etc/convertd/fonts.json /etc/fonts/conf.d/10-rs-convert-libreoffic
       setpriv --reuid=65534 --regid=65534 --clear-groups test -r "${f}" \
         || { echo "not readable by uid 65534: ${f}" >&2; exit 1; }; \
     done
-# Names agreed with lane 002. PDFIUM_BUILD exists because PDFium has no version call.
+# The worker reads these names. PDFIUM_BUILD exists because PDFium has no version call.
 ENV HOME=/tmp \
     LANG=C.UTF-8 \
     SAL_USE_VCLPLUGIN=svp \
@@ -285,7 +285,7 @@ ENV HOME=/tmp \
     TMP_DIR=/tmp/convert \
     PORT=8080 \
     LOG_MODE=prod
-# Added in the same commit as docker/libreoffice/profile/, if lane 002 provides one:
+# Added in the same commit as docker/libreoffice/profile/, if one is ever provided:
 # ENV LO_PROFILE_TEMPLATE=/opt/convertd/lo-profile
 WORKDIR /tmp
 USER 10001:10001
@@ -323,10 +323,10 @@ RUN case "${TARGETARCH}" in amd64) tri=x86_64-linux-gnu ;; arm64) tri=aarch64-li
     echo "lib-check (${TARGETARCH}): ${n} objects, every DT_NEEDED resolved except ${allowed}" \
          "allow-listed pairs (docker/libreoffice/ldd-allow.txt)" | tee /lib-check.ok
 
-# ---- Dev/test image for lane 002's engine tests (replaces 002's dev.Dockerfile.txt) -------
+# ---- Dev/test image for the engine tests -------------------------------------------------
 # Toolchain + the same engines, installed by the same script. Build for the host only:
 #   docker buildx build -f docker/Dockerfile --target dev --load -t rs-convert-dev .
-# Run with the source mounted and a job-local target dir (AGENT-RULES.md rule 5):
+# Run with the source mounted and a job-local target dir:
 #   docker run --rm -v "$PWD":/src -v <scratch>/target:/target \
 #     -e CARGO_TARGET_DIR=/target rs-convert-dev cargo test -- --include-ignored
 FROM ${RUST_IMAGE} AS dev
@@ -392,8 +392,8 @@ LABEL org.opencontainers.image.title="rs-convert" \
       org.opencontainers.image.created="${CONVERTD_BUILD_DATE}" \
       rs-convert.libreoffice.version="${LO_BUILD}" \
       rs-convert.pdfium.version="chromium/${PDFIUM_BUILD}"
-# The licence label is added when item 007 picks one.
-# No init process: convertd is PID 1 and also sets itself as child subreaper (lane 002).
+# No licence label yet; the licence is Apache-2.0 (LICENSE).
+# No init process: convertd is PID 1 and also sets itself as child subreaper.
 COPY --from=lib-check /lib-check.ok /opt/convertd/lib-check.ok
 COPY --from=builder /out/convertd /usr/local/bin/convertd
 EXPOSE 8080

@@ -11,7 +11,7 @@ Three duties apply to every change in this folder:
 
 `convertd serve` runs two pools: the office pool runs LibreOffice and the render pool runs PDFium. `select.rs` starts them, and `OfficeLok` and `PdfPdfium` implement the engine traits over them. A call that passes `WORKER_KILL_RSS_MB` kills its worker, and poison memory refuses documents that recently hung or crashed one. The soak run is not built yet, and image inputs are out of v1. [Not built yet](#not-built-yet) lists them.
 
-The worker side is in [`src/worker/`](../worker/README.md), and the frames between the two sides are in [`src/ipc/`](../ipc/README.md). `fake.rs` and `fake_markers.rs` hold lane 001's level-A fakes and the `FAKE:` marker parser. This README does not cover them.
+The worker side is in [`src/worker/`](../worker/README.md), and the frames between the two sides are in [`src/ipc/`](../ipc/README.md). `fake.rs` and `fake_markers.rs` hold the level-A fakes and the `FAKE:` marker parser. This README does not cover them.
 
 ## Contents
 
@@ -62,7 +62,7 @@ After that, it sweeps the groups of dead children with `waitid(P_PGID)` until `E
 
 `set_not_dumpable()` marks the supervisor as not dumpable on Linux, so a worker with the same UID cannot read `/proc/<supervisor>/environ`, which holds `API_KEY`. `serve` calls it first, before it reads the configuration, and it fails to start if the call fails. `convertd healthcheck` calls it first too, because the image's `HEALTHCHECK` starts it with the container's environment. A worker is dumpable again after its `execve`. The supervisor still reads its own `/proc/self/status` and `/proc/self/fd` for its gauges, and each worker's RSS for the watchdog. Its own `/proc/self/environ` becomes root-owned with mode 0400, and no gauge reads it. `tests/not_dumpable.rs` and two tests in `tests/ops.rs` prove this on Linux. With procfs mounted `hidepid=2`, the read gives `NotFound` instead of `PermissionDenied`.
 
-Known limit: between its `execve` and the call, a new `convertd healthcheck` is dumpable for a few milliseconds while it holds the container's environment. The image's `HEALTHCHECK` starts it every 30 s, while workers run. A worker that polls `/proc` can read `API_KEY` in that window. Only a separate worker UID, item 006, closes it. Kubernetes with `httpGet` probes, as in `deploy/k8s/base`, has no such window. [deploy/README.md](../../deploy/README.md#worker-isolation) gives the Docker options. A process with `CAP_SYS_PTRACE` can still read the environment, so the image must not grant it.
+Known limit: between its `execve` and the call, a new `convertd healthcheck` is dumpable for a few milliseconds while it holds the container's environment. The image's `HEALTHCHECK` starts it every 30 s, while workers run. A worker that polls `/proc` can read `API_KEY` in that window. Only a separate UID for the workers closes it ([deploy/README.md](../../deploy/README.md#worker-isolation)). Kubernetes with `httpGet` probes, as in `deploy/k8s/base`, has no such window. [deploy/README.md](../../deploy/README.md#worker-isolation) gives the Docker options. A process with `CAP_SYS_PTRACE` can still read the environment, so the image must not grant it.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="pool" files="pool.rs conn.rs" -->
@@ -176,7 +176,7 @@ After a load, export, empty-document, limit or internal error, `OfficeLok` recyc
 
 `PdfPdfium::render` leases one worker with the request's mode, then takes idle workers with `try_lease` and never waits for them. It splits the pages into contiguous chunks of at least 4 pages, one for each worker. Each chunk gets an equal share of `max_output_bytes`, so the files on disk stay within the job's reservation. The chunks run together. A crashed chunk is retried once on a fresh lease, if at least 1 s is left. A chunk that goes over its share runs again on one lease, with the cap minus the bytes of the finished chunks, if at least 1 s is left. A job thus fails on its cap exactly when one worker fails, and the cap never adds a poison strike. The pages come back in order. `engine` is the longest chunk, plus the rerun. `cpu` is the sum of every chunk that answered, a chunk over its share and the rerun included. The most severe chunk error wins: a timeout, then a crash, then a password error.
 
-There is no image assembly: image inputs are out of v1 (the owner's decision), and detection refuses them with 415 before any engine call.
+There is no image assembly: image inputs are out of v1, and detection refuses them with 415 before any engine call.
 
 Poison memory (`poison.rs`) protects the workers from documents that hang or crash them. It is keyed by the upload's SHA-256 and shared by both pools, and it works like this:
 
@@ -196,7 +196,7 @@ Poison memory (`poison.rs`) protects the workers from documents that hang or cra
 
 - **Unset**: the office pool runs `convertd worker office` and the render pool runs `convertd worker render`. Both warm up before `Ready`.
 - **`worker`** (level B, feature `test-hooks`): both pools run `convertd worker test`, behind the same pools, queue and kills.
-- **`fake`** (level A): lane 001's in-process fakes, with no pool.
+- **`fake`** (level A): the in-process fakes, with no pool.
 
 `select::start` removes `$TMP_DIR/workers` once at start. It makes one `ReaperMode::ProcessWide` spawner for both pools, so on Linux the supervisor becomes a child subreaper. The office pool has `OFFICE_WORKERS` workers and a queue of `QUEUE_CAPACITY`. The render pool has `RENDER_WORKERS` workers and a queue of 2 × `RENDER_WORKERS`. A worker has 60 s from spawn to `Ready`.
 
@@ -235,9 +235,9 @@ Each pool can have its own memory limits. `OFFICE_MAX_RSS_MB` and `OFFICE_KILL_R
 <!-- memoria:section id="measurement" files="pool.rs process.rs" -->
 ## Measurement
 
-The numbers below come from `convertd engine bench`, a hidden command that timed lease, `Ping` and return through a real pool, and spawn to `Ready` through the pool's own start path. The owner removed the `convertd engine` commands on 2026-11-26, so these tables are history. The overhead of the request path is now measured over HTTP: [src/README.md](../README.md#measurement) and [bench/results/](../../bench/results/) give those numbers.
+The numbers below come from `convertd engine bench`, a hidden command that timed lease, `Ping` and return through a real pool, and spawn to `Ready` through the pool's own start path. The `convertd engine` commands were removed on 2026-11-26, so these tables are history. The overhead of the request path is now measured over HTTP: [src/README.md](../README.md#measurement) and [bench/results/](../../bench/results/) give those numbers.
 
-One measurement, made on 2026-11-25 at commit `1eaf917`, on macOS (Darwin 27.3.0), Apple M4 Max with 14 cores. It used a release build with `--features test-hooks`, `--n 10000` and `--spawns 50`. Other jobs kept the load average at 6 to 10, so the tails are noisy:
+One measurement, made on 2026-11-25, on macOS (Darwin 27.3.0), Apple M4 Max with 14 cores. It used a release build with `--features test-hooks`, `--n 10000` and `--spawns 50`. Other jobs kept the load average at 6 to 10, so the tails are noisy:
 
 | µs, three runs, one caller | p50 | p95 | p99 |
 | --- | --- | --- | --- |
@@ -246,7 +246,7 @@ One measurement, made on 2026-11-25 at commit `1eaf917`, on macOS (Darwin 27.3.0
 
 The lease alone took 0.1 µs at p50. Spawn to `Ready` is the floor for a process with no engine, because the `test` role binds nothing.
 
-A second measurement, made on 2026-11-26 at commit `1eaf546`, in the dev image `rs-convert-003-dev:arm64`. The image ran in the Docker VM of the same machine, with 14 CPUs and about 4 GB of memory. It used a release build with `--features test-hooks`, `--n 2000`, and corpus files from `corpus/generate.py`:
+A second measurement, made on 2026-11-26, in the arm64 `dev` image. The image ran in the Docker VM of the same machine, with 14 CPUs and about 4 GB of memory. It used a release build with `--features test-hooks`, `--n 2000`, and corpus files from `corpus/generate.py`:
 
 | Role | Spawn to `Ready`, p50 / max | RSS at `Ready` | One job, runs 1 / 2 / 3 |
 | --- | --- | --- | --- |
@@ -258,7 +258,7 @@ Lease, `Ping` and return took 3.6 to 3.8 µs at p50 for every role. Over HTTP, t
 
 ### Soak, 2026-11-26
 
-A soak of 120 minutes ran on 2026-11-26 from 00:41 UTC. It used the image `rs-convert-lead-runtime:wave2b` (`3ccbb545d9fb`), built from main at `1eafd5ee`. The conditions were:
+A soak of 120 minutes ran on 2026-11-26 from 00:41 UTC. It used the arm64 `runtime` image `sha256:3ccbb545d9fb`. The conditions were:
 
 - The Docker VM on the same Apple M4 Max had 14 CPUs and 3.9 GiB of memory.
 - The flags were `--read-only`, `--tmpfs /tmp:size=2g`, `--cap-drop ALL` and `--security-opt no-new-privileges`.
@@ -307,8 +307,8 @@ The tails come from the single office worker. Of the 757 conversions of files un
 
 ## Not built yet
 
-These parts of plan 002 do not exist yet:
+These parts do not exist yet:
 
-- The fault run of step 13. The soak run of step 13 used HTTP ([Soak, 2026-11-26](#soak-2026-11-26)).
+- A fault run. The soak run used HTTP ([Soak, 2026-11-26](#soak-2026-11-26)).
 
-Image assembly (step 11) is out of v1, and the seam for it is removed.
+Image assembly is out of v1, and the seam for it is removed.

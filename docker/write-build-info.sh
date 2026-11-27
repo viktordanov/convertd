@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # docker/write-build-info.sh, installed as /opt/convertd/write-build-info.sh.
 # Writes /opt/convertd/build-info.json, the one source of engine versions and installed fonts
-# for /v1/capabilities, the fingerprint and FONT_SUBSTITUTED (plans 001 and 005):
+# for /v1/capabilities, the fingerprint and FONT_SUBSTITUTED:
 #   {"libreoffice": "26.8.3.1", "pdfium": "8179", "fonts": [...],
 #    "font_substitutes": {"Calibri": "Carlito", ...}, "default_substitute": "...",
 #    "coverage": [[32, 126], [160, 591], ...]}
-# "font_substitutes" maps each family in the probe list (lane 005 owns it) to what fc-match picks
+# "font_substitutes" maps each family in the probe list to what fc-match picks
 # in this image, aliases included; "default_substitute" is the fallback for any other name.
 # "coverage" is the union of every face's charset as merged, sorted, inclusive code point
 # ranges in decimal; GLYPHS_MISSING compares the document's text with it. The image has no
@@ -20,7 +20,7 @@ probe="${FONT_PROBE_LIST:-/opt/convertd/probe-families.txt}"
 
 json_str() { local s="${1//\\/\\\\}"; s="${s//\"/\\\"}"; printf '"%s"' "${s}"; }
 
-# One line per family entry; fontconfig lists localized names comma-separated, and 001 splits
+# One line per family entry; fontconfig lists localized names comma-separated, and convertd splits
 # them at start-up, so the raw entries are kept.
 fonts="$(fc-list --format '%{family}\n' | sed '/^$/d' | LC_ALL=C sort -u \
          | while IFS= read -r f; do json_str "${f}"; printf ','; done)"

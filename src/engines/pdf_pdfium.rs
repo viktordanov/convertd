@@ -1,4 +1,4 @@
-//! `PdfEngine` over the render pool (plan 002 step 7).
+//! `PdfEngine` over the render pool.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -375,7 +375,7 @@ impl PdfEngine for PdfPdfium {
             pdf: job.pdf,
             password: job.password.map(|p| Secret::new(p.expose())),
             probe_dpi: job.probe_dpi,
-            // The first VERIFY_PROBE_MAX_PAGES pages (lane 001).
+            // The first VERIFY_PROBE_MAX_PAGES pages.
             probe_pages: ProbePages::All {
                 max: Some(job.probe_max_pages),
             },

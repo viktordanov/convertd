@@ -1,4 +1,4 @@
-//! `convertd worker test`, driven directly over its pipes (plan 002 step 2).
+//! `convertd worker test`, driven directly over its pipes.
 #![cfg(feature = "test-hooks")]
 // These tests drive one worker binary by hand, below the supervisor, and
 // reap it themselves; the reaper rule is for the supervisor.

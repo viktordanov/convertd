@@ -1,4 +1,4 @@
-//! HTTP layer (lane 001): routes, handlers, DTOs, and the only place that
+//! HTTP layer: routes, handlers, DTOs, and the only place that
 //! maps errors to status codes.
 
 pub mod body;

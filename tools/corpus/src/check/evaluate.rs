@@ -283,7 +283,7 @@ fn pdf_facts(v: &mut Verdict, expect: &Expect, facts: Option<&PdfFacts>) {
     }
 }
 
-/// The checks of plan 005 section 3 that hold for every case.
+/// The checks that hold for every case.
 fn invariants(case: &Case, obs: &Observed, ctx: &Context, v: &mut Verdict) {
     if obs.status == 0 && !obs.timed_out {
         let why = obs.body_error.as_deref().unwrap_or("no response");
@@ -498,7 +498,7 @@ fn matches(got: &Warning, want: &ExpectedWarning) -> bool {
             })
 }
 
-/// Plan 005 section 5, V2 arbiter: for each FONT_SUBSTITUTED warning, the
+/// The V2 arbiter: for each FONT_SUBSTITUTED warning, the
 /// requested family must be absent from the PDF's `/BaseFont` names and
 /// the claimed substitute must be present.
 fn font_arbiter(v: &mut Verdict, got: &[Warning], base_fonts: Option<&BTreeSet<String>>) {

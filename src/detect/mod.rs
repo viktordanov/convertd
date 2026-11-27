@@ -1,4 +1,4 @@
-//! Format detection over the uploaded file, safe and bounded (lane 001).
+//! Format detection over the uploaded file, safe and bounded.
 //!
 //! Runs in the supervisor at the tail of the upload sink, while the file
 //! is page-cache hot: the signature, then for a ZIP its central directory

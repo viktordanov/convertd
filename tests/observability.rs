@@ -1,5 +1,5 @@
 //! The Grafana dashboard and the alert rules in `deploy/observability/`
-//! name only metrics that convertd emits (ledger item 010, effort O1).
+//! name only metrics that convertd emits.
 //!
 //! The scrape test starts `convertd serve` at level B, so the pools record
 //! their metrics too, and sends requests until every family exists. Two

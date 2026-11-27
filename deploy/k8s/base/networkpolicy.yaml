@@ -1,7 +1,7 @@
 # deploy/k8s/base/networkpolicy.yaml.
-# The service needs no outbound network, not even DNS (PLAN.md:432), so all egress is denied.
+# The service needs no outbound network, not even DNS, so all egress is denied.
 # Ingress is open to the cluster on 8080; an overlay narrows it with `from:` selectors.
-# Enforced only if the cluster's CNI implements NetworkPolicy (unverified for the owner's cluster).
+# Enforced only if the cluster's CNI implements NetworkPolicy (not verified on a live cluster).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

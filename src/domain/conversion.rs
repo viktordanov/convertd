@@ -240,7 +240,7 @@ pub struct StageTimings {
     /// not engine time, so it stays out of `engine_total` and counts as
     /// overhead. `None` for inputs without pre-flight (PDFs).
     pub preflight: Option<Duration>,
-    /// Not one of the 18 `Server-Timing` names (INTERFACES §9); logged only.
+    /// Not one of the 18 `Server-Timing` names; logged only.
     pub decrypt: Option<Duration>,
     pub decrypt_engine: Option<Duration>,
     pub render: Option<Duration>,
@@ -258,7 +258,7 @@ impl StageTimings {
         self.cpu += timing.cpu;
     }
 
-    /// Σ worker engine time of INTERFACES §11: convert, inspect, probe and
+    /// The engine time of the workers: convert, inspect, probe and
     /// render.
     pub fn engine_total(&self) -> Duration {
         [

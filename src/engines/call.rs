@@ -10,7 +10,7 @@ use crate::engines::pool::{Admission, CallError, Pool};
 use crate::ipc::{Op, Output, Reply, WorkerErrorKind};
 
 /// A crash is retried once, on a fresh lease, only with this much left
-/// before the deadline (INTERFACES.md §5).
+/// before the deadline.
 pub const RETRY_MIN_LEFT: Duration = Duration::from_secs(1);
 
 /// The result of one successful call.

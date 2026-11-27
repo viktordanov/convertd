@@ -1,4 +1,4 @@
-//! Tokio runtime builders (lane 001). Only `serve` builds a runtime;
+//! Tokio runtime builders. Only `serve` builds a runtime;
 //! `worker`, `openapi` and `healthcheck` run without one.
 
 use std::io;

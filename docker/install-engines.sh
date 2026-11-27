@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# docker/install-engines.sh (ledger item 003).
+# docker/install-engines.sh.
 # The one place that installs LibreOffice, its libraries and the fonts. The Dockerfile runs it
 # in two stages, so the product image and the dev/test image cannot drift apart:
 #   runtime-base  (debian:trixie-slim)  install-engines.sh runtime
@@ -17,7 +17,7 @@ fonts=(fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea fonts-de
        fonts-noto-core fonts-noto-color-emoji fonts-wqy-microhei)
 [[ "${FONTS_CJK:-0}" == 1 ]] && fonts+=(fonts-noto-cjk)
 extra=()
-# Dev only: what lane 002's tests use beyond the product (002-engine-workers/dev.Dockerfile.txt:25,28).
+# Dev only: what the engine tests use beyond the product.
 [[ "${mode}" == dev ]] && extra+=(locales procps)
 
 apt-get update
@@ -43,11 +43,11 @@ for d in share/fonts/truetype program/resource/common/fonts; do
   grep -qxF "  <dir>/opt/${lo_dir}/${d}</dir>" "${fc_conf}"
 done
 
-# Install-level configuration from lane 002 (macro lock-down etc.), if any.
+# Install-level configuration (macro lock-down etc.), if any.
 shopt -s nullglob
 for f in /lo-config/*.xcd; do install -m 0644 "${f}" /opt/libreoffice/share/registry/; done
 shopt -u nullglob
-# Optional read-only profile template (lane 002), read through LO_PROFILE_TEMPLATE.
+# Optional read-only profile template, read through LO_PROFILE_TEMPLATE.
 if [[ -d /lo-config/profile ]]; then
   mkdir -p /opt/convertd
   cp -a /lo-config/profile /opt/convertd/lo-profile
@@ -66,7 +66,7 @@ fi
 # The system font cache, with whole-second directory mtimes so that it survives any image
 # export (docker/cache-fonts.sh says why). The Dockerfile copies the script in first.
 bash /opt/convertd/cache-fonts.sh
-# The dpkg excludes must not have dropped a family PLAN.md promises.
+# The dpkg excludes must not have dropped a family that docker/README.md promises.
 for fam in "Liberation Sans" "Liberation Serif" "Liberation Mono" Carlito Caladea "DejaVu Sans" \
            "Noto Sans" "Noto Serif" "Noto Sans Mono" "Noto Sans Symbols" "Noto Sans Symbols2" \
            "Noto Sans Math" "Noto Color Emoji" OpenSymbol "Noto Sans Thai" "Noto Sans Ethiopic" \
@@ -74,7 +74,7 @@ for fam in "Liberation Sans" "Liberation Serif" "Liberation Mono" Carlito Calade
   fc-list ":family=${fam}" family | grep . >/dev/null || { echo "font family missing: ${fam}" >&2; exit 1; }
 done
 # Coverage gate: some installed font must have each of these letters, or text in that script
-# renders blank (docs/ledger/fonts-study). One letter per script: Devanagari, Thai, Ethiopic,
+# renders blank. One letter per script: Devanagari, Thai, Ethiopic,
 # Han, hiragana, katakana, Hangul, Arabic, Hebrew, then Bengali, Gujarati, Gurmukhi, Kannada,
 # Malayalam, Oriya, Tamil, Telugu, Sinhala, Khmer, Myanmar, Tibetan, Thaana, Syriac,
 # Mongolian, Cherokee, Yi and Ol Chiki.
@@ -88,7 +88,7 @@ apt-get clean
 rm -rf /var/lib/apt/lists/* /var/cache/apt/* /var/log/* /var/cache/ldconfig/aux-cache \
        /var/cache/debconf/*-old /var/lib/dpkg/*-old
 
-# No setuid or setgid file (ledger item 011, S6): the service never changes its user, so these
+# No setuid or setgid file: the service never changes its user, so these
 # bits only help an attacker who runs code in the container. The base image ships them on
 # passwd, su, mount and their kin. -xdev keeps the bind mounts of this build out of the walk.
 # The build log lists what was stripped; docker/smoke.sh fails if any bit is back.

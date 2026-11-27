@@ -87,7 +87,7 @@ run() { # <name> <label> -> writes ${out}/<label>.txt
   done < <(find "${corpus}" -type f -print0 | LC_ALL=C sort -z)
 }
 
-name_a="rs-convert-003-ab-a-$$"; name_b="rs-convert-003-ab-b-$$"
+name_a="rs-convert-ab-a-$$"; name_b="rs-convert-ab-b-$$"
 names=("${name_a}" "${name_b}")
 start "${image_a}" "${name_a}"
 start "${image_b}" "${name_b}"

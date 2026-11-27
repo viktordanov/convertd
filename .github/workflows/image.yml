@@ -1,4 +1,4 @@
-# CI for the image and the deployment files (ledger item 003, INTERFACES.md §14).
+# CI for the image and the deployment files.
 # This workflow builds and tests; it never pushes. A tag v<x.y.z> runs release.yml, which
 # runs the same gates (.github/actions/image-gates) and then publishes the image to GHCR and
 # a GitHub release. The image job runs by hand, monthly, and on pushes to main and pull
@@ -7,7 +7,7 @@
 name: image
 
 on:
-  # Docs-only changes (ledger, guidance, READMEs, memoria.lock, agent skills) skip this
+  # Docs-only changes (guidance, READMEs, memoria.lock, agent skills) skip this
   # workflow; memoria.yml checks them.
   pull_request:
     paths-ignore: ["**.md", "docs/**", "memoria.lock", ".claude/**"]
@@ -152,8 +152,7 @@ jobs:
   image:
     # By hand, monthly, and on the pushes and pull requests that the changes job selects. It
     # builds the image natively on each arch, runs the smoke test and the corpus check.
-    # The engine test suites stay out of it: they run monthly or by hand (lead's ruling,
-    # 2026-11-26).
+    # The engine test suites stay out of it: they run monthly or by hand.
     needs: changes
     if: >-
       ${{ !cancelled() && (github.event_name == 'workflow_dispatch'
@@ -206,7 +205,7 @@ jobs:
     env:
       KUBECONFORM_VERSION: v0.8.0
       KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
-      # Pinned, so a runner image update cannot change the result (review finding 3).
+      # Pinned, so a runner image update cannot change the result.
       SHELLCHECK_VERSION: v0.11.0
       SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
     steps:

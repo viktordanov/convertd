@@ -77,7 +77,7 @@ func startServer(bin string, extraEnv ...string) (*server, error) {
 	if err != nil {
 		return nil, err
 	}
-	dir, err := os.MkdirTemp("", "rs-convert-004-contract-")
+	dir, err := os.MkdirTemp("", "rs-convert-contract-")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create server dir: %w", err)
 	}

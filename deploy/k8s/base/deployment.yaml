@@ -4,7 +4,7 @@ kind: Deployment
 metadata:
   name: convertd
 spec:
-  replicas: 1                       # minimum 1: workers take time to warm (PLAN.md:541)
+  replicas: 1                       # minimum 1: workers take time to warm
   revisionHistoryLimit: 3
   strategy:
     type: RollingUpdate
@@ -21,7 +21,7 @@ spec:
     spec:
       automountServiceAccountToken: false
       enableServiceLinks: false
-      # preStop (5) + SHUTDOWN_GRACE_SECONDS (210) + margin (15). See plan.md, Decision 1.
+      # preStop (5) + SHUTDOWN_GRACE_SECONDS (210) + margin (15). deploy/README.md explains it.
       terminationGracePeriodSeconds: 230
       securityContext:
         runAsNonRoot: true
@@ -29,7 +29,7 @@ spec:
         runAsGroup: 10001
         fsGroup: 10001
         seccompProfile:
-          type: RuntimeDefault       # container runtime default filter, not item 006
+          type: RuntimeDefault       # container runtime default filter, not a kernel sandbox
       containers:
         - name: convertd
           image: rs-convert
@@ -54,7 +54,7 @@ spec:
             # with the maximum: an overlay that lowers the maximum below 120 lowers this too.
             - {name: TIMEOUT_DEFAULT_SECONDS, value: "120"}
             - {name: SHUTDOWN_GRACE_SECONDS, value: "210"}
-            # The run-time disk budget for everything under TMP_DIR (lane 001). It MUST stay
+            # The run-time disk budget for everything under TMP_DIR. It MUST stay
             # below sizeLimit minus the headroom (1 GiB for worker slots, profiles and logs):
             # TMP_MAX_BYTES <= 4Gi - 1Gi. Change them together, or a full volume evicts the pod.
             - {name: TMP_MAX_BYTES, value: "3221225472"}     # 3 GiB

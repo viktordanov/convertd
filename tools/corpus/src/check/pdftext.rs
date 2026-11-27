@@ -1,5 +1,5 @@
 //! The text and the image count of a PDF, for the `text_present`,
-//! `text_absent` and `pdf_images` expectations (ledger item 011, S2).
+//! `text_absent` and `pdf_images` expectations.
 //!
 //! The text comes from the content stream of every page and from every Form
 //! XObject that a content stream draws with `Do`, nested forms included.

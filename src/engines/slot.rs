@@ -1,4 +1,4 @@
-//! Worker slot directories and the worker environment (INTERFACES.md §6).
+//! Worker slot directories and the worker environment.
 //!
 //! Each worker process gets `<workers_dir>/<pool>-<slot>/` with `profile/`,
 //! `tmp/`, `cache/`, `config/`, `data/` and `run/`, recreated for every

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ghcr-versions.sh (ledger item 007): prints the X.Y.Z tags that a GHCR repository holds, one
+# ghcr-versions.sh: prints the X.Y.Z tags that a GHCR repository holds, one
 # per line, sorted by version. A 404 on the first page means no repository yet, and prints
 # nothing. Any other failure exits non-zero, so a release never decides on a partial list:
 # a non-200 page (a 404 on a later page too), a page without a "tags" list, or a bad Link.

@@ -279,7 +279,7 @@ func TestSelfTestTransport(t *testing.T) {
 			[]byte(`{"status":"ready","pools":{"office":{"target":1,"idle":1,"busy":0},"render":{"target":1,"idle":1,"busy":0}}}`)}, nil},
 		{"valid metrics", callMetrics, canned{200, map[string]string{"Content-Type": "text/plain; version=0.0.4"}, []byte("up 1\n")}, nil},
 
-		// The violations the plan lists (Design section 5).
+		// The violations the transport must report.
 		{"200 without Convert-Page-Count", callConvertPDF, canned{200, noPageCount, onePagePDF()},
 			[]string{"convertDocument 200: declared header Convert-Page-Count is missing"}},
 		{"429 without Retry-After", callConvertPDF, canned{429, errorHeaders(), errorBody("TOO_MANY_REQUESTS")},

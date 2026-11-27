@@ -1,5 +1,5 @@
-//! The `FAKE:` marker grammar of INTERFACES.md §10 (lane 001), shared by
-//! level A (`engines::fake`) and level B (lane 002's `convertd worker test`).
+//! The `FAKE:` marker grammar, shared by level A (`engines::fake`) and
+//! level B (`convertd worker test`).
 //!
 //! A pure function over bytes: no I/O, no runtime, no engine types, so a
 //! worker without tokio can call it and map the result to its own errors.
@@ -11,8 +11,7 @@
 //! - `FAKE:PAGES=<n>`: the PDF has `n` pages (`n` ≥ 1);
 //! - `FAKE:HANG`: never answer, ignoring the deadline;
 //! - `FAKE:PANIC`: panic (level A: the handler's panic layer gives 500;
-//!   level B: the worker dies with 101). Not in INTERFACES.md §10's list;
-//!   lane 002's test worker uses it;
+//!   level B: the worker dies with 101); the test worker uses it;
 //! - `FAKE:<CODE>`: fail with that code, one of [`MarkerCode`].
 //!
 //! The first marker by position wins. A `FAKE:` that is not followed by

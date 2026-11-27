@@ -1,6 +1,6 @@
 [package]
 name = "convertd"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.99.0"
 license = "Apache-2.0"
@@ -17,12 +17,12 @@ path = "src/main.rs"
 
 [features]
 default = []
-# The one gate for every test hook (INTERFACES.md §10): TEST_ENGINE,
+# The one gate for every test hook: TEST_ENGINE,
 # `convertd worker test` and the FAKE: marker parser. Never in the image.
 test-hooks = []
 
 [dependencies]
-# HTTP server (001). No http2, no multipart: multer is used directly.
+# HTTP server. No http2, no multipart: multer is used directly.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
 # S4: connections served with a timer, for the header read timeout. Both
 # are axum's own, with the features it enables.
@@ -36,7 +36,7 @@ bytes = "1.12.2"
 futures-util = "0.3.34"
 multer = "3.1.0"
 
-# OpenAPI emission (001).
+# OpenAPI emission.
 utoipa = { version = "6.0.0", features = ["axum_extras"] }
 utoipa-axum = "0.3.0"
 
@@ -48,7 +48,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "json", "std"] }
 
-# Request path (001): auth, request IDs, digests, detection, pre-flight.
+# Request path: auth, request IDs, digests, detection, pre-flight.
 sha2 = "0.11.0"
 subtle = "2.6.1"
 uuid = { version = "1.28.0", features = ["v4"] }
@@ -59,15 +59,15 @@ quick-xml = "0.41.0"
 # GLYPHS_MISSING (F2): Script, General_Category and Default_Ignorable_Code_Point,
 # compiled in; already in the lock through idna.
 icu_properties = "2.4.0"
-# tar.zst bundles (001 step 8, owner 2026-11-26): one zstd frame at level 1.
+# tar.zst bundles: one zstd frame at level 1.
 zstd = "0.14.5"
 async-trait = "0.1.92"
 
-# Metrics (001), rendered by our own handler: no HTTP listener.
+# Metrics, rendered by our own handler: no HTTP listener.
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 
-# Engine workers and process control (002).
+# Engine workers and process control.
 rustix = { version = "1.1.5", features = ["process", "stdio", "pipe"] }
 libc = "0.2.191"
 libreofficekit = "0.5.0"

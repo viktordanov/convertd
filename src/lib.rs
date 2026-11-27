@@ -1,6 +1,5 @@
-//! convertd: the document conversion service.
-//!
-//! The module owners are fixed in `docs/ledger/INTERFACES.md` §3.
+//! convertd: the document conversion service. `src/README.md` describes
+//! the modules and the process model.
 
 pub mod bundle;
 pub mod config;

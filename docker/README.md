@@ -56,7 +56,7 @@ One `Dockerfile` holds every target, so the product and the test image use the s
 | --- | --- | --- |
 | `runtime` (default) | `runtime-base` plus convertd, the OCI labels and the health check | Built and run on arm64 and amd64. The CI image job converts on both |
 | `runtime-base` | Debian, the engines, the fonts, `build-info.json` and the user | Built and checked on arm64 and amd64 |
-| `dev` | `rust:1.99-trixie` plus the same engines, rustfmt, clippy, `locales` and `procps` | Built on arm64, for the engine tests of lane 002 |
+| `dev` | `rust:1.99-trixie` plus the same engines, rustfmt, clippy, `locales` and `procps` | Built on arm64, for the engine tests |
 
 The other stages are internal. `engines` downloads and checks the pinned files on the build platform. `lib-check` runs the [library check](#library-check). `rust-cross`, `chef-tool`, `planner` and `builder` compile Rust on the build platform and cross-compile to the target, so no `rustc` runs under emulation.
 
@@ -75,7 +75,7 @@ docker run --rm -v "$PWD":/src -v "$scratch/target":/target \
   -e CARGO_TARGET_DIR=/target rs-convert-dev cargo test
 ```
 
-`build_docker.sh` in the repository root builds and pushes the `runtime` image as `<repo>:v<x.y.z>`, with the version from `Cargo.toml`. A release build needs a clean tree that carries the tag `v<x.y.z>`. The script is not proved yet (plan 003 step 6).
+`build_docker.sh` in the repository root builds and pushes the `runtime` image as `<repo>:v<x.y.z>`, with the version from `Cargo.toml`. A release build needs a clean tree that carries the tag `v<x.y.z>`. The script is not proved yet.
 
 The build arguments:
 
@@ -101,7 +101,7 @@ The font set covers Latin, Greek, Cyrillic, symbols, math and emoji, and the scr
 - From `fonts-noto-core`, one Noto family for each of these scripts: Thai, Ethiopic, Bengali, Gujarati, Gurmukhi, Kannada, Malayalam, Oriya, Tamil, Telugu, Sinhala, Khmer, Myanmar, Tibetan, Thaana, Syriac, Mongolian, Cherokee, Yi and Ol Chiki.
 - WenQuanYi Micro Hei, a fallback for Chinese, Japanese and Korean. It has one glyph form for all three. `FONTS_CJK=1` adds Noto CJK, with the correct glyph forms for each region.
 
-A script with no font renders blank, or as wrong glyphs. The PDF text layer still holds the text. Only a page that renders fully blank gets a warning, `BLANK_PAGE`. Thus the build also fails if no font has a letter of each script in this list, or of Devanagari, Arabic or Hebrew. Rare and historic scripts still have no font, for example Javanese, Balinese and Adlam. `docs/ledger/fonts-study/` gives the measurements.
+A script with no font renders blank, or as wrong glyphs. The PDF text layer still holds the text. Only a page that renders fully blank gets a warning, `BLANK_PAGE`. Thus the build also fails if no font has a letter of each script in this list, or of Devanagari, Arabic or Hebrew. Rare and historic scripts still have no font, for example Javanese, Balinese and Adlam.
 
 LibreOffice bundles its own copies of Liberation, Carlito, Caladea, DejaVu, Noto Sans and Noto Serif, and Debian packages install them too. The image keeps one copy of each family: the copy that fontconfig picked when both were present. That is Debian's Carlito and LibreOffice's copy of the others, the same version or a newer one. `dpkg/fonts.cfg` and `dpkg/libreoffice.cfg` drop the other copy, and `build-info.json` stays the same. A new LibreOffice release can change these versions, so the pin procedure checks them again.
 
@@ -183,7 +183,7 @@ These sizes are measurements without CJK fonts, on an arm64 Mac (Docker 29.8.2, 
 
 Uncompressed sizes come from `docker image inspect`. The working target for the product image is at most 600 MB uncompressed, on amd64, the production architecture. The trims save 128 MB on each architecture. The largest savings are the icon themes (72 MB), the gallery (14 MB), the offline help (11 MB of content in 5334 files), the duplicate fonts and the templates (8 MB). The spike image of `docs/m0-spikes.md` was 708 MB, without the Noto fonts.
 
-Later on 2026-11-26, the fonts for the scripts of living languages and WenQuanYi Micro Hei added 11.6 MB. The arm64 `runtime` image then measured 616.5 MB, under the CI budget of 635 MB. The same files go into the amd64 image, so it comes to about 590 MB. The next CI image job measures it natively. The final arm64 `runtime` image, built from `main` at `1eaf24b` with the performance work, measured 615.9 MB (615917307 bytes). Its convertd is 5.8 MB. The paper locales then added about 3 MB: 618.9 MB at `1eafd89` on the branch of `DEFAULT_PAPER`.
+Later on 2026-11-26, the fonts for the scripts of living languages and WenQuanYi Micro Hei added 11.6 MB. The arm64 `runtime` image then measured 616.5 MB, under the CI budget of 635 MB. The same files go into the amd64 image, so it comes to about 590 MB. The next CI image job measures it natively. The final arm64 `runtime` image, built with the performance work, measured 615.9 MB (615917307 bytes). Its convertd is 5.8 MB. The paper locales then added about 3 MB: 618.9 MB with `DEFAULT_PAPER`.
 <!-- /memoria:section -->
 
 <!-- memoria:section id="verification" files="Dockerfile smoke.sh ab-pages.sh corpus-check.sh" -->
@@ -218,14 +218,14 @@ On 2026-11-26 the LibreOffice trims passed these gates on arm64, against a basel
 - **Engine tests:** in the trimmed `dev` image, `engines_office`, `engines_render` and `engines_poison` passed (20 tests, one ignored). Two tests skipped: one needs `CONVERTD_SMALL_DISK`, and one finds no `encrypted/deck20.pptx` in the corpus.
 - **Build and smoke:** `build-info.json` is the same, `lib-check` passes, and `smoke.sh` passes.
 
-On 2026-11-27 the lock-down and the setuid strip passed these gates on arm64, against a baseline image built from `release/0.2` at `1eaf927` without them:
+On 2026-11-27 the lock-down and the setuid strip passed these gates on arm64, against a baseline image built from the same source without them:
 
 - **Corpus:** `corpus-check.sh` passed 70 of 70 cases on the new image, `docx-file-links` included, with no `ERROR` line in the service log.
 - **Pages:** `ab-pages.sh` gave the same status, page count and page hash for all 48 files and 200 pages of both images.
 - **Smoke:** `smoke.sh` passed all six checks on the new image. On the baseline it failed only the setuid check, which listed the 11 files that the build now strips: `chage`, `chfn`, `chsh`, `expiry`, `gpasswd`, `mount`, `newgrp`, `passwd`, `su` and `umount` in `/usr/bin`, and `/usr/sbin/unix_chkpwd`.
 - **Policy:** with an extra `.xcd` that trusts `file:///` and sets Writer links to "always", `file-links.docx` gave 2 images in the PDF on the baseline and 0 on the new image. Without that file, both gave 0.
 
-The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs by hand, monthly, and on pushes to `main` and pull requests that touch `docker/`, `src/engines/`, `src/worker/`, `src/preflight/`, `corpus/`, `.github/actions/image-gates/` or `Cargo.lock`. A push compares with the commit before it, and a push with no such commit runs the job. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The run after the trims (45796989297) measured 578 MB on amd64 and 604 MB on arm64. The amd64 image was ready after 764 ms and converted the DOCX in 61 ms. The command:
+The CI image job gives the amd64 proof at native speed, on the amd64 runners of GitHub. The job runs by hand, monthly, and on pushes to `main` and pull requests that touch `docker/`, `src/engines/`, `src/worker/`, `src/preflight/`, `corpus/`, `.github/actions/image-gates/` or `Cargo.lock`. A push compares with the commit before it, and a push with no such commit runs the job. It builds the image natively on each architecture and runs `smoke.sh` with `smoke/small.docx`. Its first passing run on 2026-11-26, before the trims, measured 706 MB on amd64 and 732 MB on arm64. The amd64 image was ready after 773 ms and converted the DOCX in 56 ms. The run after the trims measured 578 MB on amd64 and 604 MB on arm64. The amd64 image was ready after 764 ms and converted the DOCX in 61 ms. The command:
 
 ```sh
 docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
@@ -240,7 +240,7 @@ docker/smoke.sh rs-convert:ci docker/smoke/small.docx 635
 - That no fontconfig user cache is written.
 - That no file has a setuid or setgid bit. `find` runs as root in a container of its own, so that it can read every folder, and any error of `find` fails the check.
 
-After the smoke test, the job runs `corpus-check.sh`. Both gates live in `.github/actions/image-gates`, which `release.yml` runs too. `corpus-check.sh` is the `corpus-bench check` of lane 005, every case of `corpus/expected.json`, against the image. The harness runs in a pinned Debian container inside the network namespace of the service. Only there does the canary listener see a connection from LibreOffice. On 2026-11-26 this check passed 59 of 59 cases on the arm64 image by hand. The first automatic image run on `main` (45805165059) passed it on amd64.
+After the smoke test, the job runs `corpus-check.sh`. Both gates live in `.github/actions/image-gates`, which `release.yml` runs too. `corpus-check.sh` is the `corpus-bench check` of `tools/corpus/`, every case of `corpus/expected.json`, against the image. The harness runs in a pinned Debian container inside the network namespace of the service. Only there does the canary listener see a connection from LibreOffice. On 2026-11-26 this check passed 59 of 59 cases on the arm64 image by hand. The first automatic image run on `main` passed it on amd64.
 
 `smoke/small.docx` is the corpus entry `docx-small`, 36986 bytes. `corpus/generate.py` makes the same bytes, and its SHA-256 is in `corpus/expected.json`.
 

@@ -12,14 +12,14 @@ Memoria finds the documents that need a review when their inputs change. A perso
 
 ## What Memoria tracks here
 
-Every `README.md` is a tracked document. A README covers the files in its folder and below, until it hands a subfolder to another README with a link. The root README links every boundary README in [the map](boundaries.md), so each boundary owns its folder. `memoria.toml` lists the ignored paths: the ledger, the spikes, the research study, lockfiles and generated code.
+Every `README.md` is a tracked document. A README covers the files in its folder and below, until it hands a subfolder to another README with a link. The root README links every boundary README in [the map](boundaries.md), so each boundary owns its folder. `memoria.toml` lists the ignored paths: the spikes, lockfiles and generated code.
 
 `memoria.lock` records each review. Memoria writes it. Commit it, and never edit it by hand.
 
 ## Who does what
 
-- **An agent that changes code** in a lane branch also updates the README of that boundary in the same branch. It does not run `memoria ack` and does not touch `memoria.lock`. A worktree is not the main checkout, and an acknowledgement belongs to the merged result.
-- **The lead** merges branches one at a time. After each merge, the lead runs the review cycle in the main checkout and pushes only when `memoria check` passes.
+- **A contributor who changes code** also updates the README of that boundary in the same branch. They do not run `memoria ack` and do not touch `memoria.lock`: an acknowledgement belongs to the merged result.
+- **The maintainer** merges branches one at a time. After each merge, the maintainer runs the review cycle on `main` and pushes only when `memoria check` passes.
 - **A reviewer** reads the whole document and the sources that `memoria review` names, against this guidance, and records the result with a note that says what was verified.
 
 ## After a merge
@@ -39,4 +39,4 @@ Several reviewers can work at the same time, one document each, in the main chec
 
 ## Guidance
 
-`memoria.toml` loads [writing](writing.md), [sections](sections.md) and [boundaries](boundaries.md) as guidance for every review. When you change a guidance file, run `memoria guidance --changed` and decide which documents the change affects. Ask the owner before you invalidate documents for a guidance change.
+`memoria.toml` loads [writing](writing.md), [sections](sections.md) and [boundaries](boundaries.md) as guidance for every review. When you change a guidance file, run `memoria guidance --changed` and decide which documents the change affects. Ask the maintainer before you invalidate documents for a guidance change.

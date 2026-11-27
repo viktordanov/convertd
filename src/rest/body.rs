@@ -585,7 +585,7 @@ mod tests {
         wait_for_cleanup(&root, &semaphore).await;
         // The pump gave up: the body must end with an error, so hyper drops
         // the connection instead of sending the chunked terminator that
-        // would make a cut tar.zst look complete (review, item 5).
+        // would make a cut tar.zst look complete.
         let read = axum::body::to_bytes(body, 64 << 20).await;
         assert!(read.is_err(), "a cut body ended cleanly");
         std::fs::remove_dir_all(tmp).unwrap();

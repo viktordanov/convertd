@@ -1,6 +1,5 @@
 //! Process control for the supervisor: spawning, the child registry, the
-//! reaper, group kills, the stderr drain and one-off children (plan 002
-//! step 3).
+//! reaper, group kills, the stderr drain and one-off children.
 //!
 //! **The reaper owns every wait.** No other supervisor code may wait on a
 //! child (`clippy.toml` bans the std methods); a one-off child goes through
@@ -521,7 +520,7 @@ fn become_subreaper() -> io::Result<()> {
 }
 
 /// Linux: mark the supervisor not dumpable, so a compromised worker with the
-/// same UID cannot read `/proc/<supervisor>/environ` (plan 002 decision 7).
+/// same UID cannot read `/proc/<supervisor>/environ`.
 /// The flag resets on `execve`, so workers are unaffected.
 #[cfg(target_os = "linux")]
 pub fn set_not_dumpable() -> io::Result<()> {

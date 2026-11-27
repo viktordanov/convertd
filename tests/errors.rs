@@ -1,4 +1,4 @@
-//! Errors over HTTP (plan 001 step 4): auth, request IDs, fallbacks and the
+//! Errors over HTTP: auth, request IDs, fallbacks and the
 //! panic layer. Each error has a JSON body, a code and `X-Request-ID`. The
 //! mapping of every domain error is the table test in `rest/response.rs`.
 

@@ -1,4 +1,4 @@
-# Dependency advisories (ledger item 011, S3): the RustSec database for the Rust crates and
+# Dependency advisories: the RustSec database for the Rust crates and
 # the Go vulnerability database for the client. On every pull request, weekly, and by hand.
 # A new advisory can land while the code stays the same, so the weekly run matters.
 # Actions are pinned by commit SHA (the tag is in the comment); tools by version.

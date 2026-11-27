@@ -1,6 +1,6 @@
 //! `corpus-bench check`: runs every case of `expected.json` against a
 //! running service, with the canary listener up, and compares each answer
-//! with its expectation (plan 005 step 5).
+//! with its expectation.
 //!
 //! The run is sequential, so a listener connection belongs to the case
 //! that was running. After each case the harness asks `/healthz`.
@@ -386,7 +386,7 @@ fn memfind(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
-/// What a tar.zst answer holds (INTERFACES.md §9, "Bundle format").
+/// What a tar.zst answer holds (`src/README.md`, the tar.zst bundle).
 struct Bundle {
     manifest: Manifest,
     pdf: Option<Vec<u8>>,
@@ -584,7 +584,7 @@ mod tests {
         assert_eq!(obs.pdf_valid, Some(false));
     }
 
-    /// A tar.zst stream with these entries, as lane 001 writes it.
+    /// A tar.zst stream with these entries, as the service writes it.
     fn tar_zst(entries: &[(&str, &[u8])]) -> Vec<u8> {
         let mut tar = tar::Builder::new(Vec::new());
         for (name, body) in entries {

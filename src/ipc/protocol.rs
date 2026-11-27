@@ -301,7 +301,7 @@ pub struct EngineTimes {
     pub render_us: u64,
     pub encode_us: u64,
     pub decrypt_us: u64,
-    /// The office pre-flight scan; not engine time (INTERFACES.md §15).
+    /// The office pre-flight scan; not engine time.
     pub preflight_us: u64,
     /// The worker process's CPU time over the whole call, user plus
     /// system, every thread included. Unlike the other fields it spans
@@ -544,7 +544,7 @@ pub enum WorkerErrorKind {
     /// `RLIMIT_FSIZE`, a pixel bomb.
     LimitExceeded,
     /// ENOSPC, EDQUOT or almost no free space: caused by other jobs, worth
-    /// a retry (INTERFACES.md §5).
+    /// a retry.
     DiskFull,
     Io,
     /// The role does not answer this operation.
