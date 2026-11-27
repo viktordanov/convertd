@@ -10,8 +10,9 @@
 #      newest X.Y.Z in the registry, of its line and overall. X.Y.Z is immutable: an existing
 #      one is accepted only with the same digest (a re-run). publish runs one at a time
 #      across all tags, so it decides "newest" under that lock.
-#   5. release: a GitHub release for the tag, with generated notes, marked latest when
-#      publish moved latest.
+#   5. release: a GitHub release for the tag, with generated notes, marked latest only when
+#      publish moved latest in the same run. A re-run of a failed release job reuses that
+#      run's decision; it never lets GitHub choose.
 # workflow_dispatch is a dry run: steps 1 and 2 only, on the chosen ref. It never logs in to
 # a registry, pushes or releases.
 # Actions are pinned by commit SHA (the tag is in the comment), as in image.yml.
@@ -339,6 +340,9 @@ jobs:
           DIGEST: ${{ needs.publish.outputs.digest }}
           LATEST: ${{ needs.publish.outputs.latest }}
         run: |
+          # Latest comes only from this run's publish decision; anything but "true" is false,
+          # so GitHub never picks by itself.
+          [[ "${LATEST}" == true ]] || LATEST=false
           if gh release view "${TAG}" --repo "${REPO}" >/dev/null 2>&1; then
             echo "the release ${TAG} exists already (a re-run): nothing to do"
             exit 0
